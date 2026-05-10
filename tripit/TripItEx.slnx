@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TripIt.PowerShell/TripIt.PowerShell.csproj" />
+    <Project Path="src/TripIt/TripIt.csproj" />
+    <Project Path="src/TripItMcp/TripItMcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TripIt.FunctionalTests/TripIt.FunctionalTests.csproj" />
+  </Folder>
+</Solution>
