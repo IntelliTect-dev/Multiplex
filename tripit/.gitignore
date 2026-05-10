@@ -1,0 +1,31 @@
+# --- Raw HAR captures (sensitive: contain session cookies + private trip data) ---
+# Sanitized copies live in samples/har/ and are committed.
+/har/
+
+# --- Browser profile (sensitive: contains session cookies) ---
+.chrome-cdp-profile/
+.chrome-profile/
+
+# --- Local session file ---
+.tripit-mcp/
+session.json
+storageState.json
+
+# --- Node ---
+node_modules/
+npm-debug.log*
+
+# --- .NET ---
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
