@@ -92,7 +92,7 @@ Describe 'endpoint-dedup' {
             $r.ExitCode | Should -Be 0
             $code = Get-Content (Join-Path $out 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
             # exactly one GetUsers<id>Async method (the /users/{id} endpoint)
-            $matches = [regex]::Matches($code, 'public\s+async\s+Task<[^>]+>\s+GetUsersByIdAsync\s*\(')
+            $matches = [regex]::Matches($code, 'public\s+async\s+Task<.*?>\s+GetUsersByIdAsync\s*\(')
             $matches.Count | Should -Be 1
             # signature carries an int id
             $code | Should -Match 'GetUsersByIdAsync\s*\(\s*int\s+id'
@@ -205,6 +205,95 @@ Describe 'polite-crawl note' {
     }
 }
 
+Describe 'anti-bot challenge warning (issue #66)' {
+    BeforeAll {
+        function New-AkamaiHarFixture {
+            param(
+                [Parameter(Mandatory)][string] $Path,
+                [switch] $IncludeAkamai
+            )
+            $reqHeaders = @(
+                @{ name = 'Accept'; value = 'application/json' }
+            )
+            $respHeaders = @(
+                @{ name = 'Content-Type'; value = 'application/json' }
+            )
+            if ($IncludeAkamai) {
+                $reqHeaders += @{ name = 'Cookie'; value = '_abck=opaque; session_id=abc' }
+                $respHeaders += @{ name = 'Set-Cookie'; value = 'bm_sz=opaque; Path=/; HttpOnly' }
+            } else {
+                $reqHeaders += @{ name = 'Cookie'; value = 'session_id=abc' }
+                $respHeaders += @{ name = 'Set-Cookie'; value = 'session_id=abc; Path=/; HttpOnly' }
+            }
+            $har = @{
+                log = @{
+                    entries = @(
+                        @{
+                            startedDateTime = '2026-01-01T00:00:00Z'
+                            request  = @{
+                                method = 'GET'
+                                url    = 'https://api.example.com/v1/widgets'
+                                httpVersion = 'HTTP/1.1'
+                                cookies = @()
+                                headers = $reqHeaders
+                                queryString = @()
+                                headersSize = -1
+                                bodySize = 0
+                            }
+                            response = @{
+                                status      = 200
+                                statusText  = 'OK'
+                                httpVersion = 'HTTP/1.1'
+                                cookies     = @()
+                                headers     = $respHeaders
+                                content     = @{ size = 2; mimeType = 'application/json'; text = '{}' }
+                                redirectURL = ''
+                                headersSize = -1
+                                bodySize    = 2
+                            }
+                            cache    = @{}
+                            timings  = @{ send = 0; wait = 1; receive = 0 }
+                            time     = 1
+                        }
+                    )
+                }
+            }
+            Set-Content -Encoding utf8 -LiteralPath $Path -Value ($har | ConvertTo-Json -Depth 12)
+        }
+    }
+
+    It 'README includes an Anti-bot challenge warning section when Akamai cookies are present' {
+        $out = New-OutDir
+        $har = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+        try {
+            New-AkamaiHarFixture -Path $har -IncludeAkamai
+            Invoke-Gen -Har @($har) -Out $out | Out-Null
+            $readme = Get-Content (Join-Path $out 'README.md') -Raw
+            $readme | Should -Match '(?i)Anti-bot challenge warning'
+            $readme | Should -Match '_abck'
+            $readme | Should -Match 'bm_sz'
+            $readme | Should -Match '(?i)public landing page'
+        } finally {
+            if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+            if (Test-Path $har) { Remove-Item -Force $har }
+        }
+    }
+
+    It 'README does NOT include the warning section when no Akamai cookies are present' {
+        $out = New-OutDir
+        $har = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+        try {
+            New-AkamaiHarFixture -Path $har
+            Invoke-Gen -Har @($har) -Out $out | Out-Null
+            $readme = Get-Content (Join-Path $out 'README.md') -Raw
+            $readme | Should -Not -Match '(?i)Anti-bot challenge warning'
+        } finally {
+            if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+            if (Test-Path $har) { Remove-Item -Force $har }
+        }
+    }
+}
+
 Describe 'nuget-metadata' {
     It '.csproj contains required Package* elements' {
         $out = New-OutDir
@@ -216,8 +305,39 @@ Describe 'nuget-metadata' {
             $csproj | Should -Match '<Authors>IntelliTect</Authors>'
             $csproj | Should -Match '<RepositoryUrl>https://github\.com/example/example</RepositoryUrl>'
             $csproj | Should -Match '<PackageTags>example;api;wrapper</PackageTags>'
-            $csproj | Should -Match '<TargetFramework>net8\.0</TargetFramework>'
+            $csproj | Should -Match '<TargetFramework>net10\.0</TargetFramework>'
         } finally { Remove-Item -Recurse -Force $out }
+    }
+}
+
+Describe 'top-level solution file (issue #65)' {
+    BeforeAll {
+        $script:SlnOut = New-OutDir
+        Invoke-Gen -Har @($script:RestHar) -Out $script:SlnOut | Out-Null
+        $script:SlnxPath = Join-Path $script:SlnOut 'ExampleEx.slnx'
+    }
+    AfterAll {
+        if (Test-Path $script:SlnOut) { Remove-Item -Recurse -Force $script:SlnOut }
+    }
+    It 'emits ExampleEx.slnx at the wrapper root' {
+        Test-Path -LiteralPath $script:SlnxPath | Should -BeTrue
+    }
+    It 'references the client csproj' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match 'src/ExampleEx/ExampleEx\.csproj'
+    }
+    It 'references the tests csproj' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match 'tests/ExampleEx\.Tests/ExampleEx\.Tests\.csproj'
+    }
+    It 'uses POSIX-style forward slashes for cross-platform determinism' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Not -Match '\\'
+    }
+    It 'is wrapped in a <Solution> root element (slnx schema)' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match '<Solution>'
+        $body | Should -Match '</Solution>'
     }
 }
 
@@ -258,5 +378,57 @@ Describe 'determinism' {
             Remove-Item -Recurse -Force $a
             Remove-Item -Recurse -Force $b
         }
+    }
+}
+
+Describe 'verb-passthrough (issue #100)' {
+    BeforeAll {
+        $script:PostHar = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/rest-post-and-get.har'
+        $script:PostOut = New-OutDir
+        $script:PostRes = Invoke-Gen -Har @($script:PostHar) -Out $script:PostOut
+    }
+    AfterAll {
+        if (Test-Path $script:PostOut) { Remove-Item -Recurse -Force $script:PostOut }
+    }
+
+    It 'codegen exits 0 on the POST/GET fixture' {
+        $script:PostRes.ExitCode | Should -Be 0 -Because $script:PostRes.Output
+    }
+
+    It 'generated POST endpoint passes HttpMethod.Post to SendRawAsync' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'CreateWidgetsCreateAsync'
+        # The generated POST wrapper must thread the verb through to SendRawAsync.
+        $code | Should -Match 'CreateWidgetsCreateAsync[\s\S]*?SendRawAsync\([^)]*HttpMethod\.Post'
+    }
+
+    It 'generated POST endpoint accepts an optional body parameter' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'CreateWidgetsCreateAsync\(\s*string\?\s+body\s*=\s*null'
+    }
+
+    It 'generated GET endpoint passes HttpMethod.Get to SendRawAsync' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'GetWidgetsListAsync[\s\S]*?SendRawAsync\([^)]*HttpMethod\.Get'
+    }
+}
+
+Describe 'Client.cs.tmpl SendRawAsync verb support (issue #100)' {
+    BeforeAll {
+        $tmpl = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/csharp/Client.cs.tmpl'
+        $script:ClientTmpl = Get-Content -Raw $tmpl
+    }
+
+    It 'SendRawAsync signature includes an HttpMethod parameter' {
+        $script:ClientTmpl | Should -Match 'SendRawAsync\([\s\S]*?HttpMethod\??\s+method'
+    }
+
+    It 'SendRawAsync signature accepts an optional JSON body' {
+        $script:ClientTmpl | Should -Match 'SendRawAsync\([\s\S]*?string\?\s+jsonBody'
+    }
+
+    It 'HttpRequestMessage uses the supplied method, not a hard-coded GET' {
+        $script:ClientTmpl | Should -Not -Match 'new HttpRequestMessage\(HttpMethod\.Get,'
+        $script:ClientTmpl | Should -Match 'new HttpRequestMessage\(method,'
     }
 }
