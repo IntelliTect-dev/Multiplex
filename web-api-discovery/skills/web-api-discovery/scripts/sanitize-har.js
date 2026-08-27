@@ -9,12 +9,30 @@
  * an email becomes a fake email, a 64-char hex token becomes a 64-char
  * fake hex string, etc.
  *
+ * Scrubbing is TWO controls, not one:
+ *
+ *   1. Key-name scrubbing -- shape patterns plus the known-secret field and
+ *      header lists. It reaches inside percent-encoded parameters, because
+ *      per-request tokens routinely live in a nested JSON blob whose own key
+ *      never appears in the form's parameter list.
+ *   2. Literal-value scrubbing -- the operator's own identifiers (account id,
+ *      display name, email), applied LAST over the serialized HAR so one
+ *      sweep covers URLs, headers, request bodies and response bodies.
+ *
+ * Control 1 can only redact values whose NAME somebody anticipated. Control 2
+ * covers the same value appearing under a name nobody knew about. Neither
+ * substitutes for the other.
+ *
+ * The salt and the literal map come from the gitignored `.har-profile.json`
+ * (see har-profile.js). They are never defaulted: the literals are the
+ * operator's own identifiers, and an absent profile is a hard failure.
+ *
  * Usage:
- *   node sanitize-har.js --in <input.har> --out <output.har> --subs <subs.json> --salt <salt>
+ *   node sanitize-har.js --in <input.har>
  *
  * Exit codes:
  *   0  -- scrubbed HAR + subs map written successfully
- *   1  -- I/O or parse error
+ *   1  -- I/O, parse, or profile error
  *   2  -- usage error
  */
 
@@ -24,6 +42,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const pii = require(path.join(__dirname, 'pii.js'));
+const harProfile = require(path.join(__dirname, 'har-profile.js'));
+const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -38,8 +58,30 @@ function parseArgs(argv) {
 }
 
 function usage() {
-    console.error('usage: node sanitize-har.js --in <in.har> --out <out.har> --subs <subs.json> --salt <salt> [--pii-subs <.substitutions.json>] [--fixed-time <iso8601>]');
+    console.error([
+        'usage: node sanitize-har.js --in <in.har>',
+        '  --out        default: the input path with samples/har-original/ -> samples/har/',
+        '  --subs       default: <out-dir>/.har-substitutions.json',
+        '  --pii-subs   default: <out-dir>/.substitutions.json',
+        `  --profile    default: nearest ${harProfile.PROFILE_FILENAME} at or above the working directory`,
+        '  --fixed-time determinism for tests',
+    ].join('\n'));
     process.exit(2);
+}
+
+// Conventional layout: the raw capture lives in samples/har-original/ and the
+// scrubbed copy in samples/har/ (see the api-wrapper-scaffold skill, Phase 3).
+// Deriving the output from that convention keeps three required flags off the
+// command line without guessing.
+function deriveOutPath(inPath) {
+    const resolved = path.resolve(inPath);
+    const parts = resolved.split(path.sep);
+    const i = parts.lastIndexOf('har-original');
+    if (i >= 0) {
+        parts[i] = 'har';
+        return parts.join(path.sep);
+    }
+    return path.join(path.dirname(resolved), path.basename(resolved, '.har') + '.scrubbed.har');
 }
 
 // Format-preserving fake generators keyed by HMAC(salt, original).
@@ -75,7 +117,9 @@ const PATTERNS = [
     // a request header, so the header-name based scrub never sees them.
     { kind: 'upload-handle', re: /\b1:[A-Za-z0-9+/=_-]{6,}:[\w./+-]+:[A-Za-z0-9+/=_-]{4,}:e:\d+:[A-Za-z0-9+/=_-]{4,}\b/g },
     { kind: 'jwt',    re: /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
-    { kind: 'email',  re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g },
+    // Bounded local part / domain: an unbounded `[chars]+@` backtracks
+    // quadratically over a long non-matching run (see pii.js RE.email).
+    { kind: 'email',  re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g },
     { kind: 'uuid',   re: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g },
     { kind: 'hex64',  re: /\b[0-9a-fA-F]{64}\b/g },
     { kind: 'hex32',  re: /\b[0-9a-fA-F]{32}\b/g },
@@ -84,24 +128,14 @@ const PATTERNS = [
 // Field/header names that are secrets by identity, not by shape (issue #253).
 // These are short, non-hex, non-JWT tokens (CSRF/session-signing values,
 // upload handles) that the shape-based PATTERNS above never match, so they
-// need to be redacted by name instead. Matched case-insensitively against
-// the JSON key or header name, ignoring any leading/trailing punctuation.
-const KNOWN_SECRET_FIELD_NAMES = new Set([
-    // request-signing / CSRF-adjacent body & query params
-    'fb_dtsg', 'lsd', 'jazoest',
-    '__spin_r', '__spin_b', '__spin_t', '__hs', '__hsi', '__csr', '__hsdp', '__req', '__rev',
-    // session cookies too short to hit the 16-char cookie-value heuristic
-    'c_user', 'xs', 'datr', 'fr', 'sb', 'mid', 'ig_did', 'ds_user_id',
-    'sessionid', 'csrftoken',
-]);
-const KNOWN_SECRET_HEADER_NAMES = new Set([
-    'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
-]);
-
-function isKnownSecretField(key) {
-    if (typeof key !== 'string') return false;
-    return KNOWN_SECRET_FIELD_NAMES.has(key.toLowerCase());
-}
+// need to be redacted by name instead. The lists live in har-secrets.js so
+// the verifiers gate on exactly the names the scrubber redacts.
+const {
+    KNOWN_SECRET_FIELD_NAMES,
+    KNOWN_SECRET_HEADER_NAMES,
+    isKnownSecretField,
+    replaceMultipartSecretFields,
+} = require(path.join(__dirname, 'har-secrets.js'));
 
 // Escaped alternation of known secret field names, used to catch them by
 // identity inside form-encoded bodies (`fb_dtsg=...&lsd=...`) and inline
@@ -127,9 +161,44 @@ function scrubKnownFields(s, subs, salt) {
     return out;
 }
 
-function scrubString(s, subs, salt) {
+// A form-encoded body or query string worth DECODING: `k=v` pairs that
+// actually carry percent escapes. Without an escape there is nothing hidden
+// -- key-name scrubbing already sees the value on the wire -- and decoding
+// anyway would rewrite the value's spelling for no gain.
+//
+// A `; `-separated string is a Cookie header, not a form body; it has its own
+// scrubber and must keep its separators intact.
+function looksFormEncoded(s) {
+    return /%[0-9A-Fa-f]{2}/.test(s)
+        && !/;\s/.test(s)
+        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(s);
+}
+
+const MAX_DECODE_DEPTH = 3;
+
+function scrubString(s, subs, salt, depth) {
     if (typeof s !== 'string' || s.length === 0) return s;
+    const level = depth || 0;
     let out = scrubKnownFields(s, subs, salt);
+
+    // Multipart bodies carry the field name in a header and the value on its
+    // own line, so the `name=value` and `"name":"value"` forms above never
+    // see them.
+    out = replaceMultipartSecretFields(out, (name, value) => {
+        const key = `field:${name.toLowerCase()}:${value}`;
+        if (!subs[key]) subs[key] = fakeFor('field', value, salt);
+        return subs[key];
+    });
+
+    // Reach INSIDE percent-encoded parameters. A form body carrying
+    // `variables=<percent-encoded JSON>` hides per-request tokens where no
+    // flat pattern over the wire body can match them, and where the inner key
+    // never appears in the form's own parameter list.
+    if (level < MAX_DECODE_DEPTH && looksFormEncoded(out)) {
+        out = harLiterals.transformEncodedParams(out, (_name, decoded) =>
+            scrubString(decoded, subs, salt, level + 1));
+    }
+
     for (const { kind, re } of PATTERNS) {
         out = out.replace(re, (match) => {
             const key = `${kind}:${match}`;
@@ -151,6 +220,22 @@ function scrubCookieHeader(value, subs, salt) {
         if (!subs[key]) subs[key] = fakeFor('cookie', tok, salt);
         return `${name}=${subs[key]}`;
     });
+}
+
+// The HAR spec lets `cookies[]` and the `Cookie` header diverge, and the
+// 16-char-or-known-name heuristic only ever ran over header text. A session
+// cookie present only in the structured array was missed by the scrubber and
+// by every gate downstream of it.
+function scrubCookieArray(cookies, subs, salt) {
+    if (!Array.isArray(cookies)) return cookies;
+    for (const c of cookies) {
+        if (!c || typeof c.value !== 'string' || typeof c.name !== 'string') continue;
+        if (c.value.length < 16 && !isKnownSecretField(c.name)) continue;
+        const key = `cookie:${c.name.toLowerCase()}:${c.value}`;
+        if (!subs[key]) subs[key] = fakeFor('cookie', c.value, salt);
+        c.value = subs[key];
+    }
+    return cookies;
 }
 
 function scrubHeaders(headers, subs, salt) {
@@ -190,6 +275,8 @@ function walk(node, subs, salt) {
         for (const k of Object.keys(node)) {
             if (k === 'headers') {
                 node[k] = scrubHeaders(node[k], subs, salt);
+            } else if (k === 'cookies') {
+                node[k] = scrubCookieArray(node[k], subs, salt);
             } else {
                 node[k] = walk(node[k], subs, salt);
             }
@@ -201,7 +288,21 @@ function walk(node, subs, salt) {
 
 function main() {
     const args = parseArgs(process.argv.slice(2));
-    if (!args.in || !args.out || !args.subs || !args.salt) usage();
+    if (!args.in) usage();
+
+    let profile;
+    try {
+        profile = harProfile.loadProfile({ profilePath: args.profile });
+    } catch (e) {
+        console.error(`sanitize-har: ${e.message}`);
+        process.exit(1);
+    }
+    const salt = profile.salt;
+
+    const outPath = args.out || deriveOutPath(args.in);
+    const outDir = path.dirname(outPath);
+    const subsPath = args.subs || path.join(outDir, '.har-substitutions.json');
+    const piiSubsPath = args['pii-subs'] || path.join(outDir, '.substitutions.json');
 
     let raw;
     try {
@@ -220,7 +321,7 @@ function main() {
     }
 
     const subs = {};
-    walk(har, subs, args.salt);
+    walk(har, subs, salt);
 
     // Typed-PII pass (issue #46): runs after legacy regex scrub so that
     // anything still in the HAR (emails in custom-named fields, phones,
@@ -230,25 +331,48 @@ function main() {
     // file is safe to commit.
     const piiResult = pii.scrubPii(har);
 
+    // Literal-value pass runs LAST, over the SERIALIZED document, so a single
+    // sweep covers URLs, headers, request bodies and response bodies -- the
+    // same identifier under three different names is one replacement, not
+    // three key-list entries somebody has to know about in advance.
+    const serialized = JSON.stringify(har, null, 2);
+    const literalPass = harLiterals.applyLiteralPass(serialized, profile.literals);
+
+    // Merge rather than overwrite: the substitution table is the project's
+    // running hash -> fake map, and a second capture must not erase the first.
+    let existingSubs = {};
+    if (fs.existsSync(subsPath)) {
+        try {
+            existingSubs = JSON.parse(fs.readFileSync(subsPath, 'utf8'));
+        } catch {
+            existingSubs = {};
+        }
+    }
+    const merged = Object.assign({}, existingSubs, subs);
     // Stable key order in output JSON for byte-for-byte determinism.
     const sortedSubs = {};
-    for (const k of Object.keys(subs).sort()) sortedSubs[k] = subs[k];
+    for (const k of Object.keys(merged).sort()) sortedSubs[k] = merged[k];
 
-    fs.writeFileSync(args.out, JSON.stringify(har, null, 2), 'utf8');
-    fs.writeFileSync(args.subs, JSON.stringify(sortedSubs, null, 2), 'utf8');
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(outPath, literalPass.text, 'utf8');
+    fs.writeFileSync(subsPath, JSON.stringify(sortedSubs, null, 2), 'utf8');
 
-    if (args['pii-subs']) {
-        const createdAt = args['fixed-time'] || new Date().toISOString();
-        const store = {
-            version: 1,
-            createdAt,
-            substitutions: piiResult.substitutions
-        };
-        fs.writeFileSync(args['pii-subs'], JSON.stringify(store, null, 2), 'utf8');
-    }
+    const createdAt = args['fixed-time'] || new Date().toISOString();
+    fs.writeFileSync(piiSubsPath, JSON.stringify({
+        version: 1,
+        createdAt,
+        substitutions: piiResult.substitutions
+    }, null, 2), 'utf8');
 
-    const piiCount = piiResult.substitutions.length;
-    console.log(`sanitize-har: wrote ${args.out} (${Object.keys(subs).length} legacy + ${piiCount} typed-PII substitutions)`);
+    // Hit counts name the sentinel only. Echoing the literal would relocate
+    // the leak into the log that reports it.
+    const literalSummary = literalPass.hits.length
+        ? literalPass.hits.map((h) => `${h.sentinel} x${h.count}`).join(', ')
+        : 'none matched';
+    console.log(
+        `sanitize-har: wrote ${outPath} ` +
+        `(${Object.keys(subs).length} legacy + ${piiResult.substitutions.length} typed-PII ` +
+        `substitutions; literals: ${literalSummary})`);
     process.exit(0);
 }
 

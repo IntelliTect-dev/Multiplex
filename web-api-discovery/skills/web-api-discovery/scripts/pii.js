@@ -83,7 +83,11 @@ function fieldType(key) {
 // Email is already handled by sanitize-har.js's legacy pattern, but we also
 // detect it here so detectPii() reports it for the substitutions store.
 const RE = {
-    email:        /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    // RFC 5321 caps the local part at 64 characters and the domain at 255.
+    // The bounds are not pedantry: an unbounded `[chars]+@` backtracks
+    // quadratically over a long run that never reaches an `@`, and capture
+    // bodies are routinely hundreds of KB.
+    email:        /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g,
     phone:        /\+\d{10,15}\b/g,
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
     creditDigits: /\b\d{13,19}\b/g,
@@ -466,6 +470,16 @@ function replaceAll(text, replacements) {
             re = new RegExp(escapeRe(v), 'g');
         }
         out = out.replace(re, r.replacement);
+
+        // The same value can appear percent-encoded in the very same entry:
+        // detection reads the decoded `queryString` pair, while the `url`
+        // carries `phone=%2B1...`. Replacing only the raw spelling leaves the
+        // encoded copy readable -- one value, several spellings, which is the
+        // failure literal-value scrubbing exists to close (see har-literals.js).
+        const encoded = encodeURIComponent(v);
+        if (encoded !== v && out.includes(encoded)) {
+            out = out.split(encoded).join(encodeURIComponent(r.replacement));
+        }
     }
     return out;
 }
