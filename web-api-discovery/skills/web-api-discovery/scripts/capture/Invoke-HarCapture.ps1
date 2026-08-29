@@ -1,0 +1,342 @@
+#!/usr/bin/env pwsh
+#Requires -Version 7.0
+
+<#
+.SYNOPSIS
+    Record a browser session, scrub it, and catalogue it -- one command.
+
+.DESCRIPTION
+    PowerShell front door for capture-har.js. Opens a browser on a dedicated
+    capture profile, records every request, then scrubs, verifies, digests and
+    catalogues what it recorded.
+
+    The operator's entire surface is a URL:
+
+        Invoke-HarCapture https://example.com
+
+    Browse, perform the operations worth documenting -- including the failure
+    paths, which are frequently the highest-value entries because they
+    establish the site's real error taxonomy -- then press ENTER in this
+    terminal. Closing the browser window does the same thing; so does
+    Stop-HarRecording from another process. Ctrl+C asks whether you meant to
+    finish or to cancel.
+
+    HOW MUCH IT SAYS. By default the console names the site, how to end the
+    recording, and the artifacts the run produced. `-Verbose` adds the resolved
+    paths, the capture profile, the CDP endpoint and the per-phase detail --
+    including the recorder's own, because the level is forwarded to it. Nothing
+    a failure needs to report is ever gated by the level: a warning, a
+    leak-gate rejection and an error are printed at every level.
+
+    `-InformationAction SilentlyContinue` silences the status lines without
+    silencing the warnings.
+
+    `Invoke-`, not `Start-`, because the command no longer merely starts
+    something: by the time it returns, the capture has been scrubbed and
+    verified and the catalogue exists.
+
+    TWO DIRECTORIES, and the difference is the whole safety story:
+
+      .har-captures/   the raw capture. Carries live session cookies, is
+                       gitignored, and CANNOT be redirected -- there is no
+                       option for it, so an unignored credential-bearing
+                       capture is not reachable by any argument.
+      -OutputPath      scrubbed, verified artifacts only: the per-action
+                       reference HARs, the session digest, and the catalogue.
+
+    Both are keyed on the captured site's HOST, so captures against different
+    sites never overwrite each other:
+
+      .har-captures/app.example.com/<timestamp>/raw.har
+      ./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+
+    The host alone, never the full URL: a magic-link or password-reset URL
+    carries its token in the path or the query, and the second of these
+    directories is the committable one.
+
+.PARAMETER Uri
+    The site to open. Positional, so the parameter name is optional.
+
+.PARAMETER OutputPath
+    The parent of the host-named folder the scrubbed artifacts and the
+    catalogue are written to. Passing -OutputPath D:\refs writes
+    D:\refs\app.example.com\ instead -- the host folder is always appended, and
+    a relative path resolves against the current directory. The raw capture
+    never goes here.
+
+    THE DEFAULT is the repository root when the working directory is inside a
+    repository, and the current directory when it is not. It used to be the
+    current directory unconditionally, which was right outside a repo and wrong
+    inside one: run from a checkout's subdirectory, artifacts appeared wherever
+    the operator happened to be standing.
+
+    Anchoring alone does not make the placement CORRECT -- a worktree has its
+    own root -- only predictable. Recording from the primary checkout on the
+    protected branch additionally warns before anything is recorded; see
+    ../lib/RepoWorkflowGuard.ps1.
+
+.PARAMETER Describe
+    An optional hint about what you intend to do, which helps the cataloguing
+    step segment the session into actions. It is never the source of action
+    names -- those come from the traffic.
+
+.PARAMETER Profile
+    Which signed-in identity to record as.
+
+    A NAME keeps a separate capture profile per identity, so several accounts
+    can stay signed in side by side without you knowing where profiles live.
+
+    A PATH records as an identity another tool already owns -- useful when a
+    project keys browser profiles off its own concept (a workspace, an account,
+    a tenant) and can compute that directory for you. That tool cannot use the
+    profile until the recording ends, because a persistent profile is
+    single-instance; the recorder says so when you pass one.
+
+    Omit it for the default capture profile.
+
+.PARAMETER Isolated
+    Use bundled Chromium with an ephemeral profile instead of system Chrome on
+    the persistent capture profile. For CI and throwaway captures. An isolated
+    run is not signed in unless a .har-storage-state.json is found at or above
+    the working directory, which is discovered automatically.
+
+.PARAMETER Port
+    Remote-debugging port the recording context listens on, so an agent can
+    attach over CDP and drive the same recording. Default 9333, and it never
+    has to be specified: a busy port falls forward to the next free one, and
+    the endpoint actually chosen is written to the session so an agent reads
+    it rather than assuming.
+
+.OUTPUTS
+    IntelliSDLC.HarCapture.CatalogueEntry
+
+.EXAMPLE
+    Invoke-HarCapture https://example.com
+
+.EXAMPLE
+    Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+
+.EXAMPLE
+    Invoke-HarCapture https://example.com -Describe 'create, edit and delete a post' |
+        ConvertTo-Json -Depth 4
+#>
+
+[CmdletBinding()]
+[OutputType('IntelliSDLC.HarCapture.CatalogueEntry')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSAvoidAssignmentToAutomaticVariable', 'Profile',
+    Justification = 'Which signed-in identity to record as is the operator-facing name for this input, and $PROFILE is never read in this script. Renaming the parameter to satisfy the analyzer would make the surface worse to serve a shadowing that has no effect here.')]
+param(
+    [Parameter(Mandatory, Position = 0)]
+    [string]$Uri,
+
+    [string]$OutputPath,
+
+    [string]$Describe,
+
+    [string]$Profile,
+
+    [switch]$Isolated,
+
+    [int]$Port = 9333
+)
+
+$ErrorActionPreference = 'Stop'
+
+# The placement guard is SHARED, not reimplemented here. Bespoke per-script
+# logic about where output may land is how the defect in #300 arrived, so every
+# output-producing script dot-sources the one implementation.
+. (Join-Path $PSScriptRoot '..' 'lib' 'RepoWorkflowGuard.ps1')
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Error 'node not found on PATH -- install Node.js >= 18 to record a capture.'
+    return
+}
+
+$captureJs = Join-Path $PSScriptRoot 'capture-har.js'
+if (-not (Test-Path -LiteralPath $captureJs)) {
+    Write-Error "capture-har.js not found at $captureJs"
+    return
+}
+
+# Status goes to the information stream, never to the pipeline: per
+# powershell.instructions.md -> Output & Streams, chatter mixed into the output
+# is what makes `... | ConvertTo-Json` return prose instead of data. It is also
+# why there is no Write-Host here.
+#
+# The preference is set once rather than pinning `-InformationAction Continue`
+# on every call. Pinning made the messages visible but also made them
+# unsuppressable: the caller's own -InformationAction, the mechanism the
+# convention points them at, did nothing. Honouring an explicit binding gives
+# both -- on by default, and off when the caller says so.
+if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
+    $InformationPreference = 'Continue'
+}
+
+# Which folder this capture's artifacts land in. Mirrors uriFolder() in
+# capture-har.js -- HOST ONLY (never the path or query, which carry
+# magic-link and reset tokens), periods kept, port joined with `_` because a
+# dash is legal inside a hostname.
+#
+# Deliberately duplicated rather than shelled out to node: this script's whole
+# observable contract is the arguments it hands the recorder, and a second node
+# invocation would sit in the middle of that. The duplication is pinned instead
+# -- har-recording.Tests.ps1 asserts this function and uriFolder() agree on a
+# table of URIs, so the two cannot drift apart silently.
+function Get-HarUriFolder {
+    param([Parameter(Mandatory)][string]$Uri)
+
+    $parsed = $null
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$parsed)) { return $null }
+
+    # Parsing is not enough: 'http://../evil' parses with a host of '..', and
+    # file:/data:/about: URIs parse with none. Both are refused for the same
+    # reasons capture-har.js refuses them -- the first would walk the capture
+    # out of its directory, the second collapses every hostless capture into
+    # one folder.
+    $hostName = $parsed.Host
+    if (-not $hostName -or $hostName -eq '.' -or $hostName -eq '..') { return $null }
+
+    # .Host, NOT .IdnHost, is the wrong choice here: WHATWG punycodes an
+    # international host and .Host does not, so a capture of a non-ASCII site
+    # would be WRITTEN to xn--... and its catalogue LOOKED FOR under the
+    # unicode name. .IdnHost matches the recorder, and already drops the
+    # brackets from an IPv6 literal.
+    $bare = $parsed.IdnHost -replace '^\[|\]$', ''
+
+    # WHATWG folds an IPv4-mapped tail into hex groups (`::ffff:1.2.3.4` ->
+    # `::ffff:102:304`); .NET keeps it dotted. Match the recorder.
+    if ($bare -match '^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$') {
+        $hi = ([int]$Matches[2] -shl 8) -bor [int]$Matches[3]
+        $lo = ([int]$Matches[4] -shl 8) -bor [int]$Matches[5]
+        $bare = '{0}{1:x}:{2:x}' -f $Matches[1], $hi, $lo
+    }
+    $bare = $bare -replace ':', '-'
+
+    $folder = if ($parsed.IsDefaultPort) { $bare } else { "${bare}_$($parsed.Port)" }
+    $folded = $folder.ToLowerInvariant() -replace '[^a-z0-9._-]', '_'
+
+    # Reserved Windows device names cannot be directories.
+    if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|_|$)') { return "${folded}_" }
+    return $folded
+}
+
+
+
+$uriFolder = Get-HarUriFolder -Uri $Uri
+if (-not $uriFolder) {
+    Write-Error "cannot derive a capture folder from '$Uri' -- it must be a URL, e.g. https://example.com"
+    return
+}
+
+# WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+#
+# This sits ahead of the node invocation because the guard is only safe while
+# nothing has been recorded yet. Warn a second in and cancelling costs the
+# operator nothing; warn after a capture and the choice becomes "discard the
+# recording you just spent minutes producing", which is worse than the
+# misplacement it would prevent. Advisory, never fatal, and never moved
+# downstream.
+$placement = Get-CheckoutPlacement -Path '.'
+if (-not (Assert-NotPrimaryCheckoutOnProtectedBranch -Placement $placement)) {
+    Write-Information 'Cancelled before recording -- nothing was written.'
+    return
+}
+
+# The recorder runs the same check. Telling it the guard already fired is what
+# keeps an operator coming through this front door from being warned twice.
+$env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
+
+$captureArgs = @('start', '--uri', $Uri, '--port', $Port)
+if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
+if ($Describe) { $captureArgs += @('--describe', $Describe) }
+if ($Profile) { $captureArgs += @('--profile', $Profile) }
+if ($Isolated) { $captureArgs += '--isolated' }
+# -Verbose is the only verbosity switch. capture-har.js prints its own console
+# output directly -- re-streaming it through PowerShell would buffer the ENTER
+# prompt and the Ctrl+C question in the very terminal the operator answers --
+# so the level is handed across instead of a second switch being invented.
+if ($VerbosePreference -ne 'SilentlyContinue') { $captureArgs += @('--log-level', 'verbose') }
+
+Write-Verbose "capture-har.js $($captureArgs -join ' ')"
+Write-Information 'Recording. Browse, then press ENTER in the recorder terminal -- that writes the most complete HAR.'
+
+try {
+    & node $captureJs @captureArgs
+    $exit = $LASTEXITCODE
+}
+finally {
+    # Scoped to this invocation. Leaving it set would silence the recorder's own
+    # warning for every later capture in the same session, including ones this
+    # front door never saw.
+    Remove-Item Env:HARCAPTURE_PLACEMENT_GUARD_RAN -ErrorAction SilentlyContinue
+}
+Write-Verbose "capture-har.js exited $exit"
+
+# Exit codes are documented on capture-har.js. 5 means raw.har was assembled
+# from the incremental log rather than recordHar -- a full capture either way,
+# so it is not a failure. 6 means the recording is fine but a post-process
+# phase is not, which must not be reported as success.
+switch ($exit) {
+    0 { }
+    5 { Write-Information 'Recording ended by closing the window; press ENTER next time for a slightly richer HAR.' }
+    6 { Write-Warning 'Recorded successfully, but scrub or catalogue failed. The raw capture is intact.' }
+    default {
+        Write-Error "capture-har exited $exit -- no catalogue was produced."
+        return
+    }
+}
+
+# The catalogue is read from THIS invocation's output path, which we already
+# know -- never by globbing .har-captures/ for the newest session directory.
+#
+# That glob looks equivalent and is not: captures now coexist happily on
+# different ports, so a second capture started in another terminal and finished
+# first would be the lexicographically-last directory, and this run would emit
+# a different site's catalogue as though it were its own. The recorder's
+# current.json pointer is no help either -- it is deleted when recording ends,
+# before node returns here.
+# The URI-named subfolder comes from the recorder itself (see $uriFolder above),
+# so this path and the one the recorder wrote to cannot drift apart.
+#
+# The DEFAULT root is anchored the same way the recorder anchors it (#300):
+# the repository root inside a repo, the working directory outside one. Both
+# sides have to apply it or this script looks for a catalogue in a directory
+# the recorder never wrote to. An explicit -OutputPath is left alone, resolved
+# against the working directory, because a relative path the operator typed has
+# to mean what they typed.
+$outputRoot = if ($OutputPath) { $OutputPath } else { Get-DefaultOutputRoot -Path '.' }
+$cataloguePath = Join-Path (Join-Path $outputRoot $uriFolder) 'catalogue.json'
+Write-Verbose "catalogue: $cataloguePath"
+
+# NO closing notice here, deliberately (#300). The recorder emits it, because
+# the recorder is the process that actually wrote the files and prints it
+# in-process. Printing it from here as well would duplicate it; printing it ONLY
+# from here would make it depend on this process surviving long enough to reach
+# its own epilogue -- and a notice that goes missing exactly when something went
+# wrong is not a safety net. The opening warning is the reverse case and is
+# owned here, because it is printed before the recorder exists.
+if (-not (Test-Path -LiteralPath $cataloguePath)) {
+    Write-Warning "no catalogue was written to $cataloguePath"
+    return
+}
+
+$rows = @(& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath)
+
+# Say so when the catalogue is still a scaffold. The Status column already
+# distinguishes the two, but an operator who does not read it would otherwise
+# take a list of provisional rows for a finished catalogue. Derived from the
+# rows themselves rather than from session state, so it survives the catalogue
+# being filled in by any of the three runners.
+#
+# Keyed on Description, not Status: a real AI pass may legitimately conclude
+# that every group was observed and none exercised, and telling that operator
+# their catalogue never ran would be wrong. Describing a row is the one thing
+# the AI does that the scaffold never can.
+if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
+    Write-Information (
+        'Every row is still Observed -- the catalogue needs its AI pass. See ' +
+        (Join-Path $PSScriptRoot 'catalogue-prompt.md'))
+}
+
+$rows

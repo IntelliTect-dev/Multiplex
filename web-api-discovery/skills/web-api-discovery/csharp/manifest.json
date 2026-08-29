@@ -1,6 +1,6 @@
 {
   "$schema": "manifest.schema.json",
-  "description": "Manifest of C# .tmpl files emitted by the api-wrapper-scaffold agent. Lists each template and the {{Token}} placeholders it requires. Tests in .github/agents/tests/csharp-templates.Tests.ps1 enforce manifest <-> body parity.",
+  "description": "Manifest of C# .tmpl files emitted by the web-api-discovery agent. Lists each template and the {{Token}} placeholders it requires. Tests in .github/agents/tests/csharp-templates.Tests.ps1 enforce manifest <-> body parity.",
   "tokens": {
     "ProjectName": "PascalCase wrapper name, e.g. TripItEx. Used for class names, exception types, MCP tool prefix, and per-user storage folder.",
     "Namespace": "Root .NET namespace, e.g. TripIt. Auth types live under {Namespace}.Auth.",
