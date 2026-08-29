@@ -1,6 +1,6 @@
 {
   "$schema": "../manifest.schema.json",
-  "description": "Manifest of xUnit + Pester .tmpl files emitted into each generated wrapper's tests/<TestProjectName>/ directory. The api-wrapper-scaffold codegen pipeline (scripts/tests-emit.js) substitutes the tokens below and emits one ClientTests.<Group>.cs per resource group (with [Fact] bodies injected via the {{Facts}} token). Tests in .github/agents/tests/tests-templates.Tests.ps1 enforce manifest <-> body parity.",
+  "description": "Manifest of xUnit + Pester .tmpl files emitted into each generated wrapper's tests/<TestProjectName>/ directory. The web-api-discovery codegen pipeline (scripts/codegen/tests-emit.js) substitutes the tokens below and emits one ClientTests.<Group>.cs per resource group (with [Fact] bodies injected via the {{Facts}} token). Tests in .github/agents/tests/tests-templates.Tests.ps1 enforce manifest <-> body parity.",
   "tokens": {
     "ProjectName": "PascalCase wrapper name, e.g. ExampleEx. Matches the wrapper csproj.",
     "Namespace": "Root .NET namespace of the wrapper, e.g. Example. Test code lives under {Namespace}.Tests.",

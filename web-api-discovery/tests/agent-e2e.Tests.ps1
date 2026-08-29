@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# End-to-end smoke test for the api-wrapper-scaffold agent.
+# End-to-end smoke test for the web-api-discovery agent.
 #
 # This is the executable spec: a regression in ANY prior PR's script
 # (sanitize-har, verify-scrub, detect-auth, generate-wrapper, codegen,
@@ -10,8 +10,8 @@
 
 BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:Runner   = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts/run-agent.js'
-    $script:Detect   = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts/detect-auth.js'
+    $script:Runner   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/codegen/run-agent.js'
+    $script:Detect   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/har/detect-auth.js'
     $script:RestHar  = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-rest.har'
     $script:GqlHar   = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-graphql.har'
     $script:DotnetAvailable = $null -ne (Get-Command dotnet -ErrorAction SilentlyContinue)
@@ -66,11 +66,22 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
         It 'scrubbed HAR was written under .run-agent/' {
             Test-Path (Join-Path $script:RestOut '.run-agent/scrubbed.har') | Should -BeTrue
         }
-        It 'pii substitutions file was written' {
-            $subsPath = Join-Path $script:RestOut '.run-agent/substitutions.json'
+        It 'pii substitutions file was written into the gitignored captures tree' {
+            # Issue #294: the substitution tables are keyed by the plaintext
+            # values the scrub replaced. They used to be written as
+            # .run-agent/substitutions.json -- no leading dot, so covered by
+            # no gitignore entry -- inside the directory the operator commits.
+            $subsPath = Join-Path $script:RestOut '.run-agent/.har-captures/.substitutions.json'
             Test-Path $subsPath | Should -BeTrue
             $store = Get-Content $subsPath -Raw | ConvertFrom-Json
             $store.version | Should -Be 1
+        }
+        It 'writes no substitution table outside the captures tree' {
+            $stray = Get-ChildItem -LiteralPath $script:RestOut -Recurse -Force -File |
+                Where-Object { $_.Name -match '(?i)substitutions.*\.json$' } |
+                Where-Object { $_.FullName -notmatch '(?i)[\\/]\.har-captures[\\/]' }
+            # Report the PATHS only; the contents are the very thing at issue.
+            ($stray | ForEach-Object { $_.FullName }) -join ', ' | Should -BeNullOrEmpty
         }
         It 'no plaintext PII remains in scrubbed HAR' {
             $scrubbed = Get-Content (Join-Path $script:RestOut '.run-agent/scrubbed.har') -Raw

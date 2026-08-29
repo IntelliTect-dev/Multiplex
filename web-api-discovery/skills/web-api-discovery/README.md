@@ -1,6 +1,6 @@
-# api-wrapper-scaffold templates
+# web-api-discovery templates
 
-Reusable assets consumed by the [`api-wrapper-scaffold`](../../.github/skills/api-wrapper-scaffold/SKILL.md)
+Reusable assets consumed by the [`web-api-discovery`](../../.github/skills/web-api-discovery/SKILL.md)
 skill when it scaffolds a new .NET API-wrapper project from a probed website.
 
 These files are **input** to the skill, not generated **by** the skill. The
@@ -10,13 +10,37 @@ user's chosen output directory.
 ## Layout
 
 ```
-templates/api-wrapper-scaffold/
+templates/web-api-discovery/
 ├── README.md            # this file
-├── scripts/             # Node + PowerShell capture / scrub helpers
-│   ├── capture-cdp.js               # Playwright CDP attach + HAR capture
-│   ├── sanitize-har.js              # token/PII redaction with deterministic faker
-│   ├── verify-scrub.js              # double-check pass; fails CI on leak
-│   └── Invoke-SanitizeHar.ps1       # PowerShell wrapper for sanitize-har.js
+├── scripts/             # Node + PowerShell tooling, grouped by concern
+│   ├── capture/         # record, scrub and catalogue a live session
+│   │   ├── capture-har.js           # recorder + post-process: start/stop, CDP
+│   │   │                            #   attach, incremental fallback recorder,
+│   │   │                            #   scrub, verify, digest
+│   │   ├── capture-har.test.js      # zero-dep behavior suite for the above
+│   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
+│   │   ├── Stop-HarRecording.ps1    # end a recording (automation / AI path)
+│   │   ├── ConvertFrom-HarCatalogue.ps1  # catalogue.json -> typed objects
+│   │   ├── HarCapture.Format.ps1xml # console rendering for those objects
+│   │   ├── catalogue-prompt.md      # the AI prompt for the catalogue phase
+│   │   ├── capture-cdp.js           # predecessor; superseded by capture-har.js
+│   │   └── import-mobile-app.js     # guided mobile-app capture; validates the artifact
+│   ├── har/             # scrub, extract, and catalogue a captured HAR
+│   │   ├── sanitize-har.js          # token/PII redaction with deterministic faker
+│   │   ├── verify-scrub.js          # double-check pass; fails CI on leak
+│   │   ├── Invoke-SanitizeHar.ps1   # PowerShell wrapper for sanitize-har.js
+│   │   ├── extract-har-reference.js # emit the reviewable API reference
+│   │   ├── verify-har-reference.js  # re-check the emitted reference for leaks
+│   │   ├── detect-auth.js           # classify the observed auth model
+│   │   └── ...                      # har-profile / har-literals / har-secrets /
+│   │                                #   har-shapes / pii / pii-enrich
+│   └── codegen/         # optional continuation: emit a buildable wrapper
+│       ├── run-agent.js             # orchestrator: scrub -> verify -> detect -> generate
+│       ├── generate-wrapper.js      # typed client + PowerShell module + MCP server
+│       ├── tests-emit.js            # xUnit + Pester scaffold
+│       ├── sln-emit.js              # deterministic .slnx
+│       ├── secret-gate-emit.js      # gitleaks hook + workflows
+│       └── sdlc-integration.js      # optional IntelliSDLC.ai seed
 ├── csharp/              # C# code templates -- token-substituted at scaffold time
 │   ├── Client.cs.tmpl
 │   ├── Authenticator.cs.tmpl

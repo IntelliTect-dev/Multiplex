@@ -1,17 +1,17 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for the api-wrapper-scaffold capture/scrub script templates
+# Behavior tests for the web-api-discovery capture/scrub script templates
 # (issue #36). These exercise sanitize-har.js, verify-scrub.js, and
 # Invoke-SanitizeHar.ps1 against a synthetic HAR fixture.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:SanitizeJs = Join-Path $script:ScriptsDir 'sanitize-har.js'
-    $script:VerifyJs   = Join-Path $script:ScriptsDir 'verify-scrub.js'
-    $script:WrapperPs1 = Join-Path $script:ScriptsDir 'Invoke-SanitizeHar.ps1'
-    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture-cdp.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'
+    $script:VerifyJs   = Join-Path $script:ScriptsDir 'har/verify-scrub.js'
+    $script:WrapperPs1 = Join-Path $script:ScriptsDir 'har/Invoke-SanitizeHar.ps1'
+    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-cdp.js'
 
     function New-FixtureHar {
         param(
@@ -219,6 +219,29 @@ Describe 'Invoke-SanitizeHar.ps1' {
         $LASTEXITCODE | Should -Be 0
         Test-Path -LiteralPath $script:OutHar | Should -BeTrue
         (Get-Content -LiteralPath $script:OutHar -Raw) | Should -Not -Match 'eyJhbGciOiJIUzI1NiJ9'
+    }
+
+    It 'writes no substitution table beside the scrubbed output' {
+        # Issue #294. The wrapper used to default the map to
+        # <OutputHar>.subs.json -- the same credential-keyed reverse lookup
+        # table the scrub exists to keep out of a committed directory, sitting
+        # beside the artifact that is safe to commit and under a name no
+        # gitignore entry and no gate recognises.
+        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar -ProfilePath $script:Profile
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath ([IO.Path]::ChangeExtension($script:OutHar, '.subs.json')) | Should -BeFalse
+        $stray = Get-ChildItem -LiteralPath $script:Tmp -Recurse -Force -File |
+            Where-Object { $_.Name -match '(?i)subs.*\.json$' } |
+            Where-Object { $_.FullName -notmatch '(?i)[\\/]\.har-captures[\\/]' }
+        ($stray | ForEach-Object { $_.FullName }) -join ', ' | Should -BeNullOrEmpty
+    }
+
+    It 'still honours an explicit -SubstitutionsFile' {
+        $explicit = Join-Path $script:Tmp 'explicit-subs.json'
+        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar `
+            -ProfilePath $script:Profile -SubstitutionsFile $explicit
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath $explicit | Should -BeTrue
     }
 
     It 'propagates a non-zero exit code when verification fails' {

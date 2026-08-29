@@ -1,20 +1,25 @@
 ---
-name: api-wrapper-scaffold
-description: "Probe a target website with Playwright, capture HAR traffic, and generate a complete buildable .NET API-wrapper project (typed client + PowerShell module + MCP server + tests + security gates). Companion to the dev-loop. Use when the user asks to 'wrap an API', 'generate a client from a website', or names a target site they want to automate."
+name: web-api-discovery
+description: "Record a web session to a HAR, scrub it, and extract a reviewable API reference from the observed traffic -- then optionally generate a complete buildable .NET wrapper project from it (typed client + PowerShell module + MCP server + tests + security gates). A capture that stops at the reference is a first-class outcome. Companion to the dev-loop. Use when the user asks to 'record' or 'capture' a site's network traffic or a HAR, 'discover an undocumented API', 'wrap an API', or 'generate a client from a website'."
 ---
 
-# API Wrapper Scaffold
+# Web API Discovery
 
-You generate a complete, buildable .NET API-wrapper project from a target
-website by probing the site with Playwright, scrubbing the captured traffic,
-and code-generating typed clients, a PowerShell module, an MCP server, and
-tests around the observed endpoints.
+You discover a website's undocumented HTTP API from its own traffic: record a
+live session to a HAR with Playwright, scrub the capture of tokens and PII,
+and extract a reviewable API reference from the observed endpoints. From that
+reference you can **optionally** continue into code generation -- typed
+clients, a PowerShell module, an MCP server, and tests.
 
-This is a **generation** skill, not a maintenance skill. After the first
-successful run the resulting project owns its own dev-loop (via the standard
-`@dev-loop` agent). Re-running this skill against the same project updates
-only generated artifacts (`*.g.cs`) and HAR samples; user-edited code in
-sibling partial classes is preserved.
+A capture that stops at the reference is a first-class outcome, not a partial
+run. A consuming project may want the recording and the catalogue and never
+generate a wrapper at all.
+
+Where it does continue, this is a **generation** skill, not a maintenance
+skill. After the first successful run the resulting project owns its own
+dev-loop (via the standard `@dev-loop` agent). Re-running this skill against
+the same project updates only generated artifacts (`*.g.cs`) and HAR samples;
+user-edited code in sibling partial classes is preserved.
 
 > Every internal change to this skill itself must follow Phase 5b of
 > [`dev-loop.agent.md`](../../agents/dev-loop.agent.md) (Evidence & Verify)
@@ -22,8 +27,10 @@ sibling partial classes is preserved.
 
 ## When to invoke
 
-- The user asks to "wrap an API", "generate a client from a website", or
-  names a target site they want to automate.
+- The user asks to "record" or "capture" a site's network traffic, or to
+  produce a HAR of something they are about to do in the browser.
+- The user asks to "discover an undocumented API", "wrap an API", "generate
+  a client from a website", or names a target site they want to automate.
 - A new external integration is needed and the API surface must be
   discovered from observed traffic rather than from a published spec.
 
@@ -36,18 +43,94 @@ Do not invoke for:
 
 ## Hard Gate
 
-**Do not run any phase that mutates the user's filesystem until you have:**
+The gate is **tiered**. Recording, scrubbing, and cataloguing are a complete
+run on their own, so they are not held behind the confirmations that exist to
+scope a generated .NET project. Requiring a namespace before recording a HAR
+blocks the most common request this skill gets.
 
-1. Confirmed the target URL with the user.
-2. Confirmed a project name + .NET namespace + output directory.
-3. Confirmed the auth model (or accepted "let the detector decide").
-4. **Asked the user whether the target service has a mobile app to include**
+### Hard Gate -- recording (Phases 1-3.5)
+
+**Establish before recording:**
+
+1. **The target URL.** Establish it -- from the request, the repo, or context.
+   *Confirm* here does not mean *interrogate*: ask the user only when the URL
+   is genuinely ambiguous.
+2. **Where the capture lands.** Convention already answers this: both roots
+   are keyed on the captured host, so raw captures go to
+   `.har-captures/<host>/<timestamp>/` (gitignored) and the committable
+   reference to `./<host>/`. Do not ask; follow the convention unless the user
+   named a path.
+
+Nothing else is required. In particular, do **not** ask for a project name, a
+.NET namespace, an auth model, or a tracking issue to record a session.
+
+### Hard Gate -- generation (Phase 6 onward)
+
+**Additionally, before emitting a wrapper project:**
+
+3. Confirmed a project name + .NET namespace + output directory.
+4. Confirmed the auth model (or accepted "let the detector decide").
+5. **Asked the user whether the target service has a mobile app to include**
    (Phase 1.5). The agent must ask -- the user may still answer no.
-5. **Asked the user whether to seed the project with the IntelliSDLC.ai
+6. **Asked the user whether to seed the project with the IntelliSDLC.ai
    instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
    must ask -- the user may still answer no.
-6. Created a GitHub issue (or referenced an existing one) that describes
+7. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
+
+### Capture-only run
+
+Stopping after Phase 3.5 with a scrubbed, verified reference is a **complete
+run**, not a partial one. Take this path whenever the user asked to record,
+capture, or catalogue traffic and never asked for a client.
+
+```powershell
+# Record, scrub, verify, digest and catalogue -- one command. Browse, then
+# press ENTER; closing the browser window or calling Stop-HarRecording from an
+# agent does the same thing.
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com
+
+# -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
+# agent attaches to. Warnings and errors print at either level.
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com -Verbose
+```
+
+A consuming project usually dot-sources or aliases that path once; the rest of
+this document calls it `Invoke-HarCapture`.
+
+That is the whole capture-only path. `Invoke-HarCapture` emits the catalogue
+as objects, so the result composes rather than needing to be parsed:
+
+```powershell
+Invoke-HarCapture https://example.com | ConvertTo-Json -Depth 4
+Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+```
+
+**Two directories, and the difference is the safety story.** The raw capture
+carries live session cookies and is confined to the gitignored
+`.har-captures/` **by construction** -- no option redirects it. `-OutputPath`
+(default: the current directory) receives only artifacts that have already
+been scrubbed and verified.
+
+**Both are keyed on the captured site's host**, so two captures never
+overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
+fixed filenames, and before this the second capture silently replaced the
+first:
+
+```
+.har-captures/app.example.com/2026-08-27-141500/raw.har   <- gitignored
+./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+```
+
+The **host alone** names the folder, never the full URL: a magic-link,
+password-reset or signed start URL carries its token in the path or the query,
+and the second directory is the committable one. A port joins with `_`
+(`localhost_5001`) because a dash is legal inside a hostname.
+
+The mechanical phases -- scrub via `sanitize-har.js`, gate via
+`verify-scrub.js`, then a session digest -- run inside the recording process on
+every ending. **Cataloguing is a required phase, not an optional flourish**,
+and it is AI work: see Phase 3.5.
 
 ## Inputs (asked one at a time)
 
@@ -59,7 +142,7 @@ Do not invoke for:
 | 4 | Auth model | autodetect | `{{AuthModel}}` | One of: `cookie`, `cookie+csrf`, `bearer`, `sso-google`, `sso-microsoft`, `sso-facebook`, `oauth2-pkce`, `autodetect`. |
 | 5 | OAuth client_id / client_secret | none | -- | Only asked when (4) is `oauth2-pkce`. Stored in user-secrets, never on disk in plaintext. |
 | 6 | Seed IntelliSDLC.ai? | yes | -- | If yes, the agent runs `git init` and pulls upstream instructions (Phases 10.5 + 11). |
-| 7 | Pre-captured Playwright `storageState.json`? | none | -- | When present, the capture phase skips interactive login and replays the storage state. Required for non-interactive dogfood runs. |
+| 7 | Pre-captured Playwright storage state? | none | -- | Saved as `.har-storage-state.json` at or above the working directory, where the recorder discovers it. When present, the capture phase skips interactive login. Required for non-interactive dogfood runs. |
 | -- | .NET root namespace | `{{ProjectName}}` | `{{Namespace}}` | Asked only when the user wants to override the default. |
 | -- | IdP friendly name | derived from `{{AuthModel}}` | `{{IdpName}}` | `Google` / `Microsoft` / `Facebook` -- substituted into the generated README's re-auth section. |
 
@@ -111,7 +194,7 @@ Then run the guided importer (it prints commands and waits for the user
 to confirm each step; it never invokes proxies or decompilers itself):
 
 ```pwsh
-node templates/api-wrapper-scaffold/scripts/import-mobile-app.js \
+node templates/web-api-discovery/scripts/capture/import-mobile-app.js \
   --platform=<ios|android|both> --mode=<proxy|decompile|both>
 ```
 
@@ -138,38 +221,90 @@ app's Terms of Service permit security research). The skill must surface
 this warning before running `import-mobile-app.js --mode=decompile` and
 must not proceed without explicit user acknowledgement.
 
-### Phase 2 -- Probe with Playwright
+### Phase 2 -- Record the session
 
-- Launch chromium via Playwright (CDP attach so the user can interact).
-- If a `storageState.json` was supplied, load it and skip interactive
-  login.
-- Capture all network traffic to a HAR file (`samples/har-original/<timestamp>.har`).
-- Use the `templates/api-wrapper-scaffold/scripts/capture-cdp.js`
-  template as the baseline.
+The operator's entire surface is a URL:
+
+```powershell
+Invoke-HarCapture https://example.com    # browse, then press ENTER
+```
+
+`templates/web-api-discovery/scripts/capture/capture-har.js` owns the browser
+context; `Invoke-HarCapture.ps1` / `Stop-HarRecording.ps1` are its PowerShell
+front doors. It opens system Chrome on a **dedicated capture profile** that
+stays signed in between sessions -- never the operator's daily profile, which
+holds live sessions this must not disturb -- and records every request. Pass
+`-Isolated` for bundled Chromium with a throwaway profile (CI).
+
+| Parameter | Notes |
+|---|---|
+| `-Uri` | positional, mandatory |
+| `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
+| `-Describe` | optional intent hint that helps the AI segment; never the source of action names |
+| `-Profile`, `-Isolated` | which signed-in identity to record as |
+| `-Port` | default 9333; a busy port falls forward to the next free one |
+
+**Every ending is safe.** ENTER, closing the browser window, and
+`Stop-HarRecording` all produce a full HAR and all run the same
+scrub/verify/digest tail. Ctrl+C asks whether you meant to finish or to
+cancel; cancelling keeps the raw capture and skips post-processing, so a
+mis-keyed Ctrl+C costs nothing. Nothing is ever killed.
+
+That safety is why **two recorders run and exactly one survives**. Playwright
+serializes `recordHar` only during a close the driver performs, so a window
+close would otherwise write nothing at all. A second recorder appends every
+finished *and failed* request to an incremental log; on a clean driver close
+`recordHar` wins and the log is deleted, and on a window close the log is
+assembled into `raw.har`. Either way `raw.har` exists and is a genuine HAR 1.2
+document -- with real timings, uncapped bodies, and base64 for anything that is
+not valid UTF-8. `recordHar` is preferred where both exist only because it
+knows things a client-side recorder cannot observe (`serverIPAddress`,
+`connection`, real header sizes, `cache`, page timings).
+
+**Preflight.** `.har-profile.json` is resolved before the browser launches. On
+a TTY the recorder offers to scaffold one; without a TTY it fails with the
+`HOWTO`. Discovering an absent profile after a browsing session is spent costs
+the session; here it costs seconds. A `.har-storage-state.json` at or above the
+working directory is discovered the same way, and its absence is not an error.
+
+**Driving the browser as an AI.** `Invoke-HarCapture` prints a CDP endpoint,
+and writes it to `session.json` -- read it there rather than assuming 9333,
+because a busy port moves it. `chromium.connectOverCDP(endpoint).contexts()[0]`
+**is** the recording context, so anything the agent does there lands in the
+same HAR. Detaching (`browser.close()` on the CDP side) does *not* end the
+recording.
+
+A persistent profile is single-instance, so a second recording against the same
+profile cannot start while one is live. The recorder detects this and names the
+running capture rather than hanging; end it, or use `-Isolated`.
+
+- Capture is **unfiltered**: no HAR glob, ever, on a first pass.
 - Polite crawl: respect robots.txt, throttle to ~1 req/sec on automated
   traversal, descriptive User-Agent.
+- The raw capture is gitignored and never committed. Phase 3.5 turns it into a
+  committable reference.
 
 #### Capturing traffic reliably
 
 Lessons from hand-driven capture sessions against production sites -- each
 of these has cost real diagnosis time when skipped.
 
-- **`--save-har` only flushes on browser close, not on process kill.**
-  Stopping the Playwright driver process orphans the browser and **discards
-  everything recorded so far**. Every capture instruction to the human must
-  end with, in bold: "**close the browser window** -- that is what writes
-  the file." Before moving on to Phase 3, verify the HAR file exists and is
-  non-trivial in size; do not attempt to analyze a HAR that was never
-  flushed.
+- **Any ending is safe, but only because two recorders run.** Playwright
+  serializes `recordHar` only during a close the DRIVER performs, so a window
+  close on its own would write nothing at all -- that is measured, not
+  theoretical, and it cost a capture to learn. The incremental recorder exists
+  to make that ending survivable, and it is a real fallback rather than a
+  degraded stub: failed requests, real timings, uncapped bodies, base64 for
+  non-UTF-8. Verify `raw.har` exists and is non-trivial in size before Phase 3
+  regardless; never analyze a HAR that was never flushed.
 - **Never terminate the browser to end a capture.** Killing Chrome processes
-  can also destroy unrelated signed-in work elsewhere on the developer's
-  machine. Always end a capture by asking the human to close the window.
-  If more than one capture window may exist (a prior run wasn't cleaned up,
-  or the human opened a second tab), **disambiguate before the human
-  acts** -- list Chrome processes by `--user-data-dir` and creation time and
-  tell the user exactly which window to use (e.g. "the one that opened 4
-  minutes ago"). A human posting into the wrong window produces no capture,
-  and the loss is silent until they've already done the work.
+  can destroy unrelated signed-in work elsewhere on the developer's machine,
+  and it discards the recording besides. End a capture with ENTER, the window,
+  or `Stop-HarRecording`. If more than one capture may be live (a prior run
+  wasn't ended, or a second terminal is open), **disambiguate before the human
+  acts** -- `node capture-har.js status` names what is recording and where, and
+  a launch against a profile already in use refuses and names the running
+  capture.
 - **The first capture is always unfiltered.** Do not scope `--save-har-glob`
   to a guessed path on the first pass, even when the target mutation looks
   like it obviously belongs to one API family (e.g. GraphQL). Media upload
@@ -200,9 +335,9 @@ of these has cost real diagnosis time when skipped.
   is usually best discarded rather than flushed and parsed.
 - **Building an authenticated capture context from stored secrets.** Rather
   than making the human log in inside the capture browser every time,
-  construct a Playwright `storageState.json` from already-stored
-  credentials and pass it via `--load-storage` / the skill's Input 7. Two
-  gotchas:
+  construct a Playwright storage state from already-stored credentials and
+  save it as `.har-storage-state.json` at or above the working directory,
+  where the recorder discovers it (the skill's Input 7). Two gotchas:
   - **Secret key casing is not consistent** across secret stores (e.g.
     `Facebook:datr` vs. `Facebook:Workspaces:<alias>:Datr`). Look secrets
     up case-insensitively.
@@ -212,7 +347,7 @@ of these has cost real diagnosis time when skipped.
 
 ### Phase 3 -- Scrub
 
-- Run `templates/api-wrapper-scaffold/scripts/sanitize-har.js` and
+- Run `templates/web-api-discovery/scripts/har/sanitize-har.js` and
   `verify-scrub.js`.
 - Replace tokens, cookies, session ids, and PII with angle-bracket
   placeholders (`<GoogleAccessToken>`, `<UserEmail>`, `<BookingReference>`).
@@ -343,6 +478,19 @@ required literal deserves the same treatment before it meets a real capture.
 
 ### Phase 3.5 -- HAR Reference Catalogue
 
+**This phase is REQUIRED whenever a capture was taken.** It is not a
+tidy-up step to reach if time allows: the catalogue is the lookup index an AI
+consults when a new development request arrives, and a capture that never got
+catalogued is a capture nobody will find. `Invoke-HarCapture` writes a
+scaffold of `Observed` rows and reports the phase as pending until an AI has
+done this work.
+
+The prompt that drives it is a file, not prose to be reconstructed:
+[`templates/web-api-discovery/scripts/capture/catalogue-prompt.md`](../../../templates/web-api-discovery/scripts/capture/catalogue-prompt.md).
+The recorder reads it when it shells out to the `claude` CLI for an
+interactive human run, and an agent that drove the capture itself follows the
+same file. Do not restate its steps elsewhere.
+
 A HAR captured to solve one bug gets thrown away, and six weeks later
 somebody re-drives the same flow by hand to answer the same question. The
 capture is the single most valuable artifact of the session -- it is the only
@@ -359,13 +507,21 @@ is only possible because the capture was kept.
 #### 1. A per-provider directory of committed, scrubbed references
 
 ```
-docs/har-reference/
-├── README.md              <- the catalogue (see 3)
+<host>/                        <- e.g. app.example.com, the capture output path
+├── scrubbed.har               <- the whole session, scrubbed
+├── digest.json                <- what an AI segments from
+├── catalogue.json             <- the rows (see 3)
+├── README.md                  <- the catalogue (see 3)
 ├── <provider-a>/
-│   ├── README.md          <- provider scrub policy + re-capture recipe
+│   ├── README.md              <- provider scrub policy + re-capture recipe
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
+
+The provider directories sit beside the session artifacts, inside the
+host-named output folder. A provider is not always the host -- one site's
+traffic routinely spans several third-party APIs -- which is why both levels
+exist.
 
 **Raw captures are never committed.** They run to hundreds of MB and carry
 live credentials. Only trimmed, scrubbed extracts go in-tree.
@@ -400,7 +556,7 @@ say:
 Those are exactly what someone opening the file is looking for, and they
 otherwise survive only in whichever issue thread happened to mention them.
 
-`docs/har-reference/README.md` carries:
+The `README.md` in the host-named output folder carries:
 
 - a table per provider: **file | actions the user performed | entry count |
   capture date**;
@@ -413,6 +569,33 @@ otherwise survive only in whichever issue thread happened to mention them.
 > **The rule that makes it stick:** adding a capture has a final step --
 > *add the catalogue row, naming what you did*. The endpoint is recoverable
 > from the file. What you did to provoke it is not.
+
+#### 3a. Observed, not exercised
+
+Cataloguing is **post-hoc AI analysis**, not a narrative dictated up front.
+One browse decomposes into discrete actions -- Create Post, Edit Post, Delete
+Post -- each a candidate API operation. The AI segments the session by
+examining the traffic (using the timing gaps in `digest.json` as boundary
+evidence), names and describes each action, and extracts one reference HAR per
+action.
+
+It must **additionally** record the endpoints it saw but nobody drove. Those
+are capabilities the API has, worth knowing even without a worked example:
+a later request may need exactly one of them, and "we have seen this endpoint
+exist" is a materially different starting point from nothing.
+
+Those rows stay at `Status: "Observed"` with a description of what they appear
+to do and what would exercise them. They are never promoted to `Exercised` --
+a row claiming a worked example that does not exist is worse than no row --
+and never deleted. Each provider's `README.md` carries them under a separate
+**"Observed, not exercised"** heading so a reader can tell the two apart
+without opening the JSON.
+
+The digest carries **shapes, never values**: entries grouped by host, method,
+path template and status, with timing gaps, content types and top-level
+payload keys. That is what lets an AI segment a multi-hundred-megabyte capture
+without re-parsing it, and it is why the digest can live under `-OutputPath`
+alongside the scrubbed artifacts.
 
 Cataloguing is not clerical work: doing it forced a re-read of the files
 rather than the prose about them, and surfaced four facts nobody had written
@@ -655,7 +838,7 @@ the interactive sign-in ceremony. It must **never**:
 - Accept a username / password parameter -- the wrapper never sees the
   user's credentials.
 - POST credentials to a `/login` endpoint over `HttpClient`.
-- Shell out to `node scripts/capture-cdp.js` for runtime auth.
+- Shell out to `node scripts/capture/capture-cdp.js` for runtime auth.
 
 The required shape is:
 
@@ -731,11 +914,21 @@ Require every capture-derived probe to:
   directory. Ignoring only the directory is not enough. (The typed-PII store
   `.substitutions.json` is different: it records hash prefixes, not values,
   and is safe to commit.)
-- CI runs `verify-har-reference.js` over `docs/har-reference/` when that
-  directory exists, so a committed reference is gated on every PR, not only
-  when it was written. (The script exits non-zero on a missing or empty
-  reference directory: being pointed at nothing is a wiring mistake, not a
-  pass.)
+- A committed reference **must** be gated in CI by `verify-har-reference.js`
+  over the directory holding it -- `--dir <host>/`, or wherever the project
+  keeps its references -- so it is checked on every PR and not only when it
+  was written. (The script exits non-zero on a missing or empty reference
+  directory: being pointed at nothing is a wiring mistake, not a pass. It
+  defaults to the current directory, so CI must pass `--dir` explicitly rather
+  than relying on where it happens to run.)
+
+  > **Not wired yet -- see #283.** No workflow in this repo, and no workflow
+  > this skill emits, currently invokes `verify-har-reference.js`. Until that
+  > lands, run it locally before committing a reference and do not assume CI
+  > will catch a leak. The gitleaks secret-scan workflow is not a substitute:
+  > it matches credential shapes by its own ruleset and knows nothing about
+  > truncated request bodies, the forbidden-literal list, or secrets nested
+  > inside a JSON-valued parameter.
   The literal check reports as skipped there (the profile is gitignored and
   absent in CI); the truncation, credential and nested-secret gates all run.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
@@ -765,7 +958,7 @@ Once a HAR has been captured (Phase 2), the entire downstream pipeline
 (Phases 3 - 8) can be invoked through a single zero-dependency orchestrator:
 
 ```pwsh
-node templates/api-wrapper-scaffold/scripts/run-agent.js `
+node templates/web-api-discovery/scripts/codegen/run-agent.js `
   --har <path/to/captured.har> `
   --out <output-dir> `
   --project <Name> `
@@ -827,12 +1020,16 @@ PowerShell convenience wrapper:
 - Subsequent runs: if a fresh stored session exists, the wrapper uses it
   silently; otherwise it re-launches the Playwright browser for
   re-authentication.
-- `scripts/capture-cdp.js` (the Node-based Playwright helper) is now
-  used **only** for the Phase 2 HAR-discovery flow during initial
-  scaffold generation. It is **not** used for runtime authentication --
-  the wrapper consumer never needs Node.js installed.
-- `--storage-state <path>` is still supported on the HAR-capture helper
-  so non-interactive runs (CI, dogfood) skip the browser during Phase 2.
+- `scripts/capture/capture-har.js` (the Node-based Playwright recorder behind
+  `Invoke-HarCapture`) is used **only** for the Phase 2 recording flow
+  during initial scaffold generation. It is **not** used for runtime
+  authentication -- the wrapper consumer never needs Node.js installed.
+  `scripts/capture/capture-cdp.js` is its predecessor: a single launch-and-wait
+  helper with no stop, no incremental recorder, and no CDP attach. Prefer
+  `capture-har.js` for anything new.
+- A `.har-storage-state.json` at or above the working directory is discovered
+  automatically, so non-interactive runs (CI, dogfood) skip interactive login
+  during Phase 2 without an option to pass.
 
 ### Phase 10 -- Generated README
 
@@ -857,7 +1054,7 @@ as a git repository:
 cd <output-dir>
 git init -b main
 git add -A
-git commit -m "chore: initial scaffold from api-wrapper-scaffold skill"
+git commit -m "chore: initial scaffold from web-api-discovery skill"
 ```
 
 The initial commit is what `Pull-SDLC.ai.ps1` merges into during Phase 11,
