@@ -10,9 +10,10 @@
     capture profile, records every request, then scrubs, verifies, digests and
     catalogues what it recorded.
 
-    The operator's entire surface is a URL:
+    The operator's surface is a URL and a sentence saying what the recording
+    is for:
 
-        Invoke-HarCapture https://example.com
+        Invoke-HarCapture https://example.com -Describe 'create, then delete, a post'
 
     Browse, perform the operations worth documenting -- including the failure
     paths, which are frequently the highest-value entries because they
@@ -41,6 +42,15 @@
                        gitignored, and CANNOT be redirected -- there is no
                        option for it, so an unignored credential-bearing
                        capture is not reachable by any argument.
+
+                       WHICH .har-captures: the one in the repository's MAIN
+                       working tree, never a linked worktree's. A worktree is
+                       disposable by design and `git worktree remove` deletes a
+                       gitignored capture outright with nothing to prompt
+                       about; a raw is the one artifact that cannot be
+                       regenerated. Outside a repository it is relative to the
+                       current directory, as before. The recorder prints the
+                       resolved path as it starts.
       -OutputPath      scrubbed, verified artifacts only: the per-action
                        reference HARs, the session digest, and the catalogue.
 
@@ -76,9 +86,23 @@
     ../lib/RepoWorkflowGuard.ps1.
 
 .PARAMETER Describe
-    An optional hint about what you intend to do, which helps the cataloguing
-    step segment the session into actions. It is never the source of action
-    names -- those come from the traffic.
+    REQUIRED. What this recording is for, in your own words. Omitting it is a
+    terminating error, not a prompt: this front door and capture-har.js refuse
+    on identical terms, so a person recording by hand and an agent driving the
+    same script hit the same wall in the same way. It helps the
+    cataloguing step segment the session into actions, but that is the smaller
+    half of its job.
+
+    THE CAPTURE STORE IS SHARED AND APPEND-ONLY, and its directory names are
+    capture START times while session.json's mtime is when post-processing
+    FINISHED -- so with several sessions recording at once neither orders
+    reliably, and a time window wide enough to hold your runs holds other
+    people's too. The host directory groups by site, not by intent. In that
+    setting the description is the only reliable way to tell one capture from
+    another, and it is the one part of a capture that cannot be reconstructed
+    afterwards: the bytes can be re-captured, what you were doing cannot.
+
+    It is never the source of action names -- those come from the traffic.
 
 .PARAMETER Profile
     Which signed-in identity to record as.
@@ -111,10 +135,11 @@
     IntelliSDLC.HarCapture.CatalogueEntry
 
 .EXAMPLE
-    Invoke-HarCapture https://example.com
+    Invoke-HarCapture https://example.com -Describe 'sign in, then sign out'
 
 .EXAMPLE
-    Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+    Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+        Where-Object Status -eq Observed
 
 .EXAMPLE
     Invoke-HarCapture https://example.com -Describe 'create, edit and delete a post' |
@@ -132,6 +157,18 @@ param(
 
     [string]$OutputPath,
 
+    # Required (#366), and DELIBERATELY NOT [Parameter(Mandatory)].
+    #
+    # Mandatory would make PowerShell PROMPT for it when a host is attached and
+    # only hard-fail when one is not. That was considered and rejected: it gives
+    # a human recording by hand a different failure from an agent driving the
+    # same script, and #366 exists because the description is the one part of a
+    # capture that cannot be reconstructed afterwards. The moment of refusal has
+    # to look the same however you arrived at it -- which is also the only way
+    # it can match what capture-har.js does, since the Node side has no prompt
+    # to offer. So the check lives in the body, below, and terminates.
+    #
+    # Whitespace is empty, for the same reason it is on the Node side.
     [string]$Describe,
 
     [string]$Profile,
@@ -142,6 +179,41 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# THE REFUSAL, before anything else runs and before any host is consulted.
+#
+# It is a terminating error rather than a prompt so that this front door and
+# `capture-har.js` fail IDENTICALLY -- same reason, same example, same
+# non-zero exit -- whether a person or an agent invoked it. Nothing here reads
+# $Host, $PSCmdlet.MyInvocation, or whether a TTY is attached: a refusal that
+# varied by how the script was launched would be a second behaviour to reason
+# about, and the one the operator would hit least often is the one that would
+# rot.
+if ([string]::IsNullOrWhiteSpace($Describe)) {
+    # The explanation goes to stderr as its own lines, and only then does the
+    # terminating error fire. Throwing the whole paragraph instead would hand it
+    # to PowerShell's error renderer, which reflows it into one run-on line and
+    # takes the `Try:` example -- the actionable half -- with it. Node prints
+    # clean lines; so does this.
+    [Console]::Error.WriteLine((@(
+        'Invoke-HarCapture: refusing to record without -Describe.'
+        '  A capture nobody can identify is a capture nobody can use: the store is'
+        '  shared and append-only, the directory name is a START time, and several'
+        '  sessions record into it at once. The description is the only part of a'
+        '  capture that cannot be reconstructed afterwards -- the bytes can be'
+        '  re-captured, what you were doing cannot.'
+        "  Try: -Describe 'example.com: create a post with two photos, then delete it'"
+    ) -join [Environment]::NewLine))
+    # EXIT 2, matching capture-har.js's usage-error code exactly.
+    #
+    # `throw` was the first shape here and it disagreed quietly: an uncaught
+    # throw exits 1, so the two doors were both non-zero -- enough for any
+    # caller testing truthiness -- while still not saying the same thing. "Fail
+    # identically" is the whole reason this is a hard failure rather than a
+    # prompt, and a code is part of what a failure says. Refusing an invocation
+    # is a usage error at either door, so both answer 2.
+    exit 2
+}
 
 # The placement guard is SHARED, not reimplemented here. Bespoke per-script
 # logic about where output may land is how the defect in #300 arrived, so every
@@ -247,9 +319,40 @@ if (-not (Assert-NotPrimaryCheckoutOnProtectedBranch -Placement $placement)) {
 # keeps an operator coming through this front door from being warned twice.
 $env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
 
+# WHY THIS STILL HANDS THE WHOLE PIPELINE TO THE RECORDER, and does not call
+# Invoke-SanitizeHar.ps1 and Invoke-HarCatalogue.ps1 in turn (#352).
+#
+# Re-entry was the ask, and re-entry now exists: the scrub stage has been
+# re-runnable through Invoke-SanitizeHar.ps1 for some time, and the catalogue
+# stage is re-runnable through Invoke-HarCatalogue.ps1 as of this change. An
+# operator can enter the pipeline at either one against a capture recorded some
+# other time. What was NOT done is rewriting this front door as a sequence of
+# those two wrappers, because doing so loses invariants that #343 exists to
+# hold, and the issue says to stop rather than lose them:
+#
+#   1. `capture-har.js start` records AND post-processes in one process. There
+#      is no way to ask it for the recording alone, and adding one would be a
+#      new command-line option -- which needs approval, not initiative.
+#   2. The scrub stage inside postProcess is not "run sanitize-har, then
+#      verify-scrub". It writes the candidate into the gitignored session
+#      directory, promotes it to the output path by atomic rename ONLY after
+#      the gate passes, and quarantines it as scrubbed.rejected.har when the
+#      gate refuses. Invoke-SanitizeHar.ps1 does none of that -- it is a
+#      general-purpose HAR scrubber -- so a composed front door would have to
+#      write an unjudged file straight into the committable output path and
+#      then clean up, which is precisely the window #343 closed.
+#   3. Promotion and quarantine would then live in PowerShell, and the exit
+#      3 / 4 -> 6 / 7 mapping with them. Three of the four invariants restated
+#      on this side of the process boundary, drifting from the Node ones.
+#
+# So the composition is left undone deliberately, and the front door goes on
+# delegating. If it is wanted, the honest shape is a `scrub` command on
+# capture-har.js exposing postProcess's phase A whole -- another entry point to
+# existing code, the same move the `catalogue` command makes -- rather than a
+# PowerShell reassembly of it.
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
-if ($Describe) { $captureArgs += @('--describe', $Describe) }
+$captureArgs += @('--describe', $Describe)
 if ($Profile) { $captureArgs += @('--profile', $Profile) }
 if ($Isolated) { $captureArgs += '--isolated' }
 # -Verbose is the only verbosity switch. capture-har.js prints its own console
@@ -276,11 +379,38 @@ Write-Verbose "capture-har.js exited $exit"
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
 # from the incremental log rather than recordHar -- a full capture either way,
 # so it is not a failure. 6 means the recording is fine but a post-process
-# phase is not, which must not be reported as success.
+# phase is not, which must not be reported as success. 7 means every artifact
+# was produced but the leak gate reported advisory findings -- non-zero so no
+# caller reads it as clean, and handled here so the `default` arm below does
+# not tell the operator no catalogue exists when one does.
 switch ($exit) {
     0 { }
     5 { Write-Information 'Recording ended by closing the window; press ENTER next time for a slightly richer HAR.' }
     6 { Write-Warning 'Recorded successfully, but scrub or catalogue failed. The raw capture is intact.' }
+    7 {
+        # 7 is not a failure: everything was produced. The leak gate reported
+        # identity findings that rest on SHAPE alone, which carries no
+        # provenance -- a Luhn-valid digit run is a card, an object id, or
+        # nothing. Withholding the catalogue over that is what this issue
+        # exists to stop, so the run continues and the operator triages the
+        # findings report the recorder just named.
+        #
+        # It names no location. The report USUALLY sits beside the artifact,
+        # but when publishing it fails -- a locked file, a full disk -- it stays
+        # in the session directory instead and the recorder says so. An arm
+        # that asserted the usual place would send the operator looking for a
+        # file that is not there, in exactly the case they most need to read it.
+        #
+        # And the loop closes without re-recording. Waiving a false positive
+        # used to leave the operator with "run the capture again", which for a
+        # session a human drove by hand is not a repeat of anything.
+        # Invoke-HarCatalogue.ps1 re-enters at the catalogue stage instead
+        # (#352); it is named here rather than implemented here.
+        Write-Warning ('Recorded and catalogued, but the leak gate reported ADVISORY findings. ' +
+            'The recorder printed each finding and the path to the full report -- review ' +
+            'them, then waive or correct each one. To rebuild the catalogue afterwards ' +
+            'without re-recording, run Invoke-HarCatalogue.ps1.')
+    }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."
         return

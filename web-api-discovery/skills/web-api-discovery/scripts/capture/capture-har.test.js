@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 
 const capture = require(path.join(__dirname, 'capture-har.js'));
+const { initProtectedRepo } = require(path.join(__dirname, '..', 'har', 'har-test-repo.test-support.js'));
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-har-test-'));
 
@@ -673,7 +674,10 @@ test('the digest reduces the start URL to an origin, dropping any credential in 
 // only that the stub works, and the property under test is precisely that the
 // real one ran.
 function withSandbox(name, entries, fn) {
-    const dir = tmpDir(name);
+    // A real repository with the tables gitignored: postProcess shells out to
+    // the actual scrub, which since #318 refuses a destination git will not
+    // confirm is ignored.
+    const dir = initProtectedRepo(tmpDir(name));
     const sessionDir = path.join(dir, '.har-captures', '2026-01-01-120000');
     const outputPath = path.join(dir, 'docs', 'har-reference');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -946,15 +950,21 @@ test('a default run still says which artifacts it produced', () => {
 
 test('a leak-gate rejection is never levelled away', () => {
     // The one report that must reach an operator who never types -Verbose:
-    // a scrub the gate refused, and the reason.
+    // a scrub the gate refused, the reason, and -- since #297 Stage 7 -- where
+    // the refused artifact was put, because it is no longer thrown away.
     const text = capture.renderLines(capture.postProcessLines(fakeSession({
         postProcess: {
-            scrubbed: { path: null, removed: true, verified: false },
+            scrubbed: {
+                path: null, verified: false, rejected: true,
+                quarantined: '/tmp/caps/2026-01-01-120000/scrubbed.rejected.har'
+            },
             errors: ['verify-scrub: bearer token survived the scrub']
         }
     })), 'normal');
     assert.match(text, /REJECTED/);
     assert.match(text, /bearer token survived/);
+    assert.match(text, /scrubbed\.rejected\.har/,
+        'a rejection that does not say where the artifact went leaves nothing to triage');
 });
 
 // ---------------------------------------------------------------------------
@@ -996,7 +1006,9 @@ test('the placement guard warns before any capture begins', () => {
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            // Required since #366; this case is about the guard's ORDERING.
+            '--describe', 'placement-guard fixture'],
         { cwd: work, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0, 'the guard must not turn an advisory into a failure');
@@ -1043,7 +1055,8 @@ test('the recorder keeps the closing notice even when a front door warned (#300)
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--describe', 'closing-notice fixture'],
         {
             cwd: work,
             encoding: 'utf8',
@@ -1085,7 +1098,7 @@ test('the placement guard stays silent in a worktree', () => {
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only', '--describe', 'worktree-guard fixture'],
         { cwd: wt, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0);
