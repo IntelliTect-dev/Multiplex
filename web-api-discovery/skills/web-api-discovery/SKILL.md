@@ -57,9 +57,14 @@ blocks the most common request this skill gets.
    is genuinely ambiguous.
 2. **Where the capture lands.** Convention already answers this: both roots
    are keyed on the captured host, so raw captures go to
-   `.har-captures/<host>/<timestamp>/` (gitignored) and the committable
-   reference to `./<host>/`. Do not ask; follow the convention unless the user
-   named a path.
+   `.har-captures/<host>/<timestamp>/` (gitignored, in the repository's MAIN
+   working tree) and the committable reference to `./<host>/`. Do not ask;
+   follow the convention unless the user named a path.
+3. **What the recording is for**, one sentence, passed as `-Describe`. It is
+   mandatory and the recorder refuses to start without it. Derive it from the
+   request rather than interrogating the user -- "create a private post with
+   three photos, edit it, then delete it" is the shape that works: the site,
+   the operations, and their order.
 
 Nothing else is required. In particular, do **not** ask for a project name, a
 .NET namespace, an auth model, or a tracking issue to record a session.
@@ -68,14 +73,14 @@ Nothing else is required. In particular, do **not** ask for a project name, a
 
 **Additionally, before emitting a wrapper project:**
 
-3. Confirmed a project name + .NET namespace + output directory.
-4. Confirmed the auth model (or accepted "let the detector decide").
-5. **Asked the user whether the target service has a mobile app to include**
+4. Confirmed a project name + .NET namespace + output directory.
+5. Confirmed the auth model (or accepted "let the detector decide").
+6. **Asked the user whether the target service has a mobile app to include**
    (Phase 1.5). The agent must ask -- the user may still answer no.
-6. **Asked the user whether to seed the project with the IntelliSDLC.ai
+7. **Asked the user whether to seed the project with the IntelliSDLC.ai
    instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
    must ask -- the user may still answer no.
-7. Created a GitHub issue (or referenced an existing one) that describes
+8. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
 
 ### Capture-only run
@@ -88,11 +93,15 @@ capture, or catalogue traffic and never asked for a client.
 # Record, scrub, verify, digest and catalogue -- one command. Browse, then
 # press ENTER; closing the browser window or calling Stop-HarRecording from an
 # agent does the same thing.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+    -Describe 'sign in, create a post, then delete it'
 
+# -Describe is MANDATORY: a shared, append-only capture store keyed on start
+# times is one where the description is the only way to tell captures apart.
 # -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
 # agent attaches to. Warnings and errors print at either level.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com -Verbose
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+    -Describe 'sign in, create a post, then delete it' -Verbose
 ```
 
 A consuming project usually dot-sources or aliases that path once; the rest of
@@ -102,15 +111,49 @@ That is the whole capture-only path. `Invoke-HarCapture` emits the catalogue
 as objects, so the result composes rather than needing to be parsed:
 
 ```powershell
-Invoke-HarCapture https://example.com | ConvertTo-Json -Depth 4
-Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+    ConvertTo-Json -Depth 4
+Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+    Where-Object Status -eq Observed
 ```
 
 **Two directories, and the difference is the safety story.** The raw capture
-carries live session cookies and is confined to the gitignored
-`.har-captures/` **by construction** -- no option redirects it. `-OutputPath`
-(default: the current directory) receives only artifacts that have already
-been scrubbed and verified.
+carries live session cookies and is confined to `.har-captures/` **by
+construction** -- no option redirects it. `-OutputPath` (default: the current
+directory) receives only artifacts that have already been scrubbed and
+verified.
+
+**WHICH `.har-captures/`, though, is a separate question, and it is the one
+that cost a capture.** The name is fixed; the *anchor* used to be the working
+directory, so recording from a linked worktree wrote the raw inside a directory
+that exists to be thrown away. An ordinary cleanup destroyed a 71 MB, 666-entry
+capture, and nothing warned -- because nothing could:
+
+- a directory listing hides dot-directories, so `.har-captures/` never appeared;
+  and
+- `git status --porcelain` reported clean. **Ignored content never appears
+  there.** The store is gitignored *by design*, so the standard "what would I
+  lose if I deleted this?" check is structurally blind to the only thing in the
+  worktree worth keeping.
+
+So the raw capture root now anchors to the repository's **main working tree**,
+whose lifetime is the clone's, and the recorder **prints the resolved absolute
+path as the run starts**. Recording from a worktree still works and says where
+the bytes went. Outside a repository the working-directory answer is
+unchanged. A raw is the one artifact that cannot be regenerated -- a scrubbed
+reference can be re-extracted from it, but it can only be re-captured against
+the live provider, and for an authentication or one-shot flow sometimes not at
+all.
+
+> A *link* from the worktree to the store is not an equivalent fix. On Windows
+> a directory junction is followed by Windows PowerShell 5.1's `Remove-Item
+> -Recurse`, which deletes the target's contents -- turning the loss of one
+> capture into the loss of the whole store.
+
+That `.har-captures/` is *gitignored* is likewise a property of the repository,
+not of the name: a directory is only ignored where a `.gitignore` says so. The
+scrub therefore **verifies** it rather than assuming it -- see the substitution
+tables below.
 
 **Both are keyed on the captured site's host**, so two captures never
 overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
@@ -223,10 +266,30 @@ must not proceed without explicit user acknowledgement.
 
 ### Phase 2 -- Record the session
 
-The operator's entire surface is a URL:
+> **Precondition, not advice: record as a DEDICATED TEST ACCOUNT.** Never a
+> personal account, never a default workspace, never a production tenant. This
+> is a condition of starting a recording — if there is no test account, make one
+> before capturing, do not capture and plan to scrub harder afterwards.
+>
+> The scrub is a control, not a guarantee. It removes what it can name, shape or
+> match, and the whole of this document is an account of the ways that turns out
+> to be less than everything. A capture taken as a test account is one whose
+> worst case is disclosing fake data; a capture taken as a real account is one
+> whose worst case depends on a detector nobody has written yet.
+>
+> It also removes the hardest category outright. Third-party PII — other
+> people's names in a friend list, a search result, an order recipient — is the
+> majority of identity data in a real capture, and it is the part
+> `.har-profile.json` cannot help with, because that file holds *the operator's*
+> identifiers. A test account with no real relationships has no third parties in
+> it.
+
+The operator's surface is a URL and one sentence saying what the recording is
+for:
 
 ```powershell
-Invoke-HarCapture https://example.com    # browse, then press ENTER
+Invoke-HarCapture https://example.com -Describe 'sign in, create a post, delete it'
+# browse, then press ENTER
 ```
 
 `templates/web-api-discovery/scripts/capture/capture-har.js` owns the browser
@@ -240,7 +303,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 |---|---|
 | `-Uri` | positional, mandatory |
 | `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
-| `-Describe` | optional intent hint that helps the AI segment; never the source of action names |
+| `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one |
 
@@ -362,6 +425,206 @@ of these has cost real diagnosis time when skipped.
   capture) must never be committable even transiently; treat a missing
   gitignore rule as a hard stop for the phase, not a warning.
 
+#### The scrub policy: three files, one merge
+
+What gets removed is **data, not code**. Three files feed one merged policy that
+the scrubber and both gates all read, so they cannot hold different ideas of
+what is sensitive.
+
+| file | owner | committed | holds |
+|---|---|---|---|
+| `har-policy.default.json` | IntelliSDLC.ai (synced) | yes | the stringent baseline — **do not edit; the next sync overwrites it** |
+| `.har-policy.project.json` | the consuming project | yes | overrides merged over the baseline |
+| `.har-profile.json` | the operator | **no — gitignored** | literals: the operator's own raw identifiers |
+
+**The split that matters is values vs rules, not project vs operator.** The two
+policy files hold names, patterns and decisions — safe to commit, reviewable in
+a diff. The profile is the only place a raw identity value may ever live.
+
+##### Why a policy at all
+
+The gate this replaced hardcoded one project's threat model. Measured on a real
+capture set, it produced **1134 findings, 3 of them real** — and the three
+genuine leaks had no distinctive shape, so the shape layer never had a chance.
+It fired hardest where it was least needed and was blind where it mattered.
+Worse, a rejected scrub *deleted* its own output, so a false positive emitted
+nothing at all: 1413 trip ids read as credit cards meant no reference and no
+catalogue.
+
+A gate whose false-positive path destroys its own output is a shredder. The
+policy exists so a project can say what its threat model actually is.
+
+##### Two axes: class and evidence
+
+|  | gates (blocks) | advises (reports, artifact kept) |
+|---|---|---|
+| **secret** — grants access | name, literal **and shape** | — |
+| **identity** — names a person | literal (operator-declared) | shape |
+
+Shape is weak evidence for an identity and meaningfully stronger for a secret,
+because high entropy is itself evidence of secret-ness. A Luhn-valid 16-digit
+run is a card, a trip id, or roughly one digit run in ten by chance — so gating
+on it is how 1413 identifiers became "leaked cards".
+
+**The floor:** a project may lower any identity class. It may **not** lower a
+secret class — not to `off`, and not to `advise`, which is `off` wearing a hat.
+The loader rejects it by name at load time, so a caller cannot forget a check it
+never makes. Per-value relief is a **waiver**.
+
+##### The settings, and what `off` really means
+
+| setting | effect |
+|---|---|
+| `gate` | the finding blocks |
+| `advise` | reported, does not block |
+| `off` | still detected, still reported, does not block |
+
+`off` is not "stop looking". A disabled class is still detected and still
+reported, so **the cost of a loosening stays visible on every run** — including
+the runs where everything passes, which is when nobody is looking. A finding
+that vanished outright would be an invisible loosening, and invisible loosening
+is this issue's own diagnosis of what went wrong.
+
+> **Both engines honour these settings, and they agree by construction.** The
+> scrubber consumes the same `settingFor` the gate uses rather than carrying its
+> own copy, so `off` cannot come to mean one thing to the gate and another to
+> the scrub.
+>
+> **One narrower truth worth knowing:** only the *identity* axis reaches the
+> scrubber. Secrets are removed by a separate pass over the known-secret names,
+> so the secret settings constrain the gate and the loader's floor rather than
+> the scrub path. The floor still holds either way — a secret class cannot be
+> lowered at all — but if you are reasoning about what a policy change does to a
+> scrubbed artifact, the identity classes are the ones that move it.
+
+What a project **can** steer on the scrub side today:
+
+| key | reaches the scrub via |
+|---|---|
+| `classes.identity` | `pii.js` — whether a detected type is replaced at all |
+| `piiFields` | `pii.js` — which key names denote which type |
+| `cardIssuers` | `pii.js`, through the shared card predicate |
+| `secretFields` / `notSecretFields` | `sanitize-har.js` — which names are credentials |
+| `identifierFields` | `pii.js`, through the gate's own `isIdentifierShaped` |
+
+`identifierFields` reaches **both** engines. On the gate it stops the verifier
+reporting a project's own long identifiers as card-shaped; on the scrub it stops
+them being rewritten. Three limits, and they are the point rather than
+incidental:
+
+- **Identity class only, and a secret class never.** A high-entropy token under
+  a field named `session_id` is still a session token. A field name does not
+  argue entropy away.
+- **A resolved key path only.** A header, a cookie, a query parameter and the
+  URL reach the detectors with no structural key, so nothing there is
+  suppressed — reading the enclosing node's name instead would decline a
+  replacement on no evidence.
+- **Mixed evidence is resolved differently by each engine, deliberately.** When
+  the same value appears at a declared identifier field in one place and a plain
+  field in another, the GATE promotes it back and blocks; the SCRUB declines to
+  replace it anywhere. That is not the two engines disagreeing — it is beat 2
+  applied to each axis. On a report path, err toward more findings: noisy,
+  visible, reversible. On a replace path, err toward a miss: a false positive
+  there rewrites an object id into a fake the scrubber itself recognises, after
+  which no gate can ever report it. The composition is what makes the miss safe,
+  and it must stay that way: the scrub fails toward a miss, and the gate refuses
+  to pass what the scrub declined. A run carrying mixed evidence therefore keeps
+  the value and then FAILS at the verify step, which is the loud outcome.
+
+Declining a replacement never hides the finding: it is still detected, still
+reported, the run says so, and a mixed-evidence decline says that it was mixed —
+an operator otherwise cannot tell a finished run from one the gate is about to
+fail.
+
+##### Worked override
+
+A project whose captures are diagnostic artifacts about its own product, where
+place names are documented payload rather than a leak, and whose object ids are
+long digit runs a card detector would otherwise claim:
+
+```jsonc
+// .har-policy.project.json
+{
+  "classes": {
+    "identity": {
+      "person-name": "off",
+      "city": "off",
+      "region": "off",
+      "country": "off",
+      "postal-code": "off",
+      "geo-coordinates": "off"
+    }
+  },
+  "identifierFields": ["trip_id", "step_id"],
+  "secretFields": ["x-my-app-token"],
+  "notSecretFields": ["x-asbd-id"],
+  "waivers": [
+    { "kind": "hex32", "fingerprint": "a1b2c3d4e5f6",
+      "reason": "vendor build sha, not a session token", "expires": "2026-12-01" }
+  ]
+}
+```
+
+**The class names are the ones the default policy declares** — `geo-coordinates`
+is one kind, not a `geo-lat` / `geo-lng` pair (those are `piiFields` dictionary
+names, which is a different vocabulary). An unknown class is a load-time error
+rather than a silent no-op, so a typo here fails loudly; that is deliberate.
+
+What this achieves, split by which engine honours it:
+
+- **Both engines.** The six identity classes stop being reported as violations
+  *and* stop being replaced — the place data survives into the reference, which
+  is the whole point for a project whose captures document places.
+  `x-my-app-token` is treated as a secret, `x-asbd-id` stops being one, and the
+  waiver applies until it expires.
+- **Both engines, with a narrower scope.** `identifierFields` stops `trip_id` /
+  `step_id` being *reported* as cards and stops them being *rewritten*. It
+  applies to identity classes only, never to a secret class, and only where the
+  value sits at a resolved JSON key — a `trip_id` in a header or a query string
+  is still replaced, because there is no field there to have been declared.
+
+It cannot disable a secret class; attempting that is a load-time error.
+
+**Merge semantics**, because they are not guessable:
+
+- name lists **append** — adding one `secretFields` entry keeps every default;
+- `notSecretFields` **subtracts after** the append, so it can remove a default
+  name and veto one the same file just added;
+- `classes.*` replaces **per kind**, so naming one does not reset its siblings;
+- `qualifiers` **replaces** — copy the defaults and extend, do not list only
+  your new word;
+- an **unknown key is a hard error**, never a silent ignore. A typo that quietly
+  does nothing is how a repo comes to believe it changed a gate it never
+  touched.
+
+##### Removing a secret NAME is allowed, and is recorded
+
+`notSecretFields` may remove a name the synced default shipped — a name list has
+false positives, and a gate with no escape hatch is the undisableable gate this
+design replaces. But `named-credential` is caught by **name or not at all**, so
+a subtraction is the one input that can hollow out a secret class while its
+setting still reads `gate`.
+
+So every upstream secret name a project removes is recorded in
+`loosenedSecretNames` and printed by the gates **on every run, including clean
+ones**. Allowed, never silent.
+
+##### Waivers
+
+The sanctioned relief for one specific false positive. A waiver keys on the
+12-hex non-reversible `fingerprint` a finding already reports, must carry a
+`reason`, and expires:
+
+```jsonc
+{ "kind": "hex32", "fingerprint": "a1b2c3d4e5f6",
+  "reason": "vendor build sha", "expires": "2026-12-01" }
+```
+
+The fingerprint is not reversible, so a waiver is safe to commit: a reviewer
+sees **that** something was waived and **why**, without the value entering the
+repo. The expiry is what stops a one-off exception becoming a permanent hole
+nobody revisits.
+
 #### Scrubbing is two controls, not one
 
 This is the part that is easy to get wrong, because the first control looks
@@ -448,6 +711,46 @@ Implementation rules that mattered in practice:
   leak into the CI log that reports it -- name the sentinel instead.
 - The profile is gitignored and therefore absent in CI, where the literal
   check cannot run. Report it as **skipped**, never as a silent pass.
+
+#### Writing or changing a detector
+
+Every control here is a predicate approximating a concept. Six rules, each
+learned from a defect that shipped -- the cases and the measurements are in
+[`docs/designs/297-detector-predicates.md`](../../../docs/designs/297-detector-predicates.md).
+
+- **Say the concept out loud, then check the predicate is it.** "Six hex pairs"
+  is not "a MAC address" when more pairs follow.
+- **Weigh the predicate against what it DRIVES.** Behind a report, a loose
+  predicate makes noise somebody eventually reads. Behind a replace it makes
+  plausible corruption nobody can detect afterwards. On a replace path, fail
+  toward a miss.
+- **Ablate the fix and confirm the test fails without it.** Minutes, pass/fail,
+  and it is what separates a test from a comment. A test asserting a function
+  *accepts* a policy parameter passed while nothing ever *passed* one.
+- **Prefer a property over a list of cases.** A list covers the inputs you
+  imagined; a property covers the ones you did not.
+- **Seed a generator with the shapes ADJACENT to the one you are fixing.** The
+  gaps that got through were one step sideways, not exotic: nested overlaps but
+  never staggered ones, MAC contexts but no prefix ending in `a`-`f`.
+- **Fixing a THIRD member of the same set means the set is the wrong unit of
+  work.** Stop narrowing and remove the option -- restrict the language so the
+  dangerous input cannot be expressed.
+- **Recognise the grammar; do not count the punctuation.** A control that asks
+  "does this look structured enough" is a threshold, and a threshold on
+  punctuation has a human-written counterexample one mark past it every time --
+  measured twice on the same control, at one mark and then at two. Ask instead
+  which wire grammar the input belongs to, and enumerate the grammars from a
+  MEASUREMENT over real captures rather than from memory. When a new grammar
+  turns up, add a recogniser with its measurement; never relax an existing one
+  back into a count.
+- **Consume a predicate whole -- pattern and check -- from the engine that owns
+  it.** Unifying one half moves the divergence rather than closing it.
+- **Widen after you narrow.** Before landing a change that makes a detector see
+  more, ask what limits what it does with what it sees, and land that first.
+  Widening a report path is cheap; widening a replace path before its constraint
+  exists is how silent corruption arrives.
+- **Measure the residue, not the delta**, and when you tighten a predicate,
+  check every engine holding a copy of it.
 
 #### Do not over-redact placeholders
 
@@ -610,8 +913,17 @@ Two scripts, because the manual version of each shipped a defect (see 5).
 and/or body pattern, scrubs them, and writes the reference. Non-negotiable
 behaviours:
 
-- **Request bodies are NEVER truncated.** Only response bodies are capped,
-  and a capped response records what was dropped.
+- **Request bodies are NEVER truncated**, with or without a flag.
+- **Response bodies are not truncated either, unless you ask.**
+  `--max-response-bytes` is opt-in; absent, no body is cut.
+  The old 64 KB response default was removed because it silently discarded
+  exactly the bodies worth keeping -- a minified JS asset carrying an
+  image-variant spec was the only documentation of how photo upload worked,
+  and nothing reported its loss. Scrub by **sensitivity, not size**: a body is
+  not dangerous because it is large.
+- **If you do cap, the marker is STRUCTURAL.** A capped response records
+  `content.truncated = { originalBytes, keptBytes }` and the kept bytes are a
+  verbatim prefix. **Never write a marker into the payload.**
 - Emits **decoded** `postData.params[]` alongside the scrubbed wire `text`.
   A percent-encoded form body is not greppable; the decoded copy is what
   makes the reference searchable for a field name.
@@ -625,10 +937,50 @@ behaviours:
 - Takes the literal -> sentinel map from the capture-time profile
   (see Phase 3).
 
+> **The truncation marker contract, for any tool that writes a reference.**
+> A cut is recorded **structurally**, as `content.truncated =
+> { originalBytes, keptBytes }`, and the retained text is a verbatim prefix of
+> the original. A marker written *inside* the body is forbidden, and a
+> consumer-side tool emitting one must converge on this.
+>
+> Two reasons, both measured on a real corpus. An inline marker cuts the
+> payload mid-string, so `JSON.parse` fails with "Unterminated string" rather
+> than signalling truncation — and a reader who does not parse sees plausible
+> JSON that silently lacks everything after the cut. And it is invisible to a
+> structured audit: scanning 12 committed references for `content.truncated`
+> found **zero**, while scanning for the inline marker found **27 truncated
+> entries across 6 files**. The tell was a recurring body length of `4046` —
+> 4000 kept plus a 46-character marker.
+>
+> `verify-har-reference.js` fails on both spellings until the second one is
+> gone, so "no truncated references" cannot keep meaning "none that this tool
+> truncated".
+
 **`verify-har-reference.js`** is a gate, runnable over the whole directory
 and in CI. It fails on:
 
-- a truncated request body;
+- a truncated request **or response** body, in either spelling — the structured
+  `truncated` marker, or an inline `[... body truncated ...]` string written
+  into the payload. The inline spelling is claimed by this rule on **both**
+  sides: a request body that is only a truncation marker would otherwise be
+  reported by the next rule as a wholesale replacement, telling the reader
+  there is no marker to look for while the marker sits in the body;
+- a request body that is **present but belongs to no wire grammar** — a
+  placeholder standing in for a body rather than a body. The truncation rule
+  above catches a body that was *shortened*; nothing caught one that was
+  *replaced*, so a reference could carry a short sentinel where a form body
+  used to be, pass every gate, and be catalogued as documenting request-side
+  behaviour it contains none of. **Recognise the grammars, never a known
+  sentinel string:** the placeholder that prompted this was emitted by no tool
+  in this pipeline, and the next one will be spelled differently. A body is a
+  body when it belongs to a recognised wire grammar — **composite JSON**
+  (`{}` and `[]` are legal minimal bodies), **form-urlencoded**, **multipart**,
+  **NDJSON**, or **XML** — and is reported otherwise. Enumerate the grammars
+  from a measurement over real captures, but do not let a measurement's SCOPE
+  masquerade as its authority: a corpus of JSON-era providers says nothing
+  about whether a consumer wraps a SOAP API, and this template ships to
+  consumers nobody sampled. A gate that fires on 100% of somebody's traffic
+  gets disabled, which costs them every other check it carries;
 - an unredacted credential header, parameter, or multipart field;
 - a secret nested inside a JSON-valued parameter;
 - any caller-supplied forbidden literal;
@@ -914,6 +1266,48 @@ Require every capture-derived probe to:
   directory. Ignoring only the directory is not enough. (The typed-PII store
   `.substitutions.json` is different: it records hash prefixes, not values,
   and is safe to commit.)
+- **The destination is verified, not inferred.** `sanitize-har.js` used to
+  place the tables in a directory *named* `.har-captures` and describe that as
+  gitignored by construction. It was not -- the name matched what a scaffolded
+  consumer's `.gitignore` happens to carry, so the protection held by
+  convention plus location. A capture corpus in a `har-captures/` directory
+  (no leading dot, not a repository) defeated it: the scrub created a nested
+  `.har-captures/` inside the capture tree and wrote both tables there,
+  unprotected and nowhere near `--out`. The scrub now asks git whether the
+  destination is genuinely ignored, **before reading the input or writing
+  anything**, and refuses otherwise, so a rejected run leaves no files behind.
+  The two ways past a refusal:
+  - add `.har-captures/` (or the table filenames) to the repository's
+    `.gitignore` -- what `SCAFFOLD_GITIGNORE_ENTRIES` does for a scaffolded
+    consumer; or
+  - pass `--subs` / `--pii-subs` to name the destination deliberately. An
+    explicit path is never gated, which is how `extract-har-reference.js` and
+    `run-agent.js` write into a temp directory outside any repository.
+
+  Because the check is on the *file path* rather than its directory, a
+  hand-made or relocated capture tree inside a properly scaffolded repo is
+  accepted on its merits -- the scaffold ignores the table filenames at any
+  depth -- while the same tree outside one is refused.
+
+  **One deliberate limit.** The probe runs git with the environment's `GIT_*`
+  and home variables neutralised, because either can be pointed at
+  chosen config for a single invocation and forge an "ignored" verdict the
+  operator's own later `git add` would not honor. The consequence: an ignore
+  rule living **only** in a *global* `core.excludesFile` does not satisfy the
+  gate, and the scrub refuses with advice to add the entry to the repository's
+  own `.gitignore`. That is a false refusal rather than a false pass, which is
+  the direction this whole control errs in.
+
+  The same trade explains one confusing refusal worth knowing about in advance.
+  A repository whose **ownership git disputes** -- typically a checkout
+  bind-mounted into a container from a different host UID -- is normally made
+  usable with a `safe.directory` entry in the operator's *global* config, which
+  the probe deliberately cannot see. Such a run is refused, and says the
+  destination is not inside a work tree. Add the `.gitignore` entry, or name
+  the destination with `--subs` / `--pii-subs`. Do **not** "fix" this by having
+  the probe pass `-c safe.directory=...`: a repository's own `.git/config` can
+  set `core.excludesFile`, so trusting a repository whose ownership is disputed
+  is exactly how a planted checkout would forge an "ignored".
 - A committed reference **must** be gated in CI by `verify-har-reference.js`
   over the directory holding it -- `--dir <host>/`, or wherever the project
   keeps its references -- so it is checked on every PR and not only when it
@@ -1070,12 +1464,13 @@ Immediately after Phase 10.5 (`git init`), the agent **must** prompt:
 > this project and add an `sdlc.ai` git remote? [Y/n]
 
 Default is `Y`. On `Y`, run `Pull-SDLC.ai.ps1` from the project root --
-this adds a remote called `sdlc.ai` pointing at the IntelliSDLC.ai
-repository, merges the upstream `main` into the project's initial
-commit (using `--allow-unrelated-histories` on first sync), and
-materializes `CLAUDE.project.md` and `project.instructions.md` from
-their templates. Populate the identity sections of both files from the
-project name and namespace.
+this adds a remote called `sdlc.ai` pointing at
+`https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git`, merges the
+upstream `main` into the project's initial commit (using
+`--allow-unrelated-histories` on first sync), and materializes
+`CLAUDE.project.md` and `project.instructions.md` from their templates.
+Populate the identity sections of both files from the project name and
+namespace.
 
 On `n`, print the manual-run hint (`git clone ... ; Pull-SDLC.ai.ps1`)
 so the developer can opt in later without re-running the agent.

@@ -86,6 +86,26 @@ reintroduce the undisableable gate this issue exists to replace (the issue's own
 sketch removes `x-asbd-id`), so it is allowed and recorded. Stage 2 onward must
 report it on every run, per "the cost of a loosening stays visible".
 
+**Task 1.6 (added after PR 2).** The issuer identification table is
+policy-extendable. `CARD_ISSUERS` stays in `har-shapes.js` -- an IIN range is a
+public payment-network standard, not a project concept -- but which markets a
+consumer operates in *is* a project fact, and "patch upstream" is not an
+override path. So the merged policy carries `cardIssuers`, which **appends** to
+the shipped table and can never subtract from it: card detection is loosened by
+lowering `classes.identity.credit-card`, which reads as a setting a reviewer can
+see, not by deleting the range that would have caught something. Maestro is
+deliberately **absent** from the default -- its range (`50`, `56`-`69`, lengths
+12-19) overlaps Discover and UnionPay and would reopen the false-positive
+surface #295 closed -- so a repo that needs it declares it and owns the
+consequence. Every field of an added range is validated rather than trusted: a
+range that loads and does not mean what its author wrote is worse than one that
+fails, since `[5, 69]` reads as "5 through 69" and would in fact claim every
+prefix from 05 to 69. The accepted `lengths` window is the DETECTOR's (13-19),
+not the payment industry's -- 12 is a real Maestro length and is still refused,
+because the card pattern never offers the predicate a 12-digit run and a range
+that validates and then detects nothing is the silent failure the validator
+exists to refuse.
+
 > **PR 1** ends here -- **delivered**. No caller consumes the policy yet; the
 > lift is verifiable in isolation.
 >
@@ -137,8 +157,44 @@ with a sentinel test that is case-insensitive and recognises both the
 **Task 4.3.** Source `KNOWN_SECRET_FIELD_NAMES` / `KNOWN_SECRET_HEADER_NAMES`
 from the merged policy rather than module constants.
 
-> **PR 2** ends here: the gate now classifies, locates, and stops crying wolf on
-> its own redactions. Expect the 1134-finding measurement to collapse.
+**Task 4.4 (added during review).** Both verifiers load the merged policy and
+print, on every run including a clean one, any upstream secret name the project
+removed via `notSecretFields` -- the Stage 1 carry-forward. A `blocks()`
+predicate decides what fails: waived findings and disabled classes do not,
+advisory identity findings still do. The design's "advise = non-zero exit,
+artifact kept" is only half-implementable until Stage 7: it is the ARTIFACT
+that survives, and `capture-har.js` still deletes the scrubbed file on any
+non-zero exit. Exiting 0 on advisory findings was tried and three existing
+suites caught it turning a real leaked card into a silent pass.
+
+> **PR 2** ends here -- **delivered**. The gate now classifies, locates, and
+> stops crying wolf on its own redactions. Measured on a fixture carrying one
+> real token, one real card, a fingerprint in `log.comment` and an
+> already-redacted `fb_dtsg`: **4 findings before, 2 after**, both real and both
+> naming the field that holds them.
+>
+> Landed: `har-shapes.js` (classes, `findLeaksInHar`, `describeLeak`),
+> `har-secrets.js` (`SENTINEL_RE`, policy-sourced names, options-bag walk),
+> both verifiers, `har-shapes-class.test.js`, `har-shapes-walk.test.js`,
+> `har-secrets-value.test.js`, `verify-scrub-policy.test.js`,
+> `.github/agents/tests/har-class-evidence.Tests.ps1`.
+>
+> Two review findings fixed here rather than deferred: the structural walk
+> skipped unquoted JSON numbers (a card serialised as a number was missed where
+> the old text sweep caught it), and `listHarFiles` matched `.har`
+> case-sensitively, so a `capture.HAR` was never verified at all.
+
+### Carried into the later stages
+
+- **The scrubber does not yet read the merged policy.** `sanitize-har.js`
+  builds its field alternation at module load from the DEFAULT names, so a
+  project that ADDS a secret name gets it gated by the verifiers but not
+  redacted by the scrubber. The existing remedy is the literal mechanism in
+  `.har-profile.json`; the proper fix is deferred to Stage 6, which reworks
+  the scrubber's field matching anyway.
+- **Advisory findings still block.** They stop blocking when Stage 7 lands the
+  quarantine that makes a non-zero exit non-destructive. The two must ship
+  together.
 
 ## Stage 5 -- Credit-card precision -- ~~STRUCK~~
 

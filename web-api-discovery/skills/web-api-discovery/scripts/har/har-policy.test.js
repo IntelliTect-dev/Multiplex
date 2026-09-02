@@ -86,25 +86,64 @@ function expectThrows(fn, matcher, label) {
 // Task 1.2 is a pure data lift: behaviour must not change. Anything the old
 // module-level constants covered must still be covered by the policy, or the
 // lift silently narrows the scrub.
+//
+// The secret names are written out longhand here rather than read back from
+// har-secrets.js. Stage 4 made that module DERIVE its lists from this very
+// file, so comparing the two would compare a value to itself -- and the whole
+// risk of a data lift is exactly the silent narrowing such a check would miss.
+// `har-secrets-value.test.js` case 4 pins the same list from the other side.
 {
     const dir = path.join(tmp, 'lift');
     fs.mkdirSync(dir, { recursive: true });
     const p = load(dir);
 
-    for (const name of secrets.KNOWN_SECRET_FIELD_NAMES) {
+    const HISTORICAL_FIELDS = [
+        'fb_dtsg', 'lsd', 'jazoest',
+        '__spin_r', '__spin_b', '__spin_t', '__hs', '__hsi', '__csr', '__hsdp', '__req', '__rev',
+        'c_user', 'xs', 'datr', 'fr', 'sb', 'mid', 'ig_did', 'ds_user_id',
+        'sessionid', 'csrftoken',
+    ];
+    const HISTORICAL_HEADERS = [
+        'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
+    ];
+    for (const name of HISTORICAL_FIELDS) {
         assert.ok(p.secretFields.includes(name),
             `3.a: secret field '${name}' was dropped by the lift into har-policy.default.json`);
     }
-    for (const name of secrets.KNOWN_SECRET_HEADER_NAMES) {
+    for (const name of HISTORICAL_HEADERS) {
         assert.ok(p.secretHeaders.includes(name),
             `3.b: secret header '${name}' was dropped by the lift into har-policy.default.json`);
     }
-    for (const type of Object.keys(pii.FIELD)) {
-        assert.ok(Array.isArray(p.piiFields[type]),
+    // The PII dictionaries, written out longhand for the same reason as the
+    // secret names above: `pii.js` now derives its lists FROM this file, so
+    // reading them back would compare a value to itself. These are the names
+    // the exact-match implementation recognised before Stage 6 widened it to
+    // key tails; every one of them must still be recognised.
+    const HISTORICAL_PII = {
+        'person-name': ['name', 'firstname', 'lastname', 'fullname', 'displayname', 'givenname', 'familyname', 'surname'],
+        'street-address': ['address', 'street', 'addressline1', 'addressline2', 'streetaddress', 'streetname'],
+        city: ['city', 'town', 'locality'],
+        region: ['region', 'state', 'province', 'administrativearea'],
+        'postal-code': ['postalcode', 'postal', 'zip', 'zipcode', 'postcode'],
+        country: ['country', 'countrycode'],
+        dob: ['dob', 'dateofbirth', 'birthdate', 'birthday'],
+        'geo-lat': ['lat', 'latitude', 'geolat'],
+        'geo-lng': ['lng', 'longitude', 'geolng', 'lon', 'long'],
+    };
+    for (const type of Object.keys(HISTORICAL_PII)) {
+        const dict = p.piiFields[type];
+        assert.ok(dict && Array.isArray(dict.exact),
             `3.c: PII field dictionary '${type}' was dropped by the lift`);
-        for (const key of pii.FIELD[type]) {
-            assert.ok(p.piiFields[type].includes(key),
+        for (const key of HISTORICAL_PII[type]) {
+            assert.ok(dict.exact.includes(key),
                 `3.d: PII field name '${key}' (${type}) was dropped by the lift`);
+        }
+        // A tail without a qualifier decision is a tail that matches anything
+        // before it, which for `name` or `address` would scrub `file_name` and
+        // `ip_address`. The loader must not let that be left unstated.
+        if (dict.tail.length > 0) {
+            assert.ok(dict.qualifiers === 'any' || Array.isArray(dict.qualifiers),
+                `3.e: '${type}' declares tail tokens but no qualifier decision`);
         }
     }
 }
