@@ -158,7 +158,23 @@ const readline = require('readline');
 const { spawnSync } = require('child_process');
 
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
+const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+// The ONE walk over a capture store (#386/#387). It USED to be the body of
+// `listSessionDirs` right here; it moved out so the batch drivers could reuse
+// this exact enumeration -- with its classification of legacy and foreign
+// captures intact -- instead of growing a second notion of what a capture is.
+const captureStore = require(path.join(__dirname, 'capture-store.js'));
+const bodyDescriptor = require(path.join(__dirname, 'request-body-descriptor.js'));
+// The ONE gitignore check in this subsystem (#318). It wraps `git check-ignore`
+// and already defends against a forged `.gitignore` containing `*` and against
+// `core.excludesFile` injection, so nothing here asks the question a second
+// way -- a bespoke re-implementation is how the original defect arrived.
+const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
+// Reused, not reimplemented: the consumer .gitignore entry list and the
+// idempotent append both already exist for the scaffolder (#119).
+const { ensureRepoRootGitignoreHasScaffoldEntries } =
+    require(path.join(__dirname, '..', 'codegen', 'generate-wrapper.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -168,7 +184,12 @@ const STORAGE_STATE_FILENAME = '.har-storage-state.json';
 const CATALOGUE_PROMPT = 'catalogue-prompt.md';
 const STOP_SENTINEL = 'STOP';
 const SESSION_FILE = 'session.json';
-const CURRENT_FILE = 'current.json';
+// There is deliberately NO `current.json` (#377). A single pointer file at the
+// captures ROOT is shared mutable state in a store several agent sessions write
+// to at once, so a second capture overwrote it and the first recording became
+// unaddressable. The STAMP is the identity, and `resolveSession` already scanned
+// the session directories whenever the pointer went stale -- removing it makes
+// that existing path the only path.
 const RAW_HAR = 'raw.har';
 const RECORD_LOG = 'raw.ndjson';
 const SCRUBBED_HAR = 'scrubbed.har';
@@ -202,6 +223,9 @@ const PUBLISH_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
 const VERIFY_ADVISORY_EXIT = 4;
 const DIGEST_FILE = 'digest.json';
 const CATALOGUE_FILE = 'catalogue.json';
+// Where committed references live in a consuming project. Named here only to
+// PRINT the promote command -- nothing in this file writes into it.
+const REFERENCE_DIR = path.join('docs', 'har-reference');
 const POLL_MS = 200;
 const STOP_TIMEOUT_MS = 60000;
 const LAUNCH_TIMEOUT_MS = 45000;
@@ -487,17 +511,31 @@ function uriFolder(uri) {
  * `catalogue.json` are fixed filenames, and before this the second capture
  * silently overwrote the first.
  *
- * WHERE THE DEFAULT OUTPUT LANDS (#300). It used to be the working directory,
- * unconditionally. That is right outside a repository and wrong inside one:
- * run from a checkout's subdirectory, artifacts appeared wherever the operator
- * happened to be standing, which in the reported incident was a project's root
- * checkout on the protected branch. Inside a repo the default now anchors to
- * the repo root, which is where artifact locations are standardized; outside
- * one nothing changes.
+ * WHERE THE DEFAULT OUTPUT LANDS (#377, revising #300). It was the working
+ * directory, then the repository root. Both were wrong for the same reason: the
+ * root of whichever work tree the operator happened to be standing in is not a
+ * place scrubbed artifacts belong, so a run from a checkout root dropped an
+ * untracked `<host>/` directory there and #300's warning was simply stepped
+ * past. Anchoring made placement PREDICTABLE, not correct -- its own comment
+ * said so.
  *
- * Anchoring is scoped to the DEFAULT. An explicit `outputPath` still resolves
- * against the working directory, because a relative path the operator typed has
- * to mean what they typed.
+ * The default is now THE RUN'S OWN SESSION DIRECTORY. That fixes three defects
+ * at once and invents no new location:
+ *
+ *   - it is inside `.har-captures/`, which is gitignored by construction, so
+ *     nothing lands untracked in a work tree;
+ *   - it carries the STAMP, so a second capture against the same host no longer
+ *     silently overwrites the first's `scrubbed.har`/`digest.json`;
+ *   - the scrubbed artifact ends up beside the raw it came from, which is the
+ *     structural link a committed reference needs back to its source.
+ *
+ * Nothing is lost by this: promotion into a committable directory is a separate,
+ * deliberate step (see promoteReferenceLines), and the session directory is the
+ * durable copy either way.
+ *
+ * An explicit `outputPath` still resolves against the WORKING DIRECTORY, because
+ * a relative path the operator typed has to mean what they typed. It is warned
+ * about, never refused -- see classifyOutputDestination.
  */
 function resolveSessionPaths(opts = {}) {
     const cwd = opts.cwd || process.cwd();
@@ -505,9 +543,12 @@ function resolveSessionPaths(opts = {}) {
     const root = opts.capturesRoot ? path.resolve(opts.capturesRoot) : placement.root;
     const folder = uriFolder(opts.uri);
     const sessionDir = path.join(root, folder, opts.stamp || stamp(new Date()));
-    const outputRoot = opts.outputPath
-        ? path.resolve(cwd, opts.outputPath)
-        : repoGuard.resolveDefaultOutputRoot(cwd);
+    // The host folder is appended to an EXPLICIT root only. The session
+    // directory is already keyed on the host one level up, and appending it
+    // again would produce `<host>/<stamp>/<host>/`.
+    const outputPath = opts.outputPath
+        ? path.join(path.resolve(cwd, opts.outputPath), folder)
+        : sessionDir;
     return {
         capturesRoot: root,
         // Null when a caller pinned the root itself (tests do), because there
@@ -520,8 +561,318 @@ function resolveSessionPaths(opts = {}) {
         sessionDir,
         harPath: path.join(sessionDir, RAW_HAR),
         recordLog: path.join(sessionDir, RECORD_LOG),
-        outputPath: path.join(outputRoot, folder)
+        outputPath,
+        // Whether the operator NAMED this destination. The warning below fires
+        // only for a deliberate choice; the default can no longer be the hazard.
+        outputExplicit: Boolean(opts.outputPath)
     };
+}
+
+/**
+ * Is an EXPLICIT `--output-path` somewhere scrubbed artifacts will show up as
+ * untracked files, and what to say about it?
+ *
+ * WARN, DO NOT REFUSE (#377). Hard-failing was right while the DEFAULT was the
+ * hazard -- an operator who never typed a path got the bad location anyway.
+ * Now that the default is the gitignored session directory, the only route to a
+ * committable-but-unignored destination is a deliberate one, and refusing a
+ * deliberate choice is user-hostile: pointing `--output-path` at
+ * `docs/har-reference` is a legitimate thing to do, and the test suites do it.
+ *
+ * The question is asked through `classifyDestination()` and nowhere else. It
+ * already wraps `git check-ignore`, and already refuses to trust a forged
+ * `.gitignore` containing `*` or an injected `core.excludesFile`. A second
+ * gitignore check written here would be a second answer free to disagree.
+ *
+ * Returns null when there is nothing to say -- outside a work tree (where
+ * behaviour is unchanged), when the destination is ignored, and for the
+ * default, which is never classified because it cannot be the problem.
+ */
+function outputDestinationWarning(paths) {
+    if (!paths || !paths.outputExplicit) { return null; }
+    // Classified on a FILE inside the destination, not on the directory: a
+    // consumer's .gitignore covers these artifacts by name at any depth as well
+    // as by directory, and asking about the directory would miss that.
+    const status = subsDestination.classifyDestination(path.join(paths.outputPath, SCRUBBED_HAR));
+    // IGNORED and OUTSIDE_WORK_TREE are the two answers that mean "nothing to
+    // say". Everything else is said, UNVERIFIABLE included: git declining to
+    // answer is not the same as answering no, and treating the two alike would
+    // make the warning disappear in exactly the case where nobody can tell
+    // whether it was needed.
+    if (status === subsDestination.IGNORED
+        || status === subsDestination.OUTSIDE_WORK_TREE) { return null; }
+    const why = status === subsDestination.NOT_IGNORED
+        ? '  It is inside a git work tree and is not gitignored -- the scrubbed capture, the\n' +
+          '  digest and the catalogue will show as untracked files there.'
+        : '  git did not answer whether it is gitignored, so nothing here can promise the\n' +
+          '  scrubbed capture, the digest and the catalogue will stay out of version control.';
+    return [
+        `--output-path resolved to ${paths.outputPath}`,
+        why,
+        '  Proceeding: this is a destination you named. The session directory keeps its own',
+        '  copy of everything either way.'
+    ].join('\n');
+}
+
+// The gitignore entries a capture store needs. A SUBSET of the scaffolder's
+// list, and passed to the scaffolder's own idempotent append rather than
+// retyped into a second writer.
+//
+// Deliberately NOT a blanket `*.har`. `docs/har-reference/**/*.har` are the
+// committed artifacts of this whole pipeline, and a blanket rule would make a
+// NEW reference silently un-committable until somebody remembered `git add -f`.
+// By name and by suffix is what the shipped .gitignore already does.
+// The two substitution-table names come from subsDestination (already
+// required above for the gitignore CHECK), not retyped here -- #387 made this
+// the one other spot in this file that named them literally.
+const CAPTURE_GITIGNORE_ENTRIES = [
+    '.har-captures/',
+    '.har-profile.json',
+    subsDestination.LEGACY_SUBS_FILENAME,
+    subsDestination.PII_SUBS_FILENAME
+];
+
+// The block says what it is FOR, and names only what it writes. The scaffolder's
+// own header talks about HAR-Original/ and MobileApp-Binaries/, which this block
+// does not contain -- a provenance note about files that are not there sends the
+// next reader hunting.
+const CAPTURE_GITIGNORE_HEADER = [
+    '# Added by the HAR recorder (see .github/skills/web-api-discovery/SKILL.md).',
+    '# A raw capture carries live session cookies and is never scrubbed; the',
+    '# substitution tables are keyed by the plaintext values the scrub replaced.'
+];
+
+/**
+ * A path under the captures root that only a rule ABOUT THE STORE can ignore.
+ *
+ * Not `raw.har`: the shipped .gitignore also lists that by name, so probing
+ * with it would report a store as protected on the strength of a rule that
+ * covers one filename. The probe has to be a name nothing else claims.
+ */
+function capturesRootProbe(capturesRoot) {
+    return path.join(capturesRoot, '.har-captures-ignore-probe');
+}
+
+/**
+ * Refuse to record into a capture store that version control can see.
+ *
+ * The raw capture carries live session cookies and runs to hundreds of
+ * megabytes. Unignored, it is one `git add -A` from a commit -- and unlike the
+ * output side, there is no warn-and-proceed answer that is honest here: what
+ * would be committed is unscrubbed.
+ *
+ * INTERACTIVE: prompt once, naming the resolved absolute path, saying it is in
+ * the MAIN checkout (which is not where the operator is standing when they run
+ * from a worktree), and saying why. Answering yes appends the rules and re-asks
+ * git; the answer that matters is git's, not ours.
+ *
+ * NON-INTERACTIVE: hard failure. An agent or a CI run has nowhere to prompt,
+ * and this is exactly the case worth stopping.
+ *
+ * OUTSIDE A WORK TREE: nothing to do. There is no repository for `git add` to
+ * take the capture into, and behaviour there is unchanged by design.
+ */
+async function ensureCapturesRootIgnored(placement, opts = {}) {
+    const isTty = !!opts.isTty;
+    const ask = opts.ask || askLine;
+    const capturesRoot = placement && placement.root;
+    if (!capturesRoot) { return { ok: true, status: null }; }
+    const probe = capturesRootProbe(capturesRoot);
+    const status = subsDestination.classifyDestination(probe);
+    if (status === subsDestination.IGNORED
+        || status === subsDestination.OUTSIDE_WORK_TREE) {
+        return { ok: true, status };
+    }
+
+    const anchor = placement.mainWorkingTree || placement.currentWorkingTree;
+    // "not ignored" and "git declined to answer" are different facts, and
+    // telling an operator the first when the second happened sends them to edit
+    // a .gitignore that was never the problem. Both still refuse: an unverified
+    // destination is not assumed to be a safe one.
+    const unverified = status === subsDestination.UNVERIFIABLE;
+    const why = [
+        unverified
+            ? `capture-har: git did not answer whether the capture store is ignored: ${capturesRoot}`
+            : `capture-har: the capture store is not gitignored: ${capturesRoot}`,
+        '  A raw capture carries live session cookies and is never scrubbed -- unignored,',
+        '  it is one `git add -A` away from being committed.',
+        anchor ? `  The store belongs to the MAIN working tree (${anchor}), not to the` : null,
+        anchor ? '  worktree you may be standing in.' : null
+    ].filter(Boolean).join('\n');
+
+    if (unverified) {
+        // There is nothing to prompt about: appending a rule cannot help when
+        // the answer could not be read in the first place.
+        return {
+            ok: false,
+            status,
+            message: `${why}\n` +
+                '  Make git available on PATH and re-run. An unverified destination is not\n' +
+                '  assumed to be a safe one.'
+        };
+    }
+
+    if (!isTty) {
+        return {
+            ok: false,
+            status,
+            message: `${why}\n` +
+                `  Add ${CAPTURE_GITIGNORE_ENTRIES.map((e) => `'${e}'`).join(', ')} to that\n` +
+                "  repository's .gitignore and re-run. This run is refused rather than\n" +
+                '  prompted: there is no terminal here to answer, and an unscrubbed capture\n' +
+                '  inside a work tree is the one case worth stopping for.'
+        };
+    }
+
+    const answer = await ask(`${why}\n  Append ${CAPTURE_GITIGNORE_ENTRIES.join(', ')} to ` +
+        `${path.join(anchor || capturesRoot, '.gitignore')} now? [y/N] `);
+    if (!/^y/i.test((answer || '').trim())) {
+        return { ok: false, status, message: 'capture-har: declined -- nothing was recorded.' };
+    }
+    ensureRepoRootGitignoreHasScaffoldEntries(anchor || capturesRoot, CAPTURE_GITIGNORE_ENTRIES,
+        CAPTURE_GITIGNORE_HEADER);
+    // Ask git again rather than assuming the append worked. A rule that does
+    // not take effect -- a negation later in the file, a nested .gitignore --
+    // must not be reported as protection.
+    const after = subsDestination.classifyDestination(probe);
+    if (after === subsDestination.IGNORED) { return { ok: true, status: after, appended: true }; }
+    return {
+        ok: false,
+        status: after,
+        message: 'capture-har: the entries were appended but git still does not report the ' +
+            `store as ignored (${after}). Nothing was recorded.`
+    };
+}
+
+/**
+ * The SHORT provider name for a host: `www.facebook.com` -> `facebook`.
+ *
+ * The reference-naming convention repeats the provider in the filename as well
+ * as in the directory, because the directory is invisible the moment the file
+ * is opened in an editor tab, attached to an issue, or pasted into a diff.
+ */
+// Second-level labels that are part of the suffix rather than the name:
+// `example.co.uk` must give `example`, not `co`. Deliberately a short list and
+// not the public suffix list -- this names a file a human then reads and can
+// rename, so the cost of a miss is cosmetic, and a megabyte of suffix data
+// vendored into a recorder to improve a default filename is not a trade worth
+// making.
+const SUFFIX_LABELS = new Set(['co', 'com', 'net', 'org', 'gov', 'edu', 'ac', 'or', 'ne', 'go']);
+
+function providerSlug(host) {
+    const labels = String(host || '').split('.').filter(Boolean)
+        .filter((l, i) => !(i === 0 && l === 'www'));
+    if (!labels.length) { return null; }
+    // The registrable label, not the TLD: `app.example.com` -> `example`.
+    let index = labels.length >= 2 ? labels.length - 2 : 0;
+    if (index > 0 && SUFFIX_LABELS.has(labels[index])) { index -= 1; }
+    return slugify(labels[index]) || null;
+}
+
+function slugify(value) {
+    // Character-for-character the extractor's own slug(), because the name this
+    // prints has to be the name the extractor produces.
+    return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+// Words that carry no information in an action slug. Trimming them is what
+// turns a sentence into a name a human would have written.
+const ACTION_STOPWORDS = new Set([
+    'a', 'an', 'the', 'and', 'then', 'with', 'of', 'to', 'for', 'in', 'on', 'my',
+    'that', 'this', 'it', 'its', 'at', 'by', 'from', 'into'
+]);
+const ACTION_SLUG_WORDS = 3;
+
+/**
+ * A short action slug derived from `--describe`, for the operator to accept or
+ * replace.
+ *
+ * Deriving SILENTLY from a whole sentence yields
+ * `facebook-create-a-post-with-an-audience-selection-then-delete-it-2026-09-01.har`
+ * -- legal, and not a name anybody would write for a file that gets read in
+ * issues and diffs. So the derivation is a DEFAULT, not an answer.
+ */
+function deriveActionSlug(describe, provider) {
+    let text = String(describe || '');
+    // `facebook: create a post ...` -- the operator already named the provider,
+    // and repeating it would give `facebook-facebook-...`.
+    const colon = text.indexOf(':');
+    if (colon > 0 && provider && slugify(text.slice(0, colon)).includes(provider)) {
+        text = text.slice(colon + 1);
+    }
+    const words = slugify(text).split('-')
+        .filter(Boolean)
+        .filter((w) => !ACTION_STOPWORDS.has(w));
+    const picked = words.slice(0, ACTION_SLUG_WORDS);
+    return picked.length ? picked.join('-') : 'capture';
+}
+
+function todayStamp(now) {
+    return (now || new Date()).toISOString().slice(0, 10);
+}
+
+function uriHostOf(uri) {
+    try { return new URL(uri).hostname; } catch (e) { void e; return null; }
+}
+
+/**
+ * `group.host` minus a trailing `:<port>`, so it slugs the same way
+ * `uriHostOf` does.
+ *
+ * `group.host` comes from `URL#host` (host **plus** port, e.g.
+ * `localhost:3000`), because `Endpoints` needs the port to name the
+ * endpoint precisely. `uriHostOf` -- what `referenceRelativePath` slugs to
+ * pick the `<provider>/` directory -- comes from `URL#hostname` (host
+ * only). Slugging `group.host` unstripped would turn every port-bearing
+ * host, most commonly a local dev server, into a `Provider` that
+ * disagrees with that directory: `localhost:3000` -> `localhost-3000`
+ * against a directory named `localhost`. Stripping the port first is what
+ * keeps the two in agreement for exactly the hosts that would otherwise
+ * differ only by it.
+ */
+function stripPort(host) {
+    return String(host || '').replace(/:\d+$/, '');
+}
+
+/**
+ * The reference filename this capture's extract would take.
+ *
+ * `<provider>-<action>-<yyyy-MM-dd>.har`, which is exactly what
+ * `har/extract-har-reference.js` writes. This names it; it does not invent a
+ * second convention, and it does not write anything.
+ *
+ * The provider is in the FILENAME as well as the directory it lands in. The
+ * directory is invisible the moment the file is opened in an editor tab,
+ * attached to an issue, or pasted into a diff, and a reference that cannot
+ * say what provider it describes once separated from its folder is a
+ * reference nobody can place.
+ */
+function referenceFileName(session, opts = {}) {
+    const provider = providerSlug(uriHostOf(session && session.uri));
+    if (!provider) { return null; }
+    const action = opts.action || deriveActionSlug(session && session.describe, provider);
+    return `${provider}-${action}-${todayStamp(opts.now)}.har`;
+}
+
+/**
+ * The same reference, as `<provider>/<filename>`.
+ *
+ * This -- not the bare filename -- is what `HarFile` records, because the
+ * field's job is to survive promotion. #379 defines `HarFile` as a path
+ * RELATIVE TO the committed `catalogue.json`, which sits at
+ * `docs/har-reference/<host>/` while the extract sits one level deeper in
+ * `<provider>/`. A bare filename would be ambiguous the moment a host carries
+ * two providers, and `verify-har-catalogue.js` resolves the value against the
+ * catalogue's own directory, so a bare filename would simply not resolve.
+ *
+ * Forward slash, always: this is a value written into JSON and read back on
+ * every platform, not a path built for the local filesystem.
+ */
+function referenceRelativePath(session, opts = {}) {
+    const provider = providerSlug(uriHostOf(session && session.uri));
+    const fileName = referenceFileName(session, opts);
+    if (!provider || !fileName) { return null; }
+    return `${provider}/${fileName}`;
 }
 
 /**
@@ -706,6 +1057,14 @@ function buildEntry(observed) {
     const reqHeaders = request.headers || {};
     const resHeaders = (response && response.headers) || {};
     const postBuf = request.postDataBuffer || null;
+    // What we can say about a request body we did NOT keep (#442). null when
+    // there is nothing to say -- no body was declared, or the whole of it is
+    // in `postBuf` -- so a genuinely bodiless request is untouched.
+    const unretained = bodyDescriptor.describeRequestBody({
+        headers: reqHeaders,
+        postDataBuffer: postBuf,
+        postMimeType: request.postMimeType
+    });
 
     const phases = timing
         ? { send: timing.send, wait: timing.wait, receive: timing.receive }
@@ -723,7 +1082,13 @@ function buildEntry(observed) {
             queryString: queryStringOf(request.url),
             cookies: cookiesOf(reqHeaders),
             headersSize: headerBytes(reqHeaders, `${request.method} ${request.url}`),
-            bodySize: postBuf ? postBuf.length : 0
+            // -1 is HAR's "not available", and it is what this recorder
+            // already reports for a RESPONSE body it could not read. Reporting
+            // 0 for a body the request declared and we did not keep is a false
+            // statement, and it is the same text a genuinely bodiless GET
+            // produces -- which is the whole of #442. 0 still means 0: no
+            // descriptor, no body, nothing withheld.
+            bodySize: postBuf ? postBuf.length : (unretained ? -1 : 0)
         },
         response: {
             // A failed request has no status. 0 is the established HAR
@@ -757,6 +1122,7 @@ function buildEntry(observed) {
                 bodyContent(postBuf, request.postMimeType))
         );
     }
+    if (unretained) entry.request[bodyDescriptor.DESCRIPTOR_KEY] = unretained;
     if (failure && failure.errorText) entry._failure = failure.errorText;
     return entry;
 }
@@ -880,12 +1246,7 @@ function attachRecorder(context, recorder) {
  */
 function assembleFromLog(logPath, outPath) {
     if (!fs.existsSync(logPath)) return null;
-    const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter((l) => l.trim());
-    const entries = [];
-    let dropped = 0;
-    for (const line of lines) {
-        try { entries.push(JSON.parse(line)); } catch (e) { dropped++; }
-    }
+    const { entries, dropped } = readLogEntries(logPath);
     if (!entries.length) return null;
     const har = {
         log: {
@@ -901,6 +1262,79 @@ function assembleFromLog(logPath, outPath) {
     return { entries: entries.length, dropped };
 }
 
+/**
+ * Read the record log's entries, dropping a truncated final line.
+ *
+ * Shared with `assembleFromLog` rather than duplicated, because "a truncated
+ * last line is expected and is dropped" is a rule the two readers must not
+ * disagree about.
+ */
+function readLogEntries(logPath) {
+    if (!logPath || !fs.existsSync(logPath)) return { entries: [], dropped: 0 };
+    let text;
+    try { text = fs.readFileSync(logPath, 'utf8'); } catch (e) { return { entries: [], dropped: 0 }; }
+    const entries = [];
+    let dropped = 0;
+    for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { entries.push(JSON.parse(line)); } catch (e) { dropped++; }
+    }
+    return { entries, dropped };
+}
+
+/**
+ * Attach every unretained-request-body descriptor this recorder observed onto
+ * whichever `raw.har` exists -- THE ONE CALL SITE THAT SERVES BOTH RECORDERS.
+ *
+ * A descriptor has to be recorded at capture time because the payload it
+ * describes is gone afterwards. But on the `recordHar` path there is no moment
+ * in this process at which an entry is being built: the driver buffers the
+ * session and serialises it during `context.close()`. Writing the descriptor
+ * "while building an entry" therefore only ever runs on the assembled path --
+ * which is the path that USUALLY LOSES.
+ *
+ * What is true on both paths is that THIS RECORDER SAW THE REQUEST: that is
+ * how `raw.ndjson` exists at all. Since #377 the log is kept even when
+ * `recordHar` wins, so the observation outlives the choice of artifact, and
+ * attaching it to `raw.har` after the driver has written it is still "at
+ * capture time" in the only sense that matters -- the knowledge has not left
+ * the process, and on the `stop` path it has not left the session directory.
+ *
+ * Failure here is never fatal. An un-annotated `raw.har` is exactly today's
+ * artifact; losing the capture over a descriptor would be a far worse trade
+ * than the one this fixes.
+ */
+function annotateUnretainedBodies(harPath, logPath) {
+    if (!harPath || !fs.existsSync(harPath)) return null;
+    const { entries: logged } = readLogEntries(logPath);
+    if (!logged.length) return null;
+    const staged = `${harPath}.annotating`;
+    try {
+        const har = JSON.parse(fs.readFileSync(harPath, 'utf8'));
+        const entries = (har && har.log && har.log.entries) || [];
+        const annotated = bodyDescriptor.attachDescriptors(entries, logged);
+        if (!annotated) return { annotated: 0 };
+        // WRITE BESIDE IT, THEN RENAME. This is the only place in this file
+        // that overwrites an ALREADY-EXISTING HAR rather than writing a fresh
+        // one, and the file it overwrites is `raw.har` -- the one artifact
+        // whose loss is unrecoverable. A bare `writeFileSync` truncates first,
+        // so a kill between truncate and completion leaves a corrupt raw where
+        // a whole one stood; and this runs at exactly the moments a driver may
+        // be dying. `rename` over the same directory is atomic, so the file is
+        // either the old one or the new one and never a prefix of either.
+        writeJson(staged, har);
+        fs.renameSync(staged, harPath);
+        return { annotated };
+    } catch (e) {
+        // The half-written stage is removed rather than left beside the raw,
+        // where it would look like a second capture to anything that globs the
+        // session directory.
+        try { if (fs.existsSync(staged)) fs.unlinkSync(staged); } catch (_) { /* best effort */ }
+        log.verbose(`capture-har: could not annotate unretained request bodies: ${e.message}`);
+        return null;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Digest
 // ---------------------------------------------------------------------------
@@ -912,18 +1346,19 @@ function assembleFromLog(logPath, outPath) {
  * endpoints and the digest degenerates into a list of every request -- which
  * is the thing the digest exists to avoid.
  */
-function pathTemplate(pathname) {
-    return pathname.split('/').map((segment) => {
-        if (!segment) return segment;
-        if (/^\d+$/.test(segment)) return '{id}';
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return '{uuid}';
-        if (/^[0-9a-f]{16,}$/i.test(segment)) return '{hash}';
-        // Mixed alphanumeric with enough digits to be an id rather than a word.
-        if (segment.length >= 8 && /\d/.test(segment) && /^[A-Za-z0-9_-]+$/.test(segment)
-            && (segment.replace(/\D/g, '').length / segment.length) > 0.3) return '{id}';
-        return segment;
-    }).join('/');
-}
+// Collapse identifier-shaped path segments to a template.
+//
+// The implementation lives in har-catalogue.js and is imported rather than
+// kept here, because verify-har-catalogue.js recomputes a committed row's
+// `Endpoints` from the reference while `buildCatalogueScaffold` below writes
+// them from this digest. Two implementations that agree today would drift, and
+// the drift would surface as every scaffolded row failing the guard the moment
+// it was committed -- a failure that looks like the gate is broken, so the fix
+// people reach for is to weaken the gate.
+//
+// Re-exported below, so a caller that reasonably expects the digest's own
+// templating to come from the digest's own module still gets it.
+const pathTemplate = harCatalogue.pathTemplate;
 
 /**
  * Top-level key names of a JSON payload -- the SHAPE, never the values.
@@ -966,13 +1401,27 @@ function buildDigest(har, meta = {}) {
         try { url = new URL(entry.request.url); } catch (e) { return; }
         const template = pathTemplate(url.pathname);
         const status = (entry.response && entry.response.status) || 0;
-        const key = `${url.host}|${entry.request.method}|${template}|${status}`;
+        // UPPERCASED, and it matters twice.
+        //
+        // RFC 9110 defines the methods in uppercase and makes them
+        // case-sensitive, so `get` and `GET` are one endpoint in every practical
+        // sense -- keying on the raw verb split them into two groups and
+        // double-counted the endpoint.
+        //
+        // It also has to agree with har-catalogue.js's `measureReference`, which
+        // uppercases: the scaffold writes a row's `Methods` from here, and the
+        // guard recomputes them from the reference. A scaffold reading ["get"]
+        // against a recomputed ["GET"] fails the row on casing alone -- correct
+        // data reported as wrong, and the repair everyone reaches for is to
+        // weaken the comparison rather than fix the derivation.
+        const method = String(entry.request.method || '').toUpperCase();
+        const key = `${url.host}|${method}|${template}|${status}`;
 
         let group = groups.get(key);
         if (!group) {
             group = {
                 host: url.host,
-                method: entry.request.method,
+                method,
                 pathTemplate: template,
                 status,
                 count: 0,
@@ -1037,11 +1486,51 @@ function buildCatalogueScaffold(digest, meta = {}) {
     return digest.groups.map((group) => ({
         Action: `${group.method.toLowerCase()}-${group.pathTemplate.split('/').filter(Boolean).join('-') || 'root'}`,
         Description: null,
+        // From THIS ROW's own endpoint host -- `group.host`, the same source
+        // `Endpoints` below is built from -- never from the capture's start
+        // URI. One capture routinely spans several hosts (the site's own API,
+        // a CDN, a third party), so deriving every row from the start URI
+        // would stamp one provider onto rows that are not that provider: a
+        // row asserting something nobody checked, which is exactly the
+        // defect #379 exists to prevent. `providerSlug` returns null when the
+        // host yields no slug, and that null is left as-is -- it means "a
+        // human still has to say", and inventing a value to avoid it would be
+        // the same defect. `stripPort` first, so that for a GIVEN host this
+        // agrees with `referenceRelativePath` (which slugs `URL#hostname`,
+        // no port) on the `<provider>/` directory that host's reference
+        // would land in -- differing when the row's host differs from the
+        // capture's start host is the point of deriving per row at all.
+        Provider: providerSlug(stripPort(group.host)),
         Methods: [group.method],
         Endpoints: [`${group.host}${group.pathTemplate}`],
         EntryCount: group.count,
         Status: 'Observed',
-        HarFile: null,
+        // The reference this capture WOULD be extracted into (#377 s6), as
+        // `<provider>/<filename>` -- the shape #379 defines for this field,
+        // relative to the committed catalogue at docs/har-reference/<host>/.
+        // Not invented here: `referenceRelativePath` names what
+        // har/extract-har-reference.js writes, from the provider, the operator's
+        // own --describe and the capture date. Null when there is no session to
+        // derive it from, which is every caller that passes no meta.
+        //
+        // This is the structural link a committed reference needs back to its
+        // raw. Its absence is why an audit found 0 of 29 committed references
+        // adjudicable: a reference nobody can pair with a capture cannot be
+        // re-derived, re-scrubbed, or diffed.
+        HarFile: meta.referenceFile || null,
+        // NULL, NOT ZERO. These are facts about a reference file, and a scaffold
+        // row describes a digest GROUP -- no reference has been extracted yet,
+        // so there is nothing to have measured. Writing `0` would state a fact
+        // nobody checked, in the exact shape of the defect the structured
+        // catalogue exists to prevent: a row asserting something about a file
+        // that does not support it. verify-har-catalogue.js recomputes these
+        // once the row names a reference, so a null that was never filled in is
+        // reported rather than mistaken for a measurement.
+        RequestBodies: null,
+        RequestBytes: null,
+        ResponseBytes: null,
+        RequestBodiesAbsent: null,
+        Related: [],
         CapturedUtc: meta.capturedUtc || digest.capturedUtc
     }));
 }
@@ -1165,15 +1654,126 @@ function catalogueScrubbed(session, state) {
         // Never clobber an existing catalogue: a re-capture must not erase the
         // actions a previous run's AI phase already named and exercised.
         if (!fs.existsSync(cataloguePath)) {
-            writeJson(cataloguePath, buildCatalogueScaffold(digest));
+            writeJson(cataloguePath, buildCatalogueScaffold(digest, {
+                referenceFile: referenceRelativePath(session)
+            }));
         }
         state.catalogue = Object.assign(
             { path: cataloguePath, actions: [], files: [] },
             runCatalogue(session, digestPath, cataloguePath, state));
+        // Described, never performed -- see describeReference. Placed after the
+        // catalogue so a rejected scrub, which returns before any of this,
+        // cannot reach it: a capture the leak gate refused promotes nothing.
+        state.reference = describeReference(session, state);
     } catch (e) {
         state.errors.push(`digest: ${e.message}`);
     }
     return state;
+}
+
+/**
+ * What promoting this capture into a committable reference would produce.
+ *
+ * A DESCRIPTION, not an action. Nothing here copies, writes or creates
+ * anything, and that is the whole point of the shape:
+ *
+ *  - A reference is a TRIMMED EXTRACT, not a whole scrubbed capture. Measured
+ *    in a consuming project, committed references run 3 KB - 60 KB while the
+ *    captures they came from run 277 MB - 1.6 GB. Copying `scrubbed.har` into
+ *    `docs/har-reference/` would commit a several-hundred-megabyte file where a
+ *    20 KB extract belongs.
+ *  - The tool that makes the extract already exists --
+ *    `har/extract-har-reference.js` -- and already implements this naming
+ *    convention, the no-truncation rule for request bodies, and the decoded
+ *    `postData.params[]`. Re-implementing any of that here would be a second
+ *    engine.
+ *  - That tool selects the API traffic BY DEFAULT (#410) and reports what it
+ *    dropped, by category. It used to refuse to run without `--match`, on the
+ *    reasoning that choosing which entries matter is a judgement a tool cannot
+ *    make -- until the operator, asked for a regex, could not supply one and
+ *    named the mechanical distinction instead ("the API calls, not the fonts,
+ *    images"). So the run ends by telling the operator exactly what to type,
+ *    with the provider, the action and the destination already filled in, and
+ *    nothing left to invent. `--match` is still available to narrow within the
+ *    API set when a capture is API-heavy.
+ *
+ * Returns null when there is nothing to suggest -- no host to derive a provider
+ * from, or no verified artifact to extract from.
+ */
+function describeReference(session, state, cwd) {
+    if (!state || !state.scrubbed || !state.scrubbed.path) { return null; }
+    const host = uriHostOf(session && session.uri);
+    const fileName = referenceFileName(session);
+    const relativePath = referenceRelativePath(session);
+    if (!host || !fileName || !relativePath) { return null; }
+    // The CURRENT working tree, which is where the operator is standing and
+    // where a committed reference belongs. Never the main working tree: that is
+    // the raw capture's anchor, chosen for its lifetime, and it is frequently
+    // the protected branch.
+    const placement = capturePlacement(cwd || process.cwd());
+    const root = placement.currentWorkingTree || path.resolve(cwd || process.cwd());
+    // NESTED under the provider: `docs/har-reference/<host>/<provider>/`. The
+    // host directory holds the committed `catalogue.json` and its generated
+    // `README.md` (#379); each provider under it holds that provider's
+    // extracts and its generated `api.json` (#382). A host routinely spans
+    // several third-party APIs, so the provider level is what keeps one
+    // provider's references, policy and API document together.
+    // Derived FROM relativePath rather than recomputing the provider, so the
+    // path the run prints and the value it records in `HarFile` cannot drift
+    // apart. They are the same fact stated twice; only one of them computes it.
+    const dir = path.join(root, REFERENCE_DIR, host, path.dirname(relativePath));
+    return {
+        fileName,
+        relativePath,
+        dir,
+        path: path.join(root, REFERENCE_DIR, host, ...relativePath.split('/')),
+        source: state.scrubbed.path,
+        extractor: path.join(__dirname, '..', 'har', 'extract-har-reference.js')
+    };
+}
+
+// The catalogue table, column for column what HarCapture.Format.ps1xml already
+// renders. The two entry points agree because they show the same five columns
+// in the same order, and neither shows anything else.
+//
+// NONE OF THESE FIELDS CAN CARRY A CAPTURED VALUE. `Endpoints` is
+// `<host><pathTemplate>` from the digest, which groups on the TEMPLATE -- ids
+// are collapsed before they reach here, and the digest is derived from the
+// SCRUBBED capture in the first place. `Action` is built from the same
+// template. `Methods`, `EntryCount` and `Status` are a verb, a count and an
+// enum. `Description` is the operator's own words and is deliberately NOT a
+// column: the PowerShell table does not show it either, and parity is what
+// stops the two renderings drifting.
+const CATALOGUE_COLUMNS = [
+    { label: 'Status', width: 10, value: (r) => r.Status },
+    { label: 'Action', width: 32, value: (r) => r.Action },
+    { label: 'Methods', width: 12, value: (r) => (r.Methods || []).join(',') },
+    { label: 'Entries', width: 7, right: true, value: (r) => r.EntryCount },
+    { label: 'Endpoints', width: 0, value: (r) => (r.Endpoints || []).join(', ') }
+];
+
+function catalogueCell(column, row) {
+    const raw = column.value(row);
+    const text = raw === null || raw === undefined ? '' : String(raw);
+    if (!column.width) { return text; }
+    // Padded, never truncated. PowerShell's formatter truncates to the column
+    // width; here a long path template would lose its tail, and the tail is the
+    // part that distinguishes two endpoints under one prefix.
+    return column.right ? text.padStart(column.width) : text.padEnd(column.width);
+}
+
+function catalogueTableLines(rows) {
+    const list = (rows || []).filter((r) => r && typeof r === 'object');
+    if (!list.length) { return []; }
+    const header = CATALOGUE_COLUMNS
+        .map((c) => (c.width ? (c.right ? c.label.padStart(c.width) : c.label.padEnd(c.width)) : c.label))
+        .join(' ').replace(/\s+$/, '');
+    const rule = CATALOGUE_COLUMNS
+        .map((c) => '-'.repeat(c.width || Math.max(9, ...list.map((r) => catalogueCell(c, r).length))))
+        .join(' ');
+    const body = list.map((row) =>
+        CATALOGUE_COLUMNS.map((c) => catalogueCell(c, row)).join(' ').replace(/\s+$/, ''));
+    return [header, rule].concat(body);
 }
 
 /**
@@ -1387,6 +1987,12 @@ function renameWithRetry(from, to) {
 }
 
 function publishFile(from, to) {
+    // The default output path IS the session directory now (#377), so the
+    // candidate is frequently already at its destination. Copying a file onto
+    // itself through a temporary is not a no-op -- it is a window in which the
+    // only copy exists under a name nothing recognises -- so the identity case
+    // is answered before any bytes move.
+    if (path.resolve(from) === path.resolve(to)) { return to; }
     const temp = path.join(path.dirname(to),
         `${PUBLISH_TEMP_PREFIX}${process.pid}-${Date.now().toString(36)}-` +
         `${Math.random().toString(36).slice(2, 8)}`);
@@ -1594,6 +2200,51 @@ function findingSummaryLines(reportPath) {
     return lines;
 }
 
+/**
+ * Is the catalogue at `p` still an untouched scaffold?
+ *
+ * Not a second rule: `describedRowCount` is the one implementation of "has the
+ * AI pass happened", already used by the re-catalogue refusal.
+ */
+function isScaffoldOnly(p) {
+    const rows = readJson(p);
+    return Array.isArray(rows) && rows.length > 0 && describedRowCount(p) === 0;
+}
+
+/**
+ * The promote step: the exact command that turns this capture into a committed
+ * reference, and the catalogue row that reference will want.
+ *
+ * It PRINTS and stops. See describeReference for why nothing is copied, and
+ * `#379` for the catalogue row this only suggests -- writing a structured
+ * committed catalogue is that issue, not this one.
+ */
+function referenceNoticeLines(reference, pp, describe) {
+    if (!reference) { return []; }
+    const rows = readJson((pp && pp.catalogue && pp.catalogue.path) || null) || [];
+    const described = rows.find((r) => r && r.Description) || rows[0] || null;
+    const lines = [
+        ['info', `  reference: ${reference.path}`],
+        ['info', '             not written yet -- a reference is a TRIMMED extract of the entries'],
+        ['info', '             that matter, not the whole scrubbed capture. To write it:'],
+        ['info', `               node ${reference.extractor} \\`],
+        ['info', `                 --in ${reference.source} \\`],
+        ['info', `                 --out ${reference.path}`],
+        ['info', '             That command is complete as written: the extractor keeps the API'],
+        ['info', '             calls by default and reports, by category, what it dropped. Add'],
+        ['info', "             --match to narrow WITHIN that set."]
+    ];
+    if (described) {
+        lines.push(['info', '             Suggested catalogue row (printed only -- see #379):']);
+        // The operator's own --describe stands in until the AI pass writes a
+        // per-row description. An empty cell in a suggested row is a row
+        // nobody can paste.
+        lines.push(['info', `               | ${described.Action} ` +
+            `| ${described.Description || describe || ''} | ${reference.relativePath} |`]);
+    }
+    return lines;
+}
+
 function postProcessLines(session) {
     const pp = session.postProcess || {};
     const lines = [['verbose', `  raw:       ${session.harPath}  (unscrubbed -- never commit it)`]];
@@ -1621,7 +2272,35 @@ function postProcessLines(session) {
     if (pp.catalogue) {
         lines.push(['info', `  catalogue: ${pp.catalogue.path}  (${pp.catalogue.delegatedTo})`]);
         if (pp.catalogue.skippedReason) lines.push(['warn', `             ${pp.catalogue.skippedReason}`]);
+        // THE CATALOGUE ITSELF, not just its path (#377 s5b).
+        //
+        // A path is not a result. `CLAUDE.md` asks a run to show the actual
+        // result "so the user sees the change worked without re-running it",
+        // and this run's result is what was captured. The rendering existed
+        // already, but only on the PowerShell front door -- and the node path
+        // is the one agents use.
+        //
+        // Printed from the RECORDER on #300's precedent: this is the process
+        // that wrote the files, so the print is in-process and unconditional. A
+        // front door killed between spawning us and reaching its own epilogue
+        // cannot take it away, and a notice that goes missing exactly when
+        // something went wrong is not a safety net.
+        for (const line of catalogueTableLines(readJson(pp.catalogue.path))) {
+            lines.push(['info', `  ${line}`]);
+        }
+        // Keyed on Description and NOT on Status, for the reason
+        // Invoke-HarCapture.ps1 already gives: a real AI pass may legitimately
+        // conclude that every group was Observed and none Exercised, so Status
+        // cannot tell a finished catalogue from an untouched scaffold.
+        // Describing a row is the one thing the AI does that the scaffold never
+        // can.
+        if (isScaffoldOnly(pp.catalogue.path)) {
+            lines.push(['info',
+                '  Every row is still Observed -- the catalogue needs its AI pass. See ' +
+                path.join(__dirname, CATALOGUE_PROMPT)]);
+        }
     }
+    for (const line of referenceNoticeLines(pp.reference, pp, session.describe)) { lines.push(line); }
     for (const err of pp.errors || []) lines.push(['error', `  ERROR:     ${err}`]);
     for (const warn of pp.warnings || []) {
         for (const line of `${warn}`.split('\n')) lines.push(['warn', `  WARNING:   ${line}`]);
@@ -1680,8 +2359,17 @@ function scaffoldProfile(targetDir) {
     return file;
 }
 
+/**
+ * Ask the operator one line.
+ *
+ * The question goes to STDERR, with everything else human-facing. stdout is
+ * machine output -- and since #377 a completed `start` ends by writing one JSON
+ * line there for its front door to read, so a prompt on stdout would be a
+ * question mixed into a data stream that a caller is capturing rather than
+ * showing.
+ */
 async function askLine(question) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
     try {
         return await new Promise((resolve) => rl.question(question, resolve));
     } finally {
@@ -1836,6 +2524,25 @@ async function start(args) {
         return 0;
     }
 
+    // THE CAPTURE STORE MUST BE GITIGNORED BEFORE ANYTHING IS RECORDED (#377).
+    //
+    // Placed here for the reason repo-workflow-guard.js states as its own
+    // invariant: a guard that fires before any work costs a cancelled operator
+    // seconds, while the same guard downstream would be deciding whether to
+    // discard a browsing session somebody spent minutes on. It sits after the
+    // --validate-only return so that flag stays what it says it is -- path
+    // resolution, no side effects, no prompt.
+    const ignoreGuard = await ensureCapturesRootIgnored(paths.capturePlacement, { isTty });
+    if (!ignoreGuard.ok) {
+        process.stderr.write(ignoreGuard.message + '\n');
+        return 1;
+    }
+
+    // And the other half: an EXPLICIT --output-path into a committable
+    // directory is warned about, never refused. See outputDestinationWarning.
+    const outputWarning = outputDestinationWarning(paths);
+    if (outputWarning) { log.warn('capture-har: ' + outputWarning); }
+
     // A busy port is no longer a conflict -- we moved. A persistent profile
     // genuinely is single-instance, though, and that stays a hard error naming
     // what holds it.
@@ -1899,7 +2606,6 @@ async function start(args) {
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
-    writeJson(path.join(paths.capturesRoot, CURRENT_FILE), { sessionDir: paths.sessionDir });
 
     const page = context.pages()[0] || await context.newPage();
     await page.goto(args.uri, { waitUntil: 'domcontentloaded' }).catch((e) => {
@@ -1958,10 +2664,25 @@ async function start(args) {
     let assembled = null;
     if (!fs.existsSync(paths.harPath)) {
         assembled = assembleFromLog(paths.recordLog, paths.harPath);
-    } else {
-        // recordHar won; keeping both invites someone to analyze the other one.
-        try { fs.unlinkSync(paths.recordLog); } catch (e) { /* nothing to remove */ }
     }
+    // Unconditional, and BEFORE post-processing reads the raw (#442). On the
+    // assembled path every entry already carries its descriptor and this is a
+    // no-op; on the recordHar path it is the only place the descriptors can be
+    // attached at all.
+    annotateUnretainedBodies(paths.harPath, paths.recordLog);
+    // THE RECORD LOG IS KEPT EVEN WHEN recordHar WON (#377).
+    //
+    // It used to be deleted here, on the reasoning that keeping both invites
+    // somebody to analyze the wrong one. That reasoning is real but it is
+    // outweighed: the log is the only witness to what the recorder SAW before
+    // assembly, so it is the recovery path if a `raw.har` is ever found
+    // malformed -- and a raw is the one artifact that cannot be re-made.
+    //
+    // Nothing under `.har-captures/` is discarded. The confusion risk is
+    // answered by naming: `raw.har` is the capture, `raw.ndjson` is the log,
+    // and both sit in a directory nothing but this tool writes to. Store
+    // growth is real and is a separate concern deserving its own issue, not a
+    // side effect of a placement fix.
     const summary = summarize(paths.harPath);
 
     // endedUtc is written FIRST, preserving the stop contract, and
@@ -1973,7 +2694,6 @@ async function start(args) {
     session.assembledFromLog = !!assembled;
     session.summary = summary;
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
-    try { fs.unlinkSync(path.join(paths.capturesRoot, CURRENT_FILE)); } catch (e) { /* already gone */ }
 
     if (!summary.exists) {
         process.stderr.write(
@@ -1994,6 +2714,25 @@ async function start(args) {
     session.postProcess = postProcess(session);
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
+
+    // ONE line of machine output, on stdout, naming what this run produced.
+    //
+    // It exists because the DEFAULT output path now carries a stamp (#377), so
+    // a front door can no longer compute it: `Invoke-HarCapture.ps1` used to
+    // rebuild the path from the same anchoring rule, and the alternative --
+    // globbing .har-captures/ for the newest session -- is the very thing that
+    // file's own comment refuses, since a concurrent capture against another
+    // site finishing first would hand this run somebody else's catalogue.
+    //
+    // stdout, because that is where this script's machine output already goes
+    // (--validate-only and `status`); every human-facing line is on stderr, so
+    // a caller capturing this stream still sees the recording live.
+    process.stdout.write(JSON.stringify({
+        capture: 'complete',
+        sessionDir: paths.sessionDir,
+        outputPath: session.outputPath,
+        cataloguePath: (session.postProcess.catalogue && session.postProcess.catalogue.path) || null
+    }) + '\n');
 
     return postProcessExitCode(session.postProcess, assembled);
 }
@@ -2032,39 +2771,17 @@ function reportPostProcess(session) {
  * Accepts SEVERAL roots since #367 moved where new captures are written: an
  * older capture still under a working-directory root has to remain findable,
  * and a union is how it is found without anything being moved.
+ *
+ * THE BODY LIVES IN `capture-store.js` NOW (#386/#387). It moved rather than
+ * being copied, because the batch drivers need this same enumeration and a
+ * second walk beside it would give the store two notions of what a capture is.
+ * The contract here is unchanged; what the move added is that a LEGACY session
+ * directory sitting at the captures root -- one written before the host layer
+ * existed -- is now found too. It always satisfied every test `stop` and
+ * `status` apply; the walk simply started one level below it.
  */
 function listSessionDirs(root) {
-    const roots = Array.isArray(root) ? root : [root];
-    if (roots.length > 1) {
-        const seen = new Set();
-        const all = [];
-        for (const r of roots) {
-            for (const entry of listSessionDirs(r)) {
-                if (seen.has(entry.dir)) continue;
-                seen.add(entry.dir);
-                all.push(entry);
-            }
-        }
-        return all;
-    }
-    root = roots[0];
-    if (!root || !fs.existsSync(root)) return [];
-    const found = [];
-    for (const host of fs.readdirSync(root)) {
-        const hostDir = path.join(root, host);
-        let stamps;
-        try {
-            if (!fs.statSync(hostDir).isDirectory()) continue;
-            stamps = fs.readdirSync(hostDir);
-        } catch (e) {
-            continue;   // current.json and anything else non-traversable
-        }
-        for (const sessionStamp of stamps) {
-            const dir = path.join(hostDir, sessionStamp);
-            if (fs.existsSync(path.join(dir, SESSION_FILE))) found.push({ dir, stamp: sessionStamp });
-        }
-    }
-    return found;
+    return captureStore.listSessionDirs(root);
 }
 
 /**
@@ -2075,7 +2792,8 @@ function listSessionDirs(root) {
  * which "port 9333 is busy" never could -- that port may belong to anything.
  */
 async function findProfileConflict(profileDir, root) {
-    for (const { dir } of listSessionDirs(root)) {
+    for (const { dir, captureClass } of listSessionDirs(root)) {
+        if (!canBeLive(captureClass)) continue;
         const session = readJson(path.join(dir, SESSION_FILE));
         if (!session || session.endedUtc) continue;
         if (session.profileDir !== profileDir) continue;
@@ -2084,43 +2802,70 @@ async function findProfileConflict(profileDir, root) {
     return null;
 }
 
+/**
+ * May a capture of this class be a recording that is happening RIGHT NOW?
+ *
+ * Only the current layout. A LIVE recorder writes `<host>/<stamp>`, so a
+ * session directory at the captures root predates every capture this tool
+ * writes and cannot be one in flight.
+ *
+ * WHY THIS IS A GUARD AND NOT A DETAIL. `isDriverAlive` is a bare
+ * `process.kill(pid, 0)`: it cannot tell a running recorder from an unrelated
+ * process that inherited the pid. That was harmless while legacy directories
+ * were invisible here. Making them findable (#386) put old, never-closed
+ * sessions into the same pool, where a reused pid would let one shadow the
+ * recording the operator is sitting in front of, or refuse a new capture as a
+ * profile conflict. Findable was the fix; live was never part of it.
+ */
+function canBeLive(captureClass) {
+    return captureClass !== captureStore.CLASS_LEGACY;
+}
+
 // ---------------------------------------------------------------------------
 // stop / status
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve which capture to act on: an explicit --session, the one a running
- * driver registered, or the newest on disk. The last case is what makes
- * "catalogue that capture" work after a session already ended.
+ * Resolve which capture to act on: an explicit --session, the newest LIVE one,
+ * or failing that the newest on disk. The last case is what makes "catalogue
+ * that capture" work after a session already ended.
+ *
+ * THERE IS NO POINTER FILE ANY MORE (#377). `current.json` sat at the captures
+ * ROOT and held one `sessionDir`, in a store several agent sessions record into
+ * at once -- so a second capture overwrote it and the first recording became
+ * unaddressable. It was also unnecessary: this function ALREADY scanned the
+ * session directories whenever the pointer went stale, which it did every time
+ * a driver was killed before its own cleanup. Removing the pointer makes that
+ * existing fallback the only path, and deletes a piece of shared mutable state
+ * rather than adding a lock around it.
+ *
+ * Identity needs no pointer: the STAMP is the identity. Liveness is
+ * `session.json` without `endedUtc` plus `isDriverAlive()` -- exactly the test
+ * the pointer had to pass before it was trusted at all.
+ *
+ * With several captures live, `stop` without `--session` takes the newest live
+ * one. That is deterministic, and strictly better than the old answer, which
+ * was "whichever run wrote the shared file last".
  */
 function resolveSession(args) {
     if (args.session) return path.resolve(args.session);
     const roots = args.dir ? [path.resolve(args.dir)] : capturesSearchRoots();
-    // The pointer is looked for in every root for the same reason the sessions
-    // are: a recording that was in flight when the anchoring changed registered
-    // itself in the old place, and `stop` still has to end it cleanly.
-    const current = roots
-        .map((r) => readJson(path.join(r, CURRENT_FILE)))
-        .find((c) => c && c.sessionDir);
-    if (current && current.sessionDir && fs.existsSync(current.sessionDir)) {
-        // The pointer is only trustworthy while it names a session that has
-        // not ended. A driver killed before its own cleanup leaves the file
-        // behind, and following it forever would pin every later status/stop
-        // to a dead session while newer captures are ignored.
-        // `!endedUtc` alone is NOT enough: a driver killed mid-recording never
-        // writes endedUtc either, which is precisely the case that leaves the
-        // pointer behind. The pointer is trustworthy only while its driver is
-        // still running.
-        const pointed = readJson(path.join(current.sessionDir, SESSION_FILE));
-        if (pointed && !pointed.endedUtc && isDriverAlive(pointed)) return current.sessionDir;
-    }
     const candidates = listSessionDirs(roots);
     if (!candidates.length) return null;
-    // Sort by STAMP, not by the joined path. The host now comes first in the
-    // path, so a path sort would answer with the alphabetically-last host
-    // rather than the most recent capture.
+    // Sort by STAMP, not by the joined path. The host comes first in the path,
+    // so a path sort would answer with the alphabetically-last host rather than
+    // the most recent capture.
     candidates.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : 0));
-    return candidates[candidates.length - 1].dir;
+    // A LIVE capture outranks a newer dead one. Without this, a session that
+    // ended seconds ago would shadow the recording the operator is actually
+    // sitting in front of -- which is the one `stop` means.
+    const live = candidates.filter(({ dir, captureClass }) => {
+        if (!canBeLive(captureClass)) return false;
+        const session = readJson(path.join(dir, SESSION_FILE));
+        return session && !session.endedUtc && isDriverAlive(session);
+    });
+    const pool = live.length ? live : candidates;
+    return pool[pool.length - 1].dir;
 }
 
 async function stop(args) {
@@ -2203,6 +2948,14 @@ async function stop(args) {
         // run the phases here instead. `driverLost` alone is not the test: a
         // driver that died AFTER writing endedUtc never sets it.
         if (driverLost || !isDriverAlive(session)) {
+            // `stop` runs in a DIFFERENT PROCESS from the recorder and holds no
+            // in-memory index -- which is exactly why the descriptors are read
+            // back from `raw.ndjson` rather than carried in a variable (#442).
+            // Only in THIS branch: while the driver is alive it owns the raw,
+            // and two processes rewriting one file is not an improvement over
+            // an un-annotated one. Idempotent, so a raw the driver already
+            // annotated is left alone.
+            annotateUnretainedBodies(session.harPath, session.recordLog);
             session.postProcess = postProcess(session);
             writeJson(sessionFile, session);
         } else {
@@ -2479,12 +3232,15 @@ module.exports = {
     postProcessLines,
     buildEntry,
     assembleFromLog,
+    annotateUnretainedBodies,
+    readLogEntries,
     resolveSessionPaths,
     uriFolder,
     resolveSession,
     findProfileConflict,
     findFreePort,
     discoverStorageState,
+    pathTemplate,
     buildDigest,
     buildCatalogueScaffold,
     decideCatalogueRunner,
@@ -2496,6 +3252,19 @@ module.exports = {
     PUBLISH_TEMP_PREFIX,
     PUBLISH_RENAME_ATTEMPTS,
     findingSummaryLines,
+    catalogueTableLines,
+    isScaffoldOnly,
+    referenceNoticeLines,
+    describeReference,
+    referenceFileName,
+    referenceRelativePath,
+    deriveActionSlug,
+    providerSlug,
+    outputDestinationWarning,
+    ensureCapturesRootIgnored,
+    capturesRootProbe,
+    CAPTURE_GITIGNORE_ENTRIES,
+    REFERENCE_DIR,
     runNode,
     IncrementalRecorder
 };
