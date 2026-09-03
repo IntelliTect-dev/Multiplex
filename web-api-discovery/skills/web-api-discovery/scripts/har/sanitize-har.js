@@ -86,8 +86,16 @@ function parseArgs(argv) {
 // They are recorder state, not a deliverable, so they never default into the
 // output path -- the directory the operator has been told holds scrubbed,
 // verified artifacts and which is tracked by git (issue #294).
-const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
-const PII_SUBS_FILENAME = '.substitutions.json';
+//
+// The filenames themselves live in subs-destination.js, not here -- that
+// module is the one place both this script (which writes the tables) and
+// capture-store.js (which, for #387, only needs to ask whether one exists)
+// can safely `require()`. This file cannot be required as a library itself:
+// its `main()` runs unconditionally at the bottom with no `require.main`
+// guard, so requiring it would run a scrub. Keeping the names in the
+// dependency-free module both sides already share is what keeps this a single
+// definition instead of two that can drift.
+const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 const CAPTURES_DIR = '.har-captures';
 
 /**
@@ -173,6 +181,9 @@ function deriveOutPath(inPath) {
 // can distinguish a fake from a real (non-scrubbed) source value (issue #85).
 const HEX64_FAKE_PREFIX = 'f00ded'; //  6 hex chars  -> 58 hex follow
 const HEX32_FAKE_PREFIX = 'deaf00'; //  6 hex chars  -> 26 hex follow
+// The password-envelope fake keeps the envelope's four-token shape and marks
+// itself with a label, version and timestamp the real format never emits.
+const PWD_ENVELOPE_FAKE_PREFIX = '#PWD_REDACTED:0:0:'; // -> 24 hex chars follow
 
 function fakeFor(kind, original, salt) {
     const h = crypto.createHmac('sha256', salt).update(original).digest('hex');
@@ -190,12 +201,45 @@ function fakeFor(kind, original, salt) {
         case 'cookie':  return `redacted-${h.slice(0, 24)}`;
         case 'field':   return `redacted-${h.slice(0, 16)}`;
         case 'upload-handle': return `1:redacted-${h.slice(0, 16)}:application/octet-stream:redacted-${h.slice(16, 24)}:e:0:redacted-${h.slice(24, 32)}`;
+        // A client-side password envelope (issue #407). FORMAT-PRESERVING,
+        // like `upload-handle`: a consumer that parses the field still sees
+        // the four tokens it expects, so the scrubbed capture keeps the shape
+        // of the original instead of turning into a bare marker.
+        //
+        // The three literal tokens are the fake SENTINEL, and the LABEL is what
+        // carries it: `REDACTED` is not a product, and the label is the product
+        // (`BROWSER`, `INSTAGRAM_BROWSER`, `MSGR`). Version `0` and epoch `0`
+        // are supporting, not load-bearing alone -- #378 measured a real
+        // envelope at version `0`, and the tests carry one.
+        // `isFake` in har-shapes.js keys on exactly this spelling --
+        // without it the gate would re-report the scrubber's own redaction on
+        // every run, forever, which is the failure the `hex64` / `hex32`
+        // sentinels exist to prevent.
+        //
+        // The tail is 24 hex chars, NOT 32 or 64, on purpose: a 32-hex tail
+        // would be matched by the `hex32` rule later in this same PATTERNS
+        // sweep and rewritten, so the sentinel this file emits and the one
+        // har-shapes.js exempts would disagree about the scrubber's own output.
+        case 'pwd-envelope': return `${PWD_ENVELOPE_FAKE_PREFIX}${h.slice(0, 24)}`;
         default:        return `<REDACTED-${h.slice(0, 8)}>`;
     }
 }
 
 // Patterns ordered most-specific first so JWTs match before hex64.
 const PATTERNS = [
+    // A client-side password envelope, `#PWD_<LABEL>:<v>:<unix>:<base64>`
+    // (issue #407). FIRST because it is the most specific rule here: it is
+    // self-identifying, so a match is evidence rather than an estimate, and
+    // letting a later rule bite a hex-looking run out of its ciphertext would
+    // leave the envelope's own prefix standing in the output.
+    //
+    // Shape-scrubbed rather than name-scrubbed for the same reason the gate
+    // is: the name control loses this value the moment a provider renames the
+    // field or the envelope travels as a bare form parameter, and those are
+    // exactly the captures a name list cannot be written for in advance.
+    // Without this entry the gate (issue #395) BLOCKS such a capture with no
+    // automatic remedy at all -- a correct refusal with no route out.
+    { kind: 'pwd-envelope', re: /#PWD_[A-Z0-9_]{1,40}:\d{1,4}:\d{1,14}:[A-Za-z0-9+/_=-]{4,}/g },
     // Upload/session handle tokens, e.g. {"h":"1:<base64>:video/mp4:<token>:e:<expiry>:<sig>"}
     // (issue #253) -- these are credentials returned in a response body, not
     // a request header, so the header-name based scrub never sees them.

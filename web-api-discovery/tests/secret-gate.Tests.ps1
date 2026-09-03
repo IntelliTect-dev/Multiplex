@@ -12,6 +12,7 @@ BeforeAll {
     $script:SgTmplDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/secret-gate"
     $script:RestHar      = Join-Path $script:RepoRoot ".github/agents/tests/fixtures/har/rest-3endpoints.har"
     $script:GitleaksCmd  = Get-Command gitleaks -ErrorAction SilentlyContinue
+    . (Join-Path $PSScriptRoot 'GitleaksGuard.ps1')
 
     function New-OutDir {
         $d = Join-Path ([IO.Path]::GetTempPath()) ("wrapgen-sg-" + [guid]::NewGuid())
@@ -263,6 +264,9 @@ Describe "Determinism (secret-gate emitted files)" {
 
 Describe "gitleaks smoke (planted-leak + fake-marker)" {
     BeforeAll {
+        # Setup only runs when gitleaks is present. The skip-vs-fail decision is
+        # made inside each It (issue #312): a throw from BeforeAll is reported by
+        # Pester 6 as a bogus "break/continue label escaped", losing the message.
         $script:Skip = ($null -eq $script:GitleaksCmd)
         if (-not $script:Skip) {
             $script:Out = New-OutDir
@@ -286,13 +290,59 @@ Describe "gitleaks smoke (planted-leak + fake-marker)" {
         }
     }
     It "detects a planted real-looking secret (non-zero exit)" {
-        if ($script:Skip) { Set-ItResult -Skipped -Because "gitleaks not on PATH"; return }
+        if (-not (Assert-GitleaksAvailable -Gitleaks $script:GitleaksCmd -CiValue $env:CI)) {
+            Set-ItResult -Skipped -Because "gitleaks not on PATH (local run)"; return
+        }
         & gitleaks detect --config $script:TomlPath --source $script:PlantDir --no-banner --no-git 2>&1 | Out-Null
         $LASTEXITCODE | Should -Not -Be 0
     }
     It "does NOT flag PR #47 deterministic fake markers" {
-        if ($script:Skip) { Set-ItResult -Skipped -Because "gitleaks not on PATH"; return }
+        if (-not (Assert-GitleaksAvailable -Gitleaks $script:GitleaksCmd -CiValue $env:CI)) {
+            Set-ItResult -Skipped -Because "gitleaks not on PATH (local run)"; return
+        }
         & gitleaks detect --config $script:TomlPath --source $script:CleanDir --no-banner --no-git 2>&1 | Out-Null
         $LASTEXITCODE | Should -Be 0
+    }
+}
+Describe "This repo's own CI installs gitleaks (issue #312)" {
+    # The two smoke tests above assert that the gate detects a planted secret and
+    # that it does not flag PR #47's fake markers. Both skipped themselves on every
+    # platform because gitleaks was on no runner's PATH, so neither assertion had
+    # ever executed. Installing it in the Pester job is what makes them real; this
+    # test keeps the install step from being dropped again.
+    BeforeAll {
+        $script:CiYmlPath = Join-Path $script:RepoRoot ".github/workflows/validate-instructions.yml"
+        $script:CiYml     = Get-Content -Raw $script:CiYmlPath
+    }
+
+    It "has a step that installs gitleaks" {
+        $script:CiYml | Should -Match '(?m)^\s*-\s*name:\s*Install gitleaks\s*$'
+    }
+
+    It "pins the gitleaks version rather than tracking latest" {
+        $script:CiYml | Should -Match 'GITLEAKS_VERSION:\s*"\d+\.\d+\.\d+"'
+    }
+
+    It "installs gitleaks in the job that runs Pester, before the suite runs" {
+        # Co-location alone is not enough. An install step sitting AFTER the
+        # Pester step is still in the right job, and still leaves gitleaks off
+        # PATH for the run that matters -- the guard would then fail every CI
+        # run instead of the suite quietly skipping, which is louder but still
+        # broken. Assert the order, not just the presence.
+        $pesterJob = @($script:CiYml -split '(?m)^  \w[\w-]*:\s*$' |
+            Where-Object { $_ -match 'Invoke-PesterSuite\.ps1' })
+        $pesterJob.Count | Should -Be 1 -Because "exactly one job runs the Pester suite"
+
+        $jobText   = $pesterJob[0]
+        $installAt = $jobText.IndexOf('- name: Install gitleaks')
+        $runAt     = $jobText.IndexOf('- name: Run Pester suite')
+
+        $installAt | Should -BeGreaterThan -1 -Because "the Pester job must install gitleaks"
+        $runAt     | Should -BeGreaterThan -1 -Because "the Pester job must run the suite"
+        $installAt | Should -BeLessThan $runAt -Because "gitleaks must be on PATH before the suite runs"
+    }
+
+    It "verifies the installed binary runs" {
+        $script:CiYml | Should -Match '(?m)gitleaks\s+version'
     }
 }

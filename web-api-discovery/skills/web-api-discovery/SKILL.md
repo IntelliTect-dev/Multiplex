@@ -117,11 +117,34 @@ Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
     Where-Object Status -eq Observed
 ```
 
-**Two directories, and the difference is the safety story.** The raw capture
-carries live session cookies and is confined to `.har-captures/` **by
-construction** -- no option redirects it. `-OutputPath` (default: the current
-directory) receives only artifacts that have already been scrubbed and
-verified.
+**One stamped directory by default, and the difference from what came before
+is the safety story.** The raw capture carries live session cookies and is
+confined to `.har-captures/` **by construction** -- no option redirects it.
+`-OutputPath` receives only artifacts that have already been scrubbed and
+verified, and it **defaults to the run's own session directory**, beside the
+raw.
+
+That default is the fix for three defects at once: the session directory is
+gitignored, so nothing appears untracked in a work tree; it carries the run's
+stamp, so a second capture against the same host cannot overwrite the first's
+`scrubbed.har`; and the scrubbed artifact sits beside the raw it came from,
+which is the structural link a committed reference needs back to its source.
+
+`-OutputPath` used to default to the current directory, and then to the
+repository root. Both were wrong the same way -- the root of whichever work
+tree the operator happened to be standing in is not a place scrubbed artifacts
+belong -- and a run from a checkout root dropped an untracked `<host>/`
+directory there. Passing `-OutputPath` still writes `<path>/<host>/`; when that
+destination is inside a work tree and not gitignored the recorder **warns,
+names the path, and proceeds**, because refusing a destination the operator
+deliberately named would be user-hostile now that the default is safe.
+
+**The capture store must be gitignored before anything records.** If
+`.har-captures/` is not ignored, an interactive run prompts once to append the
+rule (naming the resolved absolute path, and saying it is in the *main*
+checkout); a non-interactive run **hard-fails**. An unscrubbed,
+credential-bearing capture one `git add -A` from a commit is the case worth
+stopping for, and an agent or CI run has nowhere to prompt.
 
 **WHICH `.har-captures/`, though, is a separate question, and it is the one
 that cost a capture.** The name is fixed; the *anchor* used to be the working
@@ -155,25 +178,89 @@ not of the name: a directory is only ignored where a `.gitignore` says so. The
 scrub therefore **verifies** it rather than assuming it -- see the substitution
 tables below.
 
-**Both are keyed on the captured site's host**, so two captures never
-overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
-fixed filenames, and before this the second capture silently replaced the
-first:
+**The store is keyed on the captured site's host and then on the run's stamp**,
+so no two captures collide -- `scrubbed.har`, `digest.json` and `catalogue.json`
+are fixed filenames, and the stamp is what keeps a second capture against the
+same host from replacing the first:
 
 ```
-.har-captures/app.example.com/2026-08-27-141500/raw.har   <- gitignored
-./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+.har-captures/app.example.com/2026-08-27-141500/    <- gitignored, and the default output path
+├── raw.har
+├── raw.ndjson
+├── scrubbed.har
+├── scrub-findings.json
+├── digest.json
+└── catalogue.json
 ```
 
 The **host alone** names the folder, never the full URL: a magic-link,
-password-reset or signed start URL carries its token in the path or the query,
-and the second directory is the committable one. A port joins with `_`
-(`localhost_5001`) because a dash is legal inside a hostname.
+password-reset or signed start URL carries its token in the path or the query.
+A port joins with `_` (`localhost_5001`) because a dash is legal inside a
+hostname.
+
+**Nothing under `.har-captures/` is ever discarded**, `raw.ndjson` included:
+the record log is the only witness to what the recorder saw before assembly, so
+it is the recovery path if a `raw.har` is ever found malformed.
+
+**The run ends by printing the catalogue itself**, not merely its path --
+Status / Action / Methods / Entries / Endpoints, the same five columns
+`Invoke-HarCapture` renders -- and says so when the catalogue is still an
+untouched scaffold. It prints **no captured value**: path templates, methods
+and counts only. The recorder prints it, on the same reasoning that puts the
+closing notice there; the PowerShell front door defers rather than printing a
+second copy, and returns the rows as typed objects for the pipeline.
 
 The mechanical phases -- scrub via `sanitize-har.js`, gate via
 `verify-scrub.js`, then a session digest -- run inside the recording process on
 every ending. **Cataloguing is a required phase, not an optional flourish**,
 and it is AI work: see Phase 3.5.
+
+### Processing a STORE: point an entry point at a folder
+
+A store accumulates faster than anyone will drive a per-capture tool by hand.
+Measured in a real project: **88 raw captures, 9.0 GB, 5 of them ever
+processed** -- not carelessness, just what happens when the only available
+motion is one capture at a time.
+
+So **a directory argument means "every capture under it"**, on the two entry
+points that already name the two stages. There is no batch verb, no `--store`,
+and no `--host`:
+
+```powershell
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures          # scrub the whole store
+.\Invoke-HarCatalogue.ps1 -Path     .har-captures          # then catalogue it
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures/app.example.com   # one host
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures -Force   # redo what is done
+```
+
+* **Pointing at the host folder IS the host filter.** The path already says it.
+* **A file, and a folder that holds a single capture, behave exactly as before.**
+* **Resume is behaviour, not a flag.** A capture is skipped when the stage's
+  completed artifact is already beside the raw -- `scrubbed.har` for the scrub,
+  `catalogue.json` for the catalogue. A 9.0 GB store *will* be interrupted, so
+  the second run is the normal one. `-Force` is the one option this adds, and it
+  means only "ignore that check".
+* **The scrub is written under a temporary name and only called `scrubbed.har`
+  once the gate has passed it**, so the verified name never exists for a capture
+  that has not earned it -- not even in the window an interruption could land in.
+* **The gate is not softened.** A rejected scrub quarantines into its own
+  session directory as `scrubbed.rejected.har`, with its findings report,
+  promotes nothing, and is retried on the next run.
+* **One bad capture does not abort the run.** It is recorded against itself and
+  the run continues.
+* **Three input classes, all reported.** The current `<host>/<stamp>` layout;
+  the **legacy** date-stamped session directories at the captures root, which a
+  host-scoped walk never reaches; and captures this recorder did not make --
+  mitmproxy `raw.mitm` dumps with no `session.json` -- which are **named and
+  declined**, never fed to the HAR scrub and never skipped in silence.
+
+The run ends with a summary of **processed / skipped / declined / failed with
+reasons**, so 88 directories do not have to be read. It prints host, stamp and
+reason, and **never a captured value**.
+
+The enumeration is `capture-store.js`, which is the same walk `resolveSession`
+uses for `stop`, `status` and `catalogue`. It is deliberately not a second one:
+two notions of what a capture is, is the defect this subsystem exists to avoid.
 
 ## Inputs (asked one at a time)
 
@@ -302,7 +389,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 | Parameter | Notes |
 |---|---|
 | `-Uri` | positional, mandatory |
-| `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
+| `-OutputPath` | default: **this run's own session directory** under `.har-captures/` -- gitignored and stamped. Passing a path appends the host folder, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`; a destination inside a work tree that is not gitignored is warned about, not refused. Receives the **scrubbed** artifacts and the catalogue |
 | `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one |
@@ -810,21 +897,94 @@ is only possible because the capture was kept.
 #### 1. A per-provider directory of committed, scrubbed references
 
 ```
-<host>/                        <- e.g. app.example.com, the capture output path
-├── scrubbed.har               <- the whole session, scrubbed
-├── digest.json                <- what an AI segments from
-├── catalogue.json             <- the rows (see 3)
-├── README.md                  <- the catalogue (see 3)
+.har-captures/<host>/<stamp>/   <- gitignored; the capture's own directory
+├── raw.har                     <- never committed
+├── scrubbed.har                <- the whole session, scrubbed
+├── digest.json                 <- what an AI segments from
+└── catalogue.json              <- THIS RUN's rows, scaffolded from digest.json
+
+docs/har-reference/<host>/      <- tracked; only trimmed extracts live here
+├── catalogue.json              <- the HOST's committed rows, STRUCTURED (see 3)
+├── README.md                   <- the table, GENERATED from catalogue.json (see 3)
 ├── <provider-a>/
-│   ├── README.md              <- provider scrub policy + re-capture recipe
+│   ├── README.md               <- provider scrub policy + re-capture recipe
+│   ├── api.json                <- GENERATED description of the server (see 4b)
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
 
-The provider directories sit beside the session artifacts, inside the
-host-named output folder. A provider is not always the host -- one site's
-traffic routinely spans several third-party APIs -- which is why both levels
-exist.
+**Two different files are called `catalogue.json` and they are not the same
+artifact.** The one in `.har-captures/<host>/<stamp>/` belongs to a single run:
+it is gitignored, scaffolded from that run's `digest.json`, and describes what
+that one capture saw. The one in `docs/har-reference/<host>/` is committed, is
+the source of truth for the host's whole reference set, and accumulates rows
+across runs. A run's catalogue is the *proposal*; the committed catalogue is the
+*record*. Promotion is what carries a row from the first to the second, and the
+run does not perform it (below).
+
+`docs/har-reference/<host>/catalogue.json` is the **source of truth** and
+`README.md` is a rendering of it. Only the region between the generated markers
+is written; everything else in that README is hand-written and survives
+regeneration untouched. See 3.
+
+The two sides are deliberately different in kind. Everything under
+`.har-captures/` is the run's own record and is never committed; everything
+under `docs/har-reference/` is a **trimmed extract** of the entries that
+mattered. Measured in a consuming project, committed references run 3 KB - 60 KB
+against captures of 277 MB - 1.6 GB, so copying `scrubbed.har` into the
+reference directory is not a smaller version of promotion -- it is the wrong
+artifact. **`scrubbed.har` is never committed**; it stays in the gitignored
+session directory beside the raw it came from.
+
+A provider is not always the host -- one site's traffic routinely spans several
+third-party APIs -- which is why both levels exist under the host directory, and
+why the provider appears in the extract's filename as well as in the directory
+it sits under.
+
+**Promotion is a deliberate step and the run does not perform it.** The run ends
+by printing the ready-to-paste command with the provider, the action slug
+(derived from `-Describe`) and the destination
+`docs/har-reference/<host>/<provider>/` already filled in, and records that
+reference's `<provider>/<filename>` path in the run catalogue's `HarFile` field
+-- the link that lets a committed reference be paired back to the capture it
+came from.
+
+**That command is complete as printed: `--match` is optional.**
+`extract-har-reference.js` used to *refuse* to run without it, on the reasoning
+that choosing which entries matter is a judgement a tool cannot make. Put to
+the operator directly, the answer was: *"I couldn't provide a regex. All I know
+is that the focus should be on the API calls, not the fonts, images, etc."*
+That retires the premise. "API call, not static asset" is a **mechanical
+classification**, and the data to make it is already in every entry, so it is
+now the **default selection**:
+
+- A Playwright capture records `_resourceType` on every entry (`xhr`, `fetch`,
+  `document`, `image`, `font`, `stylesheet`, `script`, `media`, `ping`).
+  Where present, it decides.
+- A capture from another recorder -- mitmproxy writes no Playwright extension
+  fields at all -- is classified by the request's own body and the response
+  content type: keep `application/json`, form-encoded, GraphQL, protobuf and
+  XML; drop `image/*`, `font/*`, `text/css`, `video/*`, `audio/*` and
+  standalone script bodies.
+
+The classifier is **conservative about what it DROPS, not clever about what it
+keeps**, because a wrongly dropped entry is invisible and a wrongly kept one is
+merely noise. Only a positive identification as a static asset or a beacon
+drops an entry; everything else is kept, including `document` entries (an HTML
+response can carry a token, and a redirect chain or an OAuth callback lands
+there) and any resource type or content type the classifier does not model.
+
+**Every run prints the per-category counts, and kept + dropped always equals the
+number of entries scanned** -- asserted at runtime, not assumed. That report is
+load-bearing rather than decorative: it is how a wrong drop becomes noticeable
+at extraction time instead of months later, and `scrubbed.har` staying in the
+gitignored session directory is what makes re-extracting with other criteria
+always possible.
+
+`--match` remains available as **optional further narrowing** for an API-heavy
+capture that still yields too much. It narrows *within* the API set; it never
+re-admits a dropped asset, so `--match upload` cannot drag an image back in
+because its URL happens to contain the word.
 
 **Raw captures are never committed.** They run to hundreds of MB and carry
 live credentials. Only trimmed, scrubbed extracts go in-tree.
@@ -859,15 +1019,62 @@ say:
 Those are exactly what someone opening the file is looking for, and they
 otherwise survive only in whichever issue thread happened to mention them.
 
-The `README.md` in the host-named output folder carries:
+#### 3b. The catalogue is STRUCTURED, and the table is generated from it
 
-- a table per provider: **file | actions the user performed | entry count |
-  capture date**;
-- a per-file detail section: the entry-by-entry sequence, what the capture
-  *proves*, and the failure modes it caught;
-- the excerpt fragments (partial captures that are not full HAR documents)
-  mapped the same way;
-- a pointer to the scrub policy and the verification command.
+**A prose row makes a claim nothing can check.** That is not a hypothetical
+tidiness argument -- it let a whole class of defect through a dedicated guard,
+an independent review and a merge.
+
+A consuming project's guard asserted *"every reference has a catalogue row"*
+and *"no request body is truncated"*. **Four hollow entries across three
+reference files passed both.** Each carried a 29-character
+`REDACTED_FORM_URLENCODED_BODY` where the request payload belonged, while the
+row described request-side behaviour the file contains none of:
+
+| The row claimed | The file actually held |
+|---|---|
+| "one Only-Me post with **two people tagged**" | no request body |
+| "email + password, then a **two-factor code**" | no request body |
+| "**Backdated** one existing post" | no request body |
+
+A downstream design document then cited one of those references as the evidence
+for four specific request-side facts. The claims may well be true; the cited
+reference is not the evidence.
+
+The old guard could not have done better. **The row was checkable in principle
+and unverifiable in practice**, because "published a post with two people
+tagged" is a sentence, not a field. A guard can confirm a row *exists*. It
+cannot confirm a row is *true*.
+
+So `catalogue.json` is committed beside the references and carries both halves:
+
+| Half | Fields | Who fills it |
+|---|---|---|
+| Human | `Action`, `Description`, `Status`, `Provider`, `Related`, `HarFile` | the cataloguing AI |
+| Measured | `Methods`, `Endpoints`, `EntryCount`, `RequestBodies`, `RequestBytes`, `ResponseBytes` | recomputed from the `.har`, and **compared** |
+| Escape | `RequestBodiesAbsent` | a human, in prose, when there is genuinely no body |
+
+The measured half is what a guard can check the row against, rather than
+checking the row against its own existence.
+
+`README.md` carries the human-facing table **generated** from that file,
+between two markers:
+
+```markdown
+<!-- BEGIN GENERATED CATALOGUE -- edit catalogue.json, not this table -->
+<!-- END GENERATED CATALOGUE -->
+```
+
+Everything outside the markers is hand-written and is never touched: the
+naming convention, the provenance notes ("The 2026-08-26 captures ..."), the
+re-capture recipe, the per-file detail sections describing the entry-by-entry
+sequence and the failure modes a capture caught. Those are the part of the file
+nobody can regenerate. A README with **no** markers is an error, not an
+invitation to guess where the table goes.
+
+The "Observed, not exercised" rows are generated too, from the same file. A
+half-generated section is the drift this closes: the generated half stays
+current while the hand-written half quietly describes a previous capture.
 
 > **The rule that makes it stick:** adding a capture has a final step --
 > *add the catalogue row, naming what you did*. The endpoint is recoverable
@@ -909,9 +1116,11 @@ that an identical retry after a `400` succeeded.
 
 Two scripts, because the manual version of each shipped a defect (see 5).
 
-**`extract-har-reference.js`** selects entries from a raw capture by URL
-and/or body pattern, scrubs them, and writes the reference. Non-negotiable
-behaviours:
+**`extract-har-reference.js`** selects the API traffic out of a raw capture,
+scrubs it, and writes the reference. Selection is a CLASSIFICATION, not a
+pattern: `_resourceType` where the recorder wrote one, the request body and
+response content type where it did not. `--match` is optional narrowing within
+that set (#410). Non-negotiable behaviours:
 
 - **Request bodies are NEVER truncated**, with or without a flag.
 - **Response bodies are not truncated either, unless you ask.**
@@ -927,8 +1136,12 @@ behaviours:
 - Emits **decoded** `postData.params[]` alongside the scrubbed wire `text`.
   A percent-encoded form body is not greppable; the decoded copy is what
   makes the reference searchable for a field name.
-- Refuses to run without a selector, and **fails loudly when nothing
-  matches** rather than writing an empty reference.
+- **Selects the API calls by default** and prints what it dropped, by category,
+  with kept + dropped always equal to the number of entries scanned. `--match`
+  is optional narrowing *within* that set (#410).
+- **Fails loudly when the selection is empty** rather than writing an empty
+  reference -- distinguishing "no entry was classified as an API call" from
+  "your selector matched none of the ones that were".
 - Re-checks its own output for forbidden literals **before writing**, and
   fails rather than writing. Its post-processing can reveal a literal the
   scrub never saw -- decoding a parameter to emit `params[]` peels a layer of
@@ -991,6 +1204,181 @@ and in CI. It fails on:
   it must be checked at least as hard as the intermediate it came from.
 
 Both ship with tests, each pinned to a failure that actually shipped.
+
+#### 4a. Tooling: render the catalogue, then check it against the files
+
+Two more scripts, for the same reason: the manual version of the catalogue
+shipped four rows describing request-side behaviour their references cannot
+support (see 3b).
+
+**`render-har-catalogue.js --dir <reference directory>`** writes the
+human-facing table into the marker-delimited region of `README.md`. It only
+writes. Prose outside the markers survives verbatim, and a README carrying no
+markers **fails** rather than being rewritten -- guessing where the table goes
+is how a generator eats the paragraph a person wrote. Rendering is
+deterministic (sorted by provider, action, capture date), so regenerating an
+unchanged catalogue is byte-identical.
+
+**`verify-har-catalogue.js --dir <reference directory>`** is the gate, and it
+**never writes** -- a gate that repaired what it found would report success on
+a tree it had just changed. It fails on:
+
+- a declared `Methods`, `Endpoints`, `EntryCount`, `RequestBodies`,
+  `RequestBytes` or `ResponseBytes` that **disagrees with the reference the row
+  names**. This is the assertion a prose table could never make;
+- **a row whose methods include `POST`, `PUT` or `PATCH` on a reference with
+  zero request bodies.** This is the falsifier, and it is what catches all four
+  hollow entries. The methods are recomputed from the file, so a row cannot
+  dodge it by understating what it covers. A body is recognised by the same
+  wire-grammar predicate as `verify-har-reference.js` gate 7 -- imported, not
+  reimplemented, so the two cannot drift into disagreeing about what a body is;
+- a reference on disk that no entry names, an entry naming a reference that
+  does not exist, and two entries naming one reference;
+- an `Exercised` row that names no reference at all;
+- a `README.md` that does not match what the committed `catalogue.json` renders
+  to, so a re-scrubbed reference cannot leave a generated table describing the
+  previous one.
+
+The falsifier's escape hatch is `RequestBodiesAbsent`, and it is **prose, not a
+boolean**. A bodyless `POST` is legal traffic -- `POST /logout` is the everyday
+case -- and a gate that fires on real captures gets disabled, costing every
+other check it carries. Silencing this one costs a sentence, written into the
+file, visible in the diff, under review.
+
+Wire **both** commands into CI. `verify-har-reference.js` gates the artifact's
+safety; `verify-har-catalogue.js` gates whether the catalogue tells the truth
+about it. Neither substitutes for the other.
+
+#### 4b. `api.json` -- the generated description of the SERVER
+
+A reference is a record of one session. It is not a specification. It carries
+one account's data, one set of feature flags, one incidental ordering, one
+moment's persisted-query id -- and two captures of the same flow should produce
+the **same** description of the API. Until something computes that description,
+nothing can tell **"the provider changed"** from **"this capture differs"**,
+and every conformance question is answered by a human reading a capture.
+
+**`generate-api-document.js`** aggregates a provider's references into one
+`api.json` beside them:
+
+```powershell
+node generate-api-document.js --dir <provider-dir>            # write it
+node generate-api-document.js --dir <provider-dir> --check    # gate it
+```
+
+It describes the **server**, not a client design: endpoints (host, method, path
+template), observed statuses, request and response field names with how often
+each was seen, persisted operation ids, and the credentials a request must
+carry -- named from the same list `verify-har-reference.js` uses, so the
+document and the leak gate cannot disagree about what a credential is. **No
+credential value is ever read.** Alongside those, it records what the captures
+did **not** establish; see *Nothing more, and nothing less* below.
+
+**Generated, never hand-authored**, for the reason settled for the catalogue: a
+hand-maintained specification is a further artifact free to drift, and it will
+assert things the references do not contain. Two properties make that rule
+enforceable, and `--check` enforces both.
+
+- **Idempotence.** Regenerating from unchanged references is byte-identical, so
+  a diff always means something changed. Every collection in the document has a
+  declared total order; none inherits the filesystem's.
+- **Traceability.** Every endpoint, field, credential and persisted id names the
+  reference and the entry index that witnesses it, and `--check` **re-opens that
+  entry** to confirm the claim is there. That verification is a separate code
+  path from the aggregation, so it is not the generator marking its own
+  homework -- and a claim somebody typed in by hand cannot survive it. This is
+  the assertion a prose catalogue cannot make, and the reason four hollow
+  references once survived a dedicated guard.
+
+#### Nothing more, and nothing less
+
+The document is authoritative about **what the captures proved**. That is two
+obligations, not one, and only the first is obvious.
+
+**Nothing more.** No endpoint, status or field is described that no entry
+carried. Every positive claim names the entry that witnesses it.
+
+**Nothing less.** Where the captures leave a question open, the document
+**says so** rather than staying silent -- because silence reads as
+completeness, and an untested corner mistaken for a settled one is the same
+defect as an unsupported claim wearing the opposite face. Each endpoint carries
+an `unproven` list, and each hole names the capture that would close it:
+
+| Hole | What it means | Closed by |
+|---|---|---|
+| `no-success-observed` | every observed status was an error | a successful call |
+| `no-request-body-observed` | a POST/PUT/PATCH witnessed by **one** reference that carried no request body -- "takes no body" and "the body was not captured" are not yet distinguishable | capturing it again |
+| `no-response-body-observed` | same, for a response body | capturing it again |
+| `response-truncated` | a response was capped, so the field list is a **prefix** of the real shape | re-capture without a response cap |
+| `operation-name-unknown` | a persisted id was seen with no accompanying operation name, so what it *does* is unknown | a call carrying the name alongside the id |
+| `request-field-presence-varies` | a field appears in some observed calls and not others | capture the operation again and compare |
+
+`capturesNeeded` at the top of the document rolls these up into a **work
+list**: what to go and record, and which endpoints each recording would settle.
+A reader asking "what capture is missing" should not have to walk every
+endpoint to assemble the answer.
+
+> **A hole nobody can close is noise.** The two body holes are raised only
+> while a single reference witnesses the endpoint. A bodyless `POST` captured
+> twice, in two sessions, is evidence that the endpoint *takes* no body --
+> telling a reader to "capture it with the body preserved" would be advice that
+> can never be satisfied, and a gate that fires on traffic behaving normally
+> trains its readers to ignore it. One capture cannot tell "takes no body" from
+> "the body was not captured"; a second one can, which is why capturing again
+> is what closes it.
+>
+> `DELETE` is deliberately outside the body-bearing set: the overwhelming
+> majority carry none, so raising a hole on every one would be the same noise.
+> The cost is that a `DELETE` that *does* take a body has its missing request
+> side unreported. That is a stated limit, not an inference about any
+> particular endpoint.
+
+**A hole is a claim too.** `--check` re-derives every one of them from the
+references *and* validates the entries it cites, exactly as it does for a
+positive claim -- so a hand-written "we never proved this" fails, and so does
+one citing a reference that does not exist. The re-derivation applies the same
+rule the generator applied, at the same granularity: a check that measured
+something subtly different would fail on the generator's own correct output,
+which is how a gate ends up disabled.
+
+Counts sit beside the claims for the same reason: `observedIn` of
+`observedEntries` is the difference between "this field was seen" and "this
+field was seen in one of eleven calls", and only the second says whether the
+captures settled anything.
+
+Three further answers the design had to give:
+
+- A field seen in some calls and not others is reported as **varying** and
+  labelled neither *optional* nor *provider-changed*. One corpus cannot tell
+  those apart, and picking one would be the guesswork this replaces.
+- An error shape nobody provoked is **not invented** -- but the fact that
+  nobody provoked one is recorded. The gap is the finding.
+- Fields are named at the **top level** only -- form parameters, query
+  parameters, and the top-level keys of a JSON body. The same depth as
+  `digest.json`, and the depth at which every claim stays cheap to re-check.
+
+> **Incomplete is an acceptable state; pretending otherwise is not.** A
+> provider whose document is half holes is a provider whose captures are half
+> done, and saying that plainly is what turns a document into a plan for the
+> next recording session. Live testing counts, provided it produces a capture
+> that can be committed -- the point is not the ceremony, it is that a claim
+> has an artifact behind it.
+
+> **The staleness gate, and why idempotence is half of it.** Re-scrubbing a
+> reference under a changed policy is the *expected* response to a policy
+> change, not an exotic path. Stage 5 overwrites the reference, the diff is
+> visible in review -- and nobody regenerates the derived artifacts, which now
+> describe the previous reference while nothing reports it. `--check` is the
+> gate that closes it: **regenerate, compare, fail on any difference.**
+> Idempotence is what makes that possible; without it the check would fail on
+> every run for reasons unrelated to staleness, and a gate that cries wolf gets
+> disabled.
+>
+> Aggregation makes the blast radius wider than it looks. `api.json` covers ALL
+> of a provider's references, so re-scrubbing **one** invalidates the whole
+> provider's document. Regeneration is therefore **whole-provider**, and the
+> check regenerates everything rather than only what appears to have changed --
+> "appears to have changed" being another proxy for the thing being measured.
 
 #### 5. The two defects that motivated the tooling
 
@@ -1325,6 +1713,18 @@ Require every capture-derived probe to:
   > inside a JSON-valued parameter.
   The literal check reports as skipped there (the profile is gitignored and
   absent in CI); the truncation, credential and nested-secret gates all run.
+- A committed `api.json` **must** be gated in CI by
+  `generate-api-document.js --check --dir <provider-dir>`, once per provider
+  directory, so a derived artifact cannot go on describing a reference that has
+  since been re-scrubbed. The check needs no profile and no secret, so unlike
+  the literal gate above it runs at full strength in CI.
+
+  > **Not wired yet -- same gap as #283.** No workflow in this repo, and none
+  > this skill emits, invokes it. This repository holds no committed reference
+  > of its own, so the mechanism and its falsifiers ship here and the wiring is
+  > the consuming project's: add one step per provider directory, and treat a
+  > non-zero exit as "a generated artifact is stale or unsupported", not as a
+  > flaky check to retry.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
   secrets, in addition to its pattern-based JWT/hex/UUID/email scrubbing --
   all of these have been observed in plaintext in real captures and are

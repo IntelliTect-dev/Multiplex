@@ -331,37 +331,33 @@ test('both roots are keyed on the captured host', () => {
         path.join(tmpRoot, 'out', 'app.example.com'));
 });
 
-test('outside a repo the output path defaults to the current directory', () => {
-    // The cwd default is CORRECT here and must stay byte-for-byte unchanged --
-    // tmpRoot is not a repository, so there is no root to anchor to.
+test("the default output path is the run's own session directory (#377)", () => {
+    // #300 anchored the default to the repo root and its own comment conceded
+    // the gap: a worktree has its own root, so output still landed wherever the
+    // operator was standing -- which in the reported incident was a checkout
+    // root, where it appeared as an untracked host directory. The session
+    // directory is gitignored AND stamped, so neither defect survives.
     const resolved = capture.resolveSessionPaths({
         uri: 'https://app.example.com/',
         cwd: tmpRoot,
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
-    assert.strictEqual(resolved.outputPath,
-        path.join(path.resolve(tmpRoot), 'app.example.com'));
+    assert.strictEqual(resolved.outputPath, resolved.sessionDir);
+    assert.strictEqual(resolved.outputExplicit, false);
 });
 
-test('inside a repo the output path defaults to the repo root, not the cwd (#300)', () => {
-    // The defect: run from a subdirectory of a checkout, output was created
-    // relative to wherever the operator happened to be standing. This test file
-    // lives inside a real repository, so __dirname is a genuine "deep in a
-    // checkout" cwd -- no fixture required to prove the anchoring.
-    const toplevel = require('child_process')
-        .execFileSync('git', ['rev-parse', '--show-toplevel'],
-            { cwd: __dirname, encoding: 'utf8' }).trim();
+test('the default output path is the session directory inside a repo too (#377)', () => {
+    // Same answer wherever the recorder is run from: this test file lives deep
+    // inside a real repository, which is the "run from a checkout" cwd that
+    // used to decide where output went.
     const resolved = capture.resolveSessionPaths({
         uri: 'https://app.example.com/',
         cwd: __dirname,
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
-    // realpath the existing parent, not the not-yet-created host folder.
-    assert.strictEqual(fs.realpathSync(path.dirname(resolved.outputPath)),
-        fs.realpathSync(toplevel));
-    assert.strictEqual(path.basename(resolved.outputPath), 'app.example.com');
+    assert.strictEqual(resolved.outputPath, resolved.sessionDir);
 });
 
 test('an explicit relative output path still resolves against the cwd (#300)', () => {
@@ -636,6 +632,172 @@ test('the catalogue scaffold has one Observed row per group', () => {
         assert.ok(Object.prototype.hasOwnProperty.call(row, 'Description'));
         assert.strictEqual(row.CapturedUtc, '2026-01-01T12:00:00Z');
     }
+});
+
+test('the scaffold leaves the reference facts NULL, never zero', () => {
+    // A scaffold row describes a digest GROUP: no reference has been extracted
+    // yet, so there is nothing to have measured. Writing `0` would state a fact
+    // nobody checked, in the exact shape of the defect the structured catalogue
+    // exists to prevent -- a row asserting something about a file that does not
+    // support it (issue #379). verify-har-catalogue.js recomputes these once the
+    // row names a reference, so a null that was never filled in is reported
+    // rather than mistaken for a measurement.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'POST', url: 'https://api.example.com/b' }, response: { status: 201, content: {} } }
+    ]));
+    const row = capture.buildCatalogueScaffold(digest)[0];
+
+    for (const field of ['RequestBodies', 'RequestBytes', 'ResponseBytes']) {
+        assert.ok(Object.prototype.hasOwnProperty.call(row, field),
+            `${field} must be present so the cataloguer knows to fill it in`);
+        assert.strictEqual(row[field], null, `${field} must not claim a measurement`);
+    }
+    assert.deepStrictEqual(row.Related, []);
+});
+
+// ---------------------------------------------------------------------------
+// Stage 7a -- Provider, derived PER ROW from the row's own endpoint host
+// (issue #428)
+// ---------------------------------------------------------------------------
+
+test('Provider is derived from the ROW\'s own endpoint host, not the capture start URI', () => {
+    // THE FALSIFIER. A capture of one site routinely spans several hosts --
+    // the site's own API, a CDN, a third party. Deriving every row's
+    // Provider from the capture's single start URI would stamp one
+    // provider onto rows that are not that provider: a row asserting
+    // something nobody checked (issue #379's defect). Two groups on two
+    // different hosts MUST end up with two different Provider values. An
+    // implementation that instead reads `digest.uri` (the start URI) would
+    // give both rows the same value here and fail this assertion.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'GET', url: 'https://cdn.otherhost.net/b' }, response: { status: 200, content: {} } }
+    ]), { uri: 'https://api.example.com/start' });
+
+    const rows = capture.buildCatalogueScaffold(digest);
+    const byHost = new Map(rows.map((row) => [row.Endpoints[0].split('/')[0], row.Provider]));
+
+    assert.strictEqual(byHost.get('api.example.com'), 'example');
+    assert.strictEqual(byHost.get('cdn.otherhost.net'), 'otherhost');
+    assert.notStrictEqual(byHost.get('api.example.com'), byHost.get('cdn.otherhost.net'),
+        'rows for different hosts must carry different Provider values');
+});
+
+test('Provider stays null when the row\'s host yields no slug', () => {
+    // A GUARD, not the falsifier above: `providerSlug` itself decides
+    // derivability, and this pins that the scaffold does not paper over a
+    // host it cannot name with an invented value. Constructed directly
+    // against buildCatalogueScaffold (rather than through buildDigest+a HAR)
+    // because a real URL parsed by `new URL()` always yields a non-empty
+    // host, and the case under test is precisely a group whose host does not.
+    const digest = {
+        capturedUtc: '2026-01-01T12:00:00Z',
+        groups: [{ host: '', method: 'GET', pathTemplate: '/x', count: 1 }]
+    };
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+
+    assert.strictEqual(row.Provider, null,
+        'null means "a human still has to say" -- inventing a value here would repeat the #379 defect');
+});
+
+test('Provider agrees with the <provider>/ directory the reference is nested in', () => {
+    // The catalogue (Provider) and the filesystem (the directory
+    // referenceRelativePath nests the extract under) must not be able to
+    // disagree, because both are read to place the same file. Both are
+    // driven by the same providerSlug: this row's host for Provider, the
+    // capture's own start URI for the nesting directory (issue #377). They
+    // agree here because the row's host and the capture's start host are the
+    // same registrable provider -- the ordinary case a scaffolded capture is
+    // extracted from.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } }
+    ]), { uri: 'https://api.example.com/start' });
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+    const relativePath = capture.referenceRelativePath({ uri: 'https://api.example.com/start', describe: 'test' }, { action: 'test', now: new Date('2026-01-01') });
+    const nestingDirectory = relativePath.split('/')[0];
+
+    assert.strictEqual(row.Provider, nestingDirectory);
+});
+
+test('Provider agrees with the directory for a PORT-bearing host too', () => {
+    // `group.host` comes from `URL#host` (host PLUS port, e.g.
+    // `localhost:3000`); `referenceRelativePath` slugs `URL#hostname` (host
+    // only) to pick the nesting directory. A local dev server is a routine
+    // capture target, and slugging `group.host` unstripped would turn
+    // `localhost:3000` into `Provider: 'localhost-3000'` while the reference
+    // still lands under `localhost/` -- the exact disagreement the previous
+    // test cannot see because its host carries no port.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'http://localhost:3000/a' }, response: { status: 200, content: {} } }
+    ]), { uri: 'http://localhost:3000/start' });
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+    const relativePath = capture.referenceRelativePath({ uri: 'http://localhost:3000/start', describe: 'test' }, { action: 'test', now: new Date('2026-01-01') });
+    const nestingDirectory = relativePath.split('/')[0];
+
+    assert.strictEqual(row.Provider, 'localhost');
+    assert.strictEqual(row.Provider, nestingDirectory);
+});
+
+test('the scaffold templates endpoints with the shared function, not a private copy', () => {
+    // buildCatalogueScaffold writes `Endpoints` from the digest; the guard
+    // recomputes them from the reference. Two implementations that agree today
+    // would drift, and the drift surfaces as every scaffolded row failing the
+    // guard the moment it is committed -- which looks like a broken gate, so
+    // the fix people reach for is to weaken the gate.
+    const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
+    assert.strictEqual(capture.pathTemplate, harCatalogue.pathTemplate);
+
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/posts/1234567890' }, response: { status: 200, content: {} } }
+    ]));
+    assert.deepStrictEqual(capture.buildCatalogueScaffold(digest)[0].Endpoints,
+        ['api.example.com/v1/posts/{id}']);
+});
+
+test('the digest and the guard name the same endpoints for the same traffic', () => {
+    // THE CRIES-WOLF FAILURE THIS PREVENTS. buildCatalogueScaffold writes a
+    // row's `Endpoints` from the digest; verify-har-catalogue.js recomputes
+    // them from the reference and fails the row on any disagreement. If the two
+    // derived an endpoint by even slightly different rules, correct output
+    // would fail its own check -- and the repair everyone reaches for is to
+    // weaken the gate, not to fix the derivation.
+    //
+    // Sharing `pathTemplate` is necessary but not sufficient: the host half is
+    // composed separately on each side. This asserts the composed result.
+    const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
+    const entries = [
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/posts/1234567890' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'POST', url: 'https://api.example.com:8443/v1/posts' }, response: { status: 201, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:02Z', time: 5, request: { method: 'GET', url: 'https://cdn.example.com/a/550e8400-e29b-41d4-a716-446655440000' }, response: { status: 200, content: {} } },
+    ];
+
+    const fromDigest = capture.buildDigest(har(entries)).groups
+        .map((g) => `${g.host}${g.pathTemplate}`);
+
+    // Methods travel the same two paths and must normalise the same way. The
+    // digest used to store the verb exactly as the capture recorded it while
+    // the guard uppercased, so a scaffold row reading ["get"] failed the guard
+    // on casing alone -- correct data reported as wrong, which is the cries-wolf
+    // failure the endpoint parity above exists to prevent, one field over.
+    const lower = [
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'get', url: 'https://api.example.com/v1/a' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/a' }, response: { status: 200, content: {} } },
+    ];
+    const lowerDigest = capture.buildDigest(har(lower));
+    assert.deepStrictEqual(lowerDigest.groups.map((g) => g.method), ['GET'],
+        'a lowercase verb must normalise, and must not split one endpoint into two groups');
+    assert.deepStrictEqual(capture.buildCatalogueScaffold(lowerDigest)[0].Methods, ['GET']);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-parity-'));
+    const file = path.join(dir, 'ref.har');
+    fs.writeFileSync(file, JSON.stringify(har(entries)));
+    const fromGuard = harCatalogue.measureReference(file).Endpoints;
+
+    assert.deepStrictEqual([...new Set(fromDigest)].sort(), fromGuard,
+        'the digest and the guard disagree about what endpoint this traffic hit');
 });
 
 test('the catalogue is dated to the recording, not to the processing run', () => {
