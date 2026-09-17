@@ -569,6 +569,44 @@ function resolveSessionPaths(opts = {}) {
 }
 
 /**
+ * The placement question for an output file, with the one destination that is
+ * never the hazard taken out first (#471).
+ *
+ * ONE function for both `start` and `catalogue`, because they write the same
+ * artifacts to the same kind of place and a second answer here is exactly the
+ * drift the shared guard exists to prevent. `catalogue` used to ask a
+ * location-only question of its own and so told operators to `mv` a file that
+ * had never been misplaced.
+ *
+ * WHY THE CAPTURES ROOT IS EXEMPTED STRUCTURALLY rather than by asking
+ * classifyDestination. It is gitignored -- but this tool is what makes it so,
+ * via ensureCapturesRootIgnored, and that runs AFTER the guard, which has to
+ * fire before anything is recorded. Asking git during the window between the
+ * two gets "not ignored" for a directory that is about to be ignored, and the
+ * default run is warned about for a hazard that never materialises. That is the
+ * exact false warning #471 is about, so the exemption is the containment
+ * invariant itself and not a shortcut: nothing an operator passes can move the
+ * captures root, so nothing can move output out of the exemption either.
+ *
+ * The exemption is a FAST PATH, not the authority. `catalogue` can be pointed
+ * at a session discovered under the LEGACY root (capturesSearchRoots, when
+ * placement.relocated), which the current root will not match; that run falls
+ * through to strandingPlacement and gets git's own answer, which is correct
+ * either way. So the exemption is exhaustive for `start`, which resolves its
+ * own root, and merely an optimisation for `catalogue` -- worth saying, because
+ * a reader who assumed it was exhaustive everywhere would be surprised by a
+ * legacy-rooted run taking the slow path.
+ */
+function placementForOutput(outputFile, capturesRoot) {
+    if (capturesRoot) {
+        const root = path.resolve(capturesRoot);
+        const full = path.resolve(outputFile);
+        if (full === root || full.startsWith(root + path.sep)) { return null; }
+    }
+    return repoGuard.strandingPlacement(outputFile);
+}
+
+/**
  * Is an EXPLICIT `--output-path` somewhere scrubbed artifacts will show up as
  * untracked files, and what to say about it?
  *
@@ -1606,6 +1644,7 @@ function runNode(script, argv, cwd) {
  * @returns {{path: string, verified: boolean, advisory: boolean}} state.scrubbed
  */
 function askTheGate(candidate, state, run) {
+    log.info('capture-har: verifying the scrub ...');
     const verify = (run || runNode)(
         path.join(__dirname, '..', 'har', 'verify-scrub.js'), ['--in', candidate]);
     const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
@@ -1634,8 +1673,9 @@ function askTheGate(candidate, state, run) {
  * stage, and a second implementation of them behind a second door is the
  * two-engines defect this subsystem has spent a dozen PRs removing.
  */
-function catalogueScrubbed(session, state) {
+function catalogueScrubbed(session, state, opts = {}) {
     try {
+        log.info('capture-har: building the digest ...');
         const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
         // capturedUtc is when the RECORDING happened, not when it was
         // processed. A catalogue row dated to the scrub would answer "how old
@@ -1660,7 +1700,7 @@ function catalogueScrubbed(session, state) {
         }
         state.catalogue = Object.assign(
             { path: cataloguePath, actions: [], files: [] },
-            runCatalogue(session, digestPath, cataloguePath, state));
+            runCatalogue(session, digestPath, cataloguePath, state, opts));
         // Described, never performed -- see describeReference. Placed after the
         // catalogue so a rejected scrub, which returns before any of this,
         // cannot reach it: a capture the leak gate refused promotes nothing.
@@ -1807,6 +1847,10 @@ function postProcess(session, opts = {}) {
     // verified artifact a previous run left there.
     const candidate = path.join(session.sessionDir, SCRUBBED_HAR);
     fs.mkdirSync(session.sessionDir, { recursive: true });
+    // Each stage is named as it STARTS (#492). Every one of them is silent
+    // until it finishes, and after a recording stops they run for minutes --
+    // which an operator cannot tell apart from a hang.
+    log.info(`capture-har: scrubbing ${describeSize(session.harPath)} ...`);
     const sanitize = run(path.join(harDir, 'sanitize-har.js'),
         ['--in', session.harPath, '--out', candidate]);
     if (!sanitize.ok) {
@@ -1891,7 +1935,7 @@ function postProcess(session, opts = {}) {
         state.completedUtc = new Date().toISOString();
         return state;
     }
-    catalogueScrubbed(session, state);
+    catalogueScrubbed(session, state, opts);
 
     state.completedUtc = new Date().toISOString();
     return state;
@@ -2066,8 +2110,41 @@ function quarantineRejectedScrub(session, state) {
     }
 }
 
-function runCatalogue(session, digestPath, cataloguePath, state) {
-    const decision = decideCatalogueRunner({
+/**
+ * How the AI catalogue child is launched: `claude -p <prompt>`, run UNDER
+ * run-with-heartbeat.js (#492).
+ *
+ * The child is ~95% of the wall time after a recording stops, and under `-p`
+ * it prints nothing at all -- measured at fifteen silent minutes on one real
+ * capture. postProcess is synchronous, so it cannot keep a timer of its own
+ * while `spawnSync` blocks; the wrapper is a second process that can. The argv
+ * after the wrapper is exactly what the child was always given.
+ */
+function catalogueChildCommand(prompt) {
+    return {
+        command: process.execPath,
+        args: [path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt]
+    };
+}
+
+/** "67 MB" / "12.4 KB" -- the scale of what a stage is about to chew through. */
+function describeSize(filePath) {
+    let bytes;
+    try { bytes = fs.statSync(filePath).size; } catch { return 'the raw capture'; }
+    return bytes >= 1024 * 1024
+        ? `${Math.round(bytes / (1024 * 1024))} MB`
+        : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/**
+ * `opts.runnerContext` and `opts.spawn` exist for one reason: the claude-cli
+ * branch is otherwise unreachable from a test (it needs a TTY and `claude` on
+ * PATH), and "the AI child runs under the heartbeat wrapper" is a property of
+ * THIS function, not of the helper that builds the argv (#492).
+ */
+function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
+    const spawn = opts.spawn || spawnSync;
+    const decision = decideCatalogueRunner(opts.runnerContext || {
         env: process.env,
         isTty: !!process.stdin.isTTY,
         claudeOnPath: claudeOnPath()
@@ -2080,7 +2157,9 @@ function runCatalogue(session, digestPath, cataloguePath, state) {
             `Digest: ${digestPath}\nCatalogue: ${cataloguePath}\n` +
             `Raw capture: ${session.harPath}\nOutput path: ${session.outputPath}\n` +
             (session.describe ? `Operator intent: ${session.describe}\n` : '');
-        const run = spawnSync('claude', ['-p', prompt], {
+        log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
+        const child = catalogueChildCommand(prompt);
+        const run = spawn(child.command, child.args, {
             encoding: 'utf8', cwd: session.outputPath, stdio: 'inherit', windowsHide: true
         });
         if (run.status !== 0) {
@@ -2418,7 +2497,7 @@ async function start(args) {
 
     const isTty = !!process.stdin.isTTY;
 
-    // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+    // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300, #471).
     //
     // This sits at the very top of `start`, ahead of the profile preflight, the
     // port scan and the browser, because the guard is only safe while nothing
@@ -2428,12 +2507,23 @@ async function start(args) {
     // than the misplacement it would prevent. So: advisory, never fatal, and
     // never moved downstream.
     //
-    // The PowerShell front door runs the same check and marks the environment,
-    // so an operator driving through Invoke-HarCapture is told once, not twice.
-    const placement = repoGuard.inspectCheckout(process.cwd());
-    if (placement.shouldWarn && !process.env.HARCAPTURE_PLACEMENT_GUARD_RAN) {
+    // The paths are resolved HERE, above the preflight they used to sit below,
+    // purely so the guard can consult them without moving downstream of the
+    // recording. resolveSessionPaths computes strings and writes nothing, so
+    // hoisting it changes no behaviour.
+    //
+    // THIS PROCESS IS THE ONLY OWNER of the decision (#471). The PowerShell
+    // front door used to run this same check first and mark the environment so
+    // the operator was told once, not twice; it no longer checks at all. The
+    // question is now "will this run write committable output into a work
+    // tree", and only the process that resolved the destination can answer it.
+    // A front door that guessed would be a second answer free to disagree.
+    const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
+    const placement = placementForOutput(
+        path.join(paths.outputPath, SCRUBBED_HAR), paths.capturesRoot);
+    if (placement) {
         process.stderr.write('capture-har: ' +
-            repoGuard.guardMessage(placement).split('\n').join('\n  ') + '\n');
+            repoGuard.guardMessage(placement).split('\n').join('\n' + '  ') + '\n');
     }
 
     // Preflight FIRST -- before the port scan and long before a browser.
@@ -2457,8 +2547,6 @@ async function start(args) {
             return 1;
         }
     }
-
-    const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
 
     // WHERE THE BYTES ARE GOING, said on the way IN (#367).
     //
@@ -2492,20 +2580,21 @@ async function start(args) {
         // written even though the detection happened before the browser opened.
         // Null unless the guard fired, so nothing downstream has to re-probe.
         //
-        // THE RECORDER OWNS THE CLOSING NOTICE, and deliberately not the front
-        // door -- unlike the opening warning, which the front door owns via
-        // HARCAPTURE_PLACEMENT_GUARD_RAN. The asymmetry is the point. The
-        // opening warning is printed BEFORE this process is spawned, so it
-        // cannot be lost. The closing notice is printed after work has
-        // happened, and this is the process that actually wrote the files:
-        // printing it here is in-process and unconditional, so a front door
-        // that is killed between spawning us and reaching its own epilogue --
-        // a closed terminal, a hard Ctrl+C, an agent that dies mid-session --
-        // cannot take the notice with it. Deduplicating by suppressing THIS
-        // copy would make the notice depend on another process surviving, and
-        // a notice that only arrives when nothing went wrong is not a safety
-        // net.
-        placement: placement.shouldWarn ? placement : null,
+        // THE RECORDER OWNS BOTH NOTICES since #471, having previously owned
+        // only the closing one -- the front door printed the opening warning
+        // and marked HARCAPTURE_PLACEMENT_GUARD_RAN so this process stayed
+        // quiet. That split could not survive the guard needing to know the
+        // resolved destination, which only this process computes.
+        //
+        // What the split was protecting still holds, and is why the closing
+        // notice is printed here rather than delegated back: it is emitted
+        // after work has happened, by the process that actually wrote the
+        // files, in-process and unconditionally. A front door killed between
+        // spawning us and reaching its own epilogue -- a closed terminal, a
+        // hard Ctrl+C, an agent that dies mid-session -- cannot take the notice
+        // with it. A notice that only arrives when nothing went wrong is not a
+        // safety net.
+        placement,
         profileDir,
         externalProfile,
         storageState,
@@ -3165,9 +3254,16 @@ function catalogueCommand(args) {
     // The shared placement guard, not a second opinion about where output may
     // land: this command writes into the same committable directory a capture
     // does, so it owes the same notice.
-    const placement = repoGuard.inspectCheckout(process.cwd());
+    //
+    // It asks about THE FILE IT WILL WRITE, not merely about the checkout it
+    // was started from (#471). Asking about location alone is what it used to
+    // do, and it was wrong in the same way capture was: the default output here
+    // is the capture's own session directory under the gitignored captures
+    // root, so a default run from the protected branch was told to `mv` an
+    // artifact that was never misplaced.
+    const placement = placementForOutput(cataloguePath, capturePlacement(process.cwd()).root);
     log.lines(postProcessLines(Object.assign({}, target.session, {
-        placement: placement.shouldWarn ? placement : null,
+        placement,
         postProcess: state
     })));
     return postProcessExitCode(state, false);
@@ -3244,6 +3340,7 @@ module.exports = {
     buildDigest,
     buildCatalogueScaffold,
     decideCatalogueRunner,
+    catalogueChildCommand,
     postProcess,
     catalogueCommand,
     postProcessExitCode,
@@ -3261,6 +3358,7 @@ module.exports = {
     deriveActionSlug,
     providerSlug,
     outputDestinationWarning,
+    placementForOutput,
     ensureCapturesRootIgnored,
     capturesRootProbe,
     CAPTURE_GITIGNORE_ENTRIES,
