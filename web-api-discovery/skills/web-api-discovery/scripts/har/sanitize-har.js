@@ -67,6 +67,7 @@ const pii = require(path.join(__dirname, 'pii.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const { transformNested } = require(path.join(__dirname, 'har-nested.js'));
 const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 
 function parseArgs(argv) {
@@ -87,14 +88,19 @@ function parseArgs(argv) {
 // output path -- the directory the operator has been told holds scrubbed,
 // verified artifacts and which is tracked by git (issue #294).
 //
-// The filenames themselves live in subs-destination.js, not here -- that
-// module is the one place both this script (which writes the tables) and
-// capture-store.js (which, for #387, only needs to ask whether one exists)
-// can safely `require()`. This file cannot be required as a library itself:
-// its `main()` runs unconditionally at the bottom with no `require.main`
-// guard, so requiring it would run a scrub. Keeping the names in the
-// dependency-free module both sides already share is what keeps this a single
-// definition instead of two that can drift.
+// The filenames themselves live in subs-destination.js, not here. That module
+// is dependency-free and every consumer of the names already needs it, so it
+// is the natural home for them: this script writes the tables, capture-store.js
+// asks whether one exists (#387), the scaffolded .gitignore lists them
+// (codegen/generate-wrapper.js), run-agent.js names them for a nested scrub,
+// and two gates recognise them by name (audit-scrub-drift.js,
+// verify-har-reference.js). All six now read ONE definition (#446).
+//
+// This file is required-able as of #446 -- `main()` runs behind a
+// `require.main === module` guard at the bottom -- so the names could live
+// here now. They stay where they are: the consumers above have no other reason
+// to load the scrubber, and pulling a 770-line CLI in to read a string is how
+// the copies get made again.
 const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 const CAPTURES_DIR = '.har-captures';
 
@@ -360,24 +366,15 @@ function scrubKnownFields(s, ctx) {
     return out;
 }
 
-// A form-encoded body or query string worth DECODING: `k=v` pairs that
-// actually carry percent escapes. Without an escape there is nothing hidden
-// -- key-name scrubbing already sees the value on the wire -- and decoding
-// anyway would rewrite the value's spelling for no gain.
-//
-// A `; `-separated string is a Cookie header, not a form body; it has its own
-// scrubber and must keep its separators intact.
-function looksFormEncoded(s) {
-    return /%[0-9A-Fa-f]{2}/.test(s)
-        && !/;\s/.test(s)
-        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(s);
-}
-
-const MAX_DECODE_DEPTH = 3;
-
-function scrubString(s, ctx, depth) {
-    if (typeof s !== 'string' || s.length === 0) return s;
-    const level = depth || 0;
+/**
+ * The passes that act on one string in the spelling it arrives in: known field
+ * names, multipart fields, and the shape patterns.
+ *
+ * Split out from `scrubString` (#454) so the SAME passes run at every encoding
+ * depth. They used to run only at the layers the scrubber's private recursion
+ * happened to reach.
+ */
+function scrubFlat(s, ctx) {
     let out = scrubKnownFields(s, ctx);
 
     // Multipart bodies carry the field name in a header and the value on its
@@ -389,15 +386,6 @@ function scrubString(s, ctx, depth) {
         (alreadySubstituted(value, ctx) ? null : substitute('field', name, value, ctx)),
         ctx.policy, { includeRedacted: true });
 
-    // Reach INSIDE percent-encoded parameters. A form body carrying
-    // `variables=<percent-encoded JSON>` hides per-request tokens where no
-    // flat pattern over the wire body can match them, and where the inner key
-    // never appears in the form's own parameter list.
-    if (level < MAX_DECODE_DEPTH && looksFormEncoded(out)) {
-        out = harLiterals.transformEncodedParams(out, (_name, decoded) =>
-            scrubString(decoded, ctx, level + 1));
-    }
-
     for (const { kind, re } of PATTERNS) {
         out = out.replace(re, (match) => {
             const key = `${kind}:${match}`;
@@ -406,6 +394,41 @@ function scrubString(s, ctx, depth) {
         });
     }
     return out;
+}
+
+/**
+ * Scrub one string, at every encoding depth it carries.
+ *
+ * The descent is `har-nested.js:transformNested`, the SAME traversal the gate
+ * runs (#454). It used to be a private recursion here, guarded by a private
+ * `looksFormEncoded` whose character class excluded `{` and `"` -- so once
+ * this function decoded a form parameter and landed on a JSON document it
+ * could never re-enter, while the gate descended past it and reported secrets
+ * this scrubber structurally could not reach. Three real captures were refused
+ * that way in one day, every one for a value the scrubber already had a rule
+ * for.
+ *
+ * A nested value sitting under a known secret NAME is substituted whole: at
+ * depth the name is a parsed key rather than text, so `scrubKnownFields`'s
+ * `"name":"value"` regex never sees it -- that is the `datr` half of #454.
+ */
+function scrubString(s, ctx) {
+    if (typeof s !== 'string' || s.length === 0) return s;
+    const out = scrubFlat(s, ctx);
+    return transformNested(out, ({ name, value }) => {
+        // BOTH lists, because the gate consults both. `isUnredactedSecret`
+        // asks the field list AND the header list, so checking only fields
+        // here left every `secretHeaders` name -- `x-fb-lsd`, `x-csrftoken`,
+        // `x-ig-app-id`, `x-instagram-rupload-params` -- reported by the gate
+        // and unreachable by the scrubber when it arrived nested as a pair.
+        // That is this issue's own failure re-created on a second axis.
+        const named = name
+            && (isKnownSecretField(name, ctx.policy) || isKnownSecretHeader(name, ctx.policy));
+        if (named && !alreadySubstituted(value, ctx)) {
+            return substitute('field', name, value, ctx);
+        }
+        return scrubFlat(value, ctx);
+    });
 }
 
 // A cookie is worth redacting when its value looks token-ish (16+ chars) OR
@@ -766,5 +789,35 @@ function main() {
     process.exit(0);
 }
 
-main();
+// Only run as a command when invoked as one (issue #446).
+//
+// Without this guard `main()` ran on import, so `require('./sanitize-har.js')`
+// -- even to read one constant -- performed a live scrub, wrote substitution
+// tables and called `process.exit()` in the requiring process. Nothing could
+// reuse anything this file defines, so callers copied instead: the two
+// substitution-table filenames alone reached seven spellings across the tree.
+// An unimportable module cannot be the single definition of anything.
+//
+// The guard is packaging only. `node sanitize-har.js --in ...` takes exactly
+// the path it always did -- `require.main === module` is true for the entry
+// script -- so argument parsing, scrubbing, the files written and the exit
+// code are unchanged.
+if (require.main === module) main();
 
+// The reusable surface. `main` is here so the CLI path is a callable rather
+// than a side effect of loading the file; the rest are the pure pieces other
+// modules and tests would otherwise have to re-derive. `PATTERNS` in
+// particular is what lets a test compare the scrubber's shape rules against
+// the gate's as OBJECTS -- har-pwd-envelope-scrub.test.js currently
+// regex-matches this file's source text, which is the same defect wearing a
+// different hat (issue #395).
+module.exports = {
+    main,
+    parseArgs,
+    deriveOutPath,
+    deriveSubsDir,
+    fakeFor,
+    PATTERNS,
+    CAPTURES_DIR,
+    PWD_ENVELOPE_FAKE_PREFIX,
+};

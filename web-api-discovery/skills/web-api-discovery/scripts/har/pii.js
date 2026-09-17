@@ -29,7 +29,9 @@
  * Substitutions returned by scrubPii contain only { type, originalHash,
  * replacement, locations }. The originalHash is the first 8 hex chars of
  * the SHA-256 -- never the plaintext original -- so the resulting
- * .substitutions.json file is safe to commit.
+ * substitution table is safe to commit. (The table filenames themselves are
+ * spelled once, in subs-destination.js, and are deliberately not restated
+ * here -- see the single-definition check in sanitize-har-importable.test.js.)
  */
 
 'use strict';
@@ -799,7 +801,7 @@ function detectPii(har, policy) {
         }
         // request URL
         if (entry.request && typeof entry.request.url === 'string') {
-            detectInString(entry.request.url, entryIndex, { jsonPath: 'request.url' }, out, policy);
+            detectInUrl(entry.request.url, entryIndex, out, policy);
         }
         // request body
         if (entry.request && entry.request.postData && typeof entry.request.postData.text === 'string') {
@@ -827,14 +829,193 @@ function detectPii(har, policy) {
     return out;
 }
 
-function tryWalkJsonText(text, entryIndex, basePath, out, policy) {
+// How many nested form-encoded layers to unwrap. The observed provider shape
+// needs two (a form parameter whose value is encoded JSON, whose own value is
+// an encoded string). The bound exists because the layering is provider-defined
+// and the payload is attacker-influenced. Past the bound the remainder goes to
+// the plain-text scanner -- which is the pre-existing behaviour, and therefore
+// ALSO the pre-existing defect: a body nested deeper than this can still have an
+// escape read as payload digits. A disclosed limit, not a guarantee; the bound
+// sits above the deepest shape yet observed (2) rather than at it.
+const FORM_DEPTH_LIMIT = 4;
+
+/**
+ * The `name=value` pairs of an `application/x-www-form-urlencoded` body, or
+ * null when the text is not one.
+ *
+ * DELIBERATELY STRICT, because a false positive here would route a response
+ * body through the form path and re-encode it. Every `&`-separated part must
+ * carry an `=`, every name must be a bare token, and the whole text must be
+ * free of whitespace -- which a minified JS bundle or an HTML document is not,
+ * and `&amp;` entities are not (they yield a part with no `=`).
+ */
+function formEncodedPairs(text) {
+    if (typeof text !== 'string' || text.length === 0 || text.length > 8 * 1024 * 1024) return null;
+    // Whitespace or a control character. A real form body has neither; a minified
+    // JS bundle, an HTML document and pretty-printed JSON all have the first.
+    // Written as ESCAPES on purpose -- the literal bytes make the file read as
+    // binary to grep and are invisible in review.
+    if (/[\s\u0000-\u001f]/.test(text)) return null;
+    const parts = text.split('&');
+    const pairs = [];
+    for (const part of parts) {
+        // An EMPTY segment is RECORDED, not rejected and not dropped. A
+        // trailing `&` is ordinary serializer output, and rejecting the body
+        // over one sent the whole thing back to the plain-text path --
+        // reinstating, for those bodies, exactly the defect this branch exists
+        // to remove. Carrying it through the rebuild instead of skipping it is
+        // what keeps a body whose delimiters are redundant byte-identical when
+        // some other parameter changes.
+        if (part.length === 0) { pairs.push({ empty: true, name: '', raw: '' }); continue; }
+        const eq = part.indexOf('=');
+        if (eq <= 0) return null;
+        const name = part.slice(0, eq);
+        if (!/^[A-Za-z0-9_.\-[\]%]+$/.test(name)) return null;
+        pairs.push({ name, raw: part.slice(eq + 1) });
+    }
+    return pairs.some((x) => !x.empty) ? pairs : null;
+}
+
+/**
+ * Percent-decode a form value, LENIENTLY, and never fail.
+ *
+ * `+` means space in a form body, which decodeURIComponent does not know.
+ *
+ * A MALFORMED ESCAPE DOES NOT DISQUALIFY THE VALUE, and getting this wrong cost
+ * two rounds. Returning null and SKIPPING the parameter hid every other secret
+ * in it from detection -- a leak the plain-text path did not have. Returning
+ * null and processing the RAW text instead put the value back on the exact
+ * path this branch exists to remove: the still-encoded `%22` beside it reads as
+ * two payload digits again, and the replacement then gets percent-encoded a
+ * second time on the way out, so the output is both corrupted AND
+ * double-escaped.
+ *
+ * Decoding what is well-formed and passing through what is not gives detection
+ * real delimiters, keeps every byte of the value in scope, and leaves the
+ * replacement on decoded text where re-encoding is correct.
+ *
+ * The one visible effect: a value that BOTH contains a malformed escape AND has
+ * something replaced in it comes back with that escape normalised (`%zz` ->
+ * `%25zz`). Only a value that was already being rewritten pays it, and a
+ * well-formed escape is a better artifact than the malformed one it replaces.
+ */
+function formDecode(raw) {
+    let out = '';
+    for (let i = 0; i < raw.length; i++) {
+        const c = raw[i];
+        if (c === '+') { out += ' '; continue; }
+        if (c !== '%') { out += c; continue; }
+        const hex = raw.slice(i + 1, i + 3);
+        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) { out += '%'; continue; }
+        // A multi-byte UTF-8 sequence has to decode as a unit, so hand the
+        // whole run of escapes to the real decoder and fall back to literals
+        // when it is not valid UTF-8.
+        let j = i, run = '';
+        while (j < raw.length && raw[j] === '%' && /^[0-9A-Fa-f]{2}$/.test(raw.slice(j + 1, j + 3))) {
+            run += raw.slice(j, j + 3);
+            j += 3;
+        }
+        try { out += decodeURIComponent(run); }
+        catch (_) { out += run; }
+        i = j - 1;
+    }
+    return out;
+}
+
+
+/**
+ * A URL's query string, scanned and rewritten the way a form body is.
+ *
+ * WHY THIS EXISTS (issue #479, found in review). A query string is
+ * percent-encoded form data that happens to live in a URL, and it was going
+ * straight to the plain-text scanner -- so every failure this module's form
+ * branch removes was still fully reachable through `request.url`. GraphQL over
+ * GET puts an entire JSON payload there, which is precisely the shape that
+ * turns an escape's digits into part of an adjacent value.
+ *
+ * ONLY THE QUERY. The origin, path and fragment stay on the plain-text pass:
+ * they are not `name=value` data, and rewriting a path risks changing a URL's
+ * meaning to fix a payload that is usually not there.
+ *
+ * That is a real, disclosed limit rather than a complete fix. A path segment
+ * carrying the same percent-encoded payload -- some REST APIs put a JSON or
+ * base64 blob in a segment instead of a query -- is still read as plain text
+ * and can still be corrupted exactly as a body used to be. Closing that means
+ * decoding percent-encoded runs everywhere they occur, not just where they are
+ * form data, which is a larger change than this one and is tracked separately.
+ */
+function splitUrl(url) {
+    const hash = url.indexOf('#');
+    const head = hash < 0 ? url : url.slice(0, hash);
+    const tail = hash < 0 ? '' : url.slice(hash);
+    const q = head.indexOf('?');
+    if (q < 0) return null;
+    return { base: head.slice(0, q), query: head.slice(q + 1), tail };
+}
+
+function detectInUrl(url, entryIndex, out, policy) {
+    const parts = splitUrl(url);
+    if (!parts || parts.query.length === 0) {
+        detectInString(url, entryIndex, { jsonPath: 'request.url' }, out, policy);
+        return;
+    }
+    detectInString(parts.base + parts.tail, entryIndex, { jsonPath: 'request.url' }, out, policy);
+    tryWalkJsonText(parts.query, entryIndex, 'request.url.query', out, policy, 0);
+}
+
+function replaceInUrl(url, replacements, policy) {
+    const parts = splitUrl(url);
+    if (!parts || parts.query.length === 0) return replaceAll(url, replacements);
+    const base = replaceAll(parts.base, replacements);
+    const query = replaceJsonOrText(parts.query, replacements, policy, 0);
+    return base + '?' + query + replaceAll(parts.tail, replacements);
+}
+
+/**
+ * Detection over a request or response body.
+ *
+ * THREE BRANCHES, AND THE MIDDLE ONE IS WHY THIS EXISTS (issue #479).
+ *
+ * A percent-encoded body used to go straight to the text scanner, which read
+ * `%22` as the two digits `22` rather than as a delimiter. Those digits join
+ * whatever follows, so an adjacent value is measured at the wrong LENGTH -- and
+ * length is how the digit-run detectors decide what a value is. It fails in
+ * both directions: two extra digits can complete a 14-digit id into a
+ * card-length run (a false positive, whose replacement then overwrites the
+ * escape and corrupts the document), or extend a real 16-digit card to 18 and
+ * push it out of range entirely (a false negative -- the card survives).
+ *
+ * Decoding first removes the whole class: the scanner sees the value the
+ * operator actually sent, with delimiters as delimiters.
+ */
+function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth) {
+    depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
         walkJsonForDetect(parsed, null, entryIndex, basePath, out, policy);
-    } else {
-        detectInString(text, entryIndex, { jsonPath: basePath }, out, policy);
+        return;
     }
+    if (depth < FORM_DEPTH_LIMIT) {
+        const pairs = formEncodedPairs(text);
+        if (pairs) {
+            for (const p of pairs) {
+                if (p.empty) continue;
+                tryWalkJsonText(formDecode(p.raw), entryIndex,
+                    basePath + '.' + p.name, out, policy, depth + 1);
+                // The NAME is scanned too. The plain-text path made no
+                // distinction between the two sides of an `=`, so leaving names
+                // out would silently stop detecting a secret used as a key.
+                // The path names the PARAMETER as well as the side, or two
+                // secrets used as two names in one body report the same
+                // location and the findings cannot be told apart.
+                detectInString(formDecode(p.name), entryIndex,
+                    { jsonPath: basePath + '.' + p.name + '.<name>' }, out, policy);
+            }
+            return;
+        }
+    }
+    detectInString(text, entryIndex, { jsonPath: basePath }, out, policy);
 }
 
 // --- scrubbing: apply faker substitutions in-place on the HAR ---
@@ -1050,7 +1231,7 @@ function applyReplacementsToEntry(entry, replacements, policy) {
     }
     // url
     if (entry.request && typeof entry.request.url === 'string') {
-        entry.request.url = replaceAll(entry.request.url, replacements);
+        entry.request.url = replaceInUrl(entry.request.url, replacements, policy);
     }
     // bodies (request/response)
     if (entry.request && entry.request.postData && typeof entry.request.postData.text === 'string') {
@@ -1069,12 +1250,54 @@ function applyReplacementsToEntry(entry, replacements, policy) {
     }
 }
 
-function replaceJsonOrText(text, replacements, policy) {
+/**
+ * Replacement over a request or response body. Mirrors tryWalkJsonText branch
+ * for branch, because detection and replacement disagreeing about what a body
+ * IS is how a value gets detected in one shape and rewritten in another.
+ *
+ * A CHANGED PARAMETER IS RE-ENCODED; AN UNCHANGED ONE IS RE-EMITTED VERBATIM.
+ * That asymmetry is load-bearing. `encodeURIComponent(decodeURIComponent(x))`
+ * is not the identity -- `%7E` decodes to `~` and re-encodes to `~`, `+`
+ * decodes to a space and re-encodes to `%20` -- so round-tripping every
+ * parameter would rewrite bytes the scrub was never asked to touch, in a file
+ * whose whole purpose is to be a faithful record. Only a parameter that
+ * actually changed pays that cost, and only because it had to.
+ */
+function replaceJsonOrText(text, replacements, policy, depth) {
+    depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
         const rebuilt = replaceInJson(parsed, null, replacements, policy);
         return JSON.stringify(rebuilt);
+    }
+    if (depth < FORM_DEPTH_LIMIT) {
+        const pairs = formEncodedPairs(text);
+        if (pairs) {
+            let changed = false;
+            const rebuilt = pairs.map((p) => {
+                // An EMPTY segment is re-emitted as itself, so a body's
+                // redundant delimiters survive a run that changed something
+                // else in it. The byte-identical promise covers the whole body,
+                // not only the parameters that carry values.
+                if (p.empty) return '';
+                const value = formDecode(p.raw);
+                const nextValue = replaceJsonOrText(value, replacements, policy, depth + 1);
+
+                const name = formDecode(p.name);
+                const nextName = replaceAll(name, replacements);
+
+                const valueChanged = nextValue !== value;
+                const nameChanged = nextName !== name;
+                if (!valueChanged && !nameChanged) return p.name + '=' + p.raw;
+                changed = true;
+                // Only the half that changed is re-encoded; the other half is
+                // re-emitted exactly as it arrived.
+                return (nameChanged ? encodeURIComponent(nextName) : p.name) +
+                    '=' + (valueChanged ? encodeURIComponent(nextValue) : p.raw);
+            });
+            return changed ? rebuilt.join('&') : text;
+        }
     }
     return replaceAll(text, replacements);
 }

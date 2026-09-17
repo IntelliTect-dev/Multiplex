@@ -951,6 +951,188 @@ test('postProcess still produces artifacts when the scrub verifies', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// #492 -- post-processing says what it is doing while it does it
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `fn` with every stderr write recorded instead of printed. `fn` receives
+ * the live array, so it can ask what had been said AT THE MOMENT something
+ * else happened -- which is the property under test: a label that arrives
+ * after its stage has finished tells the operator nothing.
+ */
+function withRecordedStderr(fn) {
+    const said = [];
+    const original = process.stderr.write;
+    process.stderr.write = (chunk) => { said.push(String(chunk)); return true; };
+    try { return fn(said); } finally { process.stderr.write = original; }
+}
+
+test('postProcess names each stage BEFORE the stage runs, in pipeline order (#492)', () => {
+    // The operator's report was "it appears to have frozen". A stage that
+    // prints nothing until it is over is indistinguishable from a hang, so
+    // what is pinned is what had been SAID when each piece of work started.
+    withSandbox('pp-progress', [okEntry], (session, paths) => {
+        const saidWhen = {};
+        withRecordedStderr((said) => {
+            capture.postProcess(session, {
+                run: (script, argv) => {
+                    saidWhen[path.basename(script)] = said.join('');
+                    return capture.runNode(script, argv);
+                }
+            });
+            saidWhen.end = said.join('');
+        });
+
+        assert.match(saidWhen['sanitize-har.js'] || '', /capture-har: scrubbing \d+(\.\d)? KB \.\.\./,
+            'the scrub must be announced, with the size being scrubbed, before it starts');
+        assert.doesNotMatch(saidWhen['sanitize-har.js'], /verifying the scrub/,
+            'and the verify stage must not be announced before it is reached');
+        assert.match(saidWhen['verify-scrub.js'] || '', /capture-har: verifying the scrub \.\.\./,
+            'the leak gate must be announced before it runs');
+        assert.doesNotMatch(saidWhen['verify-scrub.js'], /building the digest/);
+        assert.match(saidWhen.end, /capture-har: building the digest \.\.\./);
+        const order = ['scrubbing', 'verifying the scrub', 'building the digest']
+            .map((label) => saidWhen.end.indexOf(label));
+        assert.deepStrictEqual(order.slice().sort((a, b) => a - b), order,
+            `stages must be announced in pipeline order, got offsets ${order}`);
+    });
+});
+
+test('the digest is announced before it is written, not after (#492)', () => {
+    withSandbox('pp-progress-digest', [okEntry], (session, paths) => {
+        const digestPath = path.join(paths.outputPath, 'digest.json');
+        let digestExistedWhenAnnounced = null;
+        const original = process.stderr.write;
+        process.stderr.write = (chunk) => {
+            if (/building the digest/.test(String(chunk))) {
+                digestExistedWhenAnnounced = fs.existsSync(digestPath);
+            }
+            return true;
+        };
+        try { capture.postProcess(session); } finally { process.stderr.write = original; }
+        assert.strictEqual(digestExistedWhenAnnounced, false,
+            'the digest label must precede the digest -- a label after the fact is not progress');
+        assert.ok(fs.existsSync(digestPath), 'and the digest must then actually be written');
+    });
+});
+
+test('the AI catalogue child is run under the heartbeat wrapper, with its argv intact (#492)', () => {
+    // ~95% of post-stop wall time is this one child, and it prints nothing
+    // under `-p`. Running it through the wrapper is what makes the wait
+    // visible; the argv after the wrapper must be exactly what the child was
+    // always given, or the catalogue pass itself changes.
+    const { command, args } = capture.catalogueChildCommand('the prompt');
+    assert.strictEqual(command, process.execPath, 'the wrapper runs under this same node');
+    assert.strictEqual(path.basename(args[0]), 'run-with-heartbeat.js');
+    assert.ok(fs.existsSync(args[0]), `the wrapper must exist at ${args[0]}`);
+    assert.deepStrictEqual(args.slice(1), ['claude', '-p', 'the prompt']);
+});
+
+test('postProcess really launches the AI child through the wrapper, after announcing it (#492)', () => {
+    // The helper test above proves the argv; this proves the pipeline USES it.
+    // Reverting runCatalogue to a bare `spawnSync('claude', ...)` would leave
+    // the helper correct and unused, and only this test would notice.
+    withSandbox('pp-progress-child', [okEntry], (session, paths) => {
+        const spawned = [];
+        withRecordedStderr((said) => {
+            capture.postProcess(session, {
+                runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+                spawn: (command, args, options) => {
+                    spawned.push({ command, args, options, saidBefore: said.join('') });
+                    return { status: 0 };
+                }
+            });
+        });
+        assert.strictEqual(spawned.length, 1, 'the claude-cli branch must spawn exactly one child');
+        const [child] = spawned;
+        assert.strictEqual(child.command, process.execPath);
+        assert.strictEqual(path.basename(child.args[0]), 'run-with-heartbeat.js');
+        assert.deepStrictEqual(child.args.slice(1, 3), ['claude', '-p']);
+        assert.strictEqual(child.options.stdio, 'inherit', 'the child keeps the terminal');
+        assert.strictEqual(child.options.cwd, session.outputPath);
+        assert.match(child.saidBefore, /capture-har: cataloguing \(AI pass -- typically several minutes\) \.\.\./,
+            'the AI pass must be announced before it starts');
+    });
+});
+
+const heartbeat = require(path.join(__dirname, 'run-with-heartbeat.js'));
+
+test('a child killed by a signal is not reported as an ordinary exit 1 (#492)', () => {
+    // capture-har records "catalogue: claude exited N" from this status, so a
+    // signalled death must stay distinguishable from the CLI exiting 1. The
+    // shell convention: 128 + the signal number.
+    const os = require('os');
+    assert.strictEqual(heartbeat.exitStatusFor(3, null), 3);
+    assert.strictEqual(heartbeat.exitStatusFor(0, null), 0);
+    assert.strictEqual(heartbeat.exitStatusFor(null, 'SIGTERM'), 128 + os.constants.signals.SIGTERM);
+    assert.strictEqual(heartbeat.exitStatusFor(null, 'SIGINT'), 128 + os.constants.signals.SIGINT);
+    assert.notStrictEqual(heartbeat.exitStatusFor(null, null), 0, 'no code and no signal is not success');
+});
+
+test('elapsed time reads the way the operator reads a clock (#492)', () => {
+    assert.strictEqual(heartbeat.formatElapsed(5000), '5s');
+    assert.strictEqual(heartbeat.formatElapsed(45999), '45s');
+    assert.strictEqual(heartbeat.formatElapsed(60000), '1m00s');
+    assert.strictEqual(heartbeat.formatElapsed(270000), '4m30s');
+    assert.strictEqual(heartbeat.formatElapsed(15 * 60000 + 2000), '15m02s');
+});
+
+test('a running child produces a heartbeat naming its elapsed time and pid (#492)', async () => {
+    const said = [];
+    const result = await heartbeat.runWithHeartbeat(
+        process.execPath, ['-e', 'setTimeout(() => {}, 400)'],
+        { intervalMs: 60, write: (line) => said.push(line) });
+
+    assert.strictEqual(result.status, 0);
+    const beats = said.filter((l) => /elapsed/.test(l));
+    assert.ok(beats.length >= 2, `a 400 ms child at a 60 ms interval must beat repeatedly, got ${said}`);
+    for (const beat of beats) {
+        assert.match(beat, /^capture-har: cataloguing \.\.\. \d+s elapsed \(pid \d+\)$/);
+        assert.strictEqual(Number(/pid (\d+)/.exec(beat)[1]), result.pid,
+            'the pid printed must be the CHILD\'s -- the one an operator would look for');
+    }
+    assert.match(said[said.length - 1], /^capture-har: cataloguing finished after \d+s$/,
+        'the end of the wait is said too, so the last heartbeat is not left hanging');
+});
+
+test('the heartbeat stops when the child does (#492)', async () => {
+    const said = [];
+    await heartbeat.runWithHeartbeat(process.execPath, ['-e', 'setTimeout(() => {}, 150)'],
+        { intervalMs: 40, write: (line) => said.push(line) });
+    const count = said.length;
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(said.length, count,
+        'a heartbeat after the child exited would claim work that is no longer happening');
+});
+
+test('the child\'s exit status is what the wrapper reports (#492)', async () => {
+    const result = await heartbeat.runWithHeartbeat(process.execPath, ['-e', 'process.exit(3)'],
+        { intervalMs: 1000, write: () => {} });
+    assert.strictEqual(result.status, 3,
+        'capture-har records "catalogue: claude exited N" from this -- a masked failure reads as success');
+});
+
+test('a child that cannot be started is reported, not waited on (#492)', async () => {
+    const said = [];
+    const result = await heartbeat.runWithHeartbeat('definitely-not-a-command-492', [],
+        { intervalMs: 20, write: (line) => said.push(line) });
+    assert.notStrictEqual(result.status, 0, 'a child that never ran must not report success');
+    assert.ok(said.some((l) => /could not start definitely-not-a-command-492/.test(l)),
+        `the failure must be named, got ${JSON.stringify(said)}`);
+    assert.ok(!said.some((l) => /elapsed/.test(l)), 'and nothing may claim it is running');
+});
+
+test('run as a script, the wrapper passes the child\'s exit status through (#492)', () => {
+    // This is the door capture-har actually uses: spawnSync on the script,
+    // reading status. The in-process tests above cannot see a broken main.
+    const res = require('child_process').spawnSync(process.execPath,
+        [path.join(__dirname, 'run-with-heartbeat.js'), process.execPath, '-e', 'process.exit(4)'],
+        { encoding: 'utf8', windowsHide: true });
+    assert.strictEqual(res.status, 4, `stderr: ${res.stderr}`);
+    assert.match(res.stderr, /capture-har: cataloguing finished after \d+s/);
+});
+
 test('postProcess does not clobber a catalogue an earlier AI pass already filled in', () => {
     withSandbox('pp-keep', [okEntry], (session, paths) => {
         fs.mkdirSync(paths.outputPath, { recursive: true });
@@ -1164,11 +1346,16 @@ test('the placement guard warns before any capture begins', () => {
     // than after it. That ordering is the load-bearing part of the design: a
     // guard downstream would be choosing whether to discard a recording the
     // operator already spent minutes producing.
+    //
+    // --output-path is what makes the guard applicable at all since #471; the
+    // default lands in the gitignored session directory and is no longer a
+    // hazard to warn about. This case is still about ORDERING, not placement.
     const work = makeGuardedCheckout('guard-order');
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
             '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--output-path', 'docs/har-reference',
             // Required since #366; this case is about the guard's ORDERING.
             '--describe', 'placement-guard fixture'],
         { cwd: work, encoding: 'utf8' });
@@ -1201,42 +1388,45 @@ test('the closing notice names what was written and how to relocate it (#300)', 
     assert.match(text, /(^|\s)mv\s/m, 'reduces cleanup to a single move');
 });
 
-test('the recorder keeps the closing notice even when a front door warned (#300)', () => {
-    // Ownership is split on purpose. The front door owns the OPENING warning,
-    // because it is printed before this process exists and so cannot be lost.
-    // The recorder owns the CLOSING notice, because it is the process that
-    // actually wrote the files and prints it in-process.
-    //
-    // Suppressing this copy to avoid a duplicate would make the notice depend
-    // on the front door surviving from spawn to epilogue. A killed terminal, a
-    // hard Ctrl+C or an agent dying mid-session would then take the notice with
-    // it -- and it would be persisted as null in session.json, so `stop` and
-    // `status` recovery would stay silent too. A notice that only arrives when
-    // nothing went wrong is not a safety net.
-    const work = makeGuardedCheckout('guard-dupe');
+test('a default capture cannot strand anything, so it is not warned about (#471)', () => {
+    // The regression this issue exists for. Same checkout, same branch, same
+    // rule -- the only difference from the ordering case above is that no
+    // destination was named, so the output goes to the gitignored session
+    // directory and there is nothing to strand. Warning here is what trained
+    // the operator to answer yes and keep capturing from the protected branch.
+    const work = makeGuardedCheckout('guard-default');
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
             '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
-            '--describe', 'closing-notice fixture'],
-        {
-            cwd: work,
-            encoding: 'utf8',
-            env: Object.assign({}, process.env, { HARCAPTURE_PLACEMENT_GUARD_RAN: '1' })
-        });
+            '--describe', 'default-destination fixture'],
+        { cwd: work, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0);
     assert.doesNotMatch(res.stderr, /primary checkout/i,
-        'the opening warning belongs to the front door that already printed it');
+        'the default destination is gitignored by construction (#377)');
 
     const session = JSON.parse(res.stdout);
-    assert.ok(session.placement, 'the recorder must keep ownership of the closing notice');
-    assert.strictEqual(session.placement.shouldWarn, true);
+    assert.strictEqual(session.placement, null,
+        'and so there is no closing relocation notice to give either');
+});
 
-    // Persisted, so a later `stop` or `status` in another process can still
-    // report it without re-probing.
-    const lines = capture.postProcessLines(session).map((l) => l[1]).join('\n');
-    assert.match(lines, /git worktree add/, 'the persisted session still yields the notice');
+test('an explicitly named destination that is gitignored is not warned about (#471)', () => {
+    // Naming a path is not itself the hazard -- naming one that will show up
+    // as untracked is. A consumer whose .gitignore already covers the
+    // destination has nothing to be told.
+    const work = makeGuardedCheckout('guard-ignored');
+    fs.writeFileSync(path.join(work, '.gitignore'), 'scratch/\n');
+    const res = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--output-path', 'scratch',
+            '--describe', 'ignored-destination fixture'],
+        { cwd: work, encoding: 'utf8' });
+
+    assert.strictEqual(res.status, 0);
+    assert.doesNotMatch(res.stderr, /primary checkout/i);
 });
 
 test('there is no closing notice when the guard never fired (#300)', () => {
