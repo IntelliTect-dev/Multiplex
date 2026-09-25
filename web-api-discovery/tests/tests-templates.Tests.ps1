@@ -5,11 +5,11 @@
 # web-api-discovery codegen (issue #50). Builds on PR #49 (codegen pipeline).
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot "templates/web-api-discovery/scripts"
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot "..\") | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot "skills/web-api-discovery/scripts"
     $script:GenJs      = Join-Path $script:ScriptsDir "codegen/generate-wrapper.js"
-    $script:TmplDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/csharp/tests"
-    $script:RestHar    = Join-Path $script:RepoRoot ".github/agents/tests/fixtures/har/rest-3endpoints.har"
+    $script:TmplDir    = Join-Path $script:RepoRoot "skills/web-api-discovery/csharp/tests"
+    $script:RestHar    = Join-Path $script:RepoRoot "tests/fixtures/har/rest-3endpoints.har"
 
     function New-OutDir {
         $d = Join-Path ([IO.Path]::GetTempPath()) ("wrapgen-tests-" + [guid]::NewGuid())

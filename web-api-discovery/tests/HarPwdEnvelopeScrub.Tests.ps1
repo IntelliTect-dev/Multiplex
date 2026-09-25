@@ -18,8 +18,8 @@
 # Node 26, so the files are named explicitly.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:TestJs     = Join-Path $script:ScriptsDir 'har/har-pwd-envelope-scrub.test.js'
     $script:ShapeJs    = Join-Path $script:ScriptsDir 'har/har-pwd-envelope-shape.test.js'
     $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'

@@ -54,39 +54,24 @@ const fs = require('fs');
 const path = require('path');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
-const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 // Shape patterns live in har-shapes.js so verify-har-reference.js gates the
 // committed reference on exactly the same list. The reference is the file
 // that actually ships.
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+// Recognising a file as a capture happens in ONE place (issue #423), so this
+// gate and every stage it guards cannot drift apart over what a HAR is.
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
-// Does a finding fail the run? One definition, in har-shapes.js, so the gate
-// on the committed reference cannot drift away from the gate on the
-// intermediate it came from. See `blocksLeak` there for what each setting
-// means and why an identifier-shaped finding is reported rather than dropped.
-const blocks = harShapes.blocksLeak;
+// What the gate ASKS -- collect, then gating / advisory / reported -- lives in
+// har-gate.js, so the scrubber's blunting pass (#511) asks the same question
+// in-process without loading this CLI. Re-exported below unchanged.
+const harGate = require(path.join(__dirname, 'har-gate.js'));
+const { collectFindings, classifyFindings, isAdvisory } = harGate;
 
 const EXIT_GATING = 3;
 const EXIT_ADVISORY = 4;
 const FINDINGS_FILENAME = 'scrub-findings.json';
-
-/**
- * Is this finding shape-only identity evidence -- reported, but not a reason
- * to withhold the artifact?
- *
- * Read off the policy `setting`, not off the class. A project may opt an
- * identity class UP to `gate`, and one that did must get the gating code; the
- * policy loader already refuses to let any secret class reach `advise`, so
- * this cannot quietly downgrade a secret.
- *
- * Findings with no `setting` at all -- a known secret name, a forbidden
- * literal -- are gating by construction, which is the safe default for a field
- * this predicate does not understand.
- */
-function isAdvisory(leak) {
-    return leak.setting === 'advise';
-}
 
 // Keys a finding may contribute to the report, whitelisted rather than
 // blacklisted. Every one of these is a NAME, a LOCATION or a non-reversible
@@ -184,11 +169,23 @@ function main() {
     // not scanned as if they were wire data. A HAR that will not parse still
     // gets the flat text sweep: a gate that skips a malformed file entirely
     // would be a gate anyone could bypass by malforming the file.
+    //
+    // Both halves of that matter, and issue #423 is the second one. A file
+    // that parses as JSON but is not a HAR used to take the `parsed` branch,
+    // find no entries, and be reported as `0 blocking leaks` with exit 0 --
+    // a scrub gate issuing a clean bill of health on a document it never
+    // understood. So the sweep still runs on anything, and the refusal is
+    // ADDITIONAL to it: `unreadable` is remembered here and denies the success
+    // path below, whatever the sweep found.
     let leaks;
     let parsed = null;
+    let unreadable = null;
     try {
-        parsed = JSON.parse(raw);
-    } catch {
+        // `raw` is already in hand, so parse THAT rather than opening the file
+        // a second time -- these captures are measured in hundreds of megabytes.
+        parsed = harDocument.parseHarDocument(raw, args.in).document;
+    } catch (e) {
+        unreadable = e;
         parsed = null;
     }
     // The merged policy is discovered from the file being verified, so a
@@ -201,14 +198,7 @@ function main() {
         process.exit(1);
     }
 
-    if (parsed) {
-        leaks = harShapes.findLeaksInHar(parsed, policy);
-        harSecrets.walkForUnredactedSecrets(parsed, (name) => {
-            leaks.push({ kind: 'known-secret', sample: name, gating: true });
-        }, { policy });
-    } else {
-        leaks = harShapes.findLeaksDeep(raw, policy);
-    }
+    leaks = parsed ? collectFindings(parsed, policy) : harShapes.findLeaksDeep(raw, policy);
 
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
     // say so rather than reporting a check that never ran as a pass.
@@ -242,9 +232,7 @@ function main() {
     //             outright would be an invisible loosening.
     const describe = (l) =>
         l.sample !== undefined ? `${l.kind}: ${l.sample}` : harShapes.describeLeak(l);
-    const gating = leaks.filter((l) => blocks(l) && !isAdvisory(l));
-    const advising = leaks.filter((l) => blocks(l) && isAdvisory(l));
-    const reported = leaks.filter((l) => !blocks(l));
+    const { gating, advising, reported } = classifyFindings(leaks);
 
     // A loosening the project chose is printed on EVERY run, clean or not.
     // `named-credential` is caught by name or not at all, so removing a name
@@ -255,6 +243,16 @@ function main() {
             `upstream secret name(s) from detection: ${policy.loosenedSecretNames.join(', ')}`);
     }
     for (const l of reported) console.error(`  ~ reported, not blocking: ${describe(l)}`);
+
+    // A capture that could not be read never reaches the clean verdict, even
+    // with an empty sweep -- especially with an empty sweep, since a document
+    // nothing could walk is exactly the one that looks cleanest.
+    if (unreadable && gating.length === 0 && advising.length === 0) {
+        console.error(`verify-scrub: ${unreadable.message}`);
+        console.error('verify-scrub: REFUSING to report this file as scrubbed -- it was swept as flat ' +
+            'text, but nothing here read it as a capture.');
+        process.exit(1);
+    }
 
     if (gating.length === 0 && advising.length === 0) {
         console.log(
@@ -312,4 +310,34 @@ function main() {
     process.exit(EXIT_GATING);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing the leak
+// gate ran the whole gate against the REQUIRING process's tree -- reading
+// `process.argv`, which belongs to the importer -- and exited that process
+// with its own verdict before `require` returned. That is #446's defect in the
+// script that decides whether live credentials reach version control, and it
+// is why #395's test compares this gate's shape rules against the scrubber's
+// by matching SOURCE TEXT: it could not import either one.
+//
+// The exit codes stay exactly where they were, inside main(). They are
+// load-bearing for capture-har.js -- 3 quarantines the capture, 4 keeps it
+// with a warning -- so nothing here touches how a command-line run ends.
+if (require.main === module) main();
+
+// The reusable surface. `main` is here so the CLI path is a callable rather
+// than a side effect of loading the file; the rest are the pure pieces a
+// caller would otherwise re-derive. The two exit codes in particular are what
+// a caller must know to read this gate's verdict, and capture-har.js currently
+// spells both of them itself.
+module.exports = {
+    main,
+    parseArgs,
+    collectFindings,
+    classifyFindings,
+    isAdvisory,
+    reportableFinding,
+    waiverFragment,
+    writeFindingsReport,
+    EXIT_GATING,
+    EXIT_ADVISORY,
+    FINDINGS_FILENAME,
+};

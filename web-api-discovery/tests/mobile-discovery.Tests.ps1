@@ -7,13 +7,13 @@
 # and the --source-label flag added to detect-auth.js.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:ImportJs   = Join-Path $script:ScriptsDir 'capture/import-mobile-app.js'
     $script:DetectJs   = Join-Path $script:ScriptsDir 'har/detect-auth.js'
-    $script:CsharpDir  = Join-Path $script:RepoRoot 'templates/web-api-discovery/csharp'
+    $script:CsharpDir  = Join-Path $script:RepoRoot 'skills/web-api-discovery/csharp'
     $script:ManifestPath = Join-Path $script:CsharpDir 'manifest.json'
-    $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
+    $script:SkillPath  = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures/har'
 
     function Invoke-Import {

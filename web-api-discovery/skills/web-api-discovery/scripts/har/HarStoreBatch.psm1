@@ -157,6 +157,30 @@ function Invoke-HarCaptureBatch {
             continue
         }
 
+        # A FAILURE THE RECORDER ALREADY WROTE DOWN, said out loud here (#450).
+        #
+        # The inventory now carries what session.json recorded: post-processing
+        # errors, and a summary the recorder could not parse back. Those were
+        # printed once, by the run that failed, and then sat on disk. An
+        # operator triaging the store months later sees only that the capture is
+        # unscrubbed -- which looks exactly like "not scrubbed yet".
+        #
+        # Warned, not declined. The stage still runs: a capture whose scrub
+        # failed for a reason since fixed SHOULD be retried, and turning a
+        # recorded failure into a refusal would strand exactly the captures this
+        # is meant to rescue. What changes is that nobody has to already know to
+        # go looking.
+        $recorded = @()
+        if ($capture.PSObject.Properties['summaryParseError'] -and $capture.summaryParseError) {
+            $recorded += "the recorder could not read back the HAR it wrote: $($capture.summaryParseError)"
+        }
+        if ($capture.PSObject.Properties['postProcessErrors'] -and $capture.postProcessErrors) {
+            $recorded += @($capture.postProcessErrors)
+        }
+        foreach ($note in $recorded) {
+            Write-Warning "$($record.Label): recorded at capture time -- $note"
+        }
+
         if (-not $Force -and (& $IsProcessed $capture)) {
             $record.Outcome = $script:OutcomeSkipped
             $record.Reason = "already $Stage -- use -Force to run it again"
@@ -282,6 +306,41 @@ function Get-HarBatchSummaryLines {
 
 <#
 .SYNOPSIS
+    The scrub's own verdict line: clean / blunted / kept with advisories /
+    refused, over the captures THIS run judged (#511).
+
+.DESCRIPTION
+    "Processed" says a scrubbed artifact came out; it does not say what it cost.
+    A capture whose leak-gate findings were BLUNTED to sentinels produced an
+    artifact with less fidelity than a clean one, and that is debt the operator
+    should be able to count without reading every reason line. REFUSED should
+    be zero: each one is a scrub defect, not a steady state.
+
+    Read off the reasons the scrub stage wrote, so it cannot disagree with the
+    per-capture lines above it. Skipped and declined captures were not judged
+    by this run and are not counted. A capture can be both blunted and
+    advisory; it is counted as blunted, the costlier of the two.
+#>
+function Get-HarScrubVerdictLine {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Results)
+
+    $clean = 0; $blunted = 0; $advisory = 0; $refused = 0
+    foreach ($r in $Results) {
+        $reason = "$($r.Reason)"
+        if ($r.Outcome -eq $script:OutcomeProcessed) {
+            if ($reason -match '(^|; )BLUNTED ') { $blunted++ }
+            elseif ($reason -match 'ADVISORY') { $advisory++ }
+            else { $clean++ }
+        }
+        elseif ($r.Outcome -eq $script:OutcomeFailed -and $reason -match 'REJECTED') { $refused++ }
+    }
+    return "Scrub verdicts: $clean clean, $blunted blunted, $advisory kept with advisories, $refused refused"
+}
+
+<#
+.SYNOPSIS
     A destination name nothing already occupies.
 
 .DESCRIPTION
@@ -308,4 +367,4 @@ function Get-HarFreeName {
 }
 
 Export-ModuleMember -Function Get-HarCaptureInventory, Invoke-HarCaptureBatch,
-    Get-HarBatchSummaryLines, Get-HarCaptureLabel, Get-HarFreeName
+    Get-HarBatchSummaryLines, Get-HarCaptureLabel, Get-HarFreeName, Get-HarScrubVerdictLine

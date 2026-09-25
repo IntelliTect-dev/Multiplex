@@ -18,8 +18,8 @@
 #     scaffold notice and every warning are written.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:TestJs     = Join-Path $script:ScriptsDir 'capture/capture-output-destination.test.js'
     $script:Wrapper    = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
     $script:WrapperText = Get-Content -LiteralPath $script:Wrapper -Raw

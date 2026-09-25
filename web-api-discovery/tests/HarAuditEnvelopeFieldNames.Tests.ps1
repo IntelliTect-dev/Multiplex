@@ -31,8 +31,8 @@
 # test file reaches the pipeline solely by being shelled out to from here.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
 }
 
 Describe 'the scrub-drift audit does not treat an envelope property name as a captured field name (issue #375)' {

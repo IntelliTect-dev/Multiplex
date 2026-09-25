@@ -18,8 +18,8 @@
 # cannot reach: Invoke-HarCatalogue.ps1.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:CataloguePs1 = Join-Path $script:ScriptsDir 'capture/Invoke-HarCatalogue.ps1'
 
     # A HAR that has been scrubbed: nothing in it the leak gate objects to.

@@ -17,8 +17,8 @@
 # would otherwise mask every other finding.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:TestJs     = Join-Path $script:ScriptsDir 'har/har-api-default.test.js'
     $script:Extractor  = Join-Path $script:ScriptsDir 'har/extract-har-reference.js'
 }

@@ -9,8 +9,8 @@
 # secret class -- is the check that has to hold in CI, not only on a desk.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:TestJs     = Join-Path $script:ScriptsDir 'har/har-policy.test.js'
     $script:IssuersJs  = Join-Path $script:ScriptsDir 'har/har-card-issuers.test.js'
     $script:DefaultJson = Join-Path $script:ScriptsDir 'har/har-policy.default.json'

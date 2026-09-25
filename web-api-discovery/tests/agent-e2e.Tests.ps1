@@ -9,11 +9,11 @@
 # stage banner. The pipeline is exercised via run-agent.js end-to-end.
 
 BeforeAll {
-    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:Runner   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/codegen/run-agent.js'
-    $script:Detect   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/har/detect-auth.js'
-    $script:RestHar  = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-rest.har'
-    $script:GqlHar   = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-graphql.har'
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:Runner   = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts/codegen/run-agent.js'
+    $script:Detect   = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts/har/detect-auth.js'
+    $script:RestHar  = Join-Path $script:RepoRoot 'tests/fixtures/har/e2e-rest.har'
+    $script:GqlHar   = Join-Path $script:RepoRoot 'tests/fixtures/har/e2e-graphql.har'
     $script:DotnetAvailable = $null -ne (Get-Command dotnet -ErrorAction SilentlyContinue)
 
     function New-OutDir {

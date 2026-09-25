@@ -30,20 +30,20 @@ har-policy.default.json      synced, stringent    -.
 
 | File | Change |
 |---|---|
-| `templates/web-api-discovery/scripts/har/har-policy.js` | **new** -- loader, merge, validation, waiver matching |
-| `templates/web-api-discovery/scripts/har/har-policy.default.json` | **new** -- the stringent baseline |
-| `templates/web-api-discovery/scripts/har/har-policy.test.js` | **new** -- merge order, floor enforcement, waiver expiry |
-| `templates/web-api-discovery/scripts/har/har-shapes.js` | Patterns gain `class`; IIN validation; findings gain location |
-| `templates/web-api-discovery/scripts/har/har-secrets.js` | Value-aware sentinel recognition; names from policy |
-| `templates/web-api-discovery/scripts/har/pii.js` | Key-tail matching; phone patterns; cookies; new types |
-| `templates/web-api-discovery/scripts/har/verify-scrub.js` | Class-aware exit; findings report; policy fragment emission |
-| `templates/web-api-discovery/scripts/har/verify-har-reference.js` | Response-truncation gate; substitution-table gate |
-| `templates/web-api-discovery/scripts/har/extract-har-reference.js` | Cap becomes opt-in; structured marker only; policy stamp |
-| `templates/web-api-discovery/scripts/har/sanitize-har.js` | Substitution tables move out of the output path |
-| `templates/web-api-discovery/scripts/capture/capture-har.js` | Quarantine instead of `unlinkSync` |
-| `templates/web-api-discovery/scripts/codegen/generate-wrapper.js` | `.gitignore` block gains `.substitutions.json` |
-| `.github/skills/web-api-discovery/SKILL.md` | Policy file, override story, dedicated-account rule |
-| `templates/web-api-discovery/README.md` | Tree listing, policy file |
+| `skills/web-api-discovery/scripts/har/har-policy.js` | **new** -- loader, merge, validation, waiver matching |
+| `skills/web-api-discovery/scripts/har/har-policy.default.json` | **new** -- the stringent baseline |
+| `skills/web-api-discovery/scripts/har/har-policy.test.js` | **new** -- merge order, floor enforcement, waiver expiry |
+| `skills/web-api-discovery/scripts/har/har-shapes.js` | Patterns gain `class`; IIN validation; findings gain location |
+| `skills/web-api-discovery/scripts/har/har-secrets.js` | Value-aware sentinel recognition; names from policy |
+| `skills/web-api-discovery/scripts/har/pii.js` | Key-tail matching; phone patterns; cookies; new types |
+| `skills/web-api-discovery/scripts/har/verify-scrub.js` | Class-aware exit; findings report; policy fragment emission |
+| `skills/web-api-discovery/scripts/har/verify-har-reference.js` | Response-truncation gate; substitution-table gate |
+| `skills/web-api-discovery/scripts/har/extract-har-reference.js` | Cap becomes opt-in; structured marker only; policy stamp |
+| `skills/web-api-discovery/scripts/har/sanitize-har.js` | Substitution tables move out of the output path |
+| `skills/web-api-discovery/scripts/capture/capture-har.js` | Quarantine instead of `unlinkSync` |
+| `skills/web-api-discovery/scripts/codegen/generate-wrapper.js` | `.gitignore` block gains `.substitutions.json` |
+| `skills/web-api-discovery/SKILL.md` | Policy file, override story, dedicated-account rule |
+| `skills/web-api-discovery/README.md` | Tree listing, policy file |
 | `.github/agents/tests/pii-scrubbing.Tests.ps1` | Follows |
 | `.github/agents/tests/scrub-scripts.Tests.ps1` | Follows |
 
@@ -329,7 +329,7 @@ contract.
 test account**, never a personal or default workspace (requirement 8). State it
 as a precondition of starting a recording, not as advice.
 
-**Task 11.3.** `templates/web-api-discovery/README.md` tree listing gains
+**Task 11.3.** `skills/web-api-discovery/README.md` tree listing gains
 `har-policy.default.json` and `.har-policy.project.json`.
 
 **Task 11.4.** `project.instructions.md.template` gains a stub pointing at

@@ -12,8 +12,8 @@
 # analyzed as data.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:CaptureDir = Join-Path $script:ScriptsDir 'capture'
     $script:CaptureJs  = Join-Path $script:CaptureDir 'capture-har.js'
     $script:CaptureTestJs = Join-Path $script:CaptureDir 'capture-har.test.js'
@@ -21,7 +21,7 @@ BeforeAll {
     $script:StopPs1    = Join-Path $script:CaptureDir 'Stop-HarRecording.ps1'
     $script:ConvertPs1 = Join-Path $script:CaptureDir 'ConvertFrom-HarCatalogue.ps1'
     $script:PromptMd   = Join-Path $script:CaptureDir 'catalogue-prompt.md'
-    $script:SkillMd    = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
+    $script:SkillMd    = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
 
     # The raw capture location is FIXED and no flag can move it. $script:Tmp is
     # outside any repository, where the root still resolves against the WORKING
@@ -851,7 +851,7 @@ Describe 'The catalogue object surface' {
         $rows = & $script:ConvertPs1 -Path $script:CataloguePath
         $rows.Count | Should -Be 2
         foreach ($row in $rows) {
-            $row.PSObject.TypeNames | Should -Contain 'IntelliSDLC.HarCapture.CatalogueEntry'
+            $row.PSObject.TypeNames | Should -Contain 'WebApiDiscovery.HarCapture.CatalogueEntry'
         }
     }
 
@@ -889,7 +889,7 @@ Describe 'The catalogue object surface' {
         Test-Path -LiteralPath $formatXml | Should -BeTrue
         [xml]$doc = Get-Content -LiteralPath $formatXml -Raw
         $doc.Configuration.ViewDefinitions.View.ViewSelectedBy.TypeName |
-            Should -Contain 'IntelliSDLC.HarCapture.CatalogueEntry'
+            Should -Contain 'WebApiDiscovery.HarCapture.CatalogueEntry'
     }
 }
 
@@ -948,7 +948,7 @@ Describe 'The repository no longer references the deleted command' {
             # Excluded: docs/designs holds historical plans, and this file
             # necessarily names the command it asserts is gone.
             $hits = & git grep -n -I 'Start-HarRecording' -- . `
-                ':!docs/designs/*' ':!.github/agents/tests/har-recording.Tests.ps1' 2>$null
+                ':!docs/designs/*' ':!tests/har-recording.Tests.ps1' 2>$null
         }
         finally { Pop-Location }
         $hits | Should -BeNullOrEmpty -Because ($hits -join "`n")

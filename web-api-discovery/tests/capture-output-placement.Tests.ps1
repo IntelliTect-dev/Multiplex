@@ -22,8 +22,8 @@
 # belief about git's output instead of git's output.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:GuardPs1   = Join-Path $script:ScriptsDir 'lib/RepoWorkflowGuard.ps1'
     $script:GuardJs    = Join-Path $script:ScriptsDir 'lib/repo-workflow-guard.js'
     $script:TestJs     = Join-Path $script:ScriptsDir 'lib/repo-workflow-guard.test.js'

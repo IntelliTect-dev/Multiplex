@@ -9,11 +9,9 @@
 # always finds the assets the skill claims exist.
 
 BeforeAll {
-    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:SkillPath = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
-    $script:AgentPath = Join-Path $script:RepoRoot '.github/agents/web-api-discovery.agent.md'
-    $script:TemplateRoot = Join-Path $script:RepoRoot 'templates/web-api-discovery'
-    $script:CopilotInstructionsPath = Join-Path $script:RepoRoot '.github/copilot-instructions.md'
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:SkillPath = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
+    $script:TemplateRoot = Join-Path $script:RepoRoot 'skills/web-api-discovery'
     $script:SkillText = Get-Content -LiteralPath $script:SkillPath -Raw
 }
 
@@ -62,24 +60,6 @@ Describe 'web-api-discovery SKILL.md' {
         # five confirmations that are meaningless for it (issue #279).
         $script:SkillText | Should -Match '(?i)Hard Gate -- recording'
         $script:SkillText | Should -Match '(?i)Hard Gate -- generation'
-    }
-
-    It 'does not let the agent stub re-impose the generation gate on a capture' {
-        # The stub is the actual invocation entry point. It restated the old
-        # single-tier gate -- "project name + namespace + output directory,
-        # auth model, and a tracking GitHub issue before any filesystem
-        # mutation" -- which re-blocks the capture-only path SKILL.md was
-        # tiered to unblock, and told the agent to ask all seven inputs up
-        # front regardless of what was asked for (issue #279).
-        $agentText = Get-Content -LiteralPath $script:AgentPath -Raw
-        # (?s) matters: the old text wrapped across lines between these two
-        # phrases, so a dot without it can never match and the guard is dead.
-        $agentText | Should -Not -Match '(?si)auth model.{0,80}before any filesystem mutation'
-        # The seven inputs may still be named -- but only scoped to the
-        # generation tier, never as an unconditional opening interrogation.
-        $agentText | Should -Match '(?i)generation tier.{0,30}ask the skill''s seven inputs'
-        # It must route to the tier that matches the request.
-        $agentText | Should -Match '(?i)capture-only'
     }
 
     It 'documents a capture-only run that stops at the reference' {
@@ -140,13 +120,9 @@ Describe 'web-api-discovery SKILL.md' {
         }
     }
 
-    It 'references the evidence-capture skill (Phase 5b)' {
-        $script:SkillText | Should -Match 'evidence-capture'
-        $script:SkillText | Should -Match 'Phase 5b'
-    }
 }
 
-Describe 'templates/web-api-discovery/' {
+Describe 'skills/web-api-discovery/' {
 
     It 'has the documented subdirectory layout' {
         foreach ($d in 'scripts', 'csharp', 'powershell', 'config') {
@@ -175,47 +151,8 @@ Describe 'templates/web-api-discovery/' {
     It 'README references the skill path, not the (removed) agent path' {
         $readmePath = Join-Path $script:TemplateRoot 'README.md'
         $readme = Get-Content -LiteralPath $readmePath -Raw
-        $readme | Should -Match '\.github/skills/web-api-discovery/SKILL\.md'
+        $readme | Should -Match '\skills/web-api-discovery/SKILL\.md'
         $readme | Should -Not -Match 'web-api-discovery\.agent\.md'
     }
 }
 
-Describe 'web-api-discovery agent stub + skill registration (issues #70, #83)' {
-
-    # Issue #70 originally migrated this scaffold from an @-agent to a pure
-    # skill (the agent file was deleted). Issue #83 reversed the file
-    # deletion to preserve `@web-api-discovery` discoverability while
-    # keeping the canonical instructions in the skill. The current
-    # invariants are therefore:
-    #   - a thin delegating agent stub DOES ship at the canonical path,
-    #   - that stub delegates to the skill (it does not duplicate it),
-    #   - both the skill (in the Skills table) and the agent stub
-    #     (in the Agents table) appear in copilot-instructions.md.
-
-    It 'ships a delegating agent stub at the canonical path' {
-        Test-Path -LiteralPath $script:AgentPath | Should -BeTrue
-        $agent = Get-Content -LiteralPath $script:AgentPath -Raw
-        # The stub must delegate to the skill rather than duplicating it.
-        $agent | Should -Match 'skills/web-api-discovery/SKILL\.md'
-    }
-
-    It 'lists the skill in the Skills table of copilot-instructions.md' {
-        $instructions = Get-Content -LiteralPath $script:CopilotInstructionsPath -Raw
-        $skillsSection = [regex]::Match(
-            $instructions,
-            '(?s)###\s+Skills\b.*?(?=\n###\s)'
-        ).Value
-        $skillsSection | Should -Not -BeNullOrEmpty
-        $skillsSection | Should -Match '`web-api-discovery`'
-    }
-
-    It 'lists the agent stub in the Agents table of copilot-instructions.md' {
-        $instructions = Get-Content -LiteralPath $script:CopilotInstructionsPath -Raw
-        $agentsSection = [regex]::Match(
-            $instructions,
-            '(?s)###\s+Agents\b.*?(?=\n###\s|\z)'
-        ).Value
-        $agentsSection | Should -Not -BeNullOrEmpty
-        $agentsSection | Should -Match 'web-api-discovery\.agent\.md'
-    }
-}

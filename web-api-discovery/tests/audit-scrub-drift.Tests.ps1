@@ -11,8 +11,8 @@
 # catch.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:AuditJs    = Join-Path $script:ScriptsDir 'har/audit-scrub-drift.js'
     $script:TestJs     = Join-Path $script:ScriptsDir 'har/audit-scrub-drift.test.js'
 }

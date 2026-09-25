@@ -10,7 +10,7 @@
 // identifiers. It must never be defaulted and never committed, so an absent
 // or malformed profile is a hard failure that names the file -- see the
 // "Scrubbing is two controls, not one" guidance in
-// `.github/skills/web-api-discovery/SKILL.md`.
+// `skills/web-api-discovery/SKILL.md`.
 
 'use strict';
 

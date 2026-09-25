@@ -125,7 +125,7 @@ Neither file was modified.
 ## Verification
 
 `.github/agents/tests/HarCaptureOutputPlacement.Tests.ps1` (CI wrapper) ->
-`templates/web-api-discovery/scripts/capture/capture-output-destination.test.js`
+`skills/web-api-discovery/scripts/capture/capture-output-destination.test.js`
 (23 assertions: 12 falsifiers, plus guards).
 
 Every falsifier was **ablated**: the behaviour it names was broken, the suite

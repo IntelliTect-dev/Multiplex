@@ -14,14 +14,18 @@
 #                                    emitted waiver fragment actually works.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
 }
 
 Describe 'scrub rejection is non-destructive' {
     It 'runs <Name> and all of its behavioral assertions pass' -ForEach @(
         @{ Name = 'capture/capture-quarantine.test.js';    Expect = 'All capture-quarantine tests passed' }
         @{ Name = 'har/verify-scrub-findings.test.js';     Expect = 'All verify-scrub-findings tests passed' }
+        # #511 -- the floor under the scrub: blunt what the gate would block,
+        # never withhold the artifact.
+        @{ Name = 'har/har-blunt.test.js';                 Expect = 'All har-blunt tests passed' }
+        @{ Name = 'har/sanitize-har-blunt.test.js';        Expect = 'All sanitize-har-blunt tests passed' }
     ) {
         $testJs = Join-Path $script:ScriptsDir $Name
         Test-Path -LiteralPath $testJs | Should -BeTrue
@@ -46,7 +50,7 @@ Describe 'the PowerShell front door understands the advisory exit code' {
     # which would be false for 7, and would send the operator looking for a
     # capture that is sitting right where it belongs.
     It 'maps exit 7 to a warning that keeps going, not to the no-catalogue error' {
-        $wrapper = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
+        $wrapper = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
         $text = Get-Content -LiteralPath $wrapper -Raw
         $text | Should -Match '(?m)^\s*7\s*\{'
     }
@@ -56,7 +60,7 @@ Describe 'the PowerShell front door understands the advisory exit code' {
     # says where. An arm that asserts the usual location sends the operator
     # hunting for a file that is not there, in the one case they most need it.
     It 'does not hard-code where the findings report will be' {
-        $wrapper = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
+        $wrapper = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
         $text = Get-Content -LiteralPath $wrapper -Raw
         $arm = [regex]::Match($text, '(?ms)^\s*7\s*\{.*?^\s*\}').Value
         # Comments stripped first: this file EXPLAINS the rule in prose right

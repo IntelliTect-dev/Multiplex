@@ -118,8 +118,8 @@ BeforeAll {
         return @($TestFileName | Where-Object { -not $runnerText.Contains($_) })
     }
 
-    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
 
     $script:NodeTests = @(
         Get-ChildItem -LiteralPath $script:ScriptsDir -Recurse -File -Filter '*.test.js' |
@@ -160,13 +160,13 @@ Describe 'Node test files are covered by a Pester wrapper' {
         $script:WrapperText.Count | Should -BeGreaterThan 0
     }
 
-    It 'every *.test.js under templates/web-api-discovery/scripts is named by a wrapper' {
+    It 'every *.test.js under skills/web-api-discovery/scripts is named by a wrapper' {
         $orphans = Get-OrphanNodeTest -TestFileName $script:NodeTests -WrapperText $script:WrapperText
 
         $orphans -join ', ' | Should -BeExactly '' -Because (
-            'CI runs Pester over ./.github only, so a Node test no wrapper names never ' +
+            'CI runs Pester over ./tests only, so a Node test no wrapper names never ' +
             'runs on the pull request while still reporting green. Add a wrapper in ' +
-            '.github/agents/tests/ that invokes it and asserts $LASTEXITCODE is 0.')
+            'tests/ that invokes it and asserts $LASTEXITCODE is 0.')
     }
 }
 

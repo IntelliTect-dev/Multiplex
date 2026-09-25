@@ -10,7 +10,7 @@
 // (`{"h":"1:<b64>:<mime>:<token>:e:<expiry>:<sig>"}`). These need to be
 // redacted by field identity / shape, not by generic pattern -- see the
 // "Capturing traffic reliably" / Phase 8 secret-inventory guidance in
-// `.github/skills/web-api-discovery/SKILL.md`.
+// `skills/web-api-discovery/SKILL.md`.
 
 'use strict';
 

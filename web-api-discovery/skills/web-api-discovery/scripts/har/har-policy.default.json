@@ -2,9 +2,9 @@
   "_comment": [
     "har-policy.default.json -- the stringent scrub baseline (issue #297, Stage 1).",
     "",
-    "This file is synced from IntelliSDLC.ai and is NOT the place a consuming",
+    "This file ships with web-api-discovery and is NOT the place a consuming",
     "project records its own posture: write .har-policy.project.json instead,",
-    "which merges over this file and survives the next sync.",
+    "which merges over this file and survives the next update.",
     "",
     "RULES ONLY, NEVER VALUES. Names, patterns and decisions live here and are",
     "reviewable in a diff. A raw identity value belongs in the gitignored",

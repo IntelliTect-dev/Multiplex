@@ -28,7 +28,7 @@
     The catalogue.json written into the capture's output path.
 
 .OUTPUTS
-    IntelliSDLC.HarCapture.CatalogueEntry
+    WebApiDiscovery.HarCapture.CatalogueEntry
 
 .EXAMPLE
     ConvertFrom-HarCatalogue.ps1 -Path ./app.example.com/catalogue.json |
@@ -36,7 +36,7 @@
 #>
 
 [CmdletBinding()]
-[OutputType('IntelliSDLC.HarCapture.CatalogueEntry')]
+[OutputType('WebApiDiscovery.HarCapture.CatalogueEntry')]
 param(
     [Parameter(Mandatory, Position = 0)]
     [string]$Path
@@ -65,7 +65,7 @@ $entries = $raw | ConvertFrom-Json
 
 foreach ($entry in @($entries)) {
     [pscustomobject]@{
-        PSTypeName  = 'IntelliSDLC.HarCapture.CatalogueEntry'
+        PSTypeName  = 'WebApiDiscovery.HarCapture.CatalogueEntry'
         Action      = $entry.Action
         Description = $entry.Description
         Provider    = $entry.Provider

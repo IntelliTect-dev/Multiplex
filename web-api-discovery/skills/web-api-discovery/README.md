@@ -1,7 +1,7 @@
-# web-api-discovery templates
+# web-api-discovery tooling
 
-Reusable assets consumed by the [`web-api-discovery`](../../.github/skills/web-api-discovery/SKILL.md)
-skill when it scaffolds a new .NET API-wrapper project from a probed website.
+Reusable assets consumed by the [`web-api-discovery`](SKILL.md) skill (`skills/web-api-discovery/SKILL.md`)
+when it scaffolds a new .NET API-wrapper project from a probed website.
 
 These files are **input** to the skill, not generated **by** the skill. The
 skill reads them, performs token substitution, and writes the result into the
@@ -10,7 +10,7 @@ user's chosen output directory.
 ## Layout
 
 ```
-templates/web-api-discovery/
+skills/web-api-discovery/
 ├── README.md            # this file
 ├── scripts/             # Node + PowerShell tooling, grouped by concern
 │   ├── capture/         # record, scrub and catalogue a live session

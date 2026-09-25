@@ -12,17 +12,10 @@
  *                     [--authors <s>] [--description <s>]
  *                     [--repository-url <s>] [--package-tags <s>]
  *                     [--fixed-time <iso8601>]
- *                     [--sdlc-script <path>] [--sdlc-yes | --no-sdlc]
- *
- * SDLC integration (optional final stage): when --sdlc-yes is passed and a
- * Pull-SDLC.ai.ps1 script is discovered (via --sdlc-script, IntelliSDLC_AI_PATH,
- * or a sibling clone), the script is invoked with cwd=<out> to pull shared
- * IntelliSDLC.ai instructions into the freshly generated project. Default in
- * non-interactive mode (no TTY) is to skip the stage and print a one-line hint.
  *
  * Exit codes:
  *   0 -- all stages succeeded
- *   2 -- usage / argument error (incl. mutually exclusive SDLC flags)
+ *   2 -- usage / argument error
  *   N -- exit code of the first failing sub-step (passed through unchanged)
  */
 
@@ -31,7 +24,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const sdlc = require('./sdlc-integration.js');
 const harProfile = require('../har/har-profile.js');
 // The canonical substitution-table filenames, imported rather than re-spelled
 // (issue #446). A local copy here would silently stop matching the tables the
@@ -91,13 +83,6 @@ function main() {
     if (!args.out) usage('missing --out');
     if (!args.project) usage('missing --project');
     if (!args.namespace) usage('missing --namespace');
-
-    // Validate mutually-exclusive SDLC flags up-front so we fail fast (exit 2)
-    // before doing any expensive HAR processing.
-    if (args['sdlc-yes'] === true && args['no-sdlc'] === true) {
-        process.stderr.write('run-agent: --sdlc-yes and --no-sdlc are mutually exclusive\n');
-        process.exit(2);
-    }
 
     const har = path.resolve(args.har);
     if (!fs.existsSync(har)) {
@@ -205,24 +190,13 @@ function main() {
     ];
     runStage('generate-wrapper', process.execPath, genArgs);
 
-    // Stage 5 (optional): SDLC integration. Default is a no-op when stdin is
-    // not a TTY -- preserves the unattended-safety contract of e2e tests.
-    // scaffoldRepoRoot points at the IntelliSDLC.ai checkout that contains
-    // this scaffold (used for the sibling-discovery fallback).
-    const scaffoldRepoRoot = path.resolve(scriptsDir, '..', '..', '..');
-    const sdlcResult = sdlc.runSdlcStage({
-        outDir,
-        args,
-        isTTY: !!(process.stdin && process.stdin.isTTY),
-        env: process.env,
-        scaffoldRepoRoot,
-        transcriptPath,
-    });
-    if (sdlcResult.outcome === 'error') {
-        process.exit(sdlcResult.exitCode || 2);
-    }
-
     process.stdout.write(`==> Done. Wrapper project written to ${outDir}\n`);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing the
+// pipeline driver ran every stage against the requiring process's tree. It is
+// also why PR #455 had to verify this file's consolidation onto
+// subs-destination.js by READING it rather than by requiring it.
+if (require.main === module) main();
+
+module.exports = { main, parseArgs };

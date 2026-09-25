@@ -25,7 +25,7 @@ This is a pure move-and-rewrite refactor. No script behavior changes.
 |---|---|
 | `.github/skills/api-wrapper-scaffold/` | `.github/skills/web-api-discovery/` |
 | `.github/agents/api-wrapper-scaffold.agent.md` | `.github/agents/web-api-discovery.agent.md` |
-| `templates/api-wrapper-scaffold/` | `templates/web-api-discovery/` |
+| `templates/api-wrapper-scaffold/` | `skills/web-api-discovery/` |
 
 Skill/agent `name:` becomes `web-api-discovery` / `"Web API Discovery"`. The
 `description:` is rewritten to lead with recording:
@@ -45,7 +45,7 @@ Grouped by **concern**, tests **co-located with their subject** (decision
 below), giving three folders and no fourth `tests/` heap:
 
 ```
-templates/web-api-discovery/scripts/
+skills/web-api-discovery/scripts/
 ├── capture/   4 src,  0 test
 ├── har/      12 src,  7 test
 └── codegen/   8 src,  5 test
@@ -114,8 +114,8 @@ coverage for this change.
 
 - [ ] **T1 (red).** `Pull-SDLC.ai.Tests.ps1`: pin both halves of the
       `*.test.js` carve-out at the *new* paths --
-      `templates/web-api-discovery/scripts/har/har-literals.test.js` is
-      upstream-private; `templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl`
+      `skills/web-api-discovery/scripts/har/har-literals.test.js` is
+      upstream-private; `skills/web-api-discovery/csharp/tests/ClientTests.cs.tmpl`
       is **not**. Fails before the move (paths do not exist / stale name).
 - [ ] **T2.** `git mv` the three trees to the `web-api-discovery` name.
 - [ ] **T3.** `git mv` the 36 script files into `capture/`, `har/`, `codegen/`.
@@ -125,7 +125,7 @@ coverage for this change.
 - [ ] **T5.** Rewrite external references: `.github/copilot-instructions.md`
       (skills + agents tables), the agent stub, `SKILL.md` self-references,
       `.github/agents/tests/*.Tests.ps1` (`$script:ScriptsDir` roots),
-      `templates/web-api-discovery/README.md`, `csharp/tests/manifest.json`,
+      `skills/web-api-discovery/README.md`, `csharp/tests/manifest.json`,
       `scripts/run-dogfood.ps1`, `Pull-SDLC.ai.ps1` comments.
 - [ ] **T6.** Update skill + agent `name:` and `description:` frontmatter.
 - [ ] **T7 (green).** `Invoke-Pester ./Pull-SDLC.ai.Tests.ps1`,

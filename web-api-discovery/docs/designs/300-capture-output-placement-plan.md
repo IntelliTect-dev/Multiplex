@@ -47,10 +47,10 @@ returns `True` inside an agent session and is unusable. Use `[Console]::IsInputR
 
 ### 1. Shared guard, two runtimes, one pinned decision table
 
-- `templates/web-api-discovery/scripts/lib/RepoWorkflowGuard.ps1` --
+- `skills/web-api-discovery/scripts/lib/RepoWorkflowGuard.ps1` --
   `Assert-NotPrimaryCheckoutOnProtectedBranch`, dot-sourced by the PowerShell front doors.
   Returns `$true` (proceed) / `$false` (operator cancelled).
-- `templates/web-api-discovery/scripts/lib/repo-workflow-guard.js` -- same three probes,
+- `skills/web-api-discovery/scripts/lib/repo-workflow-guard.js` -- same three probes,
   used by `capture-har.js` so the direct-`node` entry point is not a hole.
 - A behavior test drives **both** over one table of repo shapes and asserts they reach the
   same decision -- the pattern already used to pin `Get-HarUriFolder` against `uriFolder()`.

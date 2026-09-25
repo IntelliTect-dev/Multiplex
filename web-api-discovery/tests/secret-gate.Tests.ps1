@@ -6,11 +6,11 @@
 # (tests-templates).
 
 BeforeAll {
-    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:ScriptsDir   = Join-Path $script:RepoRoot "templates/web-api-discovery/scripts"
+    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\") | Select-Object -ExpandProperty Path
+    $script:ScriptsDir   = Join-Path $script:RepoRoot "skills/web-api-discovery/scripts"
     $script:GenJs        = Join-Path $script:ScriptsDir "codegen/generate-wrapper.js"
-    $script:SgTmplDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/secret-gate"
-    $script:RestHar      = Join-Path $script:RepoRoot ".github/agents/tests/fixtures/har/rest-3endpoints.har"
+    $script:SgTmplDir    = Join-Path $script:RepoRoot "skills/web-api-discovery/secret-gate"
+    $script:RestHar      = Join-Path $script:RepoRoot "tests/fixtures/har/rest-3endpoints.har"
     $script:GitleaksCmd  = Get-Command gitleaks -ErrorAction SilentlyContinue
     . (Join-Path $PSScriptRoot 'GitleaksGuard.ps1')
 
@@ -311,7 +311,7 @@ Describe "This repo's own CI installs gitleaks (issue #312)" {
     # ever executed. Installing it in the Pester job is what makes them real; this
     # test keeps the install step from being dropped again.
     BeforeAll {
-        $script:CiYmlPath = Join-Path $script:RepoRoot ".github/workflows/validate-instructions.yml"
+        $script:CiYmlPath = Join-Path $script:RepoRoot ".github/workflows/ci.yml"
         $script:CiYml     = Get-Content -Raw $script:CiYmlPath
     }
 

@@ -12,7 +12,7 @@
     that looks like a real consumer's so the scrub gets far enough to exercise
     what they are actually testing.
 
-    This is the PowerShell twin of templates/web-api-discovery/scripts/har/
+    This is the PowerShell twin of skills/web-api-discovery/scripts/har/
     har-test-repo.js. The entries are the subset of generate-wrapper.js's
     SCAFFOLD_GITIGNORE_ENTRIES that protects the tables; a fixture wants a
     protected repo, not a copy of whatever that list happens to say.

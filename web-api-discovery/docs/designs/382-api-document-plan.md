@@ -17,7 +17,7 @@ discovery.
 
 ### One script, three jobs
 
-`templates/web-api-discovery/scripts/har/generate-api-document.js`
+`skills/web-api-discovery/scripts/har/generate-api-document.js`
 
 ```
 node generate-api-document.js --dir <provider-dir> [--check]
@@ -188,7 +188,7 @@ here reads or writes them, so the two changes do not collide.
 - [ ] Task 11 — Pester wrapper `.github/agents/tests/api-document.Tests.ps1`
       so the Node test runs in CI (node-test-coverage guard).
 - [x] Task 12 — document the phase and the CI gate in
-      `.github/skills/web-api-discovery/SKILL.md`.
+      `skills/web-api-discovery/SKILL.md`.
 
 ## Ablation log
 
