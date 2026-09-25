@@ -258,7 +258,7 @@ function Write-DogfoodReport {
 # =====================================================================
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
-$scriptsDir = Join-Path $repoRoot 'templates/web-api-discovery/scripts'
+$scriptsDir = Join-Path $repoRoot 'skills/web-api-discovery/scripts'
 $runAgent   = Join-Path $scriptsDir 'codegen/run-agent.js'
 
 if (-not (Test-Path $runAgent)) {
@@ -319,7 +319,6 @@ Write-Host "[dogfood] Running run-agent.js -> $wrapperDir" -ForegroundColor Cyan
     --project 'TripIt' `
     --namespace 'TripIt' `
     --base-url 'https://api.tripit.com' `
-    --no-sdlc `
     --fixed-time '2025-01-01T00:00:00Z'
 $agentExit = $LASTEXITCODE
 if ($agentExit -ne 0) { throw "run-agent.js failed (exit $agentExit)" }

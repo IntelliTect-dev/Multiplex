@@ -89,6 +89,9 @@ const REGIONS = ['ZZ','XA','XB','XC','XD','XE','XF','XG','XH','XI'];
 // carries `exact` (whole-key names), `tail` (trailing words that denote the
 // type) and `qualifiers` -- the words allowed to precede an ambiguous tail, or
 // the string `any` where the tail speaks for itself. See `fieldTypeFor`.
+// One place recognises a value as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require('./har-document.js');
 const harPolicy = require('./har-policy.js');
 // ONE definition of "credit card", consumed rather than copied (issue #334).
 // `har-shapes.js` is the gate; it requires an assigned issuer identifier at a
@@ -759,7 +762,11 @@ function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
  */
 function detectPii(har, policy) {
     const out = [];
-    const entries = (har && har.log && har.log.entries) || [];
+    // Recognised, not folded (issue #423). Every path here comes through
+    // sanitize-har's guarded read, so this cannot fire in practice -- which is
+    // the point: the day a new caller forgets the read, the scrub says so
+    // instead of reporting a document it never walked as carrying no PII.
+    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
     entries.forEach((entry, entryIndex) => {
         // headers
         const allHeaders = [
@@ -1121,7 +1128,7 @@ function scrubPii(har, policy) {
         return String(b.value).length - String(a.value).length;
     });
 
-    const entries = (har && har.log && har.log.entries) || [];
+    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
     for (const entry of entries) {
         applyReplacementsToEntry(entry, replacements, policy);
     }
@@ -1451,6 +1458,39 @@ function indexFor(replacements) {
         const typeKey = `${r.type}${v}`;
         if (!byTypeValue.has(typeKey)) byTypeValue.set(typeKey, r);
         if (v.length === 0) continue;
+
+        // ONLY A STRING GETS A NEEDLE (issue #529).
+        //
+        // `replaceInJson` already states the rule for the other direction: a
+        // coordinate "is the one type replaced by FIELD NAME alone, without
+        // consulting the replacement set -- a number has no string form to
+        // enrol". Enrolling one here contradicted that, and the contradiction
+        // was not academic. A detected coordinate is a NUMBER, so `String(5)`
+        // became the needle `5`, matched EVERY `5` in EVERY string in the
+        // document, and replaced it with the coordinate fake `0`. The
+        // `boundary` guard below cannot catch this: it only fires for a purely
+        // alphabetic value.
+        //
+        // The observed cost on one capture: `/v4/` became `/v0/`, content
+        // hashes and image dimensions were rewritten into fiction, and -- the
+        // reason it surfaced at all -- the `-1` needle ate the hyphen out of
+        // the scrubber's OWN `redacted-1...` sentinel, so the gate read the
+        // redaction as a live credential and quarantined a clean capture.
+        //
+        // NOT scoped to `geo-coordinates`, because the type is not what makes
+        // it wrong: a float coordinate corrupts text the same way (`34.05`
+        // inside a price or a version string), just less visibly. The
+        // discriminating fact is that the detected value has no text spelling
+        // to look for.
+        //
+        // This costs no reach. A non-string value is replaced by the number
+        // branch of `replaceInJson`, never by a text match, and a coordinate
+        // spelled as a STRING is not detected as one at all -- the geo branch
+        // of `detectInValue` requires `typeof value === 'number'`. What is lost
+        // is an accident: a numeric `47.6205` in one body also scrubbed the
+        // text `?lat=47.6205` in an unrelated URL, which was the wrong engine
+        // papering over a detection gap.
+        if (typeof r.value !== 'string') continue;
 
         // Context-typed values (person-name etc.) may have very short literals
         // (e.g. "Alice") that risk false-positive matches inside unrelated

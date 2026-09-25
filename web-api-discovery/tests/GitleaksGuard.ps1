@@ -72,7 +72,7 @@ function Assert-GitleaksAvailable {
             'The secret-detection tests must not silently skip in CI -- a green suite ' +
             'would then carry no evidence that the secret gate detects anything. ' +
             'Install gitleaks in the workflow (see the "Install gitleaks" step in ' +
-            '.github/workflows/validate-instructions.yml) or fix PATH.'
+            '.github/workflows/ci.yml) or fix PATH.'
         throw $message
     }
 

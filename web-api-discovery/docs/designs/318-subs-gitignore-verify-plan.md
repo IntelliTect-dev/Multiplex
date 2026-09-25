@@ -52,14 +52,14 @@ the filesystem untouched -- no partial scrubbed output, and no created
 
 | File | Change |
 |---|---|
-| `templates/web-api-discovery/scripts/har/subs-destination.js` | **new** -- `classifyDestination()` (git probes) + `refusalMessage()` |
-| `templates/web-api-discovery/scripts/har/subs-destination.test.js` | **new** -- unit behavior of the classifier over real temp repos |
-| `templates/web-api-discovery/scripts/har/sanitize-har.js` | Gate the derived defaults; fail-fast before any write; usage text |
-| `templates/web-api-discovery/scripts/har/substitution-table-gitignore.test.js` | **new** -- end-to-end CLI behavior of the gate |
-| `templates/web-api-discovery/scripts/har/substitution-table-location.test.js` | Existing #294 tests get real repos + `.gitignore`, so they still describe a supported configuration |
+| `skills/web-api-discovery/scripts/har/subs-destination.js` | **new** -- `classifyDestination()` (git probes) + `refusalMessage()` |
+| `skills/web-api-discovery/scripts/har/subs-destination.test.js` | **new** -- unit behavior of the classifier over real temp repos |
+| `skills/web-api-discovery/scripts/har/sanitize-har.js` | Gate the derived defaults; fail-fast before any write; usage text |
+| `skills/web-api-discovery/scripts/har/substitution-table-gitignore.test.js` | **new** -- end-to-end CLI behavior of the gate |
+| `skills/web-api-discovery/scripts/har/substitution-table-location.test.js` | Existing #294 tests get real repos + `.gitignore`, so they still describe a supported configuration |
 | `.github/agents/tests/subs-destination.Tests.ps1` | **new** -- Pester wrapper (CI runs Pester over `./.github` only) |
 | `.github/agents/tests/substitution-table-gitignore.Tests.ps1` | **new** -- Pester wrapper |
-| `.github/skills/web-api-discovery/SKILL.md` | Correct "gitignored by construction" to "verified gitignored"; document the refusal |
+| `skills/web-api-discovery/SKILL.md` | Correct "gitignored by construction" to "verified gitignored"; document the refusal |
 
 ---
 

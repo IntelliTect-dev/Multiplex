@@ -3,7 +3,7 @@
 - **Issue:** [#297](https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/297)
 - **Status:** a record of a moment, **closed on the day #297's stages landed**.
   Do not append to it. The rules are summarised as imperatives in
-  `.github/skills/web-api-discovery/SKILL.md` (Phase 3); this file carries the
+  `skills/web-api-discovery/SKILL.md` (Phase 3); this file carries the
   argument and the measurements behind them.
 - **It describes the subsystem as of this commit, not necessarily as of the day
   you are reading it.** #297 closed with follow-on work still open — the scrub's

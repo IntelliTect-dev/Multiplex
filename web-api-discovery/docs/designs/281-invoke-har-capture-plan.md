@@ -13,13 +13,13 @@ breakdown; it does not restate the rationale.
 
 | File | Change |
 |---|---|
-| `templates/web-api-discovery/scripts/capture/capture-har.js` | The bulk: recorder rework, port fallback, preflight, endings, post-process phases, digest, exit codes |
-| `templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | **New.** Six-parameter front door emitting catalogue objects |
-| `templates/web-api-discovery/scripts/capture/Start-HarRecording.ps1` | **Deleted.** No alias, no shim |
-| `templates/web-api-discovery/scripts/capture/HarCapture.Format.ps1xml` | **New.** Default display members for the catalogue type |
-| `templates/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | Waits for `postProcess`; reports both paths |
-| `.github/skills/web-api-discovery/SKILL.md` | One-command capture; catalogue required; observed-not-exercised |
-| `templates/web-api-discovery/README.md` | Tree listing |
+| `skills/web-api-discovery/scripts/capture/capture-har.js` | The bulk: recorder rework, port fallback, preflight, endings, post-process phases, digest, exit codes |
+| `skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | **New.** Six-parameter front door emitting catalogue objects |
+| `skills/web-api-discovery/scripts/capture/Start-HarRecording.ps1` | **Deleted.** No alias, no shim |
+| `skills/web-api-discovery/scripts/capture/HarCapture.Format.ps1xml` | **New.** Default display members for the catalogue type |
+| `skills/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | Waits for `postProcess`; reports both paths |
+| `skills/web-api-discovery/SKILL.md` | One-command capture; catalogue required; observed-not-exercised |
+| `skills/web-api-discovery/README.md` | Tree listing |
 | `.gitignore` | Comment no longer describes a redirectable raw directory |
 | `.github/agents/tests/har-recording.Tests.ps1` | Rewritten around the new contract |
 | `.github/agents/tests/web-api-discovery.Tests.ps1` | `Start-HarRecording` -> `Invoke-HarCapture` |
@@ -153,7 +153,7 @@ A catalogue failure is a post-process failure -- exit **6**, `raw.har` intact.
     exposes exactly `Uri, OutputPath, Describe, Profile, Isolated, Port`.
 22. **Test (red):** `Start-HarRecording.ps1` no longer exists.
 23. **Test (red):** the emitted objects carry
-    `PSTypeName = 'IntelliSDLC.HarCapture.CatalogueEntry'` and survive
+    `PSTypeName = 'WebApiDiscovery.HarCapture.CatalogueEntry'` and survive
     `ConvertTo-Json` with no status text in the pipeline.
 24. **Test (red):** `Invoke-ScriptAnalyzer` reports no `PSAvoidUsingWriteHost`
     across `scripts/capture/`.
@@ -172,7 +172,7 @@ A catalogue failure is a post-process failure -- exit **6**, `raw.har` intact.
 
 28. **Test (red):** zero repo-wide references to `Start-HarRecording` remain.
 29. Update SKILL.md (Phase 2 one-command capture, Phase 3.5 catalogue required,
-    an "Observed, not exercised" section), `templates/web-api-discovery/README.md`,
+    an "Observed, not exercised" section), `skills/web-api-discovery/README.md`,
     the `.gitignore` comment, `.github/agents/web-api-discovery.agent.md`, and
     the `Pull-SDLC.ai.Tests.ps1` carve-out fixtures.
 30. Leak scan: instruction text stays generic -- no consuming-project or domain
@@ -184,7 +184,7 @@ A catalogue failure is a post-process failure -- exit **6**, `raw.har` intact.
 Invoke-Pester -Path .github/agents/tests/har-recording.Tests.ps1,
                     .github/agents/tests/web-api-discovery.Tests.ps1,
                     Pull-SDLC.ai.Tests.ps1
-Invoke-ScriptAnalyzer -Path templates/web-api-discovery/scripts/capture -Recurse
+Invoke-ScriptAnalyzer -Path skills/web-api-discovery/scripts/capture -Recurse
 ```
 
 ## Acceptance criteria

@@ -8,13 +8,13 @@
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'fixtures/ProtectedFixtureRepo.ps1')
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'
     $script:VerifyJs   = Join-Path $script:ScriptsDir 'har/verify-scrub.js'
     $script:PiiJs      = Join-Path $script:ScriptsDir 'har/pii.js'
     $script:EnrichJs   = Join-Path $script:ScriptsDir 'har/pii-enrich.js'
-    $script:Planted    = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/pii-planted.har'
+    $script:Planted    = Join-Path $script:RepoRoot 'tests/fixtures/har/pii-planted.har'
 
     function New-LegacyHar {
         param([Parameter(Mandatory)][string]$Path)

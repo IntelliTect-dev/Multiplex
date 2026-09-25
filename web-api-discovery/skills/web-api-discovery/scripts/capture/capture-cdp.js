@@ -64,16 +64,30 @@ async function main() {
         process.exit(0);
     }
 
-    let playwright;
-    try {
-        playwright = require('playwright');
-    } catch (e) {
-        console.error('capture-cdp: playwright module not found. Run `npm install playwright` first.');
+    // The same four-location search the recorder uses (#512), and for the same
+    // reason: a bare `require` here resolved upward from THIS file, so an
+    // install in the folder the operator was standing in was invisible, and
+    // the advice to make one there could not work.
+    const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
+    const resolved = nodeDep.resolvePlaywright({ toolDir: __dirname });
+    if (!resolved.found) {
+        console.error('capture-cdp: ' + nodeDep.describeMissing(nodeDep.PLAYWRIGHT, resolved,
+            { browser: nodeDep.chromiumPresent({}) }));
         process.exit(1);
     }
+    // The browser binary is its own fact here too. Without this the run reaches
+    // launchPersistentContext and fails with Playwright's raw error, which is
+    // the pre-fix experience the recorder no longer has -- and the two entry
+    // points refusing on different terms is what #512 set out to end.
+    if (!nodeDep.chromiumPresent({})) {
+        console.error('capture-cdp: the playwright module is installed, but its Chromium ' +
+            'build is not.\n  ' + nodeDep.BROWSER_INSTALL_COMMAND);
+        process.exit(1);
+    }
+    const playwright = require(resolved.path);
 
     const projectUA = process.env.CAPTURE_USER_AGENT
-        || 'web-api-discovery/0.1 (+https://github.com/IntelliTect-Samples/IntelliSDLC.ai)';
+        || 'web-api-discovery/0.1 (+https://github.com/IntelliTect-Samples/web-api-discovery)';
     const throttleMs = Number(args['throttle-ms']) || 1000;
 
     const browser = await playwright.chromium.launch({ headless: !!args.headless });
@@ -113,7 +127,14 @@ async function main() {
     process.exit(0);
 }
 
-main().catch((err) => {
-    console.error('capture-cdp: ' + (err && err.stack ? err.stack : err));
-    process.exit(1);
-});
+// A CLI, and a module (issue #456). The rejection handler stays with the call
+// it handles, inside the guard: `main` is async, so without it the promise --
+// and the browser launch behind it -- started during the require.
+if (require.main === module) {
+    main().catch((err) => {
+        console.error('capture-cdp: ' + (err && err.stack ? err.stack : err));
+        process.exit(1);
+    });
+}
+
+module.exports = { main, parseArgs };

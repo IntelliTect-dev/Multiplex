@@ -6,8 +6,8 @@
 # 8 hand-crafted synthetic HAR fixtures (one per supported AuthModel + ambiguous).
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:DetectJs   = Join-Path $script:ScriptsDir 'har/detect-auth.js'
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures/har'
 

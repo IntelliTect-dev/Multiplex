@@ -28,8 +28,8 @@
 # `node --test <dir>` is deliberately not used: it fails on Node 26.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:HarDir     = Join-Path $script:ScriptsDir 'har'
     $script:TestJs     = Join-Path $script:HarDir 'har-nested-reach.test.js'
 }

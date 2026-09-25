@@ -5,8 +5,8 @@
 # Mirrors the structure of csharp-templates.Tests.ps1 (issue #38).
 
 BeforeAll {
-    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:CsharpDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/csharp"
+    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\") | Select-Object -ExpandProperty Path
+    $script:CsharpDir    = Join-Path $script:RepoRoot "skills/web-api-discovery/csharp"
     $script:ManifestPath = Join-Path $script:CsharpDir "manifest.json"
 
     $script:Tokens = [ordered]@{

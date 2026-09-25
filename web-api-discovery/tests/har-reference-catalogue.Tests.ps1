@@ -7,9 +7,9 @@
 # convention the tooling enforces -- a gate nobody can find is not a gate.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
-    $script:Skill      = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
+    $script:Skill      = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
     $script:SkillText  = Get-Content -LiteralPath $script:Skill -Raw
 
     function Invoke-NodeTest {

@@ -1,6 +1,6 @@
 ---
 name: web-api-discovery
-description: "Record a web session to a HAR, scrub it, and extract a reviewable API reference from the observed traffic -- then optionally generate a complete buildable .NET wrapper project from it (typed client + PowerShell module + MCP server + tests + security gates). A capture that stops at the reference is a first-class outcome. Companion to the dev-loop. Use when the user asks to 'record' or 'capture' a site's network traffic or a HAR, 'discover an undocumented API', 'wrap an API', or 'generate a client from a website'."
+description: "Record a web session to a HAR, scrub it, and extract a reviewable API reference from the observed traffic -- then optionally generate a complete buildable .NET wrapper project from it (typed client + PowerShell module + MCP server + tests + security gates). A capture that stops at the reference is a first-class outcome. Works in any folder, including an empty one, and with any AI agent that reads Agent Skills. Use when the user asks to 'record' or 'capture' a site's network traffic or a HAR, 'discover an undocumented API', 'wrap an API', or 'generate a client from a website'."
 ---
 
 # Web API Discovery
@@ -17,13 +17,16 @@ generate a wrapper at all.
 
 Where it does continue, this is a **generation** skill, not a maintenance
 skill. After the first successful run the resulting project owns its own
-dev-loop (via the standard `@dev-loop` agent). Re-running this skill against
+development workflow. Re-running this skill against
 the same project updates only generated artifacts (`*.g.cs`) and HAR samples;
 user-edited code in sibling partial classes is preserved.
 
-> Every internal change to this skill itself must follow Phase 5b of
-> [`dev-loop.agent.md`](../../agents/dev-loop.agent.md) (Evidence & Verify)
-> -- see [`../evidence-capture/SKILL.md`](../evidence-capture/SKILL.md).
+**Where the files are.** Every path below written as `scripts/...`,
+`csharp/...` or `secret-gate/...` is relative to the folder this file is in.
+With the PowerShell module installed (see the repository README), the capture
+and scrub entry points -- `Invoke-HarCapture`, `Invoke-HarCatalogue`,
+`Stop-HarRecording`, `ConvertFrom-HarCatalogue`, `Invoke-SanitizeHar` -- are
+also commands you can call by name from any folder.
 
 ## When to invoke
 
@@ -37,7 +40,7 @@ user-edited code in sibling partial classes is preserved.
 Do not invoke for:
 
 - Maintenance of an already-scaffolded wrapper project -- that lives under
-  the standard `@dev-loop` agent in the generated project.
+  the generated project's own development workflow.
 - API surfaces that already ship an OpenAPI / GraphQL schema -- prefer the
   upstream generator in that case.
 
@@ -77,10 +80,7 @@ Nothing else is required. In particular, do **not** ask for a project name, a
 5. Confirmed the auth model (or accepted "let the detector decide").
 6. **Asked the user whether the target service has a mobile app to include**
    (Phase 1.5). The agent must ask -- the user may still answer no.
-7. **Asked the user whether to seed the project with the IntelliSDLC.ai
-   instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
-   must ask -- the user may still answer no.
-8. Created a GitHub issue (or referenced an existing one) that describes
+7. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
 
 ### Capture-only run
@@ -93,14 +93,14 @@ capture, or catalogue traffic and never asked for a client.
 # Record, scrub, verify, digest and catalogue -- one command. Browse, then
 # press ENTER; closing the browser window or calling Stop-HarRecording from an
 # agent does the same thing.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+scripts/capture/Invoke-HarCapture.ps1 https://example.com `
     -Describe 'sign in, create a post, then delete it'
 
 # -Describe is MANDATORY: a shared, append-only capture store keyed on start
 # times is one where the description is the only way to tell captures apart.
 # -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
 # agent attaches to. Warnings and errors print at either level.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+scripts/capture/Invoke-HarCapture.ps1 https://example.com `
     -Describe 'sign in, create a post, then delete it' -Verbose
 ```
 
@@ -271,8 +271,7 @@ two notions of what a capture is, is the defect this subsystem exists to avoid.
 | 3 | Output directory | `D:\Git\{{ProjectName}}` on Windows, `~/git/{{ProjectName}}` elsewhere | -- | Must not already exist. |
 | 4 | Auth model | autodetect | `{{AuthModel}}` | One of: `cookie`, `cookie+csrf`, `bearer`, `sso-google`, `sso-microsoft`, `sso-facebook`, `oauth2-pkce`, `autodetect`. |
 | 5 | OAuth client_id / client_secret | none | -- | Only asked when (4) is `oauth2-pkce`. Stored in user-secrets, never on disk in plaintext. |
-| 6 | Seed IntelliSDLC.ai? | yes | -- | If yes, the agent runs `git init` and pulls upstream instructions (Phases 10.5 + 11). |
-| 7 | Pre-captured Playwright storage state? | none | -- | Saved as `.har-storage-state.json` at or above the working directory, where the recorder discovers it. When present, the capture phase skips interactive login. Required for non-interactive dogfood runs. |
+| 6 | Pre-captured Playwright storage state? | none | -- | Saved as `.har-storage-state.json` at or above the working directory, where the recorder discovers it. When present, the capture phase skips interactive login. Required for non-interactive dogfood runs. |
 | -- | .NET root namespace | `{{ProjectName}}` | `{{Namespace}}` | Asked only when the user wants to override the default. |
 | -- | IdP friendly name | derived from `{{AuthModel}}` | `{{IdpName}}` | `Google` / `Microsoft` / `Facebook` -- substituted into the generated README's re-auth section. |
 
@@ -324,7 +323,7 @@ Then run the guided importer (it prints commands and waits for the user
 to confirm each step; it never invokes proxies or decompilers itself):
 
 ```pwsh
-node templates/web-api-discovery/scripts/capture/import-mobile-app.js \
+node scripts/capture/import-mobile-app.js \
   --platform=<ios|android|both> --mode=<proxy|decompile|both>
 ```
 
@@ -379,7 +378,7 @@ Invoke-HarCapture https://example.com -Describe 'sign in, create a post, delete 
 # browse, then press ENTER
 ```
 
-`templates/web-api-discovery/scripts/capture/capture-har.js` owns the browser
+`scripts/capture/capture-har.js` owns the browser
 context; `Invoke-HarCapture.ps1` / `Stop-HarRecording.ps1` are its PowerShell
 front doors. It opens system Chrome on a **dedicated capture profile** that
 stays signed in between sessions -- never the operator's daily profile, which
@@ -411,11 +410,68 @@ not valid UTF-8. `recordHar` is preferred where both exist only because it
 knows things a client-side recorder cannot observe (`serverIPAddress`,
 `connection`, real header sizes, `cache`, page timings).
 
-**Preflight.** `.har-profile.json` is resolved before the browser launches. On
-a TTY the recorder offers to scaffold one; without a TTY it fails with the
+**Preflight.** The browser driver is resolved **first**, ahead of every prompt
+and every file the recorder would otherwise write. A missing dependency is the
+first line, not the last, so a run that cannot finish leaves the folder
+untouched. `playwright` is looked for in four places, in this order:
+
+1. **the folder you are in**, searched upward -- a project with its own copy wins
+2. **the recorder's own install**, searched upward -- a repo that synced this skill
+3. **this machine's global npm modules** -- one `npm install -g playwright` serves
+   every folder afterwards
+4. **`NODE_PATH`** -- Node's own way of pointing at an install somewhere else
+
+If none of them has it, the failure names all four by absolute path and offers
+to install into the machine default; the Chromium binary is reported separately,
+because `npm install` does not fetch one. There is no option or environment
+variable to configure any of this -- every location above is a mechanism Node or
+npm already provides. `--validate-only` skips the whole check: it resolves paths
+and opens nothing.
+
+Then `.har-profile.json` is resolved, still before the browser launches. On a
+TTY the recorder offers to scaffold one; without a TTY it fails with the
 `HOWTO`. Discovering an absent profile after a browsing session is spent costs
 the session; here it costs seconds. A `.har-storage-state.json` at or above the
 working directory is discovered the same way, and its absence is not an error.
+
+**Is a git repository required to record?** **No.** Nothing in the recorder
+needs one, and a capture is gitignored state rather than something to commit.
+Point it at an empty folder and record.
+
+A repository still matters *later* -- it is where the scrubbed reference gets
+committed in Phase 3.5, and Phase 11 initializes one in this very folder. So
+"not a repository" is usually "not a repository **yet**", and the recorder
+protects both cases:
+
+- **Inside a work tree**, the capture store must be gitignored before anything
+  is recorded. The recorder asks git, and refuses (or offers to append the
+  rules) when it is not.
+- **Outside one**, there is no git to ask, so the recorder writes the same
+  rules into a `.gitignore` beside the capture store and says so. A later
+  `git init && git add -A` then cannot commit `.har-captures/` or
+  `.har-profile.json`. An existing `.gitignore` is appended to, never rewritten.
+
+That second case is not cosmetic: `.har-profile.json` holds the operator's salt
+and identifiers, and `.har-captures/` holds unscrubbed raw captures with live
+session cookies. The sweep that would commit them happens with nobody watching.
+
+**Scrubbing in a folder that is not a git repository.** The scrub writes a
+substitution table whose keys are the plaintext values it replaced -- a reverse
+lookup of live credentials. So before scrubbing outside a work tree, the
+recorder asks at the terminal:
+
+> This folder is not a git repository. Initialize one so the capture's secrets
+> can never be committed? [Y/n]
+
+- **Y** (the default): it runs `git init`. The `.gitignore` it already wrote
+  keeps the capture store, the profile and the tables out of every commit.
+- **n**: it proceeds without git, writes the table into the capture's own
+  session folder, and warns once that nothing now stops it being committed.
+
+Without a terminal to ask -- an AI agent driving the capture -- it cannot
+prompt, so it takes the **n** path. **An agent must therefore ask the user this
+same question in the conversation before starting a capture in a folder that
+is not a git repository, and run `git init` there itself on yes.**
 
 **Driving the browser as an AI.** `Invoke-HarCapture` prints a CDP endpoint,
 and writes it to `session.json` -- read it there rather than assuming 9333,
@@ -497,7 +553,7 @@ of these has cost real diagnosis time when skipped.
 
 ### Phase 3 -- Scrub
 
-- Run `templates/web-api-discovery/scripts/har/sanitize-har.js` and
+- Run `scripts/har/sanitize-har.js` and
   `verify-scrub.js`.
 - Replace tokens, cookies, session ids, and PII with angle-bracket
   placeholders (`<GoogleAccessToken>`, `<UserEmail>`, `<BookingReference>`).
@@ -520,7 +576,7 @@ what is sensitive.
 
 | file | owner | committed | holds |
 |---|---|---|---|
-| `har-policy.default.json` | IntelliSDLC.ai (synced) | yes | the stringent baseline — **do not edit; the next sync overwrites it** |
+| `har-policy.default.json` | web-api-discovery | yes | the stringent baseline — **do not edit; the next update overwrites it** |
 | `.har-policy.project.json` | the consuming project | yes | overrides merged over the baseline |
 | `.har-profile.json` | the operator | **no — gitignored** | literals: the operator's own raw identifiers |
 
@@ -803,7 +859,7 @@ Implementation rules that mattered in practice:
 
 Every control here is a predicate approximating a concept. Six rules, each
 learned from a defect that shipped -- the cases and the measurements are in
-[`docs/designs/297-detector-predicates.md`](../../../docs/designs/297-detector-predicates.md).
+[`docs/designs/297-detector-predicates.md`](../../docs/designs/297-detector-predicates.md).
 
 - **Say the concept out loud, then check the predicate is it.** "Six hex pairs"
   is not "a MAC address" when more pairs follow.
@@ -876,7 +932,7 @@ scaffold of `Observed` rows and reports the phase as pending until an AI has
 done this work.
 
 The prompt that drives it is a file, not prose to be reconstructed:
-[`templates/web-api-discovery/scripts/capture/catalogue-prompt.md`](../../../templates/web-api-discovery/scripts/capture/catalogue-prompt.md).
+[`scripts/capture/catalogue-prompt.md`](scripts/capture/catalogue-prompt.md).
 The recorder reads it when it shells out to the `claude` CLI for an
 interactive human run, and an agent that drove the capture itself follows the
 same file. Do not restate its steps elsewhere.
@@ -1827,7 +1883,7 @@ Once a HAR has been captured (Phase 2), the entire downstream pipeline
 (Phases 3 - 8) can be invoked through a single zero-dependency orchestrator:
 
 ```pwsh
-node templates/web-api-discovery/scripts/codegen/run-agent.js `
+node scripts/codegen/run-agent.js `
   --har <path/to/captured.har> `
   --out <output-dir> `
   --project <Name> `
@@ -1858,8 +1914,8 @@ the broken stage.
 
 ### End-to-end smoke test
 
-The executable spec for this skill is
-[`.github/agents/tests/agent-e2e.Tests.ps1`](../../agents/tests/agent-e2e.Tests.ps1).
+The executable spec for this skill is `tests/agent-e2e.Tests.ps1` in the
+[web-api-discovery repository](https://github.com/IntelliTect-Samples/web-api-discovery).
 It runs `run-agent.js` against the synthetic HAR fixtures
 `tests/fixtures/har/e2e-rest.har` and `tests/fixtures/har/e2e-graphql.har`,
 then asserts the emitted project:
@@ -1914,10 +1970,9 @@ Per-endpoint recipe section in the project README:
 - NuGet packaging notes (Description, Authors, RepositoryUrl,
   PackageLicenseExpression, version-from-git already filled in).
 
-### Phase 10.5 -- Initialize git repository
+### Phase 11 -- Initialize git repository
 
-Before Phase 11 runs, the agent **must** initialize the generated project
-as a git repository:
+The agent **must** initialize the generated project as a git repository:
 
 ```pwsh
 cd <output-dir>
@@ -1926,29 +1981,15 @@ git add -A
 git commit -m "chore: initial scaffold from web-api-discovery skill"
 ```
 
-The initial commit is what `Pull-SDLC.ai.ps1` merges into during Phase 11,
-so this step is mandatory whether or not the developer opts into the SDLC
-pull. Skipping `git init` leaves the project in a fragile, unversioned
-state and forces a manual remediation step on the developer.
+Skipping `git init` leaves the project in a fragile, unversioned state and
+forces a manual remediation step on the developer.
 
-### Phase 11 -- IntelliSDLC.ai Seed (required prompt; user may decline)
-
-Immediately after Phase 10.5 (`git init`), the agent **must** prompt:
-
-> Pull the IntelliSDLC.ai shared instructions, skills, and agents into
-> this project and add an `sdlc.ai` git remote? [Y/n]
-
-Default is `Y`. On `Y`, run `Pull-SDLC.ai.ps1` from the project root --
-this adds a remote called `sdlc.ai` pointing at
-`https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git`, merges the
-upstream `main` into the project's initial commit (using
-`--allow-unrelated-histories` on first sync), and materializes
-`CLAUDE.project.md` and `project.instructions.md` from their templates.
-Populate the identity sections of both files from the project name and
-namespace.
-
-On `n`, print the manual-run hint (`git clone ... ; Pull-SDLC.ai.ps1`)
-so the developer can opt in later without re-running the agent.
+> **This is the `git add -A` Phase 2 protects against.** If a capture was
+> recorded in this folder before it was a repository, the recorder already
+> wrote a `.gitignore` covering `.har-captures/` and `.har-profile.json`, so
+> the salt and the unscrubbed raws stay out of that first commit. Do not
+> remove or overwrite it. See **Is a git repository required to record?** in
+> Phase 2.
 
 ## Output
 
@@ -1962,7 +2003,7 @@ The skill's final user-visible output is:
 **Build**: dotnet build  -> PASS
 **Tests**: dotnet test   -> <n>/<n> pass
 **Gitleaks**: 0 hits
-**Next**: cd D:\Git\<Name>; @dev-loop
+**Next**: cd D:\Git\<Name>
 ```
 
 ## Anti-patterns
@@ -1976,6 +2017,15 @@ The skill's final user-visible output is:
   is.
 - **Do not** give the literal map or the salt a default value so the tooling
   "just runs". An absent profile must fail loudly and name the file.
+- **Do not** let a capture the tooling cannot read report as a capture
+  containing nothing. Every stage reads through one reader that recognises a
+  file as a HAR or refuses it by name, exiting non-zero; `(har.log.entries) ||
+  []` is the shape that must never come back. A capture that really is empty
+  still reads as zero entries -- "I read it and it held nothing" and "I could
+  not read it" are different sentences and the operator acts on them
+  differently. Recognition is `log.entries` being a list and nothing more: a
+  reader that also insisted on a recorder name or a version would reject a
+  perfectly readable capture made by some other tool.
 - **Do not** trust a generation step's report of what it wrote. Verify a
   committed reference by parsing it and asserting on its content.
 - **Do not** hardcode the user's real cookies / tokens / OAuth secrets

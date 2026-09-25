@@ -31,8 +31,8 @@
 # over planted fixtures instead, as #377's lane does.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
 
     $script:DescriptorJs = Join-Path $script:ScriptsDir 'capture/request-body-descriptor.js'
     $script:CaptureJs    = Join-Path $script:ScriptsDir 'capture/capture-har.js'

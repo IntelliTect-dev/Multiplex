@@ -31,7 +31,6 @@ const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
 const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
-const { sdlcIntegrationReadmeSection } = require('./sdlc-integration.js');
 const { detectAntiBotCookies } = require('../har/detect-auth.js');
 // The canonical substitution-table filenames, imported rather than re-spelled
 // (issue #446). subs-destination.js is dependency-free and safe to require.
@@ -102,7 +101,7 @@ const SCAFFOLD_GITIGNORE_ENTRIES = [
 // .gitignore above a block containing neither. A wrong provenance note is worse
 // than none -- it sends the next reader looking for files that are not there.
 const SCAFFOLD_GITIGNORE_HEADER = [
-    '# Added by web-api-discovery (see .github/skills/web-api-discovery/SKILL.md).',
+    '# Added by web-api-discovery (see skills/web-api-discovery/SKILL.md).',
     '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.',
 ];
 
@@ -921,8 +920,6 @@ function emitReadme(opts, patterns, hasGraphQL) {
     lines.push(secretGateReadmeSection());
     lines.push('');
     lines.push(mobileImportReadmeSection());
-    lines.push('');
-    lines.push(sdlcIntegrationReadmeSection());
     if (Array.isArray(opts.antiBotCookies) && opts.antiBotCookies.length > 0) {
         lines.push('');
         lines.push(antiBotWarningSection(opts.antiBotCookies));
@@ -951,15 +948,15 @@ function mobileImportReadmeSection() {
         'frequently exposes richer data, internal APIs not visible on the web,',
         'and different auth shapes.',
         '',
-        'To add mobile coverage to this project, run the importer from the',
-        'IntelliSDLC.ai repo and feed the captured traffic back through this',
-        'project\'s pipeline:',
+        'To add mobile coverage to this project, run the importer from your',
+        'web-api-discovery clone (https://github.com/IntelliTect-Samples/web-api-discovery)',
+        'and feed the captured traffic back through this project\'s pipeline:',
         '',
         '```pwsh',
         '# 1. Print the platform-specific capture instructions and create the',
         '#    target paths under Samples/HAR-Original/ (proxy mode) or',
         '#    Samples/MobileApp-Discovered/ (decompile mode).',
-        'node <IntelliSDLC.ai>/templates/web-api-discovery/scripts/capture/import-mobile-app.js `',
+        'node <web-api-discovery>/skills/web-api-discovery/scripts/capture/import-mobile-app.js `',
         '  --platform=<ios|android|both> `',
         '  --mode=<proxy|decompile|both>',
         '',
@@ -973,7 +970,7 @@ function mobileImportReadmeSection() {
         '',
         '# 3. Re-run the wrapper pipeline against the new mobile HAR. Each',
         '#    captured mobile HAR is processed exactly like a web HAR.',
-        'node <IntelliSDLC.ai>/templates/web-api-discovery/scripts/codegen/run-agent.js `',
+        'node <web-api-discovery>/skills/web-api-discovery/scripts/codegen/run-agent.js `',
         '  --har Samples/HAR-Original/mobile-android-<timestamp>.har `',
         '  --out . --project <Name> --namespace <Namespace>',
         '```',

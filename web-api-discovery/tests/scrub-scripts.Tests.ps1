@@ -6,8 +6,8 @@
 # Invoke-SanitizeHar.ps1 against a synthetic HAR fixture.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'
     $script:VerifyJs   = Join-Path $script:ScriptsDir 'har/verify-scrub.js'
     $script:WrapperPs1 = Join-Path $script:ScriptsDir 'har/Invoke-SanitizeHar.ps1'

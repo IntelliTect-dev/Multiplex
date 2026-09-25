@@ -4,12 +4,12 @@
 # Behavior tests for the HAR -> C# codegen pipeline (issue #48).
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:GenJs      = Join-Path $script:ScriptsDir 'codegen/generate-wrapper.js'
     $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-cdp.js'
-    $script:RestHar    = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/rest-3endpoints.har'
-    $script:GqlHar     = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/graphql.har'
+    $script:RestHar    = Join-Path $script:RepoRoot 'tests/fixtures/har/rest-3endpoints.har'
+    $script:GqlHar     = Join-Path $script:RepoRoot 'tests/fixtures/har/graphql.har'
 
     function New-OutDir {
         $d = Join-Path ([IO.Path]::GetTempPath()) ("wrapgen-" + [guid]::NewGuid())
@@ -383,7 +383,7 @@ Describe 'determinism' {
 
 Describe 'verb-passthrough (issue #100)' {
     BeforeAll {
-        $script:PostHar = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/rest-post-and-get.har'
+        $script:PostHar = Join-Path $script:RepoRoot 'tests/fixtures/har/rest-post-and-get.har'
         $script:PostOut = New-OutDir
         $script:PostRes = Invoke-Gen -Har @($script:PostHar) -Out $script:PostOut
     }
@@ -415,7 +415,7 @@ Describe 'verb-passthrough (issue #100)' {
 
 Describe 'Client.cs.tmpl SendRawAsync verb support (issue #100)' {
     BeforeAll {
-        $tmpl = Join-Path $script:RepoRoot 'templates/web-api-discovery/csharp/Client.cs.tmpl'
+        $tmpl = Join-Path $script:RepoRoot 'skills/web-api-discovery/csharp/Client.cs.tmpl'
         $script:ClientTmpl = Get-Content -Raw $tmpl
     }
 

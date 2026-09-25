@@ -24,11 +24,11 @@
 # nobody can find is not a gate.
 
 BeforeAll {
-    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
     $script:ConvertPs1 = Join-Path $script:ScriptsDir 'capture/ConvertFrom-HarCatalogue.ps1'
     $script:FormatXml  = Join-Path $script:ScriptsDir 'capture/HarCapture.Format.ps1xml'
-    $script:Skill      = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
+    $script:Skill      = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
     $script:SkillText  = Get-Content -LiteralPath $script:Skill -Raw
 
     function New-Sandbox {

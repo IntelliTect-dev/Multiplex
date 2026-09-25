@@ -18,7 +18,7 @@
 #>
 
 BeforeAll {
-    $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+    $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
     $script:ReportPath = Join-Path $repoRoot 'docs/dogfood/tripit-dry-run-report.md'
     $script:ScriptPath = Join-Path $repoRoot 'scripts/run-dogfood.ps1'
 }
@@ -138,14 +138,11 @@ Describe 'agent-dogfood: run-dogfood.ps1 reproducer' {
         $text | Should -Not -Match '-Out\s+\$repoRoot'
     }
 
-    It 'passes --no-sdlc to run-agent (non-interactive contract from PR #57)' {
-        (Get-Content $script:ScriptPath -Raw) | Should -Match '--no-sdlc'
-    }
 }
 
 Describe 'agent-dogfood: .gitignore hygiene' {
     BeforeAll {
-        $script:GitignorePath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path '.gitignore'
+        $script:GitignorePath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '.gitignore'
         $script:Gitignore = Get-Content $script:GitignorePath -Raw
     }
 

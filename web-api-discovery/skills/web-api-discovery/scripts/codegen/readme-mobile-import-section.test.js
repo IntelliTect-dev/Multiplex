@@ -17,7 +17,7 @@ const { execFileSync } = require('child_process');
 const SCRIPTS_DIR = __dirname;
 const RUN_AGENT = path.join(SCRIPTS_DIR, 'run-agent.js');
 const REPO_ROOT = path.resolve(SCRIPTS_DIR, '..', '..', '..', '..');
-const FIXTURE_HAR = path.join(REPO_ROOT, '.github', 'agents', 'tests', 'fixtures', 'har', 'e2e-rest.har');
+const FIXTURE_HAR = path.join(REPO_ROOT, 'tests', 'fixtures', 'har', 'e2e-rest.har');
 
 function scaffold() {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'readme-mobile-test-'));
@@ -35,8 +35,7 @@ function scaffold() {
         '--profile', profile,
         '--project', 'SampleEx',
         '--namespace', 'SampleEx',
-        '--base-url', 'https://sample.invalid',
-        '--no-sdlc'
+        '--base-url', 'https://sample.invalid'
     ], { stdio: 'pipe' });
     return out;
 }

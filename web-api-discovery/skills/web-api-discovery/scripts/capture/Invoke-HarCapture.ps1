@@ -159,7 +159,7 @@
     it rather than assuming.
 
 .OUTPUTS
-    IntelliSDLC.HarCapture.CatalogueEntry
+    WebApiDiscovery.HarCapture.CatalogueEntry
 
 .EXAMPLE
     Invoke-HarCapture https://example.com -Describe 'sign in, then sign out'
@@ -174,7 +174,7 @@
 #>
 
 [CmdletBinding()]
-[OutputType('IntelliSDLC.HarCapture.CatalogueEntry')]
+[OutputType('WebApiDiscovery.HarCapture.CatalogueEntry')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
     'PSAvoidAssignmentToAutomaticVariable', 'Profile',
     Justification = 'Which signed-in identity to record as is the operator-facing name for this input, and $PROFILE is never read in this script. Renaming the parameter to satisfy the analyzer would make the surface worse to serve a shadowing that has no effect here.')]

@@ -13,7 +13,7 @@ Parent epic: #34. Item 3 of 11 in api-wrapper-scaffold series.
   - When invoked as CLI: `node detect-auth.js <har-path>` -> stdout JSON, exit 0
   - Exit 2 on usage error, exit 1 on file read / parse error
 - `.github/agents/tests/auth-detection.Tests.ps1` -- Pester tests
-- `.github/agents/tests/fixtures/har/*.har` -- 8 fixtures:
+- `tests/fixtures/har/*.har` -- 8 fixtures:
   - `cookie.har`
   - `cookie-csrf.har`
   - `bearer.har`

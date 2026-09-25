@@ -6,8 +6,8 @@
 # and a real dotnet build of the substituted output.
 
 BeforeAll {
-    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:CsharpDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/csharp"
+    $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\") | Select-Object -ExpandProperty Path
+    $script:CsharpDir    = Join-Path $script:RepoRoot "skills/web-api-discovery/csharp"
     $script:ManifestPath = Join-Path $script:CsharpDir "manifest.json"
 
     $script:Tokens = [ordered]@{
@@ -157,7 +157,7 @@ Describe "Authenticator.cs.tmpl uses Microsoft.Playwright (issue #97)" {
 
 Describe "Generated csproj declares Microsoft.Playwright (issue #97)" {
     It "generate-wrapper.js emitCsproj output includes Microsoft.Playwright PackageReference" {
-        $generator = Get-Content -Raw (Join-Path $script:RepoRoot "templates/web-api-discovery/scripts/codegen/generate-wrapper.js")
+        $generator = Get-Content -Raw (Join-Path $script:RepoRoot "skills/web-api-discovery/scripts/codegen/generate-wrapper.js")
         $generator | Should -Match 'Microsoft\.Playwright' -Because "the generated client csproj must reference Microsoft.Playwright so the Authenticator compiles"
     }
 }

@@ -26,16 +26,16 @@ The shape being introduced, for a capture of `https://app.example.com/login`:
 
 | File | Change |
 |---|---|
-| `templates/web-api-discovery/scripts/capture/capture-har.js` | `uriFolder()`; both roots re-pointed; the two flat-root scans fixed |
-| `templates/web-api-discovery/scripts/capture/capture-har.test.js` | Path assertions rewritten; new `uriFolder` and newest-session cases |
-| `templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | Stop recomputing the catalogue path; read it from the recorder |
-| `templates/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | `-CapturesDirectory` help describes the two-level root |
-| `templates/web-api-discovery/scripts/har/extract-har-reference.js` | `REFERENCE_ROOT` -> `.` (fixes the pre-existing path doubling) |
-| `templates/web-api-discovery/scripts/har/verify-har-reference.js` | `DEFAULT_DIR` -> `.`; error text follows |
-| `templates/web-api-discovery/scripts/har/har-reference.test.js` | Follows the two above |
-| `templates/web-api-discovery/scripts/capture/catalogue-prompt.md` | `--out` guidance and verifier invocation |
-| `.github/skills/web-api-discovery/SKILL.md` | Convention statement, two-directory explanation, `-OutputPath` row, trees |
-| `templates/web-api-discovery/README.md` | Tree listing |
+| `skills/web-api-discovery/scripts/capture/capture-har.js` | `uriFolder()`; both roots re-pointed; the two flat-root scans fixed |
+| `skills/web-api-discovery/scripts/capture/capture-har.test.js` | Path assertions rewritten; new `uriFolder` and newest-session cases |
+| `skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | Stop recomputing the catalogue path; read it from the recorder |
+| `skills/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | `-CapturesDirectory` help describes the two-level root |
+| `skills/web-api-discovery/scripts/har/extract-har-reference.js` | `REFERENCE_ROOT` -> `.` (fixes the pre-existing path doubling) |
+| `skills/web-api-discovery/scripts/har/verify-har-reference.js` | `DEFAULT_DIR` -> `.`; error text follows |
+| `skills/web-api-discovery/scripts/har/har-reference.test.js` | Follows the two above |
+| `skills/web-api-discovery/scripts/capture/catalogue-prompt.md` | `--out` guidance and verifier invocation |
+| `skills/web-api-discovery/SKILL.md` | Convention statement, two-directory explanation, `-OutputPath` row, trees |
+| `skills/web-api-discovery/README.md` | Tree listing |
 | `.github/agents/tests/har-recording.Tests.ps1` | Raw/output separation, gitignore depth, catalogue path |
 | `.github/agents/tests/har-reference-catalogue.Tests.ps1` | SKILL.md text assertion |
 | `.github/agents/tests/web-api-discovery.Tests.ps1` | SKILL.md text assertions |
@@ -113,7 +113,7 @@ Commit: `refactor(web-api-discovery): read the catalogue path from the recorder`
 ## Stage 5 -- Docs and their assertions
 
 **Task 5.1.** `SKILL.md` 58-61, 104-108, 222, 487-511, 531, 889-896;
-`catalogue-prompt.md` 40-48 and 79; `templates/web-api-discovery/README.md`
+`catalogue-prompt.md` 40-48 and 79; `skills/web-api-discovery/README.md`
 20-35. Examples stay generic (`app.example.com`) -- these are shared upstream
 files and must carry no project-specific names.
 
@@ -139,8 +139,8 @@ Commit: `docs(web-api-discovery): describe the URI-keyed output layout`.
 ## Verification
 
 ```powershell
-node --test templates/web-api-discovery/scripts/capture/capture-har.test.js
-node --test templates/web-api-discovery/scripts/har/har-reference.test.js
+node --test skills/web-api-discovery/scripts/capture/capture-har.test.js
+node --test skills/web-api-discovery/scripts/har/har-reference.test.js
 Invoke-Pester -Path .github/agents/tests/har-recording.Tests.ps1
 Invoke-Pester -Path .github/agents/tests/har-reference-catalogue.Tests.ps1, .github/agents/tests/web-api-discovery.Tests.ps1
 ```

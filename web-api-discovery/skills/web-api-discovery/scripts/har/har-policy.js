@@ -5,7 +5,7 @@
  *
  * Three inputs, one merge, one definition:
  *
- *   har-policy.default.json     synced from IntelliSDLC.ai, committed, stringent
+ *   har-policy.default.json     shipped with web-api-discovery, committed, stringent
  *   .har-policy.project.json    the consuming project's overrides, committed
  *   .har-profile.json           the operator's literals, GITIGNORED (har-profile.js)
  *

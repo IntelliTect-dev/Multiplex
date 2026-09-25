@@ -160,11 +160,15 @@ const { spawnSync } = require('child_process');
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
 // The ONE walk over a capture store (#386/#387). It USED to be the body of
 // `listSessionDirs` right here; it moved out so the batch drivers could reuse
 // this exact enumeration -- with its classification of legacy and foreign
 // captures intact -- instead of growing a second notion of what a capture is.
 const captureStore = require(path.join(__dirname, 'capture-store.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, '..', 'har', 'har-document.js'));
 const bodyDescriptor = require(path.join(__dirname, 'request-body-descriptor.js'));
 // The ONE gitignore check in this subsystem (#318). It wraps `git check-ignore`
 // and already defends against a forged `.gitignore` containing `*` and against
@@ -175,6 +179,11 @@ const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destinat
 // idempotent append both already exist for the scaffolder (#119).
 const { ensureRepoRootGitignoreHasScaffoldEntries } =
     require(path.join(__dirname, '..', 'codegen', 'generate-wrapper.js'));
+// Where a module is looked for, and what to say when it is not there (#512).
+// A bare `require('playwright')` searches upward from THIS file's directory, so
+// the recorder run out of the upstream checkout could not see an install in the
+// folder the operator was standing in -- and told them to make one there.
+const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -675,7 +684,7 @@ const CAPTURE_GITIGNORE_ENTRIES = [
 // does not contain -- a provenance note about files that are not there sends the
 // next reader hunting.
 const CAPTURE_GITIGNORE_HEADER = [
-    '# Added by the HAR recorder (see .github/skills/web-api-discovery/SKILL.md).',
+    '# Added by the HAR recorder (see skills/web-api-discovery/SKILL.md).',
     '# A raw capture carries live session cookies and is never scrubbed; the',
     '# substitution tables are keyed by the plaintext values the scrub replaced.'
 ];
@@ -717,9 +726,32 @@ async function ensureCapturesRootIgnored(placement, opts = {}) {
     if (!capturesRoot) { return { ok: true, status: null }; }
     const probe = capturesRootProbe(capturesRoot);
     const status = subsDestination.classifyDestination(probe);
-    if (status === subsDestination.IGNORED
-        || status === subsDestination.OUTSIDE_WORK_TREE) {
-        return { ok: true, status };
+    if (status === subsDestination.IGNORED) { return { ok: true, status }; }
+
+    // OUTSIDE A WORK TREE: leave the rule behind for the repository that does
+    // not exist yet (#512).
+    //
+    // "Not a repository" is usually "not a repository YET". The skill's own
+    // generation pipeline runs `git init && git add -A && git commit` in this
+    // same folder a few phases later, and an operator starting a new site does
+    // it by hand for the same reason. At that moment the salt and a directory
+    // of unscrubbed raw captures are both untracked files in the folder being
+    // swept, and nobody is watching.
+    //
+    // WRITTEN, NOT PROMPTED. There is no repository, so no tracked file is
+    // being changed and there is nothing to ask permission about; a prompt
+    // here would also make every agent-driven capture in a fresh folder
+    // refuse. The append is the scaffolder's own idempotent one, so a folder
+    // that already has a `.gitignore` keeps every line of it.
+    //
+    // The file goes beside the store rather than inside it: a rule inside
+    // `.har-captures/` cannot exclude `.har-captures/` itself, and the profile
+    // it also covers is the store's sibling.
+    if (status === subsDestination.OUTSIDE_WORK_TREE) {
+        const beside = path.dirname(capturesRoot);
+        const added = ensureRepoRootGitignoreHasScaffoldEntries(
+            beside, CAPTURE_GITIGNORE_ENTRIES, CAPTURE_GITIGNORE_HEADER);
+        return { ok: true, status, ignoreFile: path.join(beside, '.gitignore'), added };
     }
 
     const anchor = placement.mainWorkingTree || placement.currentWorkingTree;
@@ -965,16 +997,144 @@ function discoverStorageState(startDir, stopAt) {
     return harProfile.findUpward(STORAGE_STATE_FILENAME, startDir, stopAt);
 }
 
+const PLAYWRIGHT_MODULE = nodeDep.PLAYWRIGHT;
+
+/**
+ * Ask the four locations for the browser driver (#512).
+ *
+ * The search itself lives in node-dependency.js so this file and capture-cdp.js
+ * cannot drift apart; all this adds is THIS file's location as the tool one.
+ */
+function resolvePlaywright(opts) {
+    return nodeDep.resolvePlaywright(Object.assign({ toolDir: __dirname }, opts || {}));
+}
+
+/**
+ * The remedies for whatever is actually missing, as commands.
+ *
+ * The module and the browser are SEPARATE facts and get separate commands.
+ * `npm install` does not fetch a browser binary, so a message that offered one
+ * command for both would be followed, appear to succeed, and fail again on the
+ * same line.
+ */
+function dependencyInstallCommands(moduleMissing, browserMissing) {
+    const commands = [];
+    if (moduleMissing) commands.push(['npm', ['install', '-g', PLAYWRIGHT_MODULE]]);
+    if (browserMissing) commands.push(['npx', [PLAYWRIGHT_MODULE, 'install', 'chromium']]);
+    return commands;
+}
+
+/**
+ * Run an install the operator agreed to. Inherits stdio so they watch it
+ * happen: an install that takes a minute behind a silent spinner is
+ * indistinguishable from a hang.
+ *
+ * `started` is carried back because "never launched" and "launched and failed"
+ * need different words, and on Windows the first is a real possibility -- Node
+ * refuses to spawn npm's batch shim without a shell. Telling an operator their
+ * install "ran" when no process ever started sends them to debug the wrong
+ * thing entirely.
+ */
+function runInstall(command, args) {
+    return nodeDep.runCommand(command, args, { stdio: 'inherit' });
+}
+
+function dependencyMessage(resolved, browserPresent, env) {
+    if (!resolved.found) {
+        return 'capture-har: ' +
+            nodeDep.describeMissing(PLAYWRIGHT_MODULE, resolved, { browser: browserPresent });
+    }
+    // Named, not merely described. "Playwright's default location" is a phrase
+    // the operator then has to go and look up; the path is the answer.
+    const where = nodeDep.browsersPath({ env: env || process.env });
+    return 'capture-har: the playwright module is installed, but its Chromium build is not.\n' +
+        `  ${nodeDep.BROWSER_INSTALL_COMMAND}\n` +
+        '  It installs once per machine' + (where ? `, at ${where}` : '') + '.';
+}
+
+/**
+ * IS THE BROWSER DRIVER HERE -- asked before anything else happens (#512).
+ *
+ * The owner's transcript is the specification. A run scaffolded a profile,
+ * announced a capture root, and THEN reported the missing module, with a
+ * remedy that could not work. Everything before the failure was work to undo.
+ *
+ * So this is the first gate in `start`, ahead of the placement guard, the
+ * profile prompt, the port scan and the browser. Nothing is written and
+ * nothing is asked until the run is known to be able to finish.
+ *
+ * INTERACTIVE: offer to install into the machine default, so one install
+ * serves every folder afterwards. NON-INTERACTIVE: print the same locations
+ * and the same commands and refuse -- an agent has nowhere to answer, which is
+ * how every other guard in this file behaves.
+ */
+async function preflightDependencies(opts = {}) {
+    const isTty = !!opts.isTty;
+    const ask = opts.ask || askLine;
+    const install = opts.install || runInstall;
+    const env = opts.env || process.env;
+    // Both facts, re-read together. Called again after an install, because the
+    // only honest way to know whether an install worked is to ask the same
+    // question a second time.
+    const check = () => ({
+        resolved: resolvePlaywright(Object.assign({}, opts, { env })),
+        browser: nodeDep.chromiumPresent({ env, platform: opts.platform, homedir: opts.homedir })
+    });
+
+    let state = check();
+    if (state.resolved.found && state.browser) return { ok: true };
+
+    const message = dependencyMessage(state.resolved, state.browser, env);
+    const commands = dependencyInstallCommands(!state.resolved.found, !state.browser);
+
+    if (isTty && commands.length > 0) {
+        const answer = await ask(`${message}\n  Install it now? [y/N] `);
+        if (/^y/i.test((answer || '').trim())) {
+            let neverStarted = null;
+            for (const [command, args] of commands) {
+                const r = install(command, args) || {};
+                // `started === false` means no process was created at all --
+                // on Windows, Node refuses to spawn npm's batch shim without a
+                // shell. Reporting that as a failed install sends the operator
+                // to debug an install that never began.
+                if (r.started === false && !neverStarted) { neverStarted = command; }
+            }
+            // ASK AGAIN rather than trusting the exit code. An install that
+            // reports success and produces nothing is the case worth catching:
+            // believing it hands the operator a browser launch failure several
+            // steps later, with no mention of the install that did not work.
+            state = check();
+            if (state.resolved.found && state.browser) return { ok: true };
+            return {
+                ok: false,
+                message: dependencyMessage(state.resolved, state.browser, env) + '\n' +
+                    (neverStarted
+                        ? `  ${neverStarted} could not be started at all -- it is not on PATH, ` +
+                          'or this\n  shell cannot launch it. Run the command above yourself. ' +
+                          'Nothing was recorded.'
+                        // On Windows `started` only tells us the INTERPRETER
+                        // started. If npm itself is absent from PATH, cmd.exe
+                        // runs, prints "not recognized" and exits 1 -- a
+                        // normal exit, indistinguishable here from an install
+                        // that ran and did not work. So this wording covers
+                        // both rather than asserting the one it cannot know.
+                        : '  The install did not produce a usable module -- npm may not be ' +
+                          'on PATH, or\n  it did not do what it reported. Run the command ' +
+                          'above yourself. Nothing was recorded.')
+            };
+        }
+    }
+    return { ok: false, message };
+}
+
 function requirePlaywright() {
-    try {
-        return require('playwright');
-    } catch (e) {
+    const resolved = resolvePlaywright();
+    if (!resolved.found) {
         process.stderr.write(
-            'capture-har: the playwright module was not found.\n' +
-            '  npm install playwright && npx playwright install chromium\n' +
-            '  (or set NODE_PATH to an install that has it)\n');
+            dependencyMessage(resolved, nodeDep.chromiumPresent({})) + '\n');
         process.exit(1);
     }
+    return require(resolved.path);
 }
 
 function stamp(d) {
@@ -1175,12 +1335,35 @@ function buildEntry(observed) {
  * interval does not grow with the size of the capture.
  */
 class IncrementalRecorder {
-    constructor(logPath, intervalMs) {
+    /**
+     * @param {string} logPath append-only NDJSON log
+     * @param {number} intervalMs flush interval
+     * @param {{warnAtBytes?: number, onSizeWarning?: (text: string) => void}} [options]
+     *   seams for the size warning (issue #528). Not operator-facing: there is
+     *   no flag and no environment variable behind them. The threshold has one
+     *   correct value, which is computed from the runtime's own string ceiling;
+     *   the parameters exist so a test can cross it without producing hundreds
+     *   of megabytes, and so the warning's destination is injectable.
+     */
+    constructor(logPath, intervalMs, options = {}) {
         this.logPath = logPath;
         this.intervalMs = intervalMs;
         this.pending = [];
         this.written = 0;
         this.timer = null;
+        // Counted as it is appended rather than stat-ed per flush: the flush
+        // interval is short by design and the log is the largest file the
+        // session writes. Seeded from what is already there, because the log is
+        // append-only and a recorder attached to an existing one inherits its
+        // size -- starting the count at zero would put the warning hundreds of
+        // megabytes late, which for this warning is the same as never.
+        this.bytes = 0;
+        try { this.bytes = fs.statSync(logPath).size; } catch { /* a fresh log */ }
+        this.warnAtBytes = options.warnAtBytes === undefined
+            ? captureSize.WARN_BYTES
+            : options.warnAtBytes;
+        this.onSizeWarning = options.onSizeWarning || ((text) => log.warn(text));
+        this.sizeWarned = false;
     }
 
     start() {
@@ -1197,12 +1380,78 @@ class IncrementalRecorder {
         const batch = this.pending;
         this.pending = [];
         try {
-            fs.appendFileSync(this.logPath, batch.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+            const text = batch.map((e) => JSON.stringify(e)).join('\n') + '\n';
+            fs.appendFileSync(this.logPath, text, 'utf8');
             this.written += batch.length;
+            this.bytes += Buffer.byteLength(text, 'utf8');
         } catch (e) {
             // A failed flush must never take the recording down with it.
             log.verbose(`capture-har: incremental flush failed: ${e.message}`);
         }
+        // CONTAINED, AND SEPARATELY. Two things are true at once and an earlier
+        // version of this sacrificed the second for the first.
+        //
+        // Separately, because a warning that threw must not be reported as a
+        // failed flush: those are different facts about a recording in progress
+        // and confusing them sends anyone debugging one to the wrong place.
+        //
+        // Contained, because `flush` runs from an unguarded `setInterval`
+        // callback and nothing in this process handles an uncaught exception.
+        // An exception escaping here does not fail a flush -- it kills the
+        // recorder, orphans the browser and discards everything buffered since
+        // the last write. `log.warn` writes to stderr, and a stderr write can
+        // throw: on POSIX a pipe whose reader has gone away raises EPIPE
+        // synchronously, right here. On Windows those writes are asynchronous,
+        // so the same condition arrives as a stream error event that no
+        // synchronous catch anywhere can reach -- a property of every log call
+        // in this file, not of this one. What is claimed is therefore narrow:
+        // a synchronous throw out of the warning cannot cost a capture.
+        // SILENT, AND THAT IS THE POINT. Reporting the failure would mean
+        // writing to stderr -- the channel that just failed, through the very
+        // call that failed, with no containment of its own. Under
+        // `--log-level verbose` the recovery line would throw the same EPIPE
+        // straight back out of `flush`, into the timer callback, and take the
+        // capture down: the identical crash, reached by way of the apology for
+        // it. There is nowhere safe to say this, so it is not said.
+        try {
+            this.announceSizeOnce();
+        } catch (e) {
+            void e;
+        }
+    }
+
+    /**
+     * Say so, once, while the operator can still do something about it.
+     *
+     * THE ONLY MOMENT THIS CAN BE SAID USEFULLY. Everything that consumes a
+     * capture -- scrub, verify, digest, catalogue -- runs after the browser
+     * exits, which is why this command is `Invoke-` rather than `Start-`. So an
+     * operator recording past the size the scrub can read finds out when the
+     * session is over and the account writes behind it are spent, and the only
+     * artifact they still hold is the credential-bearing raw that must not be
+     * shared. The recorder is the one component that knows the size while
+     * stopping, splitting the session or narrowing the filter is still
+     * possible (issue #528).
+     *
+     * THE NDJSON LOG IS A FAIR PROXY for the HAR assembled from it -- in the
+     * session that prompted this, 811 MB of log against an 816 MB HAR -- and it
+     * is a slight UNDER-count, which is the safe direction for a warning: it
+     * fires marginally early rather than marginally late.
+     *
+     * Once. The flush interval is short and a session runs for many minutes, so
+     * a per-flush warning would scroll away the browsing output it shares a
+     * console with, and teach the operator to skip warnings generally.
+     */
+    announceSizeOnce() {
+        if (this.sizeWarned || this.bytes <= this.warnAtBytes) return;
+        this.sizeWarned = true;
+        const limit = captureSize.formatSize(captureSize.MAX_STRING_LENGTH);
+        this.onSizeWarning(
+            `capture-har: this recording is already ${captureSize.formatSize(this.bytes)} and ` +
+            `is approaching the ${limit} ceiling on a single string. A capture past that size ` +
+            'cannot be scrubbed, and the scrub runs only after the browser exits -- so stop ' +
+            'now and record the rest as a second session, or narrow what is being captured, ' +
+            'rather than finding out when this one is over.');
     }
 
     stop() {
@@ -1348,8 +1597,9 @@ function annotateUnretainedBodies(harPath, logPath) {
     if (!logged.length) return null;
     const staged = `${harPath}.annotating`;
     try {
-        const har = JSON.parse(fs.readFileSync(harPath, 'utf8'));
-        const entries = (har && har.log && har.log.entries) || [];
+        const read = harDocument.readHarDocument(harPath);
+        const har = read.document;
+        const entries = read.entries;
         const annotated = bodyDescriptor.attachDescriptors(entries, logged);
         if (!annotated) return { annotated: 0 };
         // WRITE BESIDE IT, THEN RENAME. This is the only place in this file
@@ -1430,7 +1680,13 @@ function originOf(uri) {
  * re-parsing a multi-hundred-megabyte HAR.
  */
 function buildDigest(har, meta = {}) {
-    const entries = (har && har.log && har.log.entries) || [];
+    // Recognised, not folded (issue #423). `|| []` here was the named symptom:
+    // a capture nothing could read produced a digest with no groups, the
+    // scaffold produced no rows, and the catalogue guard then blamed the
+    // catalogue for a file the READER had failed on. A digest is a claim about
+    // traffic, so it refuses to be built from something it cannot identify as
+    // a recording.
+    const entries = harDocument.entriesOf(har, 'the capture being digested');
     const groups = new Map();
     const gaps = [];
 
@@ -1676,7 +1932,7 @@ function askTheGate(candidate, state, run) {
 function catalogueScrubbed(session, state, opts = {}) {
     try {
         log.info('capture-har: building the digest ...');
-        const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
+        const har = harDocument.readHarDocument(state.scrubbed.path).document;
         // capturedUtc is when the RECORDING happened, not when it was
         // processed. A catalogue row dated to the scrub would answer "how old
         // is this evidence of their API" with the wrong number -- and that
@@ -1857,6 +2113,16 @@ function postProcess(session, opts = {}) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false, advisory: false };
     } else {
+        // The scrub's floor (#511): values the gate would have blocked were
+        // blunted rather than the capture refused. Read off the scrub's own
+        // stable stdout line -- counts only, never a value -- so the run
+        // summary says the artifact was blunted, not merely verified.
+        const blunted = /^sanitize-har: blunted: (.+)$/m.exec(sanitize.stdout || '');
+        if (blunted) {
+            state.blunted = blunted[1];
+            state.warnings.push(`sanitize-har: BLUNTED ${blunted[1]} -- values the leak gate ` +
+                'would have blocked, replaced by typed sentinels and recorded in the artifact');
+        }
         askTheGate(candidate, state, run);
     }
 
@@ -2186,11 +2452,23 @@ function summarize(harPath) {
     const bytes = fs.statSync(harPath).size;
     const summary = { exists: true, bytes, path: harPath };
     try {
-        const entries = JSON.parse(fs.readFileSync(harPath, 'utf8')).log.entries || [];
-        summary.entries = entries.length;
-        summary.hosts = [...new Set(entries.map((e) => {
-            try { return new URL(e.request.url).host; } catch (x) { return '?'; }
-        }))].sort();
+        // A file that is not a capture lands in `parseError` below with a
+        // message saying so, rather than being summarised as a capture that
+        // recorded nothing (issue #423).
+        //
+        // Walked, never held (#450). This runs on the RAW at capture time, and
+        // the raw is the largest file the pipeline ever sees; a count and a
+        // set of hosts are all the summary keeps, so that is all it holds. The
+        // fields are assigned only after the walk completes, so a refusal
+        // mid-walk leaves a parseError and no partial count beside it.
+        let count = 0;
+        const hosts = new Set();
+        for (const e of harDocument.iterateHarEntries(harPath)) {
+            count++;
+            try { hosts.add(new URL(e.request.url).host); } catch (x) { hosts.add('?'); }
+        }
+        summary.entries = count;
+        summary.hosts = [...hosts].sort();
     } catch (e) {
         summary.parseError = e.message;
     }
@@ -2329,7 +2607,8 @@ function postProcessLines(session) {
     const lines = [['verbose', `  raw:       ${session.harPath}  (unscrubbed -- never commit it)`]];
     if (pp.scrubbed && pp.scrubbed.path) {
         lines.push(['info', `  scrubbed:  ${pp.scrubbed.path}` +
-            `  (${pp.scrubbed.advisory ? 'kept -- advisory findings, see below' : 'verified'})`]);
+            `  (${pp.scrubbed.advisory ? 'kept -- advisory findings, see below' : 'verified'}` +
+            `${pp.blunted ? `; BLUNTED ${pp.blunted}` : ''})`]);
     } else if (pp.scrubbed && pp.scrubbed.quarantined) {
         // Where it went, not that it is gone. The predecessor of this line
         // said "deleted", which left the operator with an exit code, a missing
@@ -2497,6 +2776,26 @@ async function start(args) {
 
     const isTty = !!process.stdin.isTTY;
 
+    // CAN THIS RUN FINISH AT ALL -- asked before anything else (#512).
+    //
+    // Above even the placement guard, because this is the only gate whose
+    // answer makes every later one pointless. The owner's report is the shape
+    // being prevented: a profile scaffolded, a capture root announced, and
+    // then a missing module -- everything before the failure being work to
+    // undo, and the printed remedy being one that could not work.
+    //
+    // NOT under --validate-only. That flag resolves paths and opens nothing,
+    // and several suites use it to ask the recorder questions on machines
+    // where no browser is installed; gating it on a browser would break the
+    // one command that exists to have no side effects.
+    if (!args['validate-only']) {
+        const deps = await preflightDependencies({ isTty });
+        if (!deps.ok) {
+            process.stderr.write(deps.message + '\n');
+            return 1;
+        }
+    }
+
     // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300, #471).
     //
     // This sits at the very top of `start`, ahead of the profile preflight, the
@@ -2625,6 +2924,16 @@ async function start(args) {
     if (!ignoreGuard.ok) {
         process.stderr.write(ignoreGuard.message + '\n');
         return 1;
+    }
+    // Said out loud when it happened. A file this tool wrote into a folder the
+    // operator owns is theirs to know about -- and the line is also the answer
+    // to "do I need a repository for this?", delivered where the question
+    // actually comes up.
+    if (ignoreGuard.added && ignoreGuard.added.length > 0) {
+        log.info('capture-har: this folder is not a git repository. Wrote ' +
+            `${ignoreGuard.ignoreFile}\n` +
+            '  so a later `git init` cannot commit the capture store or your ' +
+            'operator profile.');
     }
 
     // And the other half: an EXPLICIT --output-path into a committable
@@ -3329,6 +3638,7 @@ module.exports = {
     buildEntry,
     assembleFromLog,
     annotateUnretainedBodies,
+    summarize,
     readLogEntries,
     resolveSessionPaths,
     uriFolder,
@@ -3360,6 +3670,10 @@ module.exports = {
     outputDestinationWarning,
     placementForOutput,
     ensureCapturesRootIgnored,
+    START_OPTIONS,
+    preflightDependencies,
+    resolvePlaywright,
+    dependencyInstallCommands,
     capturesRootProbe,
     CAPTURE_GITIGNORE_ENTRIES,
     REFERENCE_DIR,

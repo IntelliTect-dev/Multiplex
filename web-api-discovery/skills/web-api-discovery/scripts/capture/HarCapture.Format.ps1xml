@@ -14,9 +14,9 @@
 <Configuration>
   <ViewDefinitions>
     <View>
-      <Name>IntelliSDLC.HarCapture.CatalogueEntry</Name>
+      <Name>WebApiDiscovery.HarCapture.CatalogueEntry</Name>
       <ViewSelectedBy>
-        <TypeName>IntelliSDLC.HarCapture.CatalogueEntry</TypeName>
+        <TypeName>WebApiDiscovery.HarCapture.CatalogueEntry</TypeName>
       </ViewSelectedBy>
       <TableControl>
         <TableHeaders>
@@ -88,9 +88,9 @@
       </TableControl>
     </View>
     <View>
-      <Name>IntelliSDLC.HarCapture.CatalogueEntry.List</Name>
+      <Name>WebApiDiscovery.HarCapture.CatalogueEntry.List</Name>
       <ViewSelectedBy>
-        <TypeName>IntelliSDLC.HarCapture.CatalogueEntry</TypeName>
+        <TypeName>WebApiDiscovery.HarCapture.CatalogueEntry</TypeName>
       </ViewSelectedBy>
       <ListControl>
         <ListEntries>

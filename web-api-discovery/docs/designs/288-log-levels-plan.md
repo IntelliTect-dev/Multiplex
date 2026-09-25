@@ -24,12 +24,12 @@ Three decisions constrain everything below:
 
 | File | Change |
 |---|---|
-| `templates/web-api-discovery/scripts/capture/capture-har.js` | Leveled logger; all chatter to stderr; `--log-level`; message reclassification; one-sentence ENTER prompt |
-| `templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | Forward the level; `$InformationPreference` instead of pinned `-InformationAction`; `Write-Verbose` diagnostics; reworded exit-5 note |
-| `templates/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | Forward the level; `Write-Verbose` the args |
-| `templates/web-api-discovery/scripts/capture/capture-har.test.js` | New level-gating cases |
+| `skills/web-api-discovery/scripts/capture/capture-har.js` | Leveled logger; all chatter to stderr; `--log-level`; message reclassification; one-sentence ENTER prompt |
+| `skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1` | Forward the level; `$InformationPreference` instead of pinned `-InformationAction`; `Write-Verbose` diagnostics; reworded exit-5 note |
+| `skills/web-api-discovery/scripts/capture/Stop-HarRecording.ps1` | Forward the level; `Write-Verbose` the args |
+| `skills/web-api-discovery/scripts/capture/capture-har.test.js` | New level-gating cases |
 | `.github/agents/tests/har-recording.Tests.ps1` | New forwarding cases; existing six-param and PSSA gates stay green |
-| `.github/skills/web-api-discovery/SKILL.md` | Documented output matches what the tool now prints |
+| `skills/web-api-discovery/SKILL.md` | Documented output matches what the tool now prints |
 | `docs/designs/281-invoke-har-capture-plan.md` | Only if it quotes banner text that changed |
 
 ## Stage 1 -- The leveled logger
@@ -115,7 +115,7 @@ Three decisions constrain everything below:
 ## Stage 6 -- Docs and the analyzer sweep
 
 19. **Test (red):** zero repo references to the removed banner wording.
-20. Update the capture section of `.github/skills/web-api-discovery/SKILL.md`
+20. Update the capture section of `skills/web-api-discovery/SKILL.md`
     and any `docs/designs/281-invoke-har-capture-plan.md` quote of the old
     banner.
 21. Confirm the PSScriptAnalyzer gate (`har-recording.Tests.ps1:484-501`) stays
@@ -126,12 +126,12 @@ Three decisions constrain everything below:
 ## Verification
 
 ```powershell
-node --test templates/web-api-discovery/scripts/capture/capture-har.test.js
+node --test skills/web-api-discovery/scripts/capture/capture-har.test.js
 Invoke-Pester -Path .github/agents/tests/har-recording.Tests.ps1,
                     .github/agents/tests/web-api-discovery.Tests.ps1
-Invoke-ScriptAnalyzer -Path templates/web-api-discovery/scripts/capture -Recurse
+Invoke-ScriptAnalyzer -Path skills/web-api-discovery/scripts/capture -Recurse
 
-$js = 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
+$js = 'skills/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
 & $js https://example.com -Isolated              # terse: prompt + result
 & $js https://example.com -Isolated -Verbose     # adds paths, port, phases
 ```

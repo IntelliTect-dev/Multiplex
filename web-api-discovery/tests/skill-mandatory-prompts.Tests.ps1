@@ -2,12 +2,12 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
 # Behavior tests for issue #92 -- the web-api-discovery skill must always
-# prompt for both mobile-app discovery and the IntelliSDLC.ai pull, and the
-# SDLC prompt must be anchored to a `git init` step performed by the agent.
+# prompt for mobile-app discovery, and must ask before initializing git in a
+# folder that is not yet a repository.
 
 BeforeAll {
-    $script:RepoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:SkillPath = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
+    $script:RepoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
+    $script:SkillPath = Join-Path $script:RepoRoot 'skills/web-api-discovery/SKILL.md'
     $script:SkillText = Get-Content -LiteralPath $script:SkillPath -Raw
 }
 
@@ -20,9 +20,6 @@ Describe 'web-api-discovery SKILL.md mandatory prompts (issue #92)' {
             $script:SkillText | Should -Match '(?i)mobile app .*(y(es)?|n(o)?)'
         }
 
-        It 'requires confirmation of IntelliSDLC.ai seeding before mutating the filesystem' {
-            $script:SkillText | Should -Match '(?i)IntelliSDLC\.ai .*(seed|pull|instructions)'
-        }
     }
 
     Context 'Phase 1.5 -- Mobile App Discovery' {
@@ -48,29 +45,16 @@ Describe 'web-api-discovery SKILL.md mandatory prompts (issue #92)' {
         }
     }
 
-    Context 'Git init + SDLC pull' {
-        It 'documents an explicit git init step performed by the agent' {
-            # The new phase must mention initializing the git repo.
+    Context 'Git init in a folder that is not a repository' {
+        It 'asks the user before running git init' {
+            $script:SkillText | Should -Match '(?i)not a git repository'
             $script:SkillText | Should -Match '(?i)git init'
-        }
-
-        It 'requires the agent to prompt before pulling IntelliSDLC.ai' {
-            # Y/n prompt wording with default-yes.
             $script:SkillText | Should -Match '\[Y/n\]'
         }
 
-        It 'names the canonical sdlc.ai remote' {
-            $script:SkillText | Should -Match '(?i)remote (called |named )?[`'']?sdlc\.ai[`'']?'
-        }
-
-        It 'sequences git init before the SDLC pull' {
-            # The "git init" reference must appear in the file before the
-            # Pull-SDLC.ai.ps1 invocation.
-            $initIdx = $script:SkillText.IndexOf('git init')
-            $pullIdx = $script:SkillText.IndexOf('Pull-SDLC.ai.ps1')
-            $initIdx | Should -BeGreaterThan -1
-            $pullIdx | Should -BeGreaterThan -1
-            $initIdx | Should -BeLessThan $pullIdx
+        It 'no longer offers to seed the project with IntelliSDLC.ai' {
+            $script:SkillText | Should -Not -Match 'Pull-SDLC\.ai\.ps1'
+            $script:SkillText | Should -Not -Match '(?i)sdlc\.ai'' remote|remote (called |named )?[`'']?sdlc\.ai'
         }
     }
 
