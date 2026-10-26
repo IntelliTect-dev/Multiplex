@@ -1,263 +1,170 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Every Node test file must be reachable from CI, and a COMMENT is not reachable.
+# Every Node test file must be reachable from CI.
 #
-# The failure this exists to stop is a quiet one. CI runs Pester over ./.github
-# and nothing else, so a `*.test.js` added under templates/ with no wrapper in
-# this directory passes on the author's machine, is never executed on the pull
-# request, and reports green either way. That is worse than having no test: the
-# suite's own coverage is what a reviewer trusts when deciding a change is safe.
-# It is the same class of defect as #304 -- a suite that never ran reading as a
-# suite that passed.
+# THE FAILURE THIS EXISTS TO STOP IS UNCHANGED, and it is a quiet one: a
+# `*.test.js` that is never executed on the pull request passes on the author's
+# machine and reports green either way. That is worse than having no test, since
+# the suite's own coverage is what a reviewer trusts when deciding a change is
+# safe. Same class of defect as #304 -- a suite that never ran reading as a suite
+# that passed.
 #
-# The first version of this guard matched the filename anywhere in the RAW text
-# of any wrapper, which meant `# TODO: add a wrapper for foo.test.js` counted as
-# coverage. A guard against false green that is itself satisfied by a TODO
-# reproduces the exact bug it was written to prevent, so coverage is now defined
-# against EXECUTABLE text only:
+# WHAT CHANGED IS THE MECHANISM (#94). Reachability used to mean "some Pester
+# wrapper in this directory names this file in its executable text", because CI's
+# only job was Pester and a wrapper was the sole way a Node file got run. That
+# guard carried a hole it documented at length -- a mention and an invocation
+# could not be associated, so an incidental mention in a wrapper that ran
+# something else granted FALSE coverage -- and it imposed a rule every
+# contributor had to know or silently lose their coverage.
 #
-#   1. comments are stripped before matching -- line, trailing and block; and
-#   2. the mention must come from a wrapper that actually invokes `node`, so a
-#      file that names a test and runs nothing does not vouch for it.
+# CI now runs every `*.test.js` directly, through
+# `scripts/Invoke-NodeTestSuite.ps1`. Reachability is no longer a property of
+# what some wrapper happens to mention; it is a property of two things, and those
+# are what this suite pins:
 #
-# KNOWN LIMIT -- READ THIS BEFORE TRUSTING A GREEN RUN.
+#   1. THE GATE EXISTS. ci.yml still has a step that invokes the runner. Delete
+#      that step and 81 suites stop running while CI stays green -- the same
+#      false green as before, one level up.
+#   2. THE GATE'S REACH COVERS THE TREE. Every `*.test.js` lives under the root
+#      the runner sweeps by default, so none sits outside it.
 #
-# Coverage here means: a wrapper file that invokes `node` somewhere also mentions
-# this filename somewhere in its executable text. It does NOT mean that wrapper
-# invokes node FOR this file. There is no association between the token that
-# runs node and the token that names the file, so an incidental mention in a
-# wrapper that runs something else grants FALSE COVERAGE, and the orphan goes
-# unreported. Two reproductions, both confirmed against this suite and both
-# pinned below as PERMITTED:
-#
-#   1. a leftover variable from a refactor -- `$relatedFile = '<name>'` -- in a
-#      wrapper that separately runs its own, unrelated test; and
-#   2. a here-string documentation block naming the file, same situation. A
-#      here-string is executable text, so comment stripping does not reach it.
-#
-# No adversary is required, and the precondition is universally satisfied: every
-# wrapper in this directory already invokes node for its own test.
-#
-# Why this is not simply tightened. The obvious fix -- require the filename to
-# reach a node invocation as an argument, resolving one level of variable -- does
-# not fit this corpus. 11 of the 23 test files reach node through bindings that
-# one level cannot follow:
-#
-#   * `har-class-evidence` and `verify-scrub-cc-timestamp` (7 files) pass the
-#     name through a Pester `-ForEach` data table: a hashtable value becomes
-#     `$Name` in the It block, is interpolated into a path, assigned, and only
-#     then passed to node. Following that means modelling Pester's own binding.
-#   * `har-reference-catalogue` (4 files) passes the name as a named parameter to
-#     a helper function that invokes node in its body.
-#
-# Resolving those is a dataflow analysis over PowerShell, not a predicate tweak,
-# and a half-built one would be a guard that reports confident nonsense. So the
-# limit is accepted, stated here, and pinned in the suite. Anyone closing it
-# should start from the two PERMITTED tests at the bottom of this file and flip
-# them.
-#
-# One further caveat, in the safe direction: the comment stripper is
-# line-oriented and does not track here-strings, so a `#` inside a multi-line
-# here-string is over-stripped. Over-stripping can only shrink the corpus, so it
-# can only produce a spurious orphan that fails loudly -- never false coverage.
+# Plus the runner's own contract, driven against a throwaway tree: a failing file
+# fails the run and is named with its output, and a search that matched nothing is
+# an error rather than a green run over zero files. A gate that cannot fail is not
+# a gate.
 
 BeforeAll {
-    # Defined here rather than at file scope: Pester runs each It in a scope
-    # that does not see file-scope functions, but does see what BeforeAll
-    # defines. The self-tests in the second Describe drive these directly.
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..') | Select-Object -ExpandProperty Path
+    $script:Runner = Join-Path $script:RepoRoot 'scripts/Invoke-NodeTestSuite.ps1'
+    $script:Workflow = Join-Path $script:RepoRoot '.github/workflows/ci.yml'
+    # The root the runner sweeps when -Path is not given. A literal here ON
+    # PURPOSE: reading the default out of the script under test would make this
+    # suite agree with whatever that script says, including a typo, instead of
+    # pinning where the tests actually are.
+    $script:DefaultRoot = 'skills'
 
-    function Remove-PowerShellComments {
-        param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    function script:New-NodeTestTree {
+        <#
+            A throwaway tree of self-running Node scripts, in the same shape as
+            the real ones: exit 0 is a pass, non-zero is a failure.
+        #>
+        param([hashtable]$Files)
 
-        # Block comments first: they span lines, so the line scanner below
-        # cannot see them.
-        $withoutBlocks = [regex]::Replace($Text, '(?s)<#.*?#>', ' ')
-
-        $out = foreach ($line in ($withoutBlocks -split "`r?`n")) {
-            $sb = [System.Text.StringBuilder]::new()
-            $inSingle = $false
-            $inDouble = $false
-            for ($i = 0; $i -lt $line.Length; $i++) {
-                $ch = $line[$i]
-                if ($ch -eq '`' -and $inDouble) {
-                    # A backtick escape inside a double-quoted string consumes
-                    # the next character, which may itself be a quote.
-                    [void]$sb.Append($ch)
-                    if ($i + 1 -lt $line.Length) { [void]$sb.Append($line[$i + 1]); $i++ }
-                    continue
-                }
-                if ($ch -eq "'" -and -not $inDouble) { $inSingle = -not $inSingle }
-                elseif ($ch -eq '"' -and -not $inSingle) { $inDouble = -not $inDouble }
-                elseif ($ch -eq '#' -and -not $inSingle -and -not $inDouble) { break }
-                [void]$sb.Append($ch)
-            }
-            $sb.ToString()
+        $root = Join-Path $TestDrive ('nodetree-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        foreach ($name in $Files.Keys) {
+            $path = Join-Path $root $name
+            $dir = Split-Path $path -Parent
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            Set-Content -LiteralPath $path -Value $Files[$name] -Encoding utf8
         }
-        return (@($out) -join "`n")
+        return $root
     }
 
-    function Get-RunnerText {
-        # The executable text of every wrapper that actually invokes node,
-        # joined. A wrapper that runs nothing vouches for nothing.
-        param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$WrapperText)
+    function script:Invoke-Runner {
+        # Out-of-process, because the contract under test is an EXIT CODE. A
+        # dot-sourced run would take this Pester process down with its `exit`.
+        param([string[]]$Arguments)
 
-        $runners = foreach ($raw in $WrapperText) {
-            $code = Remove-PowerShellComments -Text $raw
-            if ($code -match '(?m)(^|[^\w.-])node\b') { $code }
-        }
-        return (@($runners) -join "`n")
-    }
-
-    function Get-OrphanNodeTest {
-        param(
-            [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$TestFileName,
-            [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$WrapperText
-        )
-        $runnerText = Get-RunnerText -WrapperText $WrapperText
-        return @($TestFileName | Where-Object { -not $runnerText.Contains($_) })
-    }
-
-    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts'
-
-    $script:NodeTests = @(
-        Get-ChildItem -LiteralPath $script:ScriptsDir -Recurse -File -Filter '*.test.js' |
-            Select-Object -ExpandProperty Name |
-            Sort-Object -Unique
-    )
-
-    $script:WrapperText = @(
-        Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.Tests.ps1' |
-            ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }
-    )
-
-    # The self-tests below need two synthetic filenames, and they must NOT
-    # appear in this file as literals. This file is itself part of the corpus
-    # the real check scans, so a literal `foo.test.js` sitting in executable
-    # text here would vouch for a real foo.test.js that no wrapper runs --
-    # accidental coverage granted by the coverage guard itself. Assembling the
-    # names from fragments keeps the corpus clean.
-    $script:ProbeName = 'zz-orphan-probe' + '.test' + '.js'
-    $script:CoveredName = 'zz-covered-probe' + '.test' + '.js'
-
-    $script:RealRunner = @"
-Describe 'x' {
-    It 'runs' {
-        `$out = & node (Join-Path `$dir '$($script:CoveredName)')
-        `$LASTEXITCODE | Should -Be 0
+        $out = & pwsh -NoProfile -File $script:Runner @Arguments 2>&1 | Out-String
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
     }
 }
+
+Describe 'the Node suites are reachable from CI' {
+
+    It 'CI invokes the Node test runner' {
+        Test-Path -LiteralPath $script:Runner | Should -BeTrue -Because 'the runner is what makes every Node suite reachable'
+        $workflow = Get-Content -LiteralPath $script:Workflow -Raw
+        $workflow | Should -Match 'Invoke-NodeTestSuite\.ps1' -Because @'
+Without that step, 81 Node suites stop running and CI still reports green --
+the same false green this suite has always existed to prevent, one level up.
+'@
+    }
+
+    It 'every *.test.js in the repository sits under the root the runner sweeps' {
+        # Exclusion is computed on the path RELATIVE to the repo root, not the
+        # full path: this suite itself runs from inside `.worktrees/<branch>/`
+        # during development, and matching `.worktrees` anywhere in the full path
+        # excluded every file in the repository -- a check that silently passed
+        # over nothing, which is the exact defect class this file exists for. The
+        # `.Count -gt 0` assertion below is what caught it.
+        $all = @(Get-ChildItem -LiteralPath $script:RepoRoot -Recurse -File -Filter '*.test.js' -ErrorAction SilentlyContinue |
+            Where-Object {
+                $rel = [System.IO.Path]::GetRelativePath($script:RepoRoot, $_.FullName)
+                $rel -notmatch '^\.worktrees[\\/]'
+            })
+        $all.Count | Should -BeGreaterThan 0 -Because 'finding no Node tests at all would make this check vacuous'
+
+        # Containment is decided on the RELATIVE path, not a raw string prefix.
+        # `StartsWith('<repo>\skills')` also matches a sibling whose name merely
+        # starts with it -- a future `skills-archive/` or `skillset/` would read
+        # as inside the sweep while the runner's own
+        # `Get-ChildItem (Join-Path $repoRoot 'skills')` never reaches it, so a
+        # test in there would go unrun while this guard called it covered. That is
+        # the same prefix-matching mistake the `.worktrees` exclusion above made,
+        # and precisely the gap this file exists to catch.
+        # The trailing separator is the whole point, and it is compared rather
+        # than pattern-matched so no regex escaping stands between this check and
+        # the answer.
+        $sep = [System.IO.Path]::DirectorySeparatorChar
+        $searchedRoot = (Join-Path $script:RepoRoot $script:DefaultRoot).TrimEnd($sep, [System.IO.Path]::AltDirectorySeparatorChar) + $sep
+        $outside = @($all | Where-Object { -not $_.FullName.StartsWith($searchedRoot, [System.StringComparison]::OrdinalIgnoreCase) })
+
+        ($outside | ForEach-Object { $_.FullName }) | Should -BeNullOrEmpty -Because @"
+A Node test outside '$($script:DefaultRoot)/' is never swept by the runner, so it
+never runs on the pull request while reporting nothing. Move it under that root,
+or extend the runner's default -Path in the same change.
 "@
-}
-
-Describe 'Node test files are covered by a Pester wrapper' {
-    It 'finds Node test files to check' {
-        $script:NodeTests.Count | Should -BeGreaterThan 0
-    }
-
-    It 'finds wrapper files to check against' {
-        $script:WrapperText.Count | Should -BeGreaterThan 0
-    }
-
-    It 'every *.test.js under skills/web-api-discovery/scripts is named by a wrapper' {
-        $orphans = Get-OrphanNodeTest -TestFileName $script:NodeTests -WrapperText $script:WrapperText
-
-        $orphans -join ', ' | Should -BeExactly '' -Because (
-            'CI runs Pester over ./tests only, so a Node test no wrapper names never ' +
-            'runs on the pull request while still reporting green. Add a wrapper in ' +
-            'tests/ that invokes it and asserts $LASTEXITCODE is 0.')
     }
 }
 
-Describe 'the coverage check cannot be satisfied by a mention that runs nothing' {
-    # These drive the helpers with synthetic wrapper text, so they pin the
-    # guard's own semantics without touching the repo. A guard whose weakness is
-    # untested is a guard nobody can trust to have stayed strong.
+Describe 'the Node test runner is a gate that can fail' {
 
-    It 'a filename named only in a line comment is NOT coverage' {
-        # The reviewer's exact reproduction: a TODO promising a wrapper someday.
-        $wrapper = "# TODO: someday add a wrapper for $($script:ProbeName)`n" + $script:RealRunner
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -Contain $script:ProbeName -Because (
-            'a TODO invokes nothing; counting it as coverage reproduces the false-green ' +
-            'bug this guard exists to catch')
+    It 'fails the run, and names the file, when one Node test fails' {
+        $tree = script:New-NodeTestTree @{
+            'nested/passing.test.js'        = 'process.exit(0);'
+            'nested/deeper/failing.test.js' = 'console.log("progress"); console.error("the reason"); process.exit(3);'
+        }
+
+        $result = script:Invoke-Runner @('-Path', $tree)
+
+        $result.ExitCode | Should -Be 1 -Because 'a failing Node suite must turn the run red'
+        $result.Output | Should -Match 'failing\.test\.js'
+        $result.Output | Should -Match 'exit 3' -Because 'the exit code is the first thing someone needs'
+        $result.Output | Should -Match 'the reason' -Because "a failing file's stderr is where the cause is"
+        $result.Output | Should -Match 'progress' -Because 'and its stdout carries how far it got'
     }
 
-    It 'a filename named only in a trailing comment is NOT coverage' {
-        $wrapper = $script:RealRunner + "`n`$x = 1  # see $($script:ProbeName)"
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -Contain $script:ProbeName
+    It 'passes when every Node test passes, and finds them recursively' {
+        $tree = script:New-NodeTestTree @{
+            'top.test.js'                  = 'process.exit(0);'
+            'nested/middle.test.js'        = 'process.exit(0);'
+            'nested/deeper/bottom.test.js' = 'process.exit(0);'
+        }
+
+        $result = script:Invoke-Runner @('-Path', $tree)
+
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $result.Output | Should -Match 'Running 3 Node test suite\(s\)' -Because 'all three, the nested ones included'
     }
 
-    It 'a filename named only in a block comment is NOT coverage' {
-        $wrapper = "<#`n  Related: $($script:ProbeName)`n#>`n" + $script:RealRunner
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -Contain $script:ProbeName
+    It 'refuses a search that matched nothing instead of reporting a green run over zero files' {
+        $tree = script:New-NodeTestTree @{ 'notatest.js' = 'process.exit(0);' }
+
+        $result = script:Invoke-Runner @('-Path', $tree)
+
+        $result.ExitCode | Should -Not -Be 0 -Because 'zero files gated is zero assurance, and must not read as success'
+        $result.Output | Should -Match 'No \*\.test\.js found'
     }
 
-    It 'a filename in executable code of a wrapper that runs node IS coverage' {
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:CoveredName) -WrapperText @($script:RealRunner)
-        $orphans | Should -BeNullOrEmpty
-    }
+    It 'refuses a -Filter that matched nothing for the same reason' {
+        $tree = script:New-NodeTestTree @{ 'nested/real.test.js' = 'process.exit(0);' }
 
-    It 'a filename in a wrapper that never invokes node is NOT coverage' {
-        $wrapper = "Describe 'x' { It 'y' { Test-Path '$($script:ProbeName)' | Should -BeTrue } }"
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -Contain $script:ProbeName -Because (
-            'a wrapper that runs nothing vouches for nothing')
-    }
+        $result = script:Invoke-Runner @('-Path', $tree, '-Filter', '*matches-nothing*')
 
-    It 'this file leaks no synthetic filename into the corpus it scans' {
-        # The bug this pins was found by probing: the self-tests originally used
-        # literal filenames, this file invokes node inside its fixture, so the
-        # guard granted coverage to any real file sharing a fixture's name -- and
-        # a real orphan by that name went undetected. The guard must not be able
-        # to vouch for a file because of its own test data.
-        $self = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'node-test-coverage.Tests.ps1') -Raw
-        $code = Remove-PowerShellComments -Text $self
-        $code | Should -Not -Match ([regex]::Escape($script:ProbeName))
-        $code | Should -Not -Match ([regex]::Escape($script:CoveredName))
-    }
-
-    It 'a # inside a quoted string does not start a comment' {
-        # Over-stripping would report spurious orphans. That fails loudly rather
-        # than silently, but it is still wrong, so it is pinned too.
-        $stripped = Remove-PowerShellComments -Text '$msg = "count #1"  # trailing'
-        $stripped | Should -Match '#1'
-        $stripped | Should -Not -Match 'trailing'
-    }
-}
-
-Describe 'KNOWN LIMIT -- file-scoped association grants false coverage' {
-    # These two pin behaviour that is WRONG and currently PERMITTED. They are
-    # not aspirational: they assert what the guard does today, so the limit is
-    # visible in the suite rather than only in prose, and so whoever tightens it
-    # later has both reproductions ready to flip.
-    #
-    # Both were built and run by an independent reviewer, and reproduced here
-    # end to end before being written down: a genuinely orphaned test file plus
-    # one of these incidental mentions yields `Failed=0`.
-    #
-    # To close this, `Get-OrphanNodeTest` must associate the token that NAMES
-    # the file with the token that RUNS it, instead of asking whether both facts
-    # are true somewhere in the same file. See the header for why that is a
-    # dataflow problem rather than a tweak.
-
-    It 'PERMITTED: a leftover variable naming the file grants coverage from an unrelated node call' {
-        # A refactor leaves `$relatedFile = '<name>'` behind; the wrapper still
-        # invokes node, for something else entirely.
-        $wrapper = "`$relatedFile = '$($script:ProbeName)'`n" + $script:RealRunner
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -BeNullOrEmpty -Because (
-            'file-scoped association cannot tell a leftover variable from an argument -- ' +
-            'this is the documented residual risk, not an accident')
-    }
-
-    It 'PERMITTED: a here-string see-also naming the file grants coverage from an unrelated node call' {
-        $wrapper = "`$doc = @`"`nSee also $($script:ProbeName)`n`"@`n" + $script:RealRunner
-        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
-        $orphans | Should -BeNullOrEmpty -Because (
-            'a here-string is executable text, so stripping comments does not reach it')
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match 'No \*\.test\.js found'
     }
 }

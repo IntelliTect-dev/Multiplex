@@ -391,7 +391,93 @@ holds live sessions this must not disturb -- and records every request. Pass
 | `-OutputPath` | default: **this run's own session directory** under `.har-captures/` -- gitignored and stamped. Passing a path appends the host folder, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`; a destination inside a work tree that is not gitignored is warned about, not refused. Receives the **scrubbed** artifacts and the catalogue |
 | `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
-| `-Port` | default 9333; a busy port falls forward to the next free one |
+| `-Port` | default 9333; a busy port falls forward to the next free one. Refused with `-Attach`, whose endpoint already names one |
+| `-Browser` | `Playwright` (default) launches the browser here; `Native` starts an ordinary Chrome instead, for a site that refuses the default. See below |
+| `-Attach` | record in a Chrome that is already running, given its debugging endpoint. Stopping **detaches** |
+
+#### When the site refuses the browser: `-Browser Native`
+
+**A Playwright-launched browser is a browser a site can refuse.** Playwright
+marks the browser as automated, and bot protection answers the marking rather
+than the traffic. Measured on car-rental sites, browsing **by hand**:
+
+| Site | Protection | What happened in the Playwright-launched window |
+|---|---|---|
+| Hertz | Imperva/Incapsula | 403 "Access denied, Error 15" on the first page load, before any interaction |
+| Costco Travel | Akamai | search POST reset (`ERR_HTTP2_PROTOCOL_ERROR`), including with a fresh profile |
+| Avis | DataDome | slider CAPTCHA on the vehicle search, then 403 even after it was solved |
+| Priceline | PerimeterX | "Press & Hold" as soon as the location field was typed into, including with a fresh profile |
+
+The **same sites, same machine and same network all worked** in a normally
+launched Chrome. But there the only way to get a HAR was a DevTools export by
+hand, and Chrome writes a **0-byte file** when exporting a large multi-site log
+— so the capture was unobtainable rather than merely awkward.
+
+So there are two ways to obtain a browser, and the second one records in the
+browser the site accepts:
+
+```powershell
+# The recorder starts chrome.exe itself, with no automation flags, and attaches
+# over CDP. Nothing else about the pipeline changes.
+Invoke-HarCapture https://www.hertz.com -Describe 'search a one-way rental' -Browser Native
+
+# Or record in a Chrome you started yourself. It needs a DEDICATED profile --
+# Chrome refuses remote debugging on one another Chrome already has open:
+#   chrome --user-data-dir=C:\chrome-capture --remote-debugging-port=9222
+Invoke-HarCapture https://www.avis.com -Describe 'vehicle search' -Attach 9222
+```
+
+- **No stealth measures, and none are wanted.** Nothing patches
+  `navigator.webdriver`, spoofs a fingerprint or rotates anything — a normally
+  launched Chrome needs none of it, which is the whole finding. A site may still
+  challenge; **you** answer it in the window.
+- **Stopping DETACHES.** The browser, its window and every tab in it are left
+  exactly as they are — including under `-Browser Native`, where the recorder
+  started it. Nothing in the recorder closes a browser, for the same reason
+  nothing in it kills a process: that window may hold a dozen signed-in tabs.
+  Close it yourself when you are done, or keep it and record the next session in
+  the same signed-in profile.
+- **Only this capture's tabs are recorded.** The browser is yours, and holds
+  whatever else you are signed into, so the recorder does not record all of it.
+  A request is recorded when the **tab or window that made it** is in scope, and
+  one is in scope when (1) the recorder opened it for the URI, (2) it was opened
+  *from* an in-scope tab — a sign-in popup, on any host — or (3) its page is on
+  the URI's site: the host without a leading `www.`, plus its subdomains
+  (`https://www.example.com` → `example.com`, `api.example.com`; never
+  `notexample.com`). Once in scope, a tab stays in scope wherever it navigates,
+  so an in-tab sign-in round trip is kept. **Every request an in-scope tab makes
+  is recorded, whatever host it goes to** — the API you are discovering usually
+  lives on another one. Tabs on other sites, including ones polling in the
+  background, are not recorded, and the stop line says how many requests were
+  left out. Browse the site in the tab the recorder opened, or in tabs opened
+  from it; a tab you open by hand on an unrelated host is not part of the
+  capture.
+- **Residual risk: the debugging port outlives the capture.**
+  `--remote-debugging-port` has no authentication, and it stays bound for as
+  long as that browser window lives — after the recording has stopped. Any
+  process on this machine can attach to it and read that profile's cookies.
+  The stop line reminds you; **close the window when you are done**, and keep
+  that profile for capture work rather than your everyday browsing.
+- **`raw.har` comes from the incremental recorder**, because `recordHar` belongs
+  to a browser Playwright launched. That artifact is *not* degraded — real
+  timings, uncapped bodies, and the failed requests `recordHar` drops — so
+  assembling it is the design here rather than a fallback, and **exit 5 is not
+  reported** for these modes.
+- **The Chromium binary is not a dependency.** These modes drive the Chrome the
+  machine already has, so the preflight asks only for the `playwright` *module*.
+- `-Browser Native` and `-Attach` are **exclusive with `-Isolated`**, which
+  launches the bundled Chromium — the very launch a protected site rejects.
+  `-Attach` also refuses `-Port` and `-Profile`: that browser is already
+  listening on a port and already running on a profile, so neither is the run's
+  to choose. A new tab is opened for the URI rather than navigating one of yours
+  away.
+- **A project-local profile gets an ignore rule automatically.** `-Profile
+  .\.chrome-profile` inside a work tree is as committable as a raw capture — it
+  holds live session cookies for the account you record as — so the recorder
+  appends a rooted rule and asks git again to confirm it took effect. A profile
+  in a OneDrive or Dropbox folder is warned about: a sync client copying a
+  profile database mid-write corrupts it, and carries those cookies to a cloud
+  account on the way.
 
 **Every ending is safe.** ENTER, closing the browser window, and
 `Stop-HarRecording` all produce a full HAR and all run the same
@@ -422,8 +508,9 @@ untouched. `playwright` is looked for in four places, in this order:
 4. **`NODE_PATH`** -- Node's own way of pointing at an install somewhere else
 
 If none of them has it, the failure names all four by absolute path and offers
-to install into the machine default; the Chromium binary is reported separately,
-because `npm install` does not fetch one. There is no option or environment
+to install into the machine default — **`[Y/n]`, so ENTER installs**: nothing is
+lost by saying yes, and the run cannot continue on no. The Chromium binary is
+reported separately, because `npm install` does not fetch one. There is no option or environment
 variable to configure any of this -- every location above is a mechanism Node or
 npm already provides. `--validate-only` skips the whole check: it resolves paths
 and opens nothing.
@@ -1529,6 +1616,36 @@ Both are the kind of thing that passes review:
 > reference by parsing it and asserting on its content -- never by trusting
 > the generation step's own report of what it did. The same rule applies to
 > any capture-derived probe (see "Verifying with capture-derived probes").
+
+#### 6. Holding the pipeline to real captures: `pipeline-check.js`
+
+Unit tests and review have repeatedly passed post-processing defects that a
+real capture shows within minutes. **`har/pipeline-check.js`** runs the real
+stages -- trim, scrub, gate, catalogue scaffold -- over a pinned set of raw
+captures and asks four questions of each:
+
+1. the gate passes (exit 0, or 4 for advisory findings only);
+2. no value the scrub's own table says to replace survives it;
+3. every JSON piece that parsed before the scrub still parses -- whole bodies,
+   bodies behind a `for (;;);` prefix, lines of line-delimited bodies, and
+   JSON inside form fields such as `variables=`;
+4. the catalogue scaffold's rows account for every scrubbed entry.
+
+```
+node har/pipeline-check.js --manifest <store>/_pipeline/pinned.json
+```
+
+The manifest pins captures by **SHA-256**, not by path alone, and lives in the
+gitignored store beside them. Output and the run record carry counts, kinds and
+entry locations -- never a value. Each run is compared with the last one for
+the same manifest, salt and check version: a capture that passed and now fails,
+or whose broken-payload or gating count rose, exits **4** -- the outcome a fix
+loop must never accept. A stage that dies (out of memory) is an **error**, not
+a pass, and never a regression.
+
+What it does **not** measure: a leak neither detector can see (#22, #24, #67),
+and typed-PII survivors, which the scrub's survivor guard does not cover yet.
+Four passing checks mean "no damage these checks can see", not "no leak".
 
 ### Phase 4 -- Classify Auth
 

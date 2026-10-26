@@ -55,12 +55,42 @@ function collectFindings(parsed, policy) {
     // named a field and left the entry to be found by hand, which on a
     // real capture meant walking tens of megabytes of JSON.
     harSecrets.walkForUnredactedSecrets(parsed, (name, where, at) => {
-        leaks.push(Object.assign({ kind: 'known-secret', sample: name, gating: true },
-            at && at.entryIndex !== undefined ? { entryIndex: at.entryIndex } : null,
-            at && at.keyPath ? { keyPath: at.keyPath } : null,
-            at && at.enclosing ? { enclosing: at.enclosing } : null));
+        leaks.push(knownSecretFinding(name, at));
     }, { policy });
     return leaks;
+}
+
+function knownSecretFinding(name, at) {
+    return Object.assign({ kind: 'known-secret', sample: name, gating: true },
+        at && at.entryIndex !== undefined ? { entryIndex: at.entryIndex } : null,
+        at && at.keyPath ? { keyPath: at.keyPath } : null,
+        at && at.enclosing ? { enclosing: at.enclosing } : null);
+}
+
+/**
+ * `collectFindings` over a capture that is READ AS IT IS WALKED (issue #34):
+ * `opened` is `harDocument.openHarCapture`'s envelope and entry walk. Both
+ * detectors see each entry once, as it is read, and the findings come back in
+ * the order `collectFindings` gives them for the same document -- so a capture
+ * past the size a string can hold is gated by the same rules, not a copy.
+ */
+function collectFindingsFromCapture(opened, policy) {
+    const collector = harShapes.createLeakCollector(policy);
+    const secrets = [];
+    harSecrets.walkForUnredactedSecrets(opened.envelope, (name, where, at) => {
+        secrets.push(knownSecretFinding(name, at));
+    }, {
+        policy,
+        onEntries: (walkEntry) => {
+            let index = 0;
+            for (const entry of opened.entries()) {
+                collector.addEntry(entry, index);
+                walkEntry(entry, index);
+                index++;
+            }
+        },
+    });
+    return collector.results().concat(secrets);
 }
 
 /**
@@ -76,4 +106,4 @@ function classifyFindings(leaks) {
     };
 }
 
-module.exports = { collectFindings, classifyFindings, isAdvisory };
+module.exports = { collectFindings, collectFindingsFromCapture, classifyFindings, isAdvisory };

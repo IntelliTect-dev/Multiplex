@@ -41,7 +41,7 @@ Describe 'Assert-GitleaksAvailable -- skip locally, fail in CI (issue #312)' {
 
     It 'names the workflow step to fix in the CI failure message' {
         { Assert-GitleaksAvailable -Gitleaks $null -CiValue 'true' } |
-            Should -Throw -ExpectedMessage '*validate-instructions.yml*'
+            Should -Throw -ExpectedMessage '*ci.yml*'
     }
 
     It 'reports not-available (skip) when gitleaks is absent outside CI' {

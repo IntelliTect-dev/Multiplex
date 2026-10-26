@@ -76,7 +76,9 @@ const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 // that removes every occurrence of a value this run decided to replace, and
 // the check that refuses the run when one survives anyway.
 const subsSurvivors = require(path.join(__dirname, 'subs-survivors.js'));
-const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
+const harStream = require(path.join(__dirname, '..', 'lib', 'har-stream.js'));
+// Replacements that land on a bare JSON number must leave valid JSON (#23, #68).
+const jsonNumbers = require(path.join(__dirname, 'json-number-tokens.js'));
 // The floor under the scrub (issue #511): blunt what the gate would still
 // block, rather than refuse the artifact over it.
 const harBlunt = require(path.join(__dirname, 'har-blunt.js'));
@@ -379,7 +381,63 @@ function substitute(kind, name, value, ctx) {
     if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, value, ctx.salt);
     ctx.produced.add(ctx.subs[key]);
     recordOriginal(ctx, key, kind, name, value, ctx.subs[key]);
+    recordDecodedSpelling(ctx, key, kind, name, value, ctx.subs[key]);
     return ctx.subs[key];
+}
+
+/**
+ * `s` with its percent-escapes decoded, or null when it has none or they do
+ * not decode. `+` is left alone: it is a space only in a form body, and a
+ * decoded spelling carrying a space is prose to the sweep and never swept.
+ */
+function percentDecoded(s) {
+    if (!/%[0-9A-Fa-f]{2}/.test(s)) return null;
+    try {
+        const decoded = decodeURIComponent(s);
+        return decoded === s ? null : decoded;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Record the DECODED spelling of a value this run replaced in its
+ * percent-encoded wire spelling (issue #67).
+ *
+ * A name-keyed secret in a form body, a URL query or a parameter list arrives
+ * percent-encoded, and that is the spelling `recordOriginal` keeps. The same
+ * value echoed decoded under a neutral name -- a response body field -- was
+ * then invisible to the sweep and to its survivor guard, which look only for
+ * what was recorded, and to the gate, which sees no name and no shape. This
+ * is not a new detection: it is the second spelling of a value the scrub
+ * already decided to replace, mapped to the same fake (spelled decoded, which
+ * for every name-keyed fake is the fake itself).
+ *
+ * Its key sorts after every real key (`~`), so where the decoded value was
+ * ALSO substituted in its own right, that record wins the sweep's tie-break.
+ * `spellingOf` tells `findCollisions` the two spellings are one datum.
+ *
+ * EVERY LEVEL, up to a bound. A value re-embedded in an already-encoded
+ * parameter arrives encoded TWICE, and stopping at one decode left its fully
+ * decoded echo standing -- the same leak, one level down. Each intermediate
+ * spelling is recorded, so an echo at any depth is swept. The bound only stops
+ * a pathological value; real captures nest two deep at most.
+ */
+const MAX_DECODE_LEVELS = 3;
+
+function recordDecodedSpelling(ctx, key, kind, name, value, replacement) {
+    if (!ctx.originals) return;
+    let spelling = value;
+    for (let level = 1; level <= MAX_DECODE_LEVELS; level++) {
+        const decoded = percentDecoded(spelling);
+        if (decoded === null) return;
+        const fake = percentDecoded(replacement);
+        // Level 1 keeps the key it has always had, so records do not churn.
+        const decodedKey = level === 1 ? `~decoded:${key}` : `~decoded${level}:${key}`;
+        recordOriginal(ctx, decodedKey, kind, name, decoded, fake === null ? replacement : fake);
+        ctx.originals.get(decodedKey).spellingOf = key;
+        spelling = decoded;
+    }
 }
 
 /**
@@ -532,7 +590,14 @@ const COOKIE_TOKEN_MIN_LENGTH = 16;
 function cookieReplacement(name, value, ctx) {
     if (typeof name !== 'string' || typeof value !== 'string' || value === '') return null;
     if (alreadySubstituted(value, ctx)) return null;
-    if (value.length < COOKIE_TOKEN_MIN_LENGTH
+    // `dpr` (device pixel ratio) is a display setting, not a token: its
+    // decimal runs to 18 characters and was scrubbed on length alone, and its
+    // fake then broke a request body that carried the same number (#68).
+    // Decided by NAME and value together -- a long decimal under any other
+    // name may be a timestamp-derived session value and is still scrubbed --
+    // and a name the policy calls secret is scrubbed whatever it holds.
+    const displaySetting = name.toLowerCase() === 'dpr' && /^\d+(\.\d+)?$/.test(value);
+    if ((value.length < COOKIE_TOKEN_MIN_LENGTH || displaySetting)
         && !isKnownSecretField(name, ctx.policy)
         && !isKnownSecretHeader(name, ctx.policy)) return null;
     return substitute('cookie', name, value, ctx);
@@ -652,84 +717,53 @@ function walk(node, ctx) {
         return node;
     }
     if (typeof node === 'object') {
-        for (const k of Object.keys(node)) {
-            if (k === 'headers') {
-                node[k] = scrubHeaders(node[k], ctx);
-            } else if (k === 'cookies') {
-                node[k] = scrubCookieArray(node[k], ctx);
-            } else if (k === 'queryString' || k === 'params') {
-                node[k] = scrubNameValuePairs(node[k], ctx);
-            } else {
-                node[k] = walk(node[k], ctx);
-            }
-        }
+        for (const k of Object.keys(node)) walkKey(node, k, ctx);
         return node;
     }
     return node;
 }
 
-/**
- * Stop, with a message an operator can act on, when the capture is too large
- * to be held as a single string (issue #528).
- *
- * WHY A REFUSAL IS THE RIGHT ANSWER HERE and not merely a louder crash: what
- * this scrub produces is the only shareable form of a capture. The raw is the
- * credential-bearing artifact by design, confined to a gitignored store, so a
- * scrub that cannot run leaves the operator holding the one copy that must not
- * be committed. Saying so by name -- the file, its size, the limit -- is what
- * turns a dead end into a decision: trim the capture, or split the session next
- * time. Streaming the scrub is the fix that removes the cliff entirely and it
- * belongs to issue #450; this is the message that stops the cliff being
- * discovered as `Cannot create a string longer than 0x1fffffe8 characters`.
- *
- * A capture whose size cannot be read is NOT refused. That is the ordinary
- * missing-file case, and the read below reports it far better than a stat
- * failure could.
- */
-function refuseCaptureTooLargeToRead(inPath) {
-    let bytes;
-    try { bytes = fs.statSync(inPath).size; } catch { return; }
-
-    const verdict = captureSize.assessCaptureSize(bytes, inPath);
-
-    // The band between the threshold and the ceiling is not safe, it is merely
-    // readable. Serialization inflates the document -- pretty-printing adds
-    // indentation to every line -- so a capture that reads can still fail when
-    // the scrubbed form is written out, minutes later, with the whole walk
-    // already done. Saying so before starting is the difference between a late
-    // failure the operator was warned about and one that looks arbitrary.
-    if (verdict.status === 'warn') {
-        console.error(`sanitize-har: ${verdict.message}`);
-        console.error(
-            'sanitize-har: this capture still reads, but the scrubbed form is larger than ' +
-            'the capture it comes from, so this run may still fail when it writes.');
-        return;
+// One key of an object, as `walk` scrubs it. Shared so the streaming scrub
+// walks the envelope around `log.entries` with exactly the rules `walk` uses.
+function walkKey(node, k, ctx) {
+    if (k === 'headers') {
+        node[k] = scrubHeaders(node[k], ctx);
+    } else if (k === 'cookies') {
+        node[k] = scrubCookieArray(node[k], ctx);
+    } else if (k === 'queryString' || k === 'params') {
+        node[k] = scrubNameValuePairs(node[k], ctx);
+    } else {
+        node[k] = walk(node[k], ctx);
     }
+}
 
-    if (verdict.status !== 'exceeds') return;
-
-    console.error(`sanitize-har: ${verdict.message}`);
-    console.error(
-        'sanitize-har: nothing was written and the raw capture is untouched. ' +
-        'Trim the capture first, or record the session in smaller parts.');
-    process.exit(1);
+/**
+ * The envelope's keys in the order `walk(har)` reaches them, split at
+ * `log.entries`: the keys walked BEFORE the entries and those walked AFTER.
+ * Order matters because `alreadySubstituted` consults what the run has
+ * produced so far, so the streaming scrub has to reach every node in the
+ * sequence the whole-document walk did.
+ */
+function envelopeKeys(har) {
+    const before = [];
+    const after = [];
+    let seen = false;
+    for (const k of Object.keys(har)) {
+        if (k === 'log' && har.log && typeof har.log === 'object' && !Array.isArray(har.log)) {
+            for (const lk of Object.keys(har.log)) {
+                if (lk === 'entries') { seen = true; continue; }
+                (seen ? after : before).push([har.log, lk]);
+            }
+            continue;
+        }
+        (seen ? after : before).push([har, k]);
+    }
+    return { before, after };
 }
 
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) usage();
-
-    // FIRST, before profile, policy or any destination work: is this capture
-    // one the scrub can read at all? (issue #528)
-    //
-    // Everything below reads the document whole, so a capture past Node's
-    // string ceiling dooms the run no matter how well the rest is configured.
-    // Asking here means the operator is told the fact that actually ended the
-    // run, rather than being sent to fix a missing profile that would have
-    // changed nothing. It is also the cheapest check in the file -- one
-    // `statSync`, no read -- so the refusal costs nothing and leaves nothing
-    // behind.
-    refuseCaptureTooLargeToRead(args.in);
 
     let profile;
     try {
@@ -768,56 +802,63 @@ function main() {
     ];
     assertDerivedDestinationsProtected(tableDestinations);
 
-    let raw;
+    // TWO WALKS, NEITHER HOLDING THE DOCUMENT (issue #10).
+    //
+    // The capture used to be read whole, which fails outright past the ~512 MB
+    // a single string can hold -- a fixed engine ceiling no amount of memory
+    // moves. It is now read entry by entry, twice, because several decisions
+    // are taken over the WHOLE run before any entry may be rewritten:
+    //
+    //   * typed PII: a value seen at an identifier field ANYWHERE is declined
+    //     EVERYWHERE, so every detection has to be in before the first rewrite;
+    //   * the substitution sweep and its guard act on the set of originals the
+    //     key-name scrub replaced across the whole capture.
+    //
+    // Walk 1 runs the key-name scrub and PII detection and keeps only those
+    // small run-wide facts. Walk 2 re-reads the raw, repeats the key-name scrub
+    // (deterministic, same order, same result), applies the PII plan, sweeps,
+    // guards, blunts, and writes each entry as it goes. Every step is the one
+    // the whole-document scrub ran, in the same order per entry; the committed
+    // oracle under tests/fixtures/har/stream-scrub/ holds the result to the
+    // same bytes.
+    let capture;
     try {
-        raw = fs.readFileSync(args.in, 'utf8');
+        capture = harDocument.openHarCapture(args.in);
     } catch (e) {
-        // The preflight compares BYTES against a ceiling counted in UTF-16 code
-        // units, which makes it a safe lower bound but not an exact one: a file
-        // it passes can still be too long to hold. Recognising the condition
-        // here keeps the readable message on that path too, rather than letting
-        // the hex text through the one gap the size check cannot close.
-        if (captureSize.isStringTooLongError(e)) {
-            console.error('sanitize-har: ' + captureSize.describeStringLimitFailure({
-                filePath: args.in,
-                bytes: (() => { try { return fs.statSync(args.in).size; } catch { return undefined; } })(),
-                stage: 'reading the capture'
-            }));
-            process.exit(1);
-        }
-        console.error(`sanitize-har: cannot read ${args.in}: ${e.message}`);
+        console.error(`sanitize-har: ${e.message}`);
         process.exit(1);
     }
+    // Each walk scrubs its own copy of the envelope, because the walk rewrites
+    // in place and walk 2 must see the raw values walk 1 saw.
+    const rawEnvelope = JSON.stringify(capture.envelope);
 
-    // Recognised as a CAPTURE, not merely parsed (issue #423). The scrub walks
-    // any JSON it is given, so a file that is not a HAR used to be scrubbed
-    // happily and written out as though it were one -- handing every later
-    // stage a document with no entries to find. `raw` is already in hand, so
-    // this parses that rather than opening the file a second time.
-    let har;
+    const subs = {};
+    const ctx = createContext(policy, subs, salt);
+    const detections = [];
     try {
-        har = harDocument.parseHarDocument(raw, args.in).document;
+        const envelope = JSON.parse(rawEnvelope);
+        const keys = envelopeKeys(envelope);
+        for (const [node, k] of keys.before) walkKey(node, k, ctx);
+        let index = 0;
+        for (const entry of capture.entries()) {
+            walk(entry, ctx);
+            pii.detectPiiInEntry(entry, index, policy, detections);
+            index++;
+        }
+        for (const [node, k] of keys.after) walkKey(node, k, ctx);
     } catch (e) {
         console.error(`sanitize-har: ${e.message}`);
         process.exit(1);
     }
 
-    const subs = {};
-    const ctx = createContext(policy, subs, salt);
-    walk(har, ctx);
-
-    // Typed-PII pass (issue #46): runs after legacy regex scrub so that
-    // anything still in the HAR (emails in custom-named fields, phones,
-    // SSNs, credit-cards, IPs, plus context-driven name/address/dob/geo)
-    // gets a deterministic, obviously-fake replacement. The returned
-    // substitutions array contains only hash prefixes of originals so the
-    // file is safe to commit.
+    // Between the walks: the run-wide decisions, from the run-wide facts.
+    //
+    // Typed PII (issue #46) is planned here and applied per entry in walk 2.
     // The MERGED policy goes in, so the scrub honours exactly the document the
-    // gate honours (issue #334). Without it `fieldTypeFor` was always called
-    // with null and the card predicate would have been too, which left a
-    // project's `piiFields` and `cardIssuers` validated, merged, loaded -- and
-    // never consulted on the side that actually rewrites the capture.
-    const piiResult = pii.scrubPii(har, policy);
+    // gate honours (issue #334). The returned substitutions carry only hash
+    // prefixes of originals, so that table is safe to commit.
+    const piiResult = pii.planPiiReplacements(detections, policy);
+    detections.length = 0;
 
     // The substitution sweep (issue #475). A key in the table is this run's own
     // statement that the value it names must be replaced, and the scrub was
@@ -827,31 +868,139 @@ function main() {
     // knows and no shape any pattern matches, so nothing but the run's own
     // record of the value can reach them.
     //
-    // Placed after the typed-PII pass so every earlier pass has had its say,
-    // and before the literal pass and the serialization, which are the only
-    // steps that follow and neither of which can put an original back.
-    //
     // THIS RUN's substitutions, never the merged historical table: the merged
     // table holds other captures' credentials, which is a different question
     // with a different false-positive profile.
     //
-    // LEGACY table only. `pii.scrubPii` returns hash prefixes rather than
-    // originals -- deliberately, so its table is safe to commit -- so its
-    // substitutions cannot feed either half of this. Typed PII is therefore
-    // still unguarded against the same class of survivor; saying so here is
-    // the difference between a known gap and an unnoticed one.
+    // LEGACY table only. The typed-PII plan's substitutions carry hash prefixes
+    // rather than originals -- deliberately, so its table is safe to commit --
+    // so they cannot feed either half of this. Typed PII is therefore still
+    // unguarded against the same class of survivor; saying so here is the
+    // difference between a known gap and an unnoticed one.
     const runEntries = [...ctx.originals.values()];
-    const sweep = subsSurvivors.applySweep(har, runEntries, ctx.produced);
+    const sweeper = subsSurvivors.compileSweeper(runEntries, ctx.produced);
+    const sweep = sweeper ? sweeper.counts : { entries: 0, occurrences: 0, leaves: 0 };
+    // Decided now, while walk 1's record of originals is in hand; walk 2 does
+    // not need that record, and on a large capture it is most of the memory.
+    const collisions = subsSurvivors.findCollisions(runEntries);
+    // Originals the sweep will replace that can stand as a JSON NUMBER. Taken
+    // before walk 1's record is released; the sweep itself only sees text.
+    const sweepNumbers = jsonNumbers.numericNeedles(
+        subsSurvivors.sweepableEntries(runEntries, ctx.produced)
+            .map((e) => ({ needle: e.original, replacement: e.replacement })));
+    const literalNumbers = jsonNumbers.numericNeedles(
+        profile.literals.map((l) => ({ needle: l.literal, replacement: l.sentinel })));
+    runEntries.length = 0;
+    ctx.originals.clear();
+    ctx.produced.clear();
 
-    // The POST-CONDITION. Cheap, exact, and the only one of the three checks
-    // that can catch a value the scrubber itself said to replace. It should now
-    // be unfalsifiable -- the sweep just ran -- which is the point: it is what
-    // makes the sweep's completeness a checked property rather than a claim.
-    const survivors = subsSurvivors.findSurvivors(har, runEntries, ctx.produced);
+    // Walk 2. Written to a partial file beside the destination and moved into
+    // place only once the survivor guard has passed on every entry: a refusal
+    // that left a partially-scrubbed file behind would be a refusal in the log
+    // and a leak on disk, which is the shape `assertDerivedDestinationsProtected`
+    // refuses in for the tables.
+    const survivors = [];
+    const bluntFindings = [];
+    const bluntBlocked = [];
+    const bluntUnblunted = [];
+    const literalCounts = new Map();
+    // Walk 2 repeats walk 1's key-name scrub, so it needs its OWN record of
+    // what it has produced so far (`alreadySubstituted` reads it in document
+    // order). It does not need its own table: every fake is a pure function of
+    // (kind, value, salt), so walk 1's finished table gives the same answer
+    // walk 2 would have built -- and holding two copies of it is what made the
+    // largest capture run out of memory. Nor does it need to record originals.
+    const ctx2 = createContext(policy, subs, salt);
+    ctx2.originals = null;
+    const envelope = JSON.parse(rawEnvelope);
+    const keys = envelopeKeys(envelope);
+    for (const [node, k] of keys.before) walkKey(node, k, ctx2);
+
+    function* rewritten() {
+        let index = 0;
+        for (const entry of capture.entries()) {
+            walk(entry, ctx2);
+            pii.applyReplacementsToEntry(entry, piiResult.replacements, policy);
+            // Where a swept original sits as a bare JSON number, it becomes a
+            // QUOTED fake here, before the sweep's blind text replacement
+            // could write an unquoted one (#68).
+            jsonNumbers.rewriteEntryNumbers(entry, sweepNumbers);
+            if (sweeper) {
+                sweeper.sweepEntry(entry, index);
+                // The POST-CONDITION. Cheap, exact, and the only one of the
+                // three checks that can catch a value the scrubber itself said
+                // to replace. It should now be unfalsifiable -- the sweep just
+                // ran -- which is the point: it is what makes the sweep's
+                // completeness a checked property rather than a claim.
+                sweeper.survivorsInEntry(entry, index, survivors);
+            }
+            // The FLOOR (issue #511). Whatever the leak gate would still block
+            // after every pass above is blunted to a typed sentinel here,
+            // rather than the whole artifact being refused over it. The gate is
+            // asked its own question -- har-blunt.js calls verify-scrub.js's
+            // classification, not a copy -- and it still runs over the written
+            // file afterwards. Advisory findings are untouched.
+            const blunted = harBlunt.bluntEntry(entry, index, { policy, salt });
+            bluntFindings.push(...blunted.findings);
+            bluntBlocked.push(...blunted.blocked);
+            bluntUnblunted.push(...blunted.unblunted);
+            // Likewise for the operator's own identifiers, before the literal
+            // pass rewrites the serialized text blind (#23).
+            jsonNumbers.rewriteEntryNumbers(entry, literalNumbers);
+            yield entry;
+            index++;
+        }
+    }
+
+    // The literal-value pass runs LAST, over the SERIALIZED text, so a single
+    // sweep covers URLs, headers, request bodies and response bodies -- the
+    // same identifier under three different names is one replacement, not
+    // three key-list entries somebody has to know about in advance. It is
+    // applied to each piece of text as the writer produces it: the envelope
+    // before the entries, each entry, the envelope after. A literal is a value
+    // inside one JSON string, so none can straddle two pieces.
+    const literalText = (text) => {
+        const r = harLiterals.applyLiteralPass(text, profile.literals);
+        for (const h of r.hits) literalCounts.set(h.sentinel, (literalCounts.get(h.sentinel) || 0) + h.count);
+        return r.text;
+    };
+    let blunting = null;
+    const finalizeEnvelope = (env) => {
+        for (const [node, k] of keys.after) walkKey(node, k, ctx2);
+        if (sweeper) {
+            // ALL of the envelope, including the part already written. The
+            // sweep of that part ran before it was written and only replaces,
+            // so this finds nothing new there -- and if it ever did change it,
+            // the writer refuses (the written head no longer matches), which
+            // removes the partial file. Do not narrow this to the keys after
+            // the entries: the survivor guard below rides on the same call.
+            sweeper.sweepEnvelope(env);
+            sweeper.survivorsInEnvelope(env, survivors);
+        }
+        const record = harBlunt.bluntRecord(bluntFindings, { policy, salt });
+        harBlunt.placeBluntRecord(env, record);
+        blunting = { values: record.values, bytes: record.bytes, findings: bluntFindings,
+            blocked: bluntBlocked, unblunted: bluntUnblunted };
+        return env;
+    };
+
+    fs.mkdirSync(outDir, { recursive: true });
+    const partial = path.join(outDir, `.${path.basename(outPath)}.partial-${process.pid}`);
+    try {
+        // The envelope before the entries is written first, so it is swept
+        // first; the sweep only replaces, so the second sweep at the end finds
+        // nothing left there.
+        if (sweeper) sweeper.sweepEnvelope(envelope);
+        harStream.writeHarDocument(partial, envelope, rewritten(), { mapText: literalText, finalizeEnvelope });
+    } catch (e) {
+        try { fs.rmSync(partial, { force: true }); } catch { /* best effort */ }
+        console.error(`sanitize-har: ${e.message}`);
+        process.exit(1);
+    }
+
     if (survivors.length) {
-        // Nothing is written. A refusal that left a partially-scrubbed file
-        // behind would be a refusal in the log and a leak on disk, which is the
-        // shape `assertDerivedDestinationsProtected` refuses in for the tables.
+        // Nothing is written. The partial file goes, and no table is written.
+        fs.rmSync(partial, { force: true });
         console.error(
             `sanitize-har: REFUSING to write ${outPath}: ${survivors.length} value(s) this ` +
             `run's own substitution table says must be replaced survived the scrub. ` +
@@ -872,49 +1021,17 @@ function main() {
     // blocking -- widening the fake would change every replacement in every
     // merged table and every committed reference, and that is an owner's
     // decision rather than a scrub's.
-    const collisions = subsSurvivors.findCollisions(runEntries);
     for (const c of collisions) {
         console.error(`sanitize-har: NOTE -- non-reversible substitution: ` +
             `${subsSurvivors.describeCollision(c)}`);
     }
-
-    // The FLOOR (issue #511). Whatever the leak gate would still block after
-    // every pass above is blunted to a typed sentinel here, rather than the
-    // whole artifact being refused over it. The gate is asked its own
-    // question -- har-blunt.js calls verify-scrub.js's classification, not a
-    // copy -- and it still runs over the written file afterwards, so nothing
-    // about what counts as a leak changed. Advisory findings are untouched.
-    const blunting = harBlunt.bluntHar(har, { policy, salt });
     reportBlunting(blunting);
-
-    // Literal-value pass runs LAST, over the SERIALIZED document, so a single
-    // sweep covers URLs, headers, request bodies and response bodies -- the
-    // same identifier under three different names is one replacement, not
-    // three key-list entries somebody has to know about in advance.
-    //
-    // And it is the step most likely to hit the string ceiling on a document
-    // that was readable: pretty-printing adds indentation and newlines to every
-    // line, so the serialized form is larger than the file it came from. A
-    // capture that passed the preflight can fail HERE, and until now that
-    // arrived as an unhandled RangeError -- a stack trace, after the whole scrub
-    // had already run (issue #528).
-    let serialized;
-    try {
-        serialized = JSON.stringify(har, null, 2);
-    } catch (e) {
-        if (captureSize.isStringTooLongError(e)) {
-            console.error('sanitize-har: ' + captureSize.describeStringLimitFailure({
-                filePath: args.in,
-                stage: 'serializing the scrubbed document, which is larger than the capture it came from'
-            }));
-            console.error(
-                'sanitize-har: nothing was written and the raw capture is untouched. ' +
-                'Trim the capture first, or record the session in smaller parts.');
-            process.exit(1);
-        }
-        throw e;
-    }
-    const literalPass = harLiterals.applyLiteralPass(serialized, profile.literals);
+    // Hit counts per sentinel across every piece, in the profile's order.
+    const literalPass = {
+        hits: harLiterals.byDescendingLength(profile.literals)
+            .filter(({ sentinel }) => literalCounts.has(sentinel))
+            .map(({ sentinel }) => ({ sentinel, count: literalCounts.get(sentinel) })),
+    };
 
     // Merge rather than overwrite: the substitution table is the project's
     // running hash -> fake map, and a second capture must not erase the first.
@@ -938,8 +1055,7 @@ function main() {
     // repository's ignore rules are not frozen while it runs.
     assertDerivedDestinationsProtected(tableDestinations);
 
-    fs.mkdirSync(outDir, { recursive: true });
-    fs.writeFileSync(outPath, literalPass.text, 'utf8');
+    fs.renameSync(partial, outPath);
     // The tables no longer share a directory with the output, and an explicit
     // --subs / --pii-subs may point anywhere, so each parent is created on its
     // own rather than assumed to exist.

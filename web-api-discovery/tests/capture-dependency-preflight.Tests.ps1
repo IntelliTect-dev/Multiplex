@@ -75,12 +75,28 @@ process.stdout.write(JSON.stringify(m.START_OPTIONS || null));
 
         $options = $json | ConvertFrom-Json
         $options | Should -Not -BeNullOrEmpty -Because 'the option list is exported so it can be pinned'
+        # --browser and --attach joined the list in #73, which is a different
+        # question from the one this Describe asks. #512 was "where is the
+        # dependency", and the answer had to use mechanisms that already existed
+        # -- so it adds no option, and that is still pinned: none of the four
+        # search locations is reachable from this list.
+        #
+        # #73 is "WHOSE BROWSER", which no existing lever can express. Playwright's
+        # launch is detectable and protected sites refuse it outright, so recording
+        # at all on those sites means recording in a browser this script did not
+        # launch. The issue names both flags, and the argument for them is written
+        # up on capture-har.js and in SKILL.md rather than here.
+        #
+        # THE EQUALITY IS KEPT DELIBERATELY. Loosening it to a subset check would
+        # end the prompt-first gate for every future option, which is the whole
+        # value of this assertion -- the next one has to come through here.
         ($options | Sort-Object) -join ',' | Should -Be (
-            (@('describe', 'isolated', 'log-level', 'no-wait', 'output-path',
-               'port', 'profile', 'snapshot-seconds', 'uri', 'validate-only') |
+            (@('attach', 'browser', 'describe', 'isolated', 'log-level', 'no-wait',
+               'output-path', 'port', 'profile', 'snapshot-seconds', 'uri', 'validate-only') |
              Sort-Object) -join ',') -Because (
-            'issue #512 adds no command-line option; changing this list is a deliberate ' +
-            'API decision that the Adding Command-Line Options rule says to prompt for')
+            'issue #512 adds no command-line option, and the two #73 added are the ones ' +
+            'it names; changing this list is a deliberate API decision that the Adding ' +
+            'Command-Line Options rule says to prompt for')
     }
 
     It 'rejects an unknown option rather than ignoring it' {

@@ -52,7 +52,12 @@
  *   * ENCODED spellings. A value surviving only inside a percent-encoded or
  *     base64 blob is not matched here. That axis belongs to the gate's shape
  *     checks and to the nested-reach work; claiming it here would be a reach
- *     fix wearing a post-condition's clothes.
+ *     fix wearing a post-condition's clothes. The OPPOSITE direction is in
+ *     scope, and is closed at the source rather than here: a value the scrub
+ *     replaced in its percent-encoded wire spelling (a form body, a query)
+ *     and that travels DECODED elsewhere. The scrub records both spellings,
+ *     the decoded one tagged `spellingOf`, so the sweep and the guard hold
+ *     both without this module decoding anything (#67).
  *   * Originals carrying WHITESPACE, and originals shorter than
  *     `MIN_SWEEPABLE_LENGTH`. Both are the same axis: a value captured by
  *     its field NAME is routinely prose -- #529's locale bundle holds the
@@ -291,91 +296,86 @@ function spliceMatches(text, hits, matcher) {
  */
 function walkStringValues(har, visit) {
     const entries = har && har.log && Array.isArray(har.log.entries) ? har.log.entries : null;
-
-    function walk(node, keyPath, entryIndex, depth) {
-        if (depth > MAX_DEPTH || node === null || node === undefined) return;
-        if (Array.isArray(node)) {
-            for (let i = 0; i < node.length; i++) {
-                const child = node[i];
-                if (typeof child === 'string') {
-                    const next = visit(child, `${keyPath}[${i}]`, entryIndex);
-                    if (next !== undefined) node[i] = next;
-                } else {
-                    walk(child, `${keyPath}[${i}]`, entryIndex, depth + 1);
-                }
-            }
-            return;
-        }
-        if (typeof node !== 'object') return;
-        for (const key of Object.keys(node)) {
-            const child = node[key];
-            const at = keyPath ? `${keyPath}.${key}` : key;
-            if (typeof child === 'string') {
-                const next = visit(child, at, entryIndex);
-                if (next !== undefined) node[key] = next;
-            } else {
-                walk(child, at, entryIndex, depth + 1);
-            }
-        }
-    }
-
     if (entries) {
-        entries.forEach((entry, i) => walk(entry, '', i, 0));
+        entries.forEach((entry, i) => walkEntryStrings(entry, i, visit));
         // Everything outside `log.entries` -- creator, comment, pages -- still
         // gets swept. A scrub that covered only the entries would leave a
         // value standing in a field the tooling itself wrote.
-        for (const key of Object.keys(har.log)) {
-            if (key === 'entries') continue;
-            const child = har.log[key];
+        walkEnvelopeStrings(har, visit);
+        return;
+    }
+    walkNode(har, '', null, 0, visit);
+}
+
+function walkNode(node, keyPath, entryIndex, depth, visit) {
+    if (depth > MAX_DEPTH || node === null || node === undefined) return;
+    if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) {
+            const child = node[i];
             if (typeof child === 'string') {
-                const next = visit(child, `log.${key}`, null);
-                if (next !== undefined) har.log[key] = next;
+                const next = visit(child, `${keyPath}[${i}]`, entryIndex);
+                if (next !== undefined) node[i] = next;
             } else {
-                walk(child, `log.${key}`, null, 0);
+                walkNode(child, `${keyPath}[${i}]`, entryIndex, depth + 1, visit);
             }
         }
         return;
     }
-    walk(har, '', null, 0);
+    if (typeof node !== 'object') return;
+    for (const key of Object.keys(node)) {
+        const child = node[key];
+        const at = keyPath ? `${keyPath}.${key}` : key;
+        if (typeof child === 'string') {
+            const next = visit(child, at, entryIndex);
+            if (next !== undefined) node[key] = next;
+        } else {
+            walkNode(child, at, entryIndex, depth + 1, visit);
+        }
+    }
+}
+
+/** One entry's string values, located as `walkStringValues` locates them. */
+function walkEntryStrings(entry, entryIndex, visit) {
+    walkNode(entry, '', entryIndex, 0, visit);
+}
+
+/** The string values of `log` outside `entries`, with no entry index. */
+function walkEnvelopeStrings(har, visit) {
+    if (!har || !har.log) return;
+    for (const key of Object.keys(har.log)) {
+        if (key === 'entries') continue;
+        const child = har.log[key];
+        if (typeof child === 'string') {
+            const next = visit(child, `log.${key}`, null);
+            if (next !== undefined) har.log[key] = next;
+        } else {
+            walkNode(child, `log.${key}`, null, 0, visit);
+        }
+    }
 }
 
 /**
- * Replace every surviving occurrence of every substituted original, in place.
+ * The sweep and the guard, compiled ONCE for a run and applied to one piece of
+ * the document at a time -- the shape the streaming scrub needs (issue #10),
+ * which knows the run's full set of originals only after its first walk and
+ * then rewrites entry by entry. `applySweep` and `findSurvivors` are these
+ * over the whole document, so the two cannot disagree.
  *
- * @returns {{entries: number, occurrences: number, leaves: number}} counts only
+ * Returns null when nothing this run substituted is sweepable.
  */
-function applySweep(har, entries, produced) {
+function compileSweeper(entries, produced) {
     const sweepable = sweepableEntries(entries, produced);
-    if (sweepable.length === 0) return { entries: 0, occurrences: 0, leaves: 0 };
+    if (sweepable.length === 0) return null;
     const matcher = compileMatcher(sweepable);
-    let occurrences = 0;
-    let leaves = 0;
-    walkStringValues(har, (text) => {
+    const counts = { entries: sweepable.length, occurrences: 0, leaves: 0 };
+    const sweepVisit = (text) => {
         const hits = findMatches(text, matcher);
         if (hits.length === 0) return undefined;
-        occurrences += hits.length;
-        leaves++;
+        counts.occurrences += hits.length;
+        counts.leaves++;
         return spliceMatches(text, hits, matcher);
-    });
-    return { entries: sweepable.length, occurrences, leaves };
-}
-
-/**
- * Every place a substituted original still survives in `har`.
- *
- * The post-condition, run on the document immediately before it is written.
- * The only steps that follow are serialization and the literal pass, and
- * neither can put an original back: serialization escapes, and the literal
- * pass only removes.
- *
- * @returns {Array<{kind, namespace, entryIndex, keyPath, length, count}>}
- */
-function findSurvivors(har, entries, produced) {
-    const sweepable = sweepableEntries(entries, produced);
-    if (sweepable.length === 0) return [];
-    const matcher = compileMatcher(sweepable);
-    const findings = [];
-    walkStringValues(har, (text, keyPath, entryIndex) => {
+    };
+    const survivorVisit = (findings) => (text, keyPath, entryIndex) => {
         const hits = findMatches(text, matcher);
         if (hits.length === 0) return undefined;
         const perOriginal = new Map();
@@ -393,7 +393,45 @@ function findSurvivors(har, entries, produced) {
             });
         }
         return undefined;
-    });
+    };
+    return {
+        counts,
+        sweepEntry: (entry, i) => walkEntryStrings(entry, i, sweepVisit),
+        sweepEnvelope: (har) => walkEnvelopeStrings(har, sweepVisit),
+        survivorsInEntry: (entry, i, findings) => walkEntryStrings(entry, i, survivorVisit(findings)),
+        survivorsInEnvelope: (har, findings) => walkEnvelopeStrings(har, survivorVisit(findings)),
+        survivorsInDocument: (har, findings) => walkStringValues(har, survivorVisit(findings)),
+        sweepDocument: (har) => walkStringValues(har, sweepVisit),
+    };
+}
+
+/**
+ * Replace every surviving occurrence of every substituted original, in place.
+ *
+ * @returns {{entries: number, occurrences: number, leaves: number}} counts only
+ */
+function applySweep(har, entries, produced) {
+    const sweeper = compileSweeper(entries, produced);
+    if (!sweeper) return { entries: 0, occurrences: 0, leaves: 0 };
+    sweeper.sweepDocument(har);
+    return sweeper.counts;
+}
+
+/**
+ * Every place a substituted original still survives in `har`.
+ *
+ * The post-condition, run on the document immediately before it is written.
+ * The only steps that follow are serialization and the literal pass, and
+ * neither can put an original back: serialization escapes, and the literal
+ * pass only removes.
+ *
+ * @returns {Array<{kind, namespace, entryIndex, keyPath, length, count}>}
+ */
+function findSurvivors(har, entries, produced) {
+    const sweeper = compileSweeper(entries, produced);
+    if (!sweeper) return [];
+    const findings = [];
+    sweeper.survivorsInDocument(har, findings);
     return findings;
 }
 
@@ -427,6 +465,9 @@ function findCollisions(entries) {
     const byReplacement = new Map();
     for (const e of entries) {
         if (typeof e.original !== 'string' || typeof e.replacement !== 'string') continue;
+        // A second SPELLING of a recorded original (#67) shares its fake by
+        // design; it is one datum, not two, so it cannot make the pair ambiguous.
+        if (e.spellingOf) continue;
         if (!byReplacement.has(e.replacement)) byReplacement.set(e.replacement, new Map());
         byReplacement.get(e.replacement).set(e.original, e);
     }
@@ -469,6 +510,7 @@ module.exports = {
     findMatches,
     replaceAll,
     walkStringValues,
+    compileSweeper,
     applySweep,
     findSurvivors,
     findCollisions,

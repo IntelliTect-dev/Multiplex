@@ -111,11 +111,12 @@ Describe 'web-api-discovery SKILL.md' {
         # .ps1 as well as .js: the capture-only path is now a single
         # PowerShell front door, and matching only .js would silently find
         # nothing -- the same hollowing-out this test exists to catch.
-        $paths = [regex]::Matches($section, 'templates/[A-Za-z0-9._/-]+\.(?:js|ps1)') |
+        # Paths in SKILL.md are relative to the skill folder.
+        $paths = [regex]::Matches($section, '(?<![\w/])scripts/[A-Za-z0-9._/-]+\.(?:js|ps1)') |
             ForEach-Object { $_.Value } | Select-Object -Unique
         @($paths).Count | Should -BeGreaterThan 0 -Because 'the run is made of real commands'
         foreach ($p in $paths) {
-            Test-Path -LiteralPath (Join-Path $script:RepoRoot $p) |
+            Test-Path -LiteralPath (Join-Path $script:RepoRoot 'skills/web-api-discovery' $p) |
                 Should -BeTrue -Because "$p is invoked by the Capture-only run"
         }
     }
@@ -151,7 +152,7 @@ Describe 'skills/web-api-discovery/' {
     It 'README references the skill path, not the (removed) agent path' {
         $readmePath = Join-Path $script:TemplateRoot 'README.md'
         $readme = Get-Content -LiteralPath $readmePath -Raw
-        $readme | Should -Match '\skills/web-api-discovery/SKILL\.md'
+        $readme | Should -Match 'skills/web-api-discovery/SKILL\.md'
         $readme | Should -Not -Match 'web-api-discovery\.agent\.md'
     }
 }

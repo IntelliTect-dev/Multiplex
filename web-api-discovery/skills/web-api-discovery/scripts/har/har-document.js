@@ -386,8 +386,26 @@ function* iterateHarEntries(source) {
     for (const entry of entries) yield entry;
 }
 
+/**
+ * Open a capture for a stage that must walk it MORE THAN ONCE without holding
+ * it: the envelope (with an empty `log.entries` in its original key position)
+ * and a function that starts a fresh entry walk each time it is called.
+ *
+ * The scrub needs this shape (issue #10): it takes document-wide decisions in
+ * a first walk and rewrites in a second, and neither walk may hold the
+ * document. Refusals are translated exactly as `iterateHarEntries` does.
+ */
+function openHarCapture(harPath) {
+    const opened = openCapture(harPath);
+    return {
+        envelope: opened.envelope,
+        entries: () => walkOpened(opened, harPath),
+    };
+}
+
 module.exports = {
     HarFormatError,
+    openHarCapture,
     HAR_FORMAT_CODES,
     describeShape,
     entriesOf,

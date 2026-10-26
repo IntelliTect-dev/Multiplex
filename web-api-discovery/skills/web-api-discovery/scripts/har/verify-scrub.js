@@ -54,6 +54,7 @@ const fs = require('fs');
 const path = require('path');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
 // Shape patterns live in har-shapes.js so verify-har-reference.js gates the
 // committed reference on exactly the same list. The reference is the file
 // that actually ships.
@@ -156,9 +157,10 @@ function main() {
         console.error('usage: node verify-scrub.js --in <har> [--profile <path>]');
         process.exit(1);
     }
-    let raw;
+    let bytes;
     try {
-        raw = fs.readFileSync(args.in, 'utf8');
+        bytes = fs.statSync(args.in).size;
+        fs.accessSync(args.in, fs.constants.R_OK);
     } catch (e) {
         console.error(`verify-scrub: cannot read ${args.in}: ${e.message}`);
         process.exit(1);
@@ -177,17 +179,16 @@ function main() {
     // understood. So the sweep still runs on anything, and the refusal is
     // ADDITIONAL to it: `unreadable` is remembered here and denies the success
     // path below, whatever the sweep found.
+    //
+    // READ AS IT IS WALKED (issue #34). The capture is never held as one
+    // string, so a file past the ~512 MB a string can hold is gated by the
+    // same two detectors, entry by entry, rather than not at all. The flat
+    // sweep over a file that is not a HAR still needs the whole text; past
+    // that size it cannot run, and the file is refused as unreadable -- the
+    // closed direction, never the open one.
     let leaks;
-    let parsed = null;
+    let raw = null;
     let unreadable = null;
-    try {
-        // `raw` is already in hand, so parse THAT rather than opening the file
-        // a second time -- these captures are measured in hundreds of megabytes.
-        parsed = harDocument.parseHarDocument(raw, args.in).document;
-    } catch (e) {
-        unreadable = e;
-        parsed = null;
-    }
     // The merged policy is discovered from the file being verified, so a
     // consuming project's `.har-policy.project.json` governs its own captures.
     let policy;
@@ -197,15 +198,31 @@ function main() {
         console.error(`verify-scrub: ${e.message}`);
         process.exit(1);
     }
-
-    leaks = parsed ? collectFindings(parsed, policy) : harShapes.findLeaksDeep(raw, policy);
+    try {
+        leaks = harGate.collectFindingsFromCapture(harDocument.openHarCapture(args.in), policy);
+    } catch (e) {
+        unreadable = e;
+        leaks = [];
+        if (bytes < captureSize.MAX_STRING_LENGTH) {
+            try {
+                raw = fs.readFileSync(args.in, 'utf8');
+            } catch (readError) {
+                console.error(`verify-scrub: cannot read ${args.in}: ${readError.message}`);
+                process.exit(1);
+            }
+            leaks = harShapes.findLeaksDeep(raw, policy);
+        }
+    }
 
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
     // say so rather than reporting a check that never ran as a pass.
     let literalStatus = 'skipped (no profile)';
     try {
         const profile = harProfile.loadProfile({ profilePath: args.profile });
-        for (const hit of harLiterals.findLiteralHits(raw, profile.literals)) {
+        const hits = raw !== null
+            ? harLiterals.findLiteralHits(raw, profile.literals)
+            : harLiterals.findLiteralHitsInFile(args.in, profile.literals);
+        for (const hit of hits) {
             leaks.push({ kind: 'forbidden-literal', sample: `${hit.sentinel} (x${hit.count})` });
         }
         literalStatus = `${profile.literals.length} literal(s)`;

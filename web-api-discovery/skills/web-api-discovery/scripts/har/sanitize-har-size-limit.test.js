@@ -1,36 +1,29 @@
 #!/usr/bin/env node
-// Behavior tests for what the scrub does with a capture too large to read
-// whole (issue #528).
+// Behavior tests for what the scrub does with a capture past the size a single
+// string can hold (issues #528, #10).
 //
 // Zero-dep, runs with `node sanitize-har-size-limit.test.js`. Exits non-zero
 // when anything fails.
 //
-// THE SESSION THIS IS ABOUT. An operator recorded an 816 MB capture of a live,
-// fragile account -- human-paced, deliberately rationed real writes and reads,
-// not cheaply repeatable. The browsing finished, the recorder handed off to the
-// scrub, and the scrub said:
+// THE HISTORY. An operator recorded an 816 MB capture of a live, fragile
+// account, and the scrub said `Cannot create a string longer than 0x1fffffe8
+// characters`. #528 turned that into a refusal that named the file, its size
+// and the limit, decided on a `statSync` alone. #10 then removed the limit:
+// the scrub now reads a capture entry by entry and never holds it as one
+// string, so size is no longer a reason to refuse (sanitize-har-stream.test.js
+// pins that it scrubs a capture larger than its heap).
 //
-//     Cannot create a string longer than 0x1fffffe8 characters
+// What survives from #528 is pinned here:
 //
-// Nothing shareable came out. The raw is the credential-bearing artifact by
-// design, so what the operator was left holding was the one copy that must not
-// be committed or shared. The expensive part was already spent.
+//  1. A capture past the old ceiling is NOT refused for its size. The sparse
+//     file below is 576 MB of NUL bytes, so it is refused -- as not being a
+//     HAR, which is the truth about it -- and never with the old size text.
+//  2. A refused run writes nothing: no output, no substitution table, no
+//     partial file.
+//  3. The raw is left exactly as it was.
 //
-// So the behavior pinned here is not "it fails". It failed before. It is:
-//
-//  1. The refusal NAMES the file, its size and the limit. The old text named
-//     none of the three and required the reader to already know `0x1fffffe8` is
-//     Node's string ceiling to interpret it at all.
-//  2. The refusal comes FIRST, before profile and policy loading, so the
-//     unreadable-size fact is not reported behind some other setup failure.
-//  3. Nothing is written and the raw is not touched. A refusal that damaged the
-//     only surviving copy of an unrepeatable capture would be worse than the
-//     defect.
-//
-// AN OVERSIZED FILE COSTS MILLISECONDS HERE. `ftruncate` sets a file's length
-// without writing its contents, so a 600 MB input exists in about 15 ms. The
-// scrub must refuse it on the `statSync` alone -- if this suite ever becomes
-// slow, that is the regression: something started reading the file.
+// This suite is slower than it was: the scrub now READS the sparse file to
+// find out it is not a HAR, where it used to refuse on its size unread.
 
 'use strict';
 
@@ -78,8 +71,8 @@ function runScrub(args, cwd) {
 /**
  * A file of the requested length whose contents were never written.
  *
- * The point of the exercise is that the scrub decides on the SIZE, so the
- * contents are irrelevant and producing them would make the suite unrunnable.
+ * Contents never written: all NUL bytes, which is not a HAR. Producing real
+ * contents at this size would make the suite unrunnable.
  */
 function sparseFile(filePath, bytes) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -100,55 +93,29 @@ function project(name, { withProfile = true } = {}) {
     return dir;
 }
 
-// --- 1. The refusal names the file, its size and the limit. ---
+// --- 1. Size is not a reason to refuse. ---
 
-test('an oversized capture is refused by name, size and limit', () => {
+test('a capture past the old ceiling is refused for what it is, never for its size', () => {
     const dir = project('named');
     const raw = sparseFile(path.join(dir, '.har-captures', 'session', 'raw.har'), OVERSIZE);
 
     const r = runScrub(['--in', raw], dir);
 
-    assert.notStrictEqual(r.code, 0, 'a capture that cannot be scrubbed must not exit 0');
-    assert.ok(/raw\.har/.test(r.stderr), 'names the file: ' + r.stderr);
-    assert.ok(r.stderr.includes(String(OVERSIZE)), 'names the exact size: ' + r.stderr);
-    assert.ok(r.stderr.includes(String(captureSize.MAX_STRING_LENGTH)),
-        'names the exact limit: ' + r.stderr);
+    assert.notStrictEqual(r.code, 0, 'a file that is not a HAR must not exit 0');
+    assert.ok(/raw.har/.test(r.stderr), 'names the file: ' + r.stderr);
+    assert.ok(/cannot be read as a HAR/.test(r.stderr), 'says it is not a HAR: ' + r.stderr);
+    assert.ok(!/0x1fffffe8|single string|ceiling/.test(r.stderr),
+        'and says nothing about a size limit: ' + r.stderr);
 });
 
-test('the refusal does not fall back to the unreadable Node text', () => {
-    const dir = project('readable');
-    const raw = sparseFile(path.join(dir, '.har-captures', 'session', 'raw.har'), OVERSIZE);
+// --- 2. Nothing is written, and the raw survives untouched. ---
 
-    const r = runScrub(['--in', raw], dir);
-
-    assert.ok(!/0x1fffffe8/.test(r.stderr),
-        'the hex constant is the message this issue exists to replace: ' + r.stderr);
-    assert.ok(/sanitize-har:/.test(r.stderr),
-        'the refusal is attributed to the tool that refused: ' + r.stderr);
-});
-
-// --- 2. It refuses first, not behind other setup. ---
-
-test('the size refusal precedes profile and policy loading', () => {
-    // No .har-profile.json at all. Without an early size check the operator
-    // would be told about the missing profile -- true, fixable, and completely
-    // beside the point, because fixing it changes nothing about the capture.
-    const dir = project('no-profile', { withProfile: false });
-    const raw = sparseFile(path.join(dir, '.har-captures', 'session', 'raw.har'), OVERSIZE);
-
-    const r = runScrub(['--in', raw], dir);
-
-    assert.ok(r.stderr.includes(String(captureSize.MAX_STRING_LENGTH)),
-        'the size is what is reported, not the missing profile: ' + r.stderr);
-});
-
-// --- 3. Nothing is written, and the raw survives untouched. ---
-
-test('a refused run writes no output and no substitution table', () => {
+test('a refused run writes no output, no substitution table and no partial file', () => {
     const dir = project('nothing-written');
     const rawDir = path.join(dir, '.har-captures', 'session');
     const raw = sparseFile(path.join(rawDir, 'raw.har'), OVERSIZE);
-    const out = path.join(dir, 'samples', 'har', 'scrubbed.har');
+    const outDir = path.join(dir, 'samples', 'har');
+    const out = path.join(outDir, 'scrubbed.har');
 
     const r = runScrub(['--in', raw, '--out', out], dir);
 
@@ -157,6 +124,8 @@ test('a refused run writes no output and no substitution table', () => {
     const strays = fs.readdirSync(rawDir).filter((f) => f !== 'raw.har');
     assert.deepStrictEqual(strays, [],
         'no substitution table beside the raw: ' + strays.join(', '));
+    const partials = fs.existsSync(outDir) ? fs.readdirSync(outDir) : [];
+    assert.deepStrictEqual(partials, [], 'no partial file: ' + partials.join(', '));
 });
 
 test('the raw capture is left exactly as it was', () => {
@@ -174,31 +143,7 @@ test('the raw capture is left exactly as it was', () => {
     assert.strictEqual(after.mtimeMs, before.mtimeMs, 'the raw was not rewritten');
 });
 
-// --- 4. The band between the threshold and the ceiling is not silent. ---
-
-test('a capture in the warn band still runs, and is told it may still fail', () => {
-    // It reads. It may still not survive being written: the scrubbed form is
-    // pretty-printed, so it is larger than the capture it came from, and that
-    // failure lands minutes later with the whole walk already done. An operator
-    // who was told beforehand can trim first; one who was not sees an
-    // arbitrary-looking failure at the end of a long run.
-    //
-    // The file is sparse and never read past the stat -- what is asserted is
-    // the notice, which is decided on the size alone.
-    const dir = project('warn-band');
-    const raw = sparseFile(path.join(dir, '.har-captures', 'session', 'raw.har'),
-        require(path.join(__dirname, '..', 'lib', 'capture-size.js')).WARN_BYTES + 1024);
-
-    const r = runScrub(['--in', raw], dir);
-
-    assert.ok(/approaching/.test(r.stderr), 'the band is named: ' + r.stderr);
-    assert.ok(/may still fail/.test(r.stderr),
-        'and what may still go wrong is named: ' + r.stderr);
-    assert.ok(!/nothing was written/.test(r.stderr),
-        'but it is a notice, not a refusal: ' + r.stderr);
-});
-
-// --- 5. An ordinary capture is unaffected. ---
+// --- 3. An ordinary capture is unaffected. ---
 
 test('a capture below the ceiling is not refused', () => {
     const dir = project('ordinary');

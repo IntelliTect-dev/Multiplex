@@ -965,9 +965,19 @@ function blocksLeak(leak) {
  */
 function findLeaksInHar(har, policy) {
     const entries = har && har.log && Array.isArray(har.log.entries) ? har.log.entries : [];
-    const grouped = new Map();
+    const collector = createLeakCollector(policy);
+    entries.forEach((entry, entryIndex) => collector.addEntry(entry, entryIndex));
+    return collector.results();
+}
 
-    entries.forEach((entry, entryIndex) => {
+/**
+ * `findLeaksInHar`, one entry at a time: the grouping by (kind, fingerprint)
+ * is the only state, and it is small. The streaming gate (issue #34) feeds it
+ * entries as it reads them rather than holding the document.
+ */
+function createLeakCollector(policy) {
+    const grouped = new Map();
+    function addEntry(entry, entryIndex) {
         if (!entry || typeof entry !== 'object') return;
         const push = (leak, keyPath, enclosing, field) => {
             const key = `${leak.kind}:${leak.fingerprint}`;
@@ -998,9 +1008,8 @@ function findLeaksInHar(har, policy) {
             }));
         };
         collectEntryStrings(entry, (keyPath, text) => scanString(text, keyPath, policy, push));
-    });
-
-    return [...grouped.values()];
+    }
+    return { addEntry, results: () => [...grouped.values()] };
 }
 
 module.exports = {
@@ -1008,6 +1017,7 @@ module.exports = {
     STRUCTURAL_LIMITS,
     ibanChecksumOk,
     findLeaksInHar,
+    createLeakCollector,
     blocksLeak,
     walkJsonBody,
     enclosingFieldName,
