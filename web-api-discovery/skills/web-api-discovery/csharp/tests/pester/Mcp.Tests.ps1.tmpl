@@ -15,7 +15,7 @@
 # (or invoke this file directly with Invoke-Pester).
 
 BeforeAll {
-    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\") | Select-Object -ExpandProperty Path
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
     $script:ClientCs = Join-Path $script:RepoRoot "src/{{ProjectName}}/{{ProjectName}}Client.Generated.cs"
     $script:ExpectedMethods = @(
 {{ExpectedMethods}}

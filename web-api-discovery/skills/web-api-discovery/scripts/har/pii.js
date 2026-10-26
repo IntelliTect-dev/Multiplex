@@ -767,7 +767,17 @@ function detectPii(har, policy) {
     // the point: the day a new caller forgets the read, the scrub says so
     // instead of reporting a document it never walked as carrying no PII.
     const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
-    entries.forEach((entry, entryIndex) => {
+    entries.forEach((entry, entryIndex) => detectPiiInEntry(entry, entryIndex, policy, out));
+    return out;
+}
+
+/**
+ * Detection for ONE entry, appended to `out`. `detectPii` is this over every
+ * entry; the streaming scrub (issue #10) calls it one entry at a time, so the
+ * two cannot disagree about what an entry holds.
+ */
+function detectPiiInEntry(entry, entryIndex, policy, out) {
+    {
         // headers
         const allHeaders = [
             ...((entry.request && entry.request.headers) || []).map(h => ({ ...h, _ctx: 'request' })),
@@ -832,7 +842,7 @@ function detectPii(har, policy) {
             walkJsonForDetect(descriptor, null, entryIndex,
                 `request.${BODY_DESCRIPTOR_KEY}`, out, policy);
         }
-    });
+    }
     return out;
 }
 
@@ -1027,8 +1037,27 @@ function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth) {
 
 // --- scrubbing: apply faker substitutions in-place on the HAR ---
 function scrubPii(har, policy) {
-    const detections = detectPii(har, policy);
-    if (detections.length === 0) return { substitutions: [], retained: [] };
+    const plan = planPiiReplacements(detectPii(har, policy), policy);
+    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
+    for (const entry of entries) {
+        applyReplacementsToEntry(entry, plan.replacements, policy);
+    }
+    return { substitutions: plan.substitutions, retained: plan.retained };
+}
+
+/**
+ * Every decision the typed-PII pass takes over the WHOLE run, from the whole
+ * run's detections, before any entry is rewritten: which values are declined
+ * (an identifier-field site anywhere declines a value everywhere), which are
+ * replaced, and with what.
+ *
+ * Split from `scrubPii` so the streaming scrub (issue #10) can detect in one
+ * walk and rewrite in a second: this is the step between them, and the only
+ * one that has to see everything at once. `replacements` carries the raw
+ * values and stays in memory; `substitutions` is the value-free record.
+ */
+function planPiiReplacements(detections, policy) {
+    if (detections.length === 0) return { replacements: [], substitutions: [], retained: [] };
 
     // Split out the detections the policy asked us to leave alone (issue #346).
     // DETECTION is untouched above: a disabled class is still found, and is
@@ -1102,7 +1131,7 @@ function scrubPii(har, policy) {
     replaceable.push(...survivors);
 
     if (replaceable.length === 0) {
-        return { substitutions: [], retained: summariseRetained(retainedDetections, new Set()) };
+        return { replacements: [], substitutions: [], retained: summariseRetained(retainedDetections, new Set()) };
     }
 
     // Group by (type, original value) so we record one substitution per unique original.
@@ -1128,11 +1157,6 @@ function scrubPii(har, policy) {
         return String(b.value).length - String(a.value).length;
     });
 
-    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
-    for (const entry of entries) {
-        applyReplacementsToEntry(entry, replacements, policy);
-    }
-
     // Strip raw values out of the returned substitutions (safe-store schema).
     const safe = replacements.map(r => ({
         type: r.type,
@@ -1145,7 +1169,7 @@ function scrubPii(har, policy) {
         return a.originalHash < b.originalHash ? -1 : 1;
     });
     const replacedValues = new Set(replacements.map((r) => String(r.value)));
-    return { substitutions: safe, retained: summariseRetained(retainedDetections, replacedValues) };
+    return { replacements, substitutions: safe, retained: summariseRetained(retainedDetections, replacedValues) };
 }
 
 /**
@@ -1627,6 +1651,9 @@ module.exports = {
     fieldTypeFor,
     keyWords,
     detectPii,
+    detectPiiInEntry,
+    planPiiReplacements,
+    applyReplacementsToEntry,
     fakeFor,
     scrubPii,
     scrubSettingFor,

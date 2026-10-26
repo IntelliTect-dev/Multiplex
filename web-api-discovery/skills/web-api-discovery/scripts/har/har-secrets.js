@@ -258,6 +258,7 @@ function walkForUnredactedSecrets(root, report, options) {
     // an options bag that a caller could accidentally fill with a `where`
     // string is a bag that silently changes what the walk reports.
     const policy = options && options.policy;
+    const onEntries = options && typeof options.onEntries === 'function' ? options.onEntries : null;
     const visited = new Set();
 
     // WHERE, not just WHAT (issue #529). The walk always knew the position it
@@ -330,6 +331,22 @@ function walkForUnredactedSecrets(root, report, options) {
                 // from the other side. `entryIndex === undefined` is true
                 // exactly while nothing has claimed an entry yet.
                 if (key === 'entries' && Array.isArray(value) && entryIndex === undefined) {
+                    // A streaming caller (issue #34) holds no entries array: it
+                    // hands the walk each entry as it reads it, at exactly the
+                    // point the array would have been walked, so findings keep
+                    // the order the whole-document walk gave them.
+                    if (onEntries) {
+                        onEntries((item, i) => {
+                            // Nothing is shared between separately parsed
+                            // entries, so remembering one entry's nodes past it
+                            // would only hold the document this exists to avoid
+                            // holding.
+                            visited.clear();
+                            walk(item, '', i);
+                            visited.clear();
+                        });
+                        continue;
+                    }
                     value.forEach((item, i) => walk(item, '', i));
                     continue;
                 }

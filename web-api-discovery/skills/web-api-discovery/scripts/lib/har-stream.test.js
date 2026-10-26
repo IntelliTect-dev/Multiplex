@@ -465,6 +465,40 @@ test('a very long string value cannot masquerade as the entries key', () => {
     assert.strictEqual(opened.envelope.log.version, long);
 });
 
+test('a key added after the entries once they are written lands where JSON.stringify puts it', () => {
+    // The scrub learns its blunt record while writing and adds it to `log`
+    // after the last entry (#10). The file must be what serializing the
+    // finished document would have produced.
+    const out = path.join(tmpRoot, 'finalized.har');
+    const env = { log: { version: '1.2', entries: [], comment: 'c' } };
+    const entries = [{ a: 1 }, { b: [2, 3] }];
+    hs.writeHarDocument(out, env, entries, {
+        finalizeEnvelope: (e) => { e.log.record = { n: 2 }; return e; },
+    });
+    const expected = { log: { version: '1.2', entries, comment: 'c', record: { n: 2 } } };
+    assert.strictEqual(fs.readFileSync(out, 'utf8'), JSON.stringify(expected, null, 2));
+});
+
+test('an envelope whose written part changes after the entries is refused', () => {
+    const out = path.join(tmpRoot, 'finalized-bad.har');
+    const env = { log: { version: '1.2', entries: [] } };
+    assert.throws(() => hs.writeHarDocument(out, env, [{ a: 1 }], {
+        finalizeEnvelope: (e) => { e.log.version = '9.9'; return e; },
+    }), (e) => e.code === hs.codes.ENVELOPE_UNPARSEABLE);
+});
+
+test('mapText rewrites every piece of text, and none of the punctuation between', () => {
+    const out = path.join(tmpRoot, 'mapped.har');
+    const env = { log: { creator: 'Z-TOKEN', entries: [], comment: 'Z-TOKEN' } };
+    const pieces = [];
+    hs.writeHarDocument(out, env, [{ v: 'Z-TOKEN' }, { v: 'Z-TOKEN' }], {
+        mapText: (t) => { pieces.push(t); return t.split('Z-TOKEN').join('<Z>'); },
+    });
+    const doc = JSON.parse(fs.readFileSync(out, 'utf8'));
+    assert.deepStrictEqual(doc, { log: { creator: '<Z>', entries: [{ v: '<Z>' }, { v: '<Z>' }], comment: '<Z>' } });
+    assert.strictEqual(pieces.length, 4, 'head, two entries, tail');
+});
+
 test('the writer refuses an envelope with no log.entries to fill', () => {
     const out = path.join(tmpRoot, 'no-entries.har');
     assert.throws(() => hs.writeHarDocument(out, { log: { version: '1.2' } }, []),

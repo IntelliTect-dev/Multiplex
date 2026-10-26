@@ -36,6 +36,7 @@ const os = require('os');
 const path = require('path');
 
 const capture = require(path.join(__dirname, 'capture-har.js'));
+const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 
 const captureJs = path.join(__dirname, 'capture-har.js');
@@ -150,6 +151,63 @@ function childEnv(over) {
     }, over);
 }
 
+/**
+ * Where playwright resolves from, asked by a process that sees what the
+ * subprocess cases' recorder sees: the same `childEnv()`, a fixture folder as
+ * its working directory, and this recorder's directory as the tool location.
+ *
+ * It runs the production resolver -- the one the recorder itself calls,
+ * including the `npm root -g` refinement on the way out -- rather than
+ * re-deriving any location here. A re-derivation is how this precondition
+ * came to check the machine's real global root, which the fixture had already
+ * pointed elsewhere (#6): the question is what the CHILD can reach, and only
+ * the child's own resolver, in the child's own environment, can answer it.
+ *
+ * Returns `{ found, location, path, dir, label }`. `env` and `cwd` are
+ * overridable so the probe itself can be proved to detect a planted install.
+ */
+function subprocessReach(env, cwd) {
+    const nodeDep = path.join(__dirname, '..', 'lib', 'node-dependency.js');
+    const script =
+        'const r = require(' + JSON.stringify(nodeDep) + ').resolvePlaywright(' +
+        '{ toolDir: ' + JSON.stringify(__dirname) + ' });' +
+        'const s = r.searched.filter((l) => l.found)[0] || {};' +
+        'process.stdout.write(JSON.stringify({ found: r.found, location: r.location,' +
+        ' path: r.path, dir: s.dir || null, label: s.label || null }));';
+    const r = spawnSync(process.execPath, ['-e', script], {
+        cwd: cwd || dir('precondition-probe'),
+        encoding: 'utf8', windowsHide: true, env: env || childEnv()
+    });
+    if (r.status !== 0) {
+        throw new Error('the subprocess resolution probe itself failed (' + r.status + '): ' +
+            (r.stderr || r.error));
+    }
+    return JSON.parse(r.stdout);
+}
+
+/**
+ * The precondition's failure message: what the CHILD reaches, and from where.
+ *
+ * Names the location by the resolver's own label and path, so the reader is
+ * told which search step answered -- not what the machine has installed. When
+ * the answering location is the global root on a platform where the fixture's
+ * APPDATA does not move it, that is the obstacle, and it is said.
+ */
+function describeReach(reach, platform) {
+    const host = platform || process.platform;
+    let text = 'a subprocess running with the fixture environment (childEnv) still resolves ' +
+        'playwright -- from ' + reach.label + ' (' + reach.dir + '), as ' + reach.path +
+        '. Every subprocess "the module is absent" case would pass without reaching the ' +
+        'branch it names.';
+    if (reach.location === 'global' && host !== 'win32') {
+        text += ' On ' + host + " npm's global root comes from node's own install prefix " +
+            '(or an npm prefix configured outside APPDATA), which the fixture cannot ' +
+            'redirect: uninstall the global playwright there, or run this suite with a ' +
+            'node and npm configuration whose global root holds none.';
+    }
+    return text;
+}
+
 function runCapture(cwd, argv, env) {
     const r = spawnSync(process.execPath, [captureJs, ...argv], {
         cwd, encoding: 'utf8', windowsHide: true, env: env || childEnv()
@@ -195,18 +253,97 @@ test('PRECONDITION: no playwright install sits above the fixtures', () => {
     assert.ok(!ancestorHasPlaywright(__dirname),
         "the recorder's own directory is clean, so the tool location cannot answer either");
 
-    // And the machine's REAL global root, which the subprocess cases cannot
-    // point elsewhere: they spawn the recorder, so they get the host platform's
-    // derivation whatever APPDATA says. A globally installed playwright would
-    // make "nothing is scaffolded when the dependency is missing" pass by
-    // never reaching the branch it names.
-    const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
-    const globalRoot = nodeDep.defaultGlobalRoot({});
-    if (globalRoot) {
-        assert.ok(!fs.existsSync(path.join(globalRoot, 'playwright')),
-            'this machine has no global playwright install (' + globalRoot + '), so the ' +
-            'subprocess absence cases reach the branch they name');
+    // And whatever the SUBPROCESS cases can reach (#6). Not the machine's real
+    // global root: the subprocess cases run under childEnv(), whose fake
+    // APPDATA already moves npm's Windows global root into the fixture, so a
+    // global playwright on this machine -- the setup the recorder's own
+    // remedy recommends -- is invisible to them. Asserting against the live
+    // environment refused exactly that machine while testing nothing extra.
+    //
+    // So the child's own resolver is asked, in the child's own environment.
+    // Anything still reachable from there -- a location the fixture cannot
+    // redirect on this platform, an ancestor install, a user-level npm prefix
+    // -- fails here, by name, instead of hollowing out the cases below.
+    const reach = subprocessReach();
+    assert.ok(!reach.found, describeReach(reach));
+
+    // AND NODE_PATH, which is the one this precondition used to miss -- found
+    // the hard way, by CI exporting it and ten in-process cases turning from
+    // "the module is absent" into "the module is here", each reporting a
+    // mismatch that said nothing about the cause.
+    //
+    // It is not enough that the in-process cases pass an `env` without
+    // NODE_PATH. `require.resolve(name, { paths: [dir] })` STILL falls back to
+    // `Module.globalPaths`, NODE_PATH is in it, and those paths are captured
+    // when the process starts -- so no argument to the resolver can suppress
+    // them. `childEnv()` protects the subprocess cases because a child gets a
+    // fresh process with a blanked variable; nothing protects this one.
+    //
+    // So it is asserted rather than worked around. A machine whose NODE_PATH
+    // holds playwright genuinely cannot run the absence cases, and saying so
+    // once is worth more than ten failures that each look like a behaviour
+    // change.
+    for (const entry of (process.env.NODE_PATH || '').split(path.delimiter)) {
+        const dir = entry.trim();
+        if (!dir) continue;
+        assert.ok(!fs.existsSync(path.join(dir, 'playwright')),
+            'NODE_PATH points at a playwright install (' + dir + '), which every case below ' +
+            'would resolve through -- Module.globalPaths is consulted even when the resolver ' +
+            'is handed explicit paths. Unset NODE_PATH to run this suite.');
     }
+});
+
+// The precondition above is only as good as its probe. A probe that could not
+// see a planted install would pass on every machine and guard nothing, so it
+// is proved to detect one, in each kind of location the child consults.
+test('the precondition probe reports a playwright planted above the child, by name', () => {
+    const planted = plantPlaywright(dir('probe-planted-ancestor'));
+    const reach = subprocessReach(childEnv(), dir('probe-planted-ancestor', 'deep', 'cwd'));
+    assert.strictEqual(reach.found, true, 'an ancestor install is reachable from the child');
+    assert.strictEqual(reach.location, 'cwd');
+    const message = describeReach(reach);
+    assert.ok(message.includes(path.join(planted, 'node_modules', 'playwright')),
+        'the message names what the child actually resolved\n' + message);
+    assert.ok(/fixture environment/.test(message),
+        'and says it is the subprocess environment that reaches it\n' + message);
+});
+
+test('the precondition probe reports a playwright in a container location the child consults', () => {
+    // The location #6 is about. On Windows the child's global root follows
+    // APPDATA, so planting there is planting where the child looks; that is
+    // also the proof that childEnv()'s fake APPDATA is what keeps a real
+    // global install out of reach. Elsewhere the root follows node's own
+    // prefix and cannot be planted from a fixture, so NODE_PATH -- the other
+    // container location -- stands in for it.
+    const container = process.platform === 'win32'
+        ? path.join(dir('probe-planted-appdata'), 'npm')
+        : dir('probe-planted-nodepath-parent');
+    plantPlaywright(container);
+    const env = process.platform === 'win32'
+        ? childEnv({ APPDATA: dir('probe-planted-appdata') })
+        : childEnv({ NODE_PATH: path.join(container, 'node_modules') });
+    const reach = subprocessReach(env, dir('probe-planted-global-cwd'));
+    assert.strictEqual(reach.found, true, 'a container install is reachable from the child');
+    assert.ok(reach.path.startsWith(path.join(container, 'node_modules', 'playwright') + path.sep),
+        'and it is the planted copy that answered: ' + reach.path);
+    if (process.platform === 'win32') {
+        // Only Windows can pin WHICH search step answered. NODE_PATH also
+        // sits in the child's Module.globalPaths, so the first upward location
+        // (the cwd) already resolves through it and claims the hit -- as CI
+        // on Linux showed. The file that resolved is the fact either way.
+        assert.strictEqual(reach.location, 'global');
+        assert.strictEqual(reach.dir, path.join(container, 'node_modules'));
+    }
+});
+
+test('where the fixture cannot redirect the global root, the message says so', () => {
+    const reach = { found: true, location: 'global', label: "this machine's global npm modules",
+        dir: '/usr/local/lib/node_modules', path: '/usr/local/lib/node_modules/playwright/index.js' };
+    const elsewhere = describeReach(reach, 'linux');
+    assert.ok(/cannot redirect/.test(elsewhere), 'names the real obstacle\n' + elsewhere);
+    assert.ok(elsewhere.includes(reach.dir), elsewhere);
+    assert.ok(!/cannot redirect/.test(describeReach(reach, 'win32')),
+        'on Windows APPDATA does redirect it, so a hit there is something else');
 });
 
 // ---------------------------------------------------------------------------
@@ -348,6 +485,74 @@ test('accepting runs the install into the machine default, then re-checks', asyn
     });
     assert.deepStrictEqual(commands, ['npm install -g playwright']);
     assert.strictEqual(r.ok, true, 'the re-check finds what the install put there: ' + r.message);
+});
+
+test('ENTER installs -- the prompt defaults to YES, and says so', async () => {
+    // THE DEFAULT IS THE ANSWER MOST PEOPLE GIVE, so it has to be the one they
+    // mean. This prompt used to read [y/N]: an operator who had just been told
+    // the recorder cannot run without the driver, and who was standing at a
+    // terminal reading the remedy, had to type `y` to proceed -- while ENTER,
+    // the key a hurried person presses, abandoned the run.
+    //
+    // That is backwards for this prompt specifically, and the distinction is the
+    // one the rest of this file already draws: a prompt that can LOSE something
+    // defaults to no (the leak gate, a scrub the gate refused), and a prompt
+    // that is merely the next step defaults to yes (the capture store's own
+    // `git init`). An install is the second kind. Nothing is lost by saying yes,
+    // and the run cannot continue on no.
+    //
+    // Asserted on BOTH halves, because either alone is a lie: an empty answer
+    // has to install, and the prompt has to advertise that it will. A [y/N]
+    // prompt that silently installs on ENTER is worse than the defect.
+    const appdata = dir('pf-default-yes-appdata');
+    const prompts = [];
+    const commands = [];
+    const r = await capture.preflightDependencies({
+        platform: WIN,
+        npmGlobalRoot: NO_NPM,
+        cwd: dir('pf-default-yes'), toolDir: dir('pf-default-yes-tool'), isTty: true,
+        // What readline hands back for a bare ENTER.
+        ask: (q) => { prompts.push(q); return Promise.resolve(''); },
+        install: (cmd, args) => {
+            commands.push([cmd].concat(args).join(' '));
+            plantPlaywright(path.join(appdata, 'npm'));
+            return { ok: true };
+        },
+        env: {
+            APPDATA: appdata,
+            PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-default-yes-browsers'))
+        }
+    });
+    assert.deepStrictEqual(commands, ['npm install -g playwright'],
+        'ENTER must install -- it is the answer an operator who agrees with the remedy gives');
+    assert.strictEqual(r.ok, true, r.message);
+    assert.strictEqual(prompts.length, 1);
+    assert.match(prompts[0], /\[Y\/n\]/,
+        'the prompt has to advertise the default it actually applies');
+    assert.ok(!/\[y\/N\]/.test(prompts[0]),
+        'a [y/N] prompt that installs on ENTER is worse than the default it fixed');
+});
+
+test('and an explicit `n` still declines, leaving the commands to run by hand', async () => {
+    // The other half of the default: "yes unless you say no" must still take no
+    // for an answer, and must still print what to run. `!/^n/` is the test, so
+    // anything else -- including a typo -- proceeds, which is the correct bias
+    // for a prompt whose yes is free and whose no ends the run.
+    let installs = 0;
+    const r = await capture.preflightDependencies({
+        platform: WIN,
+        npmGlobalRoot: NO_NPM,
+        cwd: dir('pf-still-no'), toolDir: dir('pf-still-no-tool'), isTty: true,
+        ask: () => Promise.resolve('no'),
+        install: () => { installs++; return { ok: true }; },
+        env: {
+            APPDATA: dir('pf-still-no-appdata'),
+            PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-still-no-browsers'))
+        }
+    });
+    assert.strictEqual(installs, 0, 'declining installs nothing');
+    assert.strictEqual(r.ok, false);
+    assert.ok(/npm install -g playwright/.test(r.message), r.message);
 });
 
 test('the re-check is a real re-resolution, not a trust of the exit code', async () => {
@@ -573,17 +778,58 @@ test('an existing .gitignore keeps its own content', async () => {
     assert.ok(lines.includes('.har-captures/'), 'and ours are added');
 });
 
-test('it never prompts about a folder that has no repository', async () => {
-    // There is nothing to ask about: no repository exists, so no tracked file
-    // is being changed, and the leak this prevents is silent. A prompt here
-    // would also make every agent-driven capture in a fresh folder refuse.
+test('outside a repository, a terminal operator is offered git init, and yes makes the store ignored', async () => {
+    // The scrub's substitution tables are reverse lookups of live credentials,
+    // and it will not derive their home outside a work tree. So the one
+    // question worth asking is whether to make this folder a repository --
+    // default yes -- and the .gitignore just written then takes effect.
+    const prompts = [];
+    const root = dir('nonrepo-yes');
+    const r = await capture.ensureCapturesRootIgnored(
+        { root: path.join(root, '.har-captures'), currentWorkingTree: null, mainWorkingTree: null },
+        { isTty: true, ask: (q) => { prompts.push(q); return Promise.resolve(''); } });
+    assert.strictEqual(prompts.length, 1, 'asked exactly once');
+    assert.match(prompts[0], /not a git repository/);
+    assert.match(prompts[0], /\[Y\/n\]/);
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.initialized, root);
+    assert.ok(fs.existsSync(path.join(root, '.git')), 'a repository was created');
+    assert.strictEqual(r.status, subsDestination.IGNORED, 'and git now reports the store ignored');
+    assert.ok(!r.unprotected);
+});
+
+test('outside a repository, no leaves the folder alone and proceeds unprotected', async () => {
+    const root = dir('nonrepo-no');
+    const r = await capture.ensureCapturesRootIgnored(
+        { root: path.join(root, '.har-captures'), currentWorkingTree: null, mainWorkingTree: null },
+        { isTty: true, ask: () => Promise.resolve('n') });
+    assert.strictEqual(r.ok, true, 'declining git is not declining the capture');
+    assert.strictEqual(r.unprotected, true);
+    assert.ok(!fs.existsSync(path.join(root, '.git')), 'no repository was created');
+    assert.ok(fs.existsSync(path.join(root, '.gitignore')), 'the rule is still left for a later repository');
+});
+
+test('outside a repository with no terminal, it neither prompts nor refuses', async () => {
+    // An AI agent driving the capture has nowhere to answer. The skill tells it
+    // to ask the user in the conversation first; here it simply proceeds.
     let asked = 0;
     const root = dir('nonrepo-quiet');
     const r = await capture.ensureCapturesRootIgnored(
         { root: path.join(root, '.har-captures'), currentWorkingTree: null, mainWorkingTree: null },
-        { isTty: true, ask: () => { asked++; return Promise.resolve('n'); } });
+        { isTty: false, ask: () => { asked++; return Promise.resolve('y'); } });
     assert.strictEqual(asked, 0);
     assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.unprotected, true);
+    assert.ok(!fs.existsSync(path.join(root, '.git')));
+});
+
+test('a failed git init refuses before anything is recorded', async () => {
+    const root = dir('nonrepo-initfails');
+    const r = await capture.ensureCapturesRootIgnored(
+        { root: path.join(root, '.har-captures'), currentWorkingTree: null, mainWorkingTree: null },
+        { isTty: true, ask: () => Promise.resolve('y'), gitInit: () => false });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.message, /git init failed/);
 });
 
 test('a folder inside a repository is left to the existing guard', async () => {

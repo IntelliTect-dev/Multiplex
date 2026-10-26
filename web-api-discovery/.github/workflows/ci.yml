@@ -18,6 +18,65 @@ jobs:
         with:
           node-version: "20"
 
+      # THE BROWSER DRIVER, so the capture tests that attach to a real browser
+      # actually run here. Without it capture-native-attach.test.js skips its two
+      # end-to-end cases and this job reports green having never once attached to
+      # a browser -- the same false assurance #304 removed from the gate itself.
+      # The test turns a missing driver into a FAILURE whenever CI is set, the
+      # way GitleaksGuard.ps1 does for gitleaks, so this step is required.
+      #
+      # NOT `npm install -g playwright`, and the difference is load-bearing.
+      # capture-preflight.test.js asserts as a PRECONDITION that npm's global
+      # root holds no playwright: its subprocess cases spawn the real recorder,
+      # which derives the global root from the host platform whatever the
+      # fixture environment says, so a global install would make every "the
+      # module is absent" case pass while testing nothing.
+      #
+      # NOR IS NODE_PATH EXPORTED FOR THE WHOLE JOB, which was the first attempt
+      # and is measurably wrong: `require.resolve(name, { paths: [dir] })` still
+      # falls back to Module.globalPaths, and NODE_PATH is in it. Those paths are
+      # captured when the process starts, so the `env` object a test hands the
+      # resolver cannot suppress them -- `childEnv()` protects the SUBPROCESS
+      # cases, and the in-process ones resolve inside the test process itself.
+      # Exporting it turned ten of those into failures.
+      #
+      # So the path is published under a name only the test that wants a driver
+      # reads, and that test puts it on NODE_PATH for the recorder it spawns --
+      # per invocation, which is exactly what NODE_PATH is for and what the
+      # recorder documents as its fourth location. Nothing else in the job can
+      # see it. The install also stays out of the repository, which the same
+      # precondition checks: a node_modules above the recorder would answer for
+      # the tool location.
+      #
+      # No browser download. These capture modes drive the SYSTEM Chrome with no
+      # automation flags -- Playwright's own Chromium is not a dependency of
+      # theirs, and fetching it would add a minute to every run for nothing.
+      - name: Install the Playwright driver (reached by NODE_PATH, never globally)
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/playwright-home"
+          cd "$RUNNER_TEMP/playwright-home"
+          npm install --no-audit --no-fund --no-package-lock --no-save playwright
+          echo "HAR_CAPTURE_TEST_NODE_PATH=$RUNNER_TEMP/playwright-home/node_modules" >> "$GITHUB_ENV"
+
+      # A headful browser needs somewhere to draw. The native capture mode
+      # launches Chrome with NO automation flags, and --headless is exactly the
+      # kind of flag it exists to avoid -- so the display is provided rather than
+      # the browser being told it does not need one. Without this, Chrome exits
+      # immediately with "Missing X server or $DISPLAY" and the attach times out.
+      - name: Start a virtual display, and report the Chrome the tests will drive
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1280x1024x24 >/dev/null 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          # Diagnostics only -- the test owns the decision about a missing
+          # browser, and names every path it looked in when it fails.
+          google-chrome --version || echo 'google-chrome is not on PATH'
+
       # .NET is optional: the agent-e2e build/test blocks skip when the SDK is
       # absent. Installing it here makes CI exercise the full pipeline on the
       # emitted wrapper project.
@@ -47,3 +106,24 @@ jobs:
         run: |
           Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser -SkipPublisherCheck
           ./.github/ci/Invoke-PesterSuite.ps1 -Path ./tests, ./.github/ci/tests, ./Install.Tests.ps1
+
+      # Node runs the Node suites. Until #94 the only way one reached a pull
+      # request was a Pester wrapper in tests/ that shelled out to `node <file>`
+      # and asserted exit 0 -- which made Pester the runner for Node tests, and
+      # made "write a wrapper" a rule a contributor had to know or silently lose
+      # their coverage. These suites are zero-dep self-running scripts; nothing
+      # here uses `node:test`, so no runner is needed, only discovery and a
+      # non-zero exit. The same command runs locally.
+      #
+      # IN THIS JOB ON PURPOSE, after the environment above: several of these
+      # suites need the Playwright driver, the virtual display and the .NET SDK
+      # it installs, and standing up a second job with that environment would
+      # duplicate all of it to buy nothing.
+      #
+      # `!cancelled()` so a red Pester step does not hide the Node results. The
+      # two gate independently, and a run that reports one failure at a time
+      # costs a round trip per failure.
+      - name: Run the Node test suites
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./scripts/Invoke-NodeTestSuite.ps1

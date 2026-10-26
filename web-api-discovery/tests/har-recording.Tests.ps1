@@ -643,15 +643,31 @@ Describe 'Invoke-HarCapture.ps1' {
         }
     }
 
-    It 'exposes exactly the six documented parameters' {
-        # Six, down from eight: -StorageState is auto-discovered and
+    It 'exposes exactly the eight documented parameters' {
+        # Was six, down from eight: -StorageState is auto-discovered and
         # -ValidateOnly stays on capture-har.js where it is the test seam.
+        #
+        # Back to eight with #73, and the two additions are WHO LAUNCHES THE
+        # BROWSER -- which is not a preference this front door could infer.
+        # Playwright's launch is detectable and protected sites refuse it
+        # outright (Imperva, Akamai, DataDome and PerimeterX, measured), so
+        # `-Browser Native` records in an ordinary Chrome and `-Attach` records
+        # in one that is already running. Neither could be folded into an
+        # existing parameter: -Profile names an identity rather than a launch
+        # mechanism, and -Isolated is the opposite end of the same axis (it is
+        # refused alongside both).
+        #
+        # This assertion is the gate the "Adding Command-Line Options" rule
+        # relies on, so it is DELIBERATELY still an equality over the whole list:
+        # the next parameter has to arrive through this test and the argument for
+        # it has to be written down here.
         $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:InvokePs1, [ref]$null, [ref]$errors)
         $names = $ast.ParamBlock.Parameters |
             ForEach-Object { $_.Name.VariablePath.UserPath } |
             Sort-Object
-        $names | Should -Be @('Describe', 'Isolated', 'OutputPath', 'Port', 'Profile', 'Uri')
+        $names | Should -Be @(
+            'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Port', 'Profile', 'Uri')
     }
 
     It 'takes the URI positionally, so the parameter name is optional' {
@@ -678,7 +694,7 @@ Describe 'Invoke-HarCapture.ps1' {
 
     It 'wires -Verbose to the recorder instead of adding a seventh parameter' {
         # -Verbose is free with [CmdletBinding()]. A -LogLevel switch would be
-        # a second way to say the same thing, and the six-parameter assertion
+        # a second way to say the same thing, and the eight-parameter assertion
         # above is what stops one appearing.
         #
         # Asserted on the arguments node actually RECEIVES, not on the source

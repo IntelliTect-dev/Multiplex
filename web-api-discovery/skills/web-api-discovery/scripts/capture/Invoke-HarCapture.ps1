@@ -158,6 +158,71 @@
     the endpoint actually chosen is written to the session so an agent reads
     it rather than assuming.
 
+    Refused with -Attach: that browser is already listening somewhere, and its
+    endpoint names the port.
+
+.PARAMETER Browser
+    WHO LAUNCHES THE BROWSER.
+
+    `Playwright` (the default) launches it here, which is what every capture
+    did before -- and what a site with bot protection detects and refuses.
+    Playwright marks the browser as automated, and the protection answers the
+    marking rather than the traffic. Measured on car-rental sites: Imperva
+    returned 403 "Error 15" on the first page load, Akamai reset the search
+    POST, DataDome served a slider CAPTCHA and then 403 even once it was
+    solved, and PerimeterX raised "Press & Hold" as soon as a location field
+    was typed into -- all while browsing BY HAND, and all on sites that worked
+    normally in an ordinary Chrome on the same machine and network.
+
+    `Native` is that ordinary Chrome: the recorder starts chrome.exe itself
+    with no automation flags and attaches over CDP. Use it on any site that
+    refuses the default. There are no stealth measures and none are wanted --
+    a site may still challenge, and you answer it in the window.
+
+    What changes: Playwright's recordHar belongs to a browser Playwright
+    launched, so raw.har comes from the incremental recorder instead. That
+    artifact is not degraded (real timings, uncapped bodies, the failed
+    requests recordHar drops), and the scrub/verify/digest/catalogue tail is
+    identical.
+
+    Exclusive with -Isolated, which launches the bundled Chromium -- the very
+    launch a protected site rejects.
+
+    The recording is scoped to this capture's tabs, and the debugging port
+    stays open after it stops: see -Attach.
+
+.PARAMETER Attach
+    Record in a Chrome that is ALREADY RUNNING, given its debugging endpoint:
+    `http://127.0.0.1:9222`, `127.0.0.1:9222`, or just `9222`.
+
+    Start that browser with a DEDICATED profile -- Chrome refuses remote
+    debugging on a profile another Chrome already has open:
+
+        chrome --user-data-dir=C:\chrome-capture --remote-debugging-port=9222
+
+    Implies -Browser Native. STOPPING DETACHES: the browser, its window and
+    every tab in it are left exactly as they are, because this recording
+    borrowed a browser it did not open. Nothing here ever closes one.
+
+    A new tab is opened for -Uri rather than navigating one of yours away.
+
+    ONLY THIS CAPTURE'S TABS ARE RECORDED (applies to -Browser Native too). A
+    request is recorded when the tab or window that made it is in scope: the
+    tab opened for -Uri, any window opened from an in-scope tab (a sign-in
+    popup, on any host), and any tab whose page is on -Uri's site -- its host
+    without a leading www., plus subdomains. A tab stays in scope wherever it
+    navigates, and every request an in-scope tab makes is recorded whatever
+    host it goes to. Other tabs in that browser are not recorded.
+
+    RESIDUAL RISK: the debugging port outlives the capture. It has no
+    authentication and stays open for as long as that window lives, so any
+    local process can attach and read the profile's cookies. Close the window
+    when you are done.
+
+    -Port and -Profile are refused with it: the browser is already listening
+    on a port and already running on a profile, so neither is this run's to
+    choose.
+
 .OUTPUTS
     WebApiDiscovery.HarCapture.CatalogueEntry
 
@@ -171,6 +236,16 @@
 .EXAMPLE
     Invoke-HarCapture https://example.com -Describe 'create, edit and delete a post' |
         ConvertTo-Json -Depth 4
+
+.EXAMPLE
+    # A site whose bot protection refuses a Playwright-launched browser: record
+    # in an ordinary Chrome instead. Stopping leaves that browser running.
+    Invoke-HarCapture https://www.hertz.com -Describe 'search a one-way rental' -Browser Native
+
+.EXAMPLE
+    # Record in a Chrome you started yourself, on a dedicated profile:
+    #   chrome --user-data-dir=C:\chrome-capture --remote-debugging-port=9222
+    Invoke-HarCapture https://www.avis.com -Describe 'vehicle search' -Attach 9222
 #>
 
 [CmdletBinding()]
@@ -202,7 +277,18 @@ param(
 
     [switch]$Isolated,
 
-    [int]$Port = 9333
+    # NOT defaulted to 9333 here, and the difference is load-bearing: the
+    # recorder has to be able to tell "the operator asked for a port" from "the
+    # operator said nothing", because -Attach refuses the first and must accept
+    # the second. A default on this parameter would make every -Attach run look
+    # like a request for port 9333. $PSBoundParameters is the discriminator, and
+    # the default lives where it always did -- DEFAULT_PORT in capture-har.js.
+    [int]$Port,
+
+    [ValidateSet('Playwright', 'Native')]
+    [string]$Browser = 'Playwright',
+
+    [string]$Attach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -373,11 +459,28 @@ if (-not $uriFolder) {
 # capture-har.js exposing postProcess's phase A whole -- another entry point to
 # existing code, the same move the `catalogue` command makes -- rather than a
 # PowerShell reassembly of it.
-$captureArgs = @('start', '--uri', $Uri, '--port', $Port)
+$captureArgs = @('start', '--uri', $Uri)
+if ($PSBoundParameters.ContainsKey('Port')) { $captureArgs += @('--port', $Port) }
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
 $captureArgs += @('--describe', $Describe)
 if ($Profile) { $captureArgs += @('--profile', $Profile) }
 if ($Isolated) { $captureArgs += '--isolated' }
+# THE RECORDER OWNS THE EXCLUSIVITY RULES, and this script deliberately
+# re-states none of them (#73).
+#
+# -Attach with -Port, with -Profile, with -Isolated, or with -Browser Playwright
+# are all unanswerable combinations, and all four are refused -- by
+# capture-har.js, with the reason, at exit 2. Checking here as well would be a
+# second copy of the same judgement, free to disagree with the first the day one
+# of them changes; this file already has that argument on record about the
+# placement guard (#471) and settles it the same way. So the flags are forwarded
+# and the one owner answers.
+#
+# -Browser is only forwarded when it is not the default: `--browser playwright`
+# is refused alongside --attach, and passing the default explicitly would turn
+# `-Attach x` into that refusal for an operator who never typed a browser.
+if ($Browser -ne 'Playwright') { $captureArgs += @('--browser', $Browser.ToLowerInvariant()) }
+if ($Attach) { $captureArgs += @('--attach', $Attach) }
 # -Verbose is the only verbosity switch. capture-har.js prints its own console
 # output directly -- re-streaming it through PowerShell would buffer the ENTER
 # prompt and the Ctrl+C question in the very terminal the operator answers --
@@ -404,7 +507,10 @@ Write-Verbose "capture-har.js exited $exit"
 
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
 # from the incremental log rather than recordHar -- a full capture either way,
-# so it is not a failure. 6 means the recording is fine but a post-process
+# so it is not a failure. It is also unreachable under -Browser Native and
+# -Attach, where there is no recordHar to lose: the recorder does not report a
+# design as a fallback, so the advice in that arm cannot be handed to a run that
+# could not have taken the other path (#73). 6 means the recording is fine but a post-process
 # phase is not, which must not be reported as success. 7 means every artifact
 # was produced but the leak gate reported advisory findings -- non-zero so no
 # caller reads it as clean, and handled here so the `default` arm below does
@@ -436,6 +542,25 @@ switch ($exit) {
             'The recorder printed each finding and the path to the full report -- review ' +
             'them, then waive or correct each one. To rebuild the catalogue afterwards ' +
             'without re-recording, run Invoke-HarCatalogue.ps1.')
+    }
+    2 {
+        # A USAGE ERROR KEEPS ITS CODE, and keeps the recorder's own words.
+        #
+        # This file already holds the rule, for -Describe: "the front door and
+        # the recorder must refuse on identical terms -- same reason, same
+        # example, same exit code", and har-capture's exit 2 is that refusal
+        # arriving from the other side of the process boundary. The `default`
+        # arm below would re-wrap it as a Write-Error and exit 1: a second,
+        # vaguer sentence about a refusal that has already explained itself,
+        # under a code that says something else.
+        #
+        # It went unnoticed while exit 2 was unreachable through this script's
+        # own parameters. #73 made it reachable -- `-Browser Native -Isolated`
+        # and the three other unanswerable -Attach combinations are refused by
+        # the recorder, by design, because one owner decides them (see the
+        # forwarding block above). Delegating the judgement is only honest if the
+        # answer survives the trip back.
+        exit 2
     }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."

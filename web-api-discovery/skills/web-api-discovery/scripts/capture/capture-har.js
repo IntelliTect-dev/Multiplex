@@ -41,6 +41,48 @@
  * timings, uncapped bodies, base64 for anything not valid UTF-8, and the
  * failed requests that a `response`-driven recorder drops entirely.
  *
+ * ## A browser Playwright launched is a browser a site can refuse
+ *
+ * The paragraph above is true of a browser this script LAUNCHES. On a
+ * protected site, that launch is the end of the recording before it starts:
+ * Playwright marks the browser as automated, and bot protection answers the
+ * marking rather than the traffic. Measured against car-rental sites (#73):
+ *
+ *   Hertz          Imperva      403 "Access denied, Error 15" on the FIRST page
+ *                               load, before any interaction, browsing by hand
+ *   Costco Travel  Akamai       search POST reset (ERR_HTTP2_PROTOCOL_ERROR),
+ *                               including with a fresh profile
+ *   Avis           DataDome     slider CAPTCHA on the vehicle search, then 403
+ *                               even after it was solved
+ *   Priceline      PerimeterX   "Press & Hold" as soon as the location field
+ *                               was typed into, including with a fresh profile
+ *
+ * The SAME sites, on the same machine and the same network, all worked in a
+ * normally launched Chrome. So there is a second way to obtain a browser:
+ * `--browser native` starts `chrome.exe` itself with no automation flags, and
+ * `--attach` records in one that is already running. Both then reach it the way
+ * the paragraph above says an AI reaches a recording --
+ * `connectOverCDP(endpoint).contexts()[0]` -- which is why this mode is
+ * possible at all rather than being a second recorder.
+ *
+ * WHAT CHANGES, and it is only this: recordHar is Playwright's, and Playwright
+ * did not launch this browser, so `raw.har` always comes from
+ * IncrementalRecorder + assembleFromLog. That artifact is not degraded (see
+ * above), and it is no longer reported as a fallback -- exit 5 says "recordHar
+ * lost", which is not a fact about a mode where recordHar never ran.
+ *
+ * WHAT DOES NOT CHANGE: the scrub -> verify -> digest -> catalogue tail, every
+ * ending, and the confinement of raw captures below.
+ *
+ * NO STEALTH MEASURES, deliberately. Nothing here patches
+ * `navigator.webdriver`, spoofs a fingerprint, or rotates anything -- a
+ * normally launched Chrome needs none of it, which is the entire finding. A
+ * site may still challenge; the human answers it.
+ *
+ * AND NOTHING HERE EVER CLOSES A BROWSER IT DID NOT LAUNCH. `stop` detaches.
+ * The operator's window, and every signed-in tab in it, survives the recording
+ * -- for the same reason nothing in this file kills a process.
+ *
  * ## Raw captures are confined by construction
  *
  * The raw capture carries live session cookies. It always lands in the fixed,
@@ -96,6 +138,7 @@
  * Usage:
  *   node capture-har.js start --uri <url> --describe <text>
  *                             [--profile <name|path>] [--isolated]
+ *                             [--browser playwright|native] [--attach <cdp>]
  *                             [--port <n>] [--output-path <dir>]
  *                             [--snapshot-seconds <n>] [--no-wait]
  *                             [--validate-only]
@@ -113,6 +156,25 @@
  *                    dedicated capture profile, which stays signed in between
  *                    sessions -- bundled Chromium can silently close against
  *                    a profile Chrome created, hence channel:'chrome'.
+ *   --browser        `playwright` (default) launches the browser here, which is
+ *                    the mode a protected site detects and refuses. `native`
+ *                    starts chrome.exe with NO automation flags and attaches
+ *                    over CDP -- use it on a site that blocks the default. See
+ *                    the measured table above. Exclusive with --isolated.
+ *   --attach         record in a Chrome that is ALREADY running with
+ *                    --remote-debugging-port, given its HTTP endpoint
+ *                    (http://127.0.0.1:9222, 127.0.0.1:9222, or just 9222).
+ *                    Implies --browser native, and takes the port and the
+ *                    profile from the browser it finds, so --port and
+ *                    --profile are refused with it. `stop` DETACHES and leaves
+ *                    that browser and its tabs alone.
+ *                    With --attach or --browser native, ONLY THIS CAPTURE'S
+ *                    TABS are recorded (#85): the tab opened for --uri, windows
+ *                    opened from an in-scope tab, and tabs on the --uri's site
+ *                    (host minus a leading www., plus subdomains). Every
+ *                    request such a tab makes is recorded, whatever its host.
+ *                    The debugging port stays open, unauthenticated, until
+ *                    that window closes -- close it when done.
  *   --port           default 9333, and it never has to be specified: a busy
  *                    port falls forward to the next free one.
  *   --describe       REQUIRED (#366). What this recording is for, in the
@@ -141,7 +203,11 @@
  *   2 -- usage error
  *   3 -- no capture session found to stop
  *   4 -- the capture produced no usable recording
- *   5 -- raw.har was assembled from the incremental log rather than recordHar
+ *   5 -- raw.har was assembled from the incremental log rather than recordHar.
+ *        Only reachable in a mode where recordHar could have won: a native or
+ *        attached browser has no recordHar at all, so assembling is the design
+ *        rather than a fallback, and reporting it would make the normal ending
+ *        of that mode look like a degraded one.
  *   6 -- recorded successfully, but scrub or catalogue failed
  *   7 -- recorded, scrubbed and catalogued, but the leak gate reported
  *        ADVISORY findings (identity evidence by shape). Every artifact is
@@ -155,7 +221,7 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
@@ -240,6 +306,19 @@ const STOP_TIMEOUT_MS = 60000;
 const LAUNCH_TIMEOUT_MS = 45000;
 const CDP_PROBE_MS = 1500;
 const PORT_SCAN_LIMIT = 64;
+// The two ways a browser can come to exist for a recording (#73). The default
+// is unchanged; `native` exists because Playwright's launch is DETECTABLE and
+// protected sites refuse it outright -- see the measured table at the top.
+const BROWSER_PLAYWRIGHT = 'playwright';
+const BROWSER_NATIVE = 'native';
+const BROWSER_MODES = [BROWSER_PLAYWRIGHT, BROWSER_NATIVE];
+// How long a natively launched Chrome gets to answer on its debugging port.
+// Generous, because this is a cold browser start on a fresh profile and the
+// alternative to waiting is telling an operator their browser failed when it
+// was merely slow. The wait ends EARLY when the process we spawned has already
+// exited, which is the failure that actually happens (see launchNativeChrome).
+const NATIVE_CDP_TIMEOUT_MS = 30000;
+const NATIVE_CDP_POLL_MS = 250;
 // A pause longer than this between two requests is the only signal in the
 // traffic that says "the human moved on to a different action".
 const ACTION_GAP_SECONDS = 5;
@@ -316,7 +395,8 @@ const log = {
 // would leave an operator believing the raw capture had moved.
 const START_OPTIONS = [
     'uri', 'profile', 'isolated', 'port', 'output-path', 'describe',
-    'snapshot-seconds', 'no-wait', 'validate-only', 'log-level'
+    'snapshot-seconds', 'no-wait', 'validate-only', 'log-level',
+    'browser', 'attach'
 ];
 
 /**
@@ -350,15 +430,53 @@ function isDriverAlive(session) {
  * a busy port is no longer fatal, because it falls forward.
  */
 async function probeCdp(port) {
+    return probeCdpEndpoint(`http://localhost:${port}`);
+}
+
+/**
+ * The same question asked of an ENDPOINT rather than a port, because an
+ * attached browser is named by one (#73) and the recorder never chose its host.
+ *
+ * `probeCdp` delegates here so there is one place that knows what answering
+ * looks like. A non-2xx response is NOT an answer: Chrome serves
+ * /json/version from the debugging endpoint and nothing else does, so a 404
+ * from something else on that port means "not a browser", not "not ready".
+ */
+async function probeCdpEndpoint(endpoint) {
     try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), CDP_PROBE_MS);
-        const res = await fetch(`http://localhost:${port}/json/version`, { signal: controller.signal });
+        const res = await fetch(`${endpoint}/json/version`, { signal: controller.signal });
         clearTimeout(timer);
         return res.ok ? await res.json() : null;
     } catch (e) {
         return null;   // nothing listening, which is the normal case
     }
+}
+
+/**
+ * Wait for a browser to open its debugging port.
+ *
+ * `stillStarting` is the reason this is not a plain sleep-and-poll. The
+ * everyday failure of a native launch is that chrome.exe HANDS OFF: point it at
+ * a profile some other Chrome already has open and the new process forwards the
+ * request to that instance and exits immediately, having applied none of our
+ * flags. Nothing ever answers on the port, so a timeout-only wait spends the
+ * full 30 seconds and then reports "the browser did not start" about a browser
+ * that started and left. Asking whether our own child is still alive turns that
+ * into an immediate, accurate failure.
+ */
+async function waitForCdp(endpoint, timeoutMs, opts = {}) {
+    const probe = opts.probe || probeCdpEndpoint;
+    const stillStarting = opts.stillStarting || (() => true);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const version = await probe(endpoint);
+        if (version) return version;
+        if (!stillStarting()) return null;
+        await sleep(NATIVE_CDP_POLL_MS);
+    }
+    return null;
 }
 
 /**
@@ -404,11 +522,22 @@ function usage(msg) {
     process.stderr.write(
         'usage: node capture-har.js start --uri <url> --describe <text>\n' +
         '                                 [--isolated] [--port <n>] [--output-path <dir>]\n' +
+        '                                 [--browser playwright|native] [--attach <cdp>]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
         '       node capture-har.js status\n' +
         '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
         '                                     [--session <dir>] [--output-path <dir>]\n' +
         '\n' +
+        '  --browser native            start chrome.exe with no automation flags and\n' +
+        '                              attach over CDP, for a site that refuses a\n' +
+        '                              Playwright-launched browser.\n' +
+        '  --attach <cdp>              record in a Chrome already running with\n' +
+        '                              --remote-debugging-port. `stop` detaches only.\n' +
+        '                              With either, only this capture\'s tabs are\n' +
+        '                              recorded: the one opened for --uri, windows\n' +
+        '                              opened from it, and tabs on the --uri\'s site.\n' +
+        '                              Its debugging port stays open until that\n' +
+        '                              window closes -- close it when done.\n' +
         '  --log-level normal|verbose  how much the console says (default normal).\n' +
         '                              Invoke-HarCapture sets it from -Verbose.\n');
     return 2;
@@ -747,11 +876,40 @@ async function ensureCapturesRootIgnored(placement, opts = {}) {
     // The file goes beside the store rather than inside it: a rule inside
     // `.har-captures/` cannot exclude `.har-captures/` itself, and the profile
     // it also covers is the store's sibling.
+    //
+    // THEN OFFER THE REPOSITORY ITSELF. The scrub writes substitution tables --
+    // reverse lookups of live credentials -- and refuses to derive their home
+    // outside a work tree, because nothing there keeps them out of a commit.
+    // So a terminal operator is asked, default yes, and `git init` makes the
+    // rule just written take effect. On no, or with no terminal to ask (an AI
+    // agent -- the skill tells it to ask the user in the conversation first),
+    // the capture proceeds anyway: `unprotected` tells postProcess to place the
+    // tables in the session directory by name, and the caller warns once.
     if (status === subsDestination.OUTSIDE_WORK_TREE) {
         const beside = path.dirname(capturesRoot);
         const added = ensureRepoRootGitignoreHasScaffoldEntries(
             beside, CAPTURE_GITIGNORE_ENTRIES, CAPTURE_GITIGNORE_HEADER);
-        return { ok: true, status, ignoreFile: path.join(beside, '.gitignore'), added };
+        const ignoreFile = path.join(beside, '.gitignore');
+        if (isTty) {
+            const answer = await ask(`capture-har: ${beside} is not a git repository.\n` +
+                "  Initialize one so the capture's secrets can never be committed? [Y/n] ");
+            if (!/^n/i.test((answer || '').trim())) {
+                const init = (opts.gitInit || gitInit)(beside);
+                const after = init ? subsDestination.classifyDestination(probe) : status;
+                if (after === subsDestination.IGNORED) {
+                    return { ok: true, status: after, ignoreFile, added, initialized: beside };
+                }
+                return {
+                    ok: false,
+                    status: after,
+                    message: init
+                        ? `capture-har: initialized a repository in ${beside}, but git does not ` +
+                          `report the capture store as ignored (${after}). Nothing was recorded.`
+                        : `capture-har: git init failed in ${beside}. Nothing was recorded.`
+                };
+            }
+        }
+        return { ok: true, status, ignoreFile, added, unprotected: true };
     }
 
     const anchor = placement.mainWorkingTree || placement.currentWorkingTree;
@@ -997,6 +1155,320 @@ function discoverStorageState(startDir, stopAt) {
     return harProfile.findUpward(STORAGE_STATE_FILENAME, startDir, stopAt);
 }
 
+// ---------------------------------------------------------------------------
+// A browser Playwright did not launch (#73)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which browser this run records in, from `--browser` and `--attach`.
+ *
+ * Resolved in one place and BEFORE anything is written, because the answer
+ * decides what the dependency preflight has to insist on: a native or attached
+ * Chrome needs the playwright MODULE and not its Chromium build, and demanding
+ * a browser download to drive the browser the machine already has would be a
+ * refusal with no cause.
+ *
+ * Every combination below is refused rather than silently resolved. `--isolated`
+ * means "bundled Chromium, throwaway profile", which is the exact launch a
+ * protected site rejects -- so honouring one flag while the operator typed both
+ * would record in the browser they were trying to avoid, and the evidence would
+ * be a 403 they then spend an afternoon on.
+ */
+function resolveBrowserMode(args) {
+    const asked = args.browser === undefined
+        ? BROWSER_PLAYWRIGHT
+        : String(args.browser).trim().toLowerCase();
+    if (!BROWSER_MODES.includes(asked)) {
+        return { error: `--browser takes ${BROWSER_MODES.join(' or ')}, not '${args.browser}'` };
+    }
+    const attaching = args.attach !== undefined;
+    if (!attaching) {
+        if (asked === BROWSER_NATIVE && args.isolated) {
+            return {
+                error: '--browser native and --isolated are exclusive. --isolated launches ' +
+                    "Playwright's\n  bundled Chromium, which IS the launch a protected site refuses"
+            };
+        }
+        return { browser: asked, attached: false };
+    }
+    if (args.isolated) {
+        return {
+            error: '--attach and --isolated are exclusive. --isolated launches a throwaway ' +
+                'browser;\n  --attach records in one that is already running'
+        };
+    }
+    if (args.browser !== undefined && asked !== BROWSER_NATIVE) {
+        return {
+            error: `--attach cannot be combined with --browser ${asked}: an attached browser ` +
+                'is not\n  one Playwright launched. --attach already implies --browser native'
+        };
+    }
+    // --port and --profile are not merely redundant here, they are unanswerable:
+    // the browser is already running, so its debugging port and its profile are
+    // facts to be read rather than choices to be made. Accepting either would
+    // mean accepting a value this run cannot honour.
+    if (args.port !== undefined) {
+        return { error: '--attach and --port are exclusive: the endpoint already names the port' };
+    }
+    if (args.profile !== undefined) {
+        return {
+            error: '--attach and --profile are exclusive: the browser you are attaching to is ' +
+                'already\n  running on a profile, and this run cannot change it'
+        };
+    }
+    const parsed = parseCdpEndpoint(args.attach);
+    if (parsed.error) return { error: parsed.error };
+    return {
+        browser: BROWSER_NATIVE,
+        attached: true,
+        endpoint: parsed.endpoint,
+        port: parsed.port
+    };
+}
+
+/**
+ * Normalize whatever the operator had in hand into an endpoint and a port.
+ *
+ * Three spellings, because all three are things people actually have: the URL
+ * Chrome prints, a host:port pair, and the bare port they typed after
+ * `--remote-debugging-port`.
+ *
+ * A `ws://` URL is REFUSED with its own message rather than coerced. It is the
+ * DevTools socket, not the endpoint `connectOverCDP` wants, and it carries a
+ * target id that stops working the moment anything else connects -- so
+ * accepting it would produce an intermittent failure a long way from the flag
+ * that caused it.
+ */
+function parseCdpEndpoint(value) {
+    const raw = String(value === undefined || value === null ? '' : value).trim();
+    if (!raw) {
+        return { error: '--attach needs the endpoint, e.g. --attach http://127.0.0.1:9222' };
+    }
+    if (/^wss?:\/\//i.test(raw)) {
+        return {
+            error: 'that is the DevTools websocket, not the debugging endpoint. Pass the HTTP ' +
+                'one\n  (http://127.0.0.1:9222) -- the ws:// URL names one target and expires'
+        };
+    }
+    if (/^\d+$/.test(raw)) {
+        const port = Number(raw);
+        if (port < 1 || port > 65535) return { error: `${raw} is not a port` };
+        return { endpoint: `http://127.0.0.1:${port}`, port };
+    }
+    let url;
+    try {
+        url = new URL(/^https?:\/\//i.test(raw) ? raw : `http://${raw}`);
+    } catch (e) {
+        void e;
+        return { error: `could not read '${raw}' as a CDP endpoint` };
+    }
+    if (!url.port) {
+        return {
+            error: `'${raw}' names no port, and Chrome's debugging endpoint always has one ` +
+                '(the\n  value you gave --remote-debugging-port)'
+        };
+    }
+    return { endpoint: `${url.protocol}//${url.host}`, port: Number(url.port) };
+}
+
+/**
+ * Chrome's own installation paths, in the order a machine is likely to have
+ * them.
+ *
+ * NO NEW OPTION AND NO NEW ENVIRONMENT VARIABLE for "where is Chrome", on
+ * node-dependency.js's reasoning: when this list cannot answer, the operator
+ * already has a better lever than one more path to type -- they start Chrome
+ * themselves and pass `--attach`, which is a mode this file supports anyway. So
+ * the failure names every path it tried and then names that lever.
+ *
+ * Chromium is listed last on Linux and nowhere else. It is the same engine and
+ * will record, but it is not the browser whose fingerprint the sites in the
+ * table above accepted, so it is a last resort rather than an equal.
+ */
+function chromeCandidates(opts = {}) {
+    const env = opts.env || process.env;
+    const platform = opts.platform || process.platform;
+    const home = opts.homedir === undefined ? os.homedir() : opts.homedir;
+    if (platform === 'win32') {
+        const suffix = ['Google', 'Chrome', 'Application', 'chrome.exe'];
+        return [env['ProgramFiles'], env['ProgramFiles(x86)'], env.LOCALAPPDATA]
+            .filter(Boolean)
+            .map((root) => path.join(root, ...suffix));
+    }
+    if (platform === 'darwin') {
+        const app = path.join('Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome');
+        return [
+            path.join('/Applications', app),
+            home ? path.join(home, 'Applications', app) : null
+        ].filter(Boolean);
+    }
+    return [
+        '/opt/google/chrome/chrome',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser'
+    ];
+}
+
+/**
+ * The first candidate that is actually a file, and the whole list either way.
+ *
+ * The list comes back on the failure path too, because "not found" is only
+ * actionable alongside where it was looked for -- the same contract
+ * node-dependency.js holds itself to for the module.
+ */
+function findChromeExecutable(opts = {}) {
+    const candidates = chromeCandidates(opts);
+    for (const candidate of candidates) {
+        try {
+            if (fs.statSync(candidate).isFile()) return { path: candidate, candidates };
+        } catch (e) {
+            void e;   // absent, which is the ordinary answer for most of the list
+        }
+    }
+    return { path: null, candidates };
+}
+
+/**
+ * Start Chrome the way a person does, and get out of the way.
+ *
+ * THE ARGUMENT LIST IS THE FEATURE, so every entry is accounted for:
+ *
+ *   --user-data-dir            a dedicated profile. Not a nicety: Chrome
+ *                              refuses remote debugging on a profile another
+ *                              Chrome already has open, and pointing this at
+ *                              the operator's daily profile would put a
+ *                              recorder inside every session they have running.
+ *   --remote-debugging-port    the only reason this process is involved at all.
+ *   --no-first-run             a dedicated profile is a FRESH profile, so the
+ *                              first-run experience would otherwise stand in
+ *                              front of the site on every new one.
+ *   --no-default-browser-check same: a modal about switching to a browser the
+ *                              operator did not ask to switch to.
+ *
+ * AND NOTHING ELSE. No --disable-blink-features, no --disable-extensions, no
+ * automation switches, no headless. Those are the marks this mode exists to
+ * avoid; the two suppressions above are first-run UI, not automation, and
+ * `navigator.webdriver` stays false -- which is the property that matters and
+ * is asserted in the suite rather than assumed here.
+ *
+ * DETACHED, AND NEVER WAITED ON. In the Playwright mode this process outlives
+ * the browser. Here the browser outlives US, because `stop` detaches and leaves
+ * it running -- so tying the two lifetimes together is exactly what must not
+ * happen: it would end a recording by taking down a window full of the
+ * operator's signed-in tabs.
+ */
+function launchNativeChrome(options) {
+    const { executable, profileDir, port } = options;
+    const args = [
+        `--user-data-dir=${profileDir}`,
+        `--remote-debugging-port=${port}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        // Opened blank ON PURPOSE. The site is navigated to after the attach, so
+        // its first request -- the one carrying the challenge, the cookies and
+        // the redirect chain -- is recorded. Handing the URL to the command line
+        // would load it while nothing was listening.
+        'about:blank'
+    ];
+    const child = (options.spawn || spawn)(executable, args, {
+        detached: true,
+        stdio: 'ignore'
+    });
+    child.unref();
+    return { child, args };
+}
+
+// Folders a consumer sync client watches. A browser profile is a set of SQLite
+// databases Chrome writes continuously, so a sync client copying one mid-write
+// corrupts the profile -- and carries live session cookies up to a cloud
+// account on the way.
+const SYNCED_FOLDER_PATTERNS = [
+    { re: /(^|[\\/])OneDrive([\\/ -]|$)/i, name: 'OneDrive' },
+    { re: /(^|[\\/])Dropbox([\\/]|$)/i, name: 'Dropbox' },
+    { re: /(^|[\\/])Google Drive([\\/]|$)/i, name: 'Google Drive' },
+    { re: /(^|[\\/])iCloud ?Drive([\\/]|$)/i, name: 'iCloud Drive' },
+    { re: /(^|[\\/])Box( Sync)?([\\/]|$)/i, name: 'Box' }
+];
+
+/**
+ * Warn, never refuse: the operator named this path.
+ *
+ * Matched on the PATH rather than by asking a sync client, because there is no
+ * portable way to ask one and a name match is the signal an operator can check
+ * for themselves. A false positive costs one warning line about a folder that
+ * happens to be called Dropbox; a false negative costs a corrupted profile and
+ * a cookie jar in somebody's cloud.
+ */
+function syncedFolderWarning(dir) {
+    if (!dir) return null;
+    const target = path.resolve(dir);
+    const hit = SYNCED_FOLDER_PATTERNS.find((p) => p.re.test(target));
+    if (!hit) return null;
+    return `the browser profile is inside what looks like a ${hit.name} folder:\n` +
+        `  ${target}\n` +
+        '  A profile is a set of databases the browser writes continuously. A sync\n' +
+        '  client copying one mid-write corrupts it, and carries live session cookies\n' +
+        '  to a cloud account on the way. Prefer a local path.';
+}
+
+const PROFILE_GITIGNORE_HEADER = [
+    '# Added by the HAR recorder (see skills/web-api-discovery/SKILL.md).',
+    '# A browser profile holds live session cookies for the account the capture',
+    '# was recorded as.'
+];
+
+/**
+ * A browser profile inside a work tree gets an ignore rule, WRITTEN rather than
+ * prompted for and never refused.
+ *
+ * Both departures from ensureCapturesRootIgnored are deliberate, and both come
+ * from the same difference: that path is ours and this one is the operator's.
+ *
+ * WHY IT DOES NOT REFUSE. The capture store's path is fixed, is where an
+ * unscrubbed raw is about to land, and nobody chose it. A profile path only
+ * reaches here because somebody TYPED it, and this file has a settled answer
+ * for a destination somebody deliberately named -- warn, never refuse (see
+ * outputDestinationWarning). Refusing would also arrive too late to help:
+ * the directory has to exist before the browser can use it.
+ *
+ * WHY IT DOES NOT PROMPT. The store prompts because refusing is the
+ * alternative. There is no refusal here, so the question would have one
+ * meaningful answer -- and appending an ignore rule for a directory this run
+ * just created changes nobody's work.
+ *
+ * git is asked AGAIN afterwards, for the reason the store's guard gives: a rule
+ * that does not take effect (a later negation, a nested .gitignore) must never
+ * be reported as protection.
+ */
+function ensureProfileIgnored(profileDir) {
+    const probe = path.join(profileDir, '.browser-profile-ignore-probe');
+    const status = subsDestination.classifyDestination(probe);
+    if (status !== subsDestination.NOT_IGNORED) return { status };
+    const anchor = repoGuard.inspectCheckout(profileDir).topLevel;
+    if (!anchor) return { status };
+    const rel = path.relative(anchor, profileDir).split(path.sep).join('/');
+    // The repository root itself is not a profile directory, and `/` is not a
+    // rule anybody wants written. Nothing reaches this in practice; it is here
+    // so that if something does, it does nothing.
+    if (!rel || rel.startsWith('..')) return { status };
+    // Rooted with a leading slash so the rule cannot also match a same-named
+    // directory elsewhere in the tree, and closed with a trailing one because
+    // what is ignored is a directory.
+    const entry = `/${rel}/`;
+    const added = ensureRepoRootGitignoreHasScaffoldEntries(
+        anchor, [entry], PROFILE_GITIGNORE_HEADER);
+    const after = subsDestination.classifyDestination(probe);
+    return {
+        status: after,
+        entry,
+        added,
+        ignoreFile: path.join(anchor, '.gitignore'),
+        ineffective: after !== subsDestination.IGNORED
+    };
+}
+
 const PLAYWRIGHT_MODULE = nodeDep.PLAYWRIGHT;
 
 /**
@@ -1067,18 +1539,27 @@ function dependencyMessage(resolved, browserPresent, env) {
  * serves every folder afterwards. NON-INTERACTIVE: print the same locations
  * and the same commands and refuse -- an agent has nowhere to answer, which is
  * how every other guard in this file behaves.
+ *
+ * `requireBrowser: false` asks only about the MODULE, and is what a native or
+ * attached run passes (#73). Those modes drive the Chrome this machine already
+ * has, so Playwright's bundled Chromium is not a dependency of theirs -- and a
+ * gate that demanded a browser download in order to use an installed browser
+ * would be exactly the unfollowable advice #512 set out to remove.
  */
 async function preflightDependencies(opts = {}) {
     const isTty = !!opts.isTty;
     const ask = opts.ask || askLine;
     const install = opts.install || runInstall;
     const env = opts.env || process.env;
+    const requireBrowser = opts.requireBrowser !== false;
     // Both facts, re-read together. Called again after an install, because the
     // only honest way to know whether an install worked is to ask the same
     // question a second time.
     const check = () => ({
         resolved: resolvePlaywright(Object.assign({}, opts, { env })),
-        browser: nodeDep.chromiumPresent({ env, platform: opts.platform, homedir: opts.homedir })
+        browser: requireBrowser
+            ? nodeDep.chromiumPresent({ env, platform: opts.platform, homedir: opts.homedir })
+            : true
     });
 
     let state = check();
@@ -1088,8 +1569,18 @@ async function preflightDependencies(opts = {}) {
     const commands = dependencyInstallCommands(!state.resolved.found, !state.browser);
 
     if (isTty && commands.length > 0) {
-        const answer = await ask(`${message}\n  Install it now? [y/N] `);
-        if (/^y/i.test((answer || '').trim())) {
+        // DEFAULT YES, matching the capture store's own `git init` prompt rather
+        // than the refusals. The two shapes in this file are not arbitrary: a
+        // prompt that can LOSE something defaults to no, and a prompt that is
+        // merely the next step defaults to yes. Installing the driver is the
+        // second kind -- an operator who has just been told the recorder cannot
+        // run without it, and who is standing at a terminal answering the
+        // question, has already decided. Making them type `y` to proceed and
+        // ENTER to abandon the run inverts the cheap and the expensive answer:
+        // ENTER is what a hurried person presses, and here that meant reading
+        // the remedy, agreeing with it, and then being refused anyway.
+        const answer = await ask(`${message}\n  Install it now? [Y/n] `);
+        if (!/^n/i.test((answer || '').trim())) {
             let neverStarted = null;
             for (const [command, args] of commands) {
                 const r = install(command, args) || {};
@@ -1461,19 +1952,148 @@ class IncrementalRecorder {
 }
 
 /**
+ * The site a capture is about: the target's host without a leading `www.`.
+ *
+ * Deliberately NOT the registrable domain. A suffix list short enough to vendor
+ * (see SUFFIX_LABELS) would make `foo.github.io` admit `bar.github.io`, and this
+ * decides what gets recorded out of somebody's own browser -- so a miss errs
+ * toward recording LESS. The pages a capture actually uses are in scope by the
+ * other two rules below, whatever host they are on; this one only reaches tabs
+ * the operator opens by hand.
+ */
+function captureSite(uri) {
+    let host;
+    try { host = new URL(uri).hostname.toLowerCase(); } catch (e) { void e; return null; }
+    if (!host) return null;
+    return host.startsWith('www.') ? host.slice(4) : host;
+}
+
+function onCaptureSite(site, url) {
+    if (!site || !url) return false;
+    let host;
+    try { host = new URL(url).hostname.toLowerCase(); } catch (e) { void e; return false; }
+    return host === site || host.endsWith(`.${site}`);
+}
+
+/**
+ * Which requests a capture in somebody else's browser records (#85).
+ *
+ * In a browser this script launched, every request in the context is this
+ * capture's: the context did not exist until this run made it. Attached -- and
+ * natively launched, where Chrome may restore a profile's tabs -- the context is
+ * the OPERATOR'S browser, holding whatever else they are signed into. Recording
+ * all of it put other sites' and other accounts' traffic into raw.har, and from
+ * there into scrubbed artifacts the scrub only cleans of KNOWN credential shapes.
+ *
+ * THE RULE. A request is recorded when the PAGE (tab or window) that made it is
+ * in scope, and a page is in scope when:
+ *
+ *   1. this run opened it (the tab `start` navigates to the target), or
+ *   2. it was opened FROM an in-scope page -- a popup or sign-in window, on any
+ *      host, because it carries the auth exchange; or
+ *   3. its top-level document is on the target's site (captureSite) -- a tab
+ *      the operator opens on the target by hand.
+ *
+ * Once in scope, a page STAYS in scope wherever it navigates: an in-tab sign-in
+ * leaves the site and comes back, and that round trip is the capture.
+ *
+ * WHAT IS NEVER CONSULTED: the request's own host. The APIs a capture exists to
+ * find usually live on a different host from the page (`api.`, an auth server,
+ * a CDN), so filtering requests by origin would discard exactly what is wanted.
+ * Scoping is by page, and an in-scope page's requests are all recorded.
+ *
+ * FAILS CLOSED. A request whose page cannot be resolved -- a frame already gone,
+ * a service worker not on the target's site -- is not recorded. Leaking another
+ * account's traffic is the failure this exists to prevent; dropping a stray
+ * request is not.
+ */
+function createCaptureScope(targetUri) {
+    const site = captureSite(targetUri);
+    const inScope = new WeakSet();
+    // The opener never changes for a page, so it is asked once per page; whether
+    // that opener is in scope CAN change (it may navigate to the target later),
+    // so that part is not cached.
+    const openers = new WeakMap();
+    const MAX_OPENER_DEPTH = 8;
+
+    async function pageAdmitted(page, documentUrl, depth) {
+        if (inScope.has(page)) return true;
+        let current = documentUrl;
+        if (!current) {
+            try { current = page.url(); } catch (e) { void e; current = null; }
+        }
+        if (onCaptureSite(site, current)) { inScope.add(page); return true; }
+        if (depth >= MAX_OPENER_DEPTH) return false;
+        if (!openers.has(page)) {
+            openers.set(page, Promise.resolve()
+                .then(() => (typeof page.opener === 'function' ? page.opener() : null))
+                .catch(() => null));
+        }
+        const opener = await openers.get(page);
+        if (opener && opener !== page && await pageAdmitted(opener, null, depth + 1)) {
+            inScope.add(page);
+            return true;
+        }
+        return false;
+    }
+
+    return {
+        site,
+        /** Rule 1: a page this run opened is in scope from the start. */
+        claim(page) { if (page) inScope.add(page); },
+        async admits(request) {
+            try {
+                let frame = null;
+                try { frame = request.frame(); } catch (e) { void e; frame = null; }
+                if (!frame) {
+                    // A service worker's request has no frame. It belongs to the
+                    // site that registered the worker, so rule 3 is the only one
+                    // that can admit it.
+                    const worker = typeof request.serviceWorker === 'function'
+                        ? request.serviceWorker() : null;
+                    return !!worker && onCaptureSite(site, worker.url());
+                }
+                const page = frame.page();
+                if (!page) return false;
+                // A tab's FIRST document request finishes before page.url() has
+                // caught up with it, so a top-level navigation is judged by where
+                // it is going rather than by where the tab was.
+                let documentUrl = null;
+                if (request.isNavigationRequest() && frame === page.mainFrame()) {
+                    documentUrl = request.url();
+                }
+                return await pageAdmitted(page, documentUrl, 0);
+            } catch (e) {
+                void e;
+                return false;
+            }
+        }
+    };
+}
+
+/**
  * Adapt Playwright events onto buildEntry.
  *
  * `requestfinished` and `requestfailed` rather than `response`, for two
  * reasons: a failed request never emits a response and was therefore lost
  * entirely, and `requestfinished` is the point at which timing information is
  * actually complete.
+ *
+ * `scope` (createCaptureScope) is given only where the browser is not this
+ * run's own -- attached or natively launched -- and a request it does not admit
+ * is never read, let alone written. Null records everything in the context,
+ * which in a browser this run launched is the same set as "this capture".
  */
-function attachRecorder(context, recorder) {
+function attachRecorder(context, recorder, scope) {
     const record = async (request, failure) => {
         // The whole handler is guarded, not just the calls known to be
         // fragile: an unhandled rejection here would crash the driver
         // mid-capture, which is the exact loss this recorder exists to prevent.
         try {
+            if (scope && !(await scope.admits(request))) {
+                recorder.excluded = (recorder.excluded || 0) + 1;
+                return;
+            }
             const response = await request.response().catch(() => null);
             let body = null;
             // Tracked separately from `body` because "could not read it" and
@@ -2107,8 +2727,12 @@ function postProcess(session, opts = {}) {
     // until it finishes, and after a recording stops they run for minutes --
     // which an operator cannot tell apart from a hang.
     log.info(`capture-har: scrubbing ${describeSize(session.harPath)} ...`);
+    const tables = session.unprotectedTables
+        ? ['--subs', path.join(session.sessionDir, subsDestination.LEGACY_SUBS_FILENAME),
+            '--pii-subs', path.join(session.sessionDir, subsDestination.PII_SUBS_FILENAME)]
+        : [];
     const sanitize = run(path.join(harDir, 'sanitize-har.js'),
-        ['--in', session.harPath, '--out', candidate]);
+        ['--in', session.harPath, '--out', candidate, ...tables]);
     if (!sanitize.ok) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false, advisory: false };
@@ -2494,7 +3118,10 @@ function startBannerLines(session) {
             '  This profile belongs to another tool, which cannot use it\n' +
             '  until the recording ends.']);
     }
-    lines.push(['verbose', `  profile:  ${session.profileDir}`]);
+    // Absent when attached, where the browser is running on a profile this run
+    // did not choose. Printing `null` would answer the question wrongly rather
+    // than declining to answer it.
+    if (session.profileDir) lines.push(['verbose', `  profile:  ${session.profileDir}`]);
     if (session.storageState) lines.push(['verbose', `  session:  ${session.storageState}`]);
     // Still verbose: the capture ROOT is announced unconditionally before this
     // banner (#367), and that is the durability-relevant half. The per-session
@@ -2503,8 +3130,58 @@ function startBannerLines(session) {
     lines.push(['verbose', `  output:   ${session.outputPath}  (scrubbed artifacts only)`]);
     lines.push(['verbose', `  cdp:      ${session.cdpEndpoint}` +
         (session.port !== session.requestedPort ? `  (${session.requestedPort} was busy)` : '')]);
-    lines.push(['info', '\n  Browse, then press ENTER here -- that writes the most complete HAR.\n']);
+    // WHOSE BROWSER THIS IS, at info level, because it changes what the operator
+    // should do when the recording ends (#73). A window that stays open looks
+    // like a leak unless it was announced as the contract.
+    if (session.attached) {
+        lines.push(['info',
+            '  Attached to a browser this recorder did not launch. Ending the recording\n' +
+            '  DETACHES: the browser, its window and its tabs are left exactly as they are.']);
+    } else if (session.browser === BROWSER_NATIVE) {
+        lines.push(['info',
+            '  Recording in a natively launched Chrome -- no automation flags, so a site\n' +
+            '  with bot protection sees an ordinary browser. Ending the recording detaches\n' +
+            '  and leaves it running; close the window yourself when you are done with it.']);
+    }
+    // WHICH TABS, said where the operator can still act on it (#85). Not in
+    // the Playwright mode, where the browser is this run's own and holds
+    // nothing else.
+    if (session.attached || session.browser === BROWSER_NATIVE) {
+        const site = captureSite(session.uri) || session.uri;
+        lines.push(['info',
+            `  Recording ONLY this capture's tab, windows opened from it, and tabs on ${site}.
+` +
+            '  Other tabs in this browser are not recorded.']);
+    }
+    // "The most complete HAR" is a claim about recordHar, which only exists in a
+    // browser Playwright launched. Saying it in a mode where recordHar never
+    // runs would promise a richer artifact for pressing a key that cannot
+    // produce one.
+    lines.push(['info', session.ownsRecordHar === false
+        ? '\n  Browse, then press ENTER here to end the recording.\n'
+        : '\n  Browse, then press ENTER here -- that writes the most complete HAR.\n']);
     return lines;
+}
+
+/**
+ * What the console says when a recording in a browser it did not close ends.
+ *
+ * Two facts, both about the window still sitting there. It is the CONTRACT,
+ * not a failed cleanup (#73) -- every other mode ends with the browser gone, and
+ * an operator who closes it on that assumption loses the signed-in profile.
+ * And its debugging port is STILL OPEN (#85): `--remote-debugging-port` has no
+ * authentication, so for as long as that window lives any local process can
+ * attach to it and read the profile's cookies. That is a residual risk this
+ * mode carries by design, so the remedy is said every time rather than only in
+ * SKILL.md.
+ */
+function detachedLines(session) {
+    return [
+        ['info', `  the browser is still running at ${session.cdpEndpoint} -- ` +
+            'this run detached and closed nothing.'],
+        ['info', '  Its debugging port stays open, unauthenticated, until that window closes -- ' +
+            'close it when you are done.']
+    ];
 }
 
 /**
@@ -2726,6 +3403,11 @@ function scaffoldProfile(targetDir) {
  * question mixed into a data stream that a caller is capturing rather than
  * showing.
  */
+function gitInit(dir) {
+    const r = spawnSync('git', ['init', '--quiet'], { cwd: dir, windowsHide: true, stdio: 'ignore' });
+    return !r.error && r.status === 0;
+}
+
 async function askLine(question) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
     try {
@@ -2774,6 +3456,23 @@ async function start(args) {
         return 2;
     }
 
+    // WHICH BROWSER, AND WHOSE (#73). Resolved here, above every gate, because
+    // the answer changes what the next one has to insist on: a native or
+    // attached run needs the playwright module and not its Chromium build. A
+    // usage error also has to arrive before a prompt or an install offer --
+    // being asked to install a browser and then told the flags were wrong is
+    // the shape of failure #512 exists to prevent.
+    const browserMode = resolveBrowserMode(args);
+    if (browserMode.error) return usage(browserMode.error);
+    const attached = !!browserMode.attached;
+    const nativeBrowser = browserMode.browser === BROWSER_NATIVE;
+    // recordHar is Playwright's, and Playwright launched neither of the browsers
+    // above. Carried as a fact on the session rather than re-derived from the
+    // mode string, because `stop` runs in another process and has to reach the
+    // same answer -- and an older session.json, which has no such field, must
+    // keep the behaviour it was recorded under.
+    const ownsRecordHar = !nativeBrowser;
+
     const isTty = !!process.stdin.isTTY;
 
     // CAN THIS RUN FINISH AT ALL -- asked before anything else (#512).
@@ -2789,7 +3488,7 @@ async function start(args) {
     // where no browser is installed; gating it on a browser would break the
     // one command that exists to have no side effects.
     if (!args['validate-only']) {
-        const deps = await preflightDependencies({ isTty });
+        const deps = await preflightDependencies({ isTty, requireBrowser: ownsRecordHar });
         if (!deps.ok) {
             process.stderr.write(deps.message + '\n');
             return 1;
@@ -2855,17 +3554,26 @@ async function start(args) {
     // info level, before the browser, and not gated on -Verbose.
     const rootNotice = repoGuard.captureRootNotice(paths.capturePlacement);
     if (rootNotice) log.info('capture-har: ' + rootNotice);
-    const requestedPort = numberOr(args.port, DEFAULT_PORT);
-    const port = args['validate-only'] && requestedPort === 0
+    // AN ATTACHED BROWSER'S PORT IS READ, NEVER CHOSEN. Falling forward to a
+    // free port is right for a browser we are about to start and is exactly
+    // wrong for one already listening: the next free port is the one nothing is
+    // on. So the scan is skipped and the endpoint's own port stands.
+    const requestedPort = attached ? browserMode.port : numberOr(args.port, DEFAULT_PORT);
+    const port = attached || (args['validate-only'] && requestedPort === 0)
         ? requestedPort
         : await findFreePort(requestedPort);
     const snapshotSeconds = numberOr(args['snapshot-seconds'], DEFAULT_SNAPSHOT_SECONDS);
     const snapshotMs = snapshotSeconds * 1000;
     const isolated = !!args.isolated;
-    const profileDir = isolated
-        ? fs.mkdtempSync(path.join(os.tmpdir(), 'har-capture-'))
-        : resolveProfileDir(args.profile);
-    const externalProfile = !isolated && !profileDir.startsWith(captureProfileRoot());
+    // Null when attached, and null is the honest value: the browser is running
+    // on a profile this run did not choose and cannot name. Guessing one would
+    // put a path in session.json that nothing verified.
+    const profileDir = attached
+        ? null
+        : isolated
+            ? fs.mkdtempSync(path.join(os.tmpdir(), 'har-capture-'))
+            : resolveProfileDir(args.profile);
+    const externalProfile = !!profileDir && !isolated && !profileDir.startsWith(captureProfileRoot());
     const storageState = isolated ? discoverStorageState(process.cwd()) : null;
 
     const session = {
@@ -2897,8 +3605,26 @@ async function start(args) {
         profileDir,
         externalProfile,
         storageState,
-        mode: isolated ? 'isolated-chromium' : 'chrome-profile',
-        cdpEndpoint: `http://localhost:${port}`,
+        mode: attached
+            ? 'attached-chrome'
+            : nativeBrowser
+                ? 'native-chrome'
+                : isolated ? 'isolated-chromium' : 'chrome-profile',
+        // WHICH BROWSER, AND WHOSE -- both recorded, because `status` and any
+        // agent reading this file need to know not to close it (#73).
+        browser: browserMode.browser,
+        attached,
+        ownsRecordHar,
+        // 127.0.0.1 rather than `localhost` for a browser we start, and the
+        // difference is not cosmetic: Chrome binds its debugging port to the
+        // IPv4 loopback, while Node's resolver may answer `localhost` with ::1
+        // first -- so the literal is the one spelling that cannot fail to
+        // connect to the browser this process just launched. The Playwright
+        // mode keeps `localhost`, which is what it has always printed and what
+        // agents have been told to expect.
+        cdpEndpoint: attached
+            ? browserMode.endpoint
+            : nativeBrowser ? `http://127.0.0.1:${port}` : `http://localhost:${port}`,
         port,
         requestedPort,
         snapshotSeconds: snapshotMs / 1000
@@ -2929,11 +3655,21 @@ async function start(args) {
     // operator owns is theirs to know about -- and the line is also the answer
     // to "do I need a repository for this?", delivered where the question
     // actually comes up.
-    if (ignoreGuard.added && ignoreGuard.added.length > 0) {
+    if (ignoreGuard.initialized) {
+        log.info(`capture-har: initialized a git repository in ${ignoreGuard.initialized}; ` +
+            `${ignoreGuard.ignoreFile} keeps the capture store and your operator profile out of it.`);
+    } else if (ignoreGuard.added && ignoreGuard.added.length > 0) {
         log.info('capture-har: this folder is not a git repository. Wrote ' +
             `${ignoreGuard.ignoreFile}\n` +
             '  so a later `git init` cannot commit the capture store or your ' +
             'operator profile.');
+    }
+    if (ignoreGuard.unprotected) {
+        session.unprotectedTables = true;
+        log.warn('capture-har: proceeding without a git repository. The scrub\'s substitution ' +
+            'tables -- reverse lookups of the values it replaced -- will be written into this ' +
+            "capture's session folder, and nothing stops them being committed if this folder " +
+            'becomes a repository without the .gitignore written here.');
     }
 
     // And the other half: an EXPLICIT --output-path into a committable
@@ -2941,10 +3677,44 @@ async function start(args) {
     const outputWarning = outputDestinationWarning(paths);
     if (outputWarning) { log.warn('capture-har: ' + outputWarning); }
 
+    // AND THE BROWSER PROFILE, when this run owns one (#73). A profile holds
+    // live session cookies for the account being recorded, so a project-local
+    // one -- `--profile .\.chrome-profile`, the shape a project that keys
+    // browsers off its own concept hands us -- is as committable as a raw
+    // capture and gets the same treatment the store gets: an ignore rule,
+    // written. Unlike the store it is never refused and never prompted for; see
+    // ensureProfileIgnored for why those two differ.
+    //
+    // Not gated on the browser mode, because the hazard is not either mode's:
+    // `--profile` has always accepted a path, and a path inside a work tree has
+    // always been as exposed there. The default profile lives outside any
+    // repository, so this is a no-op for it.
+    if (profileDir) {
+        const synced = syncedFolderWarning(profileDir);
+        if (synced) log.warn('capture-har: ' + synced);
+        const profileIgnore = ensureProfileIgnored(profileDir);
+        if (profileIgnore.added && profileIgnore.added.length > 0) {
+            log.info(`capture-har: added ${profileIgnore.entry} to ${profileIgnore.ignoreFile} -- ` +
+                'a browser profile holds live session cookies.');
+        }
+        if (profileIgnore.ineffective) {
+            log.warn('capture-har: the browser profile is NOT gitignored and the rule written ' +
+                `for it did not take effect (${profileIgnore.status}):\n  ${profileDir}\n` +
+                '  It holds live session cookies for the account you record as. Add a rule ' +
+                'that\n  does, or record to a profile outside this repository.');
+        }
+    }
+
     // A busy port is no longer a conflict -- we moved. A persistent profile
     // genuinely is single-instance, though, and that stays a hard error naming
     // what holds it.
-    const conflict = await findProfileConflict(profileDir, paths.searchRoots);
+    //
+    // ASKED ONLY WHEN THIS RUN OWNS A PROFILE. An attached session records no
+    // profile path, so two of them would compare equal (null against null) and
+    // the second would be refused as a conflict with the first -- while in fact
+    // they are two different browsers, each one already running, neither of them
+    // single-instance with respect to the other.
+    const conflict = profileDir ? await findProfileConflict(profileDir, paths.searchRoots) : null;
     if (conflict) {
         process.stderr.write(
             `capture-har: the capture profile is already recording.\n` +
@@ -2959,38 +3729,164 @@ async function start(args) {
     fs.mkdirSync(paths.sessionDir, { recursive: true });
     const playwright = requirePlaywright();
 
-    const options = {
-        headless: false,
-        timeout: LAUNCH_TIMEOUT_MS,
-        recordHar: { path: paths.harPath, mode: 'full', content: 'embed' },
-        args: [`--remote-debugging-port=${port}`]
-    };
-    // Bundled Chromium can silently close against a Chrome-created profile,
-    // so the default path pins the system Chrome channel.
-    if (!isolated) options.channel = 'chrome';
-    if (storageState) options.storageState = storageState;
-
     let context;
-    try {
-        context = await playwright.chromium.launchPersistentContext(profileDir, options);
-    } catch (e) {
-        // The profile can also be held by a browser that no session file knows
-        // about. Launch then stalls rather than erroring, so a timeout here
-        // means "in use" far more often than it means "broken".
-        if (/Timeout/i.test(e.message)) {
+    // The CDP side, when there is one. Null in the Playwright mode, and the
+    // teardown reads THIS rather than the mode -- so "is this browser mine to
+    // close?" has one answer, held by the thing that would know.
+    let cdpBrowser = null;
+
+    if (nativeBrowser) {
+        if (!attached) {
+            const chrome = findChromeExecutable();
+            if (!chrome.path) {
+                process.stderr.write(
+                    'capture-har: --browser native needs Google Chrome, and it is not at any of\n' +
+                    '  the places it installs:\n' +
+                    chrome.candidates.map((c) => `    ${c}\n`).join('') +
+                    '  Install Chrome, or start one yourself and record in it:\n' +
+                    '    chrome --user-data-dir=<a dedicated profile> --remote-debugging-port=9222\n' +
+                    '    node capture-har.js start --attach http://127.0.0.1:9222 ...\n');
+                return 1;
+            }
+            // Before the launch, because Chrome creates it silently and a
+            // --user-data-dir it cannot write to fails with nothing to read.
+            fs.mkdirSync(profileDir, { recursive: true });
+            log.verbose(`capture-har: launching ${chrome.path}`);
+            let launched;
+            try {
+                launched = launchNativeChrome({
+                    executable: chrome.path, profileDir, port
+                });
+            } catch (e) {
+                process.stderr.write(
+                    `capture-har: could not start ${chrome.path}: ${e.message}\n`);
+                return 1;
+            }
+            // RECORDED, NEVER SIGNALLED. Nothing in this file kills a process,
+            // and a browser holding the operator's signed-in tabs is the last
+            // one that would start. The pid is here so the claim this mode makes
+            // -- "the browser is still running" -- is one a reader of
+            // session.json, or a test, can actually check.
+            session.browserPid = launched.child.pid || null;
+            // A spawn that fails asynchronously arrives as an `error` event, and
+            // an unhandled one on a child process is thrown. Both handlers exist
+            // to answer `stillStarting` below -- and to keep a browser that
+            // refused to start from taking this process down with it.
+            let gone = false;
+            launched.child.once('exit', () => { gone = true; });
+            launched.child.once('error', () => { gone = true; });
+            const version = await waitForCdp(session.cdpEndpoint, NATIVE_CDP_TIMEOUT_MS,
+                { stillStarting: () => !gone });
+            if (!version) {
+                process.stderr.write(
+                    'capture-har: Chrome started but never opened its debugging port at\n' +
+                    `  ${session.cdpEndpoint}\n` +
+                    (gone
+                        ? '  The process exited immediately, which is what Chrome does when the\n' +
+                          '  profile is ALREADY OPEN in another window: the new process hands the\n' +
+                          '  request to that one and leaves, applying none of our flags.\n' +
+                          `    profile: ${profileDir}\n` +
+                          // THE LIKELIEST CAUSE IS THIS TOOL'S OWN CONTRACT, so it
+                          // is named first. A native recording DETACHES and leaves
+                          // its browser running, by design -- so the second capture
+                          // of a session arrives to find the first one's window
+                          // still holding the profile. An operator who is not told
+                          // that reads this as a broken feature, and the remedy they
+                          // reach for (close it) is the one that throws away the
+                          // signed-in state the mode exists to keep.
+                          '  If that window is the one a previous recording left running -- which\n' +
+                          '  this mode does deliberately -- record in it rather than starting a\n' +
+                          '  second browser. Its endpoint is the `cdpEndpoint` in that capture\'s\n' +
+                          '  session.json:\n' +
+                          '    node capture-har.js status\n' +
+                          '    node capture-har.js start --attach <that endpoint> ...\n' +
+                          '  Otherwise close the window, or record on a different --profile.\n'
+                        : `  It is still running, and did not answer within ` +
+                          `${NATIVE_CDP_TIMEOUT_MS / 1000}s. Nothing was\n` +
+                          '  recorded; the browser was left alone.\n'));
+                return 1;
+            }
+            log.verbose(`capture-har: attached to ${version.Browser || 'the browser'}`);
+        } else {
+            // A browser that is not there is worth its own message: attaching
+            // would otherwise fail inside Playwright, naming a websocket the
+            // operator never typed.
+            const version = await probeCdpEndpoint(session.cdpEndpoint);
+            if (!version) {
+                process.stderr.write(
+                    `capture-har: nothing is answering as a browser at ${session.cdpEndpoint}\n` +
+                    '  Start Chrome with a debugging port and a DEDICATED profile -- it refuses\n' +
+                    '  remote debugging on a profile another Chrome already has open:\n' +
+                    '    chrome --user-data-dir=<a dedicated profile> --remote-debugging-port=' +
+                    `${port}\n`);
+                return 1;
+            }
+            log.verbose(`capture-har: attaching to ${version.Browser || 'the browser'}`);
+        }
+
+        try {
+            cdpBrowser = await playwright.chromium.connectOverCDP(session.cdpEndpoint);
+        } catch (e) {
             process.stderr.write(
-                `capture-har: the browser did not start within ${LAUNCH_TIMEOUT_MS / 1000}s.\n` +
-                `  The capture profile is almost certainly open in another window:\n` +
-                `    ${profileDir}\n` +
-                '  Close that window (do not kill the process -- other windows may share it),\n' +
-                '  or record in a throwaway profile with --isolated.\n');
+                `capture-har: could not attach to ${session.cdpEndpoint}: ${e.message}\n`);
             return 1;
         }
-        throw e;
+        // THE DEFAULT CONTEXT IS THE RECORDING, and there is no second one to
+        // fall back to. `newContext()` over CDP does work -- measured against
+        // Chrome 154, it yields a second context -- but that context is
+        // incognito: a different cookie jar, with none of the profile's
+        // sign-ins, which is the opposite of what a signed-in capture needs.
+        //
+        // And the default context is the OPERATOR'S, holding every other tab
+        // they have open. So in this branch the recorder is given a scope
+        // (createCaptureScope) and records only this capture's pages (#85).
+        context = cdpBrowser.contexts()[0];
+        if (!context) {
+            process.stderr.write(
+                `capture-har: attached to ${session.cdpEndpoint}, but it has no browser context\n` +
+                '  to record. Open a window in that browser and try again.\n');
+            await cdpBrowser.close().catch(() => {});
+            return 1;
+        }
+    } else {
+        // THE ONLY BRANCH THAT CAN ASK FOR recordHar, which is why these options
+        // are built here rather than above the split: recordHar is a
+        // launch-time option on a context Playwright creates, and a browser
+        // Playwright did not launch has no way to accept one.
+        const options = {
+            headless: false,
+            timeout: LAUNCH_TIMEOUT_MS,
+            recordHar: { path: paths.harPath, mode: 'full', content: 'embed' },
+            args: [`--remote-debugging-port=${port}`]
+        };
+        // Bundled Chromium can silently close against a Chrome-created profile,
+        // so the default path pins the system Chrome channel.
+        if (!isolated) options.channel = 'chrome';
+        if (storageState) options.storageState = storageState;
+
+        try {
+            context = await playwright.chromium.launchPersistentContext(profileDir, options);
+        } catch (e) {
+            // The profile can also be held by a browser that no session file
+            // knows about. Launch then stalls rather than erroring, so a timeout
+            // here means "in use" far more often than it means "broken".
+            if (/Timeout/i.test(e.message)) {
+                process.stderr.write(
+                    `capture-har: the browser did not start within ${LAUNCH_TIMEOUT_MS / 1000}s.\n` +
+                    `  The capture profile is almost certainly open in another window:\n` +
+                    `    ${profileDir}\n` +
+                    '  Close that window (do not kill the process -- other windows may share it),\n' +
+                    '  or record in a throwaway profile with --isolated.\n');
+                return 1;
+            }
+            throw e;
+        }
     }
 
     const recorder = new IncrementalRecorder(paths.recordLog, snapshotMs);
-    attachRecorder(context, recorder);
+    // Only where the browser is not this run's own: see createCaptureScope.
+    const scope = cdpBrowser ? createCaptureScope(args.uri) : null;
+    attachRecorder(context, recorder, scope);
     recorder.start();
 
     // Armed BEFORE the first navigation. A window closed while `goto` is still
@@ -2999,13 +3895,32 @@ async function start(args) {
     // holding the port and reporting `recording: true`.
     let reason = null;
     const settle = (r) => { if (!reason) reason = r; };
-    context.on('close', () => settle('window-closed'));
+    context.on('close', () => settle(nativeBrowser ? 'browser-closed' : 'window-closed'));
+    // THE DISCONNECT IS AN ENDING (#73). Over CDP, a browser the operator quits
+    // reaches us as a dropped connection rather than as a context close, and a
+    // recording with no ending waits forever holding the session open.
+    //
+    // Our OWN detach fires this too, at the end of a normal run -- harmlessly,
+    // because `settle` keeps the first reason and by then there is one. That is
+    // the same first-one-wins rule the other endings rely on, not an exception
+    // made for this event.
+    if (cdpBrowser) cdpBrowser.on('disconnected', () => settle('browser-closed'));
 
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
 
-    const page = context.pages()[0] || await context.newPage();
+    // A NEW TAB IN SOMEBODY ELSE'S BROWSER, and the existing one everywhere
+    // else. Attached, `pages()[0]` is whatever the operator happens to have
+    // open -- navigating it away would discard work this recording has no claim
+    // on. A browser this run launched has exactly one blank tab, which is there
+    // to be used.
+    const page = attached
+        ? await context.newPage()
+        : context.pages()[0] || await context.newPage();
+    // Rule 1 of the scope, claimed BEFORE the first navigation so the target's
+    // own document is recorded.
+    if (scope) scope.claim(page);
     await page.goto(args.uri, { waitUntil: 'domcontentloaded' }).catch((e) => {
         log.warn(`capture-har: initial navigation failed (${e.message}); recording anyway`);
     });
@@ -3049,15 +3964,36 @@ async function start(args) {
     }
 
     recorder.stop();
-    if (reason !== 'window-closed') {
+    if (cdpBrowser) {
+        // DETACH. NEVER CLOSE.
+        //
+        // `browser.close()` on a CDP connection disconnects and leaves the
+        // browser, its window and every one of its tabs exactly as they are --
+        // measured against Chrome 154, not inferred from the method's name. It
+        // is the only teardown this branch performs: `context.close()` would
+        // close the operator's tabs, and signalling the pid in session.browserPid
+        // would take down a window this recording borrowed. Nothing in this file
+        // ends a session by destroying something it did not make.
+        //
+        // A browser that is already gone -- the operator quit it, which is one
+        // of the endings above -- makes this a no-op that can still reject, so
+        // it is caught and said quietly. There is nothing left to fix by then.
+        await cdpBrowser.close().catch((e) => {
+            log.verbose(`capture-har: detaching reported ${e.message}`);
+        });
+    } else if (reason !== 'window-closed') {
         await context.close().catch((e) => {
             process.stderr.write(`capture-har: closing the context failed: ${e.message}\n`);
         });
     }
 
     // Playwright writes the HAR during close; give a slow flush a moment
-    // before judging the capture missing.
-    for (let i = 0; i < 25 && !fs.existsSync(paths.harPath); i++) await sleep(POLL_MS);
+    // before judging the capture missing. Skipped where there is no recordHar
+    // to wait for: five seconds spent watching for a file that cannot appear
+    // would be the normal ending of every native run.
+    if (ownsRecordHar) {
+        for (let i = 0; i < 25 && !fs.existsSync(paths.harPath); i++) await sleep(POLL_MS);
+    }
 
     let assembled = null;
     if (!fs.existsSync(paths.harPath)) {
@@ -3109,6 +4045,16 @@ async function start(args) {
     }
 
     log.info(`\ncapture-har: stopped (${reason}) -- ${describeSummary(summary)}`);
+    // Said out loud, because the operator is about to wonder. Every other mode
+    // ends with the browser gone, so a window still sitting there looks like
+    // something that failed to clean up rather than the contract (#73) -- and an
+    // operator who closes it by hand on that assumption loses the signed-in
+    // profile they would otherwise have recorded the next session in.
+    if (cdpBrowser && reason !== 'browser-closed') log.lines(detachedLines(session));
+    if (recorder.excluded) {
+        log.info(`  ${recorder.excluded} request(s) from outside this capture's tabs were not ` +
+            'recorded -- see "Only this capture\'s tabs are recorded" in SKILL.md.');
+    }
     session.postProcess = postProcess(session);
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
@@ -3132,7 +4078,9 @@ async function start(args) {
         cataloguePath: (session.postProcess.catalogue && session.postProcess.catalogue.path) || null
     }) + '\n');
 
-    return postProcessExitCode(session.postProcess, assembled);
+    // `assembled` is only NEWS where recordHar could have won. See
+    // postProcessExitCode, and the exit-code table at the top of this file.
+    return postProcessExitCode(session.postProcess, assembled && ownsRecordHar);
 }
 
 /**
@@ -3143,6 +4091,12 @@ async function start(args) {
  * card is clean; returning 6 would say "scrub or catalogue failed" about a run
  * that produced both. An error outranks a warning, and both outrank the
  * assembled-from-log signal, which is informational.
+ *
+ * `assembled` MEANS "recordHar could have written this and did not" -- so the
+ * callers pass false in a mode where recordHar never ran at all (#73). The
+ * alternative was teaching this function about browser modes, which would make
+ * every caller's answer depend on a second fact it does not hold; the fact it
+ * does hold is whether the signal is news.
  */
 function postProcessExitCode(pp, assembled) {
     if (pp.errors && pp.errors.length) return 6;
@@ -3379,7 +4333,11 @@ async function stop(args) {
         return 6;
     }
 
-    return postProcessExitCode(session.postProcess, assembled || session.assembledFromLog);
+    // `ownsRecordHar !== false` rather than a truthiness test: a session.json
+    // written before #73 has no such field, and the mode it recorded under is
+    // the one where assembling IS news. Absent has to keep meaning true.
+    return postProcessExitCode(session.postProcess,
+        (assembled || session.assembledFromLog) && session.ownsRecordHar !== false);
 }
 
 // ---------------------------------------------------------------------------
@@ -3590,6 +4548,10 @@ function status(args) {
         sessionDir,
         uri: session.uri,
         mode: session.mode,
+        // Reported so an agent reading this does not close a browser that is not
+        // the recorder's to close (#73).
+        browser: session.browser || null,
+        attached: !!session.attached,
         cdpEndpoint: session.cdpEndpoint,
         outputPath: session.outputPath,
         // A crashed driver never writes endedUtc, so its absence does not mean
@@ -3634,6 +4596,8 @@ module.exports = {
     setLogLevel,
     renderLines,
     startBannerLines,
+    detachedLines,
+    createCaptureScope,
     postProcessLines,
     buildEntry,
     assembleFromLog,
@@ -3645,6 +4609,18 @@ module.exports = {
     resolveSession,
     findProfileConflict,
     findFreePort,
+    resolveBrowserMode,
+    parseCdpEndpoint,
+    chromeCandidates,
+    findChromeExecutable,
+    launchNativeChrome,
+    waitForCdp,
+    probeCdpEndpoint,
+    syncedFolderWarning,
+    ensureProfileIgnored,
+    BROWSER_PLAYWRIGHT,
+    BROWSER_NATIVE,
+    BROWSER_MODES,
     discoverStorageState,
     pathTemplate,
     buildDigest,

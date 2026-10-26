@@ -113,31 +113,6 @@ BeforeAll {
         return $work
     }
 
-    $script:CheckSh = Join-Path $script:RepoRoot '.githooks/check-dirty-primary-checkout'
-
-    # bash is not on PATH in a Windows PowerShell session, but Git for Windows
-    # always ships one beside git itself -- and a machine running these tests has
-    # git by definition. Resolving it from git's own location keeps the suite
-    # from depending on the operator having put bash on PATH.
-    $script:Bash = (Get-Command bash -ErrorAction SilentlyContinue)?.Source
-    if (-not $script:Bash) {
-        $gitExe = (Get-Command git -ErrorAction Stop).Source
-        $candidate = Join-Path (Split-Path (Split-Path $gitExe)) 'bin/bash.exe'
-        if (Test-Path -LiteralPath $candidate) { $script:Bash = $candidate }
-    }
-
-    # The safety net's verdict, run from $Cwd. Exit 2 means "reported".
-    function Invoke-DirtyCheck {
-        param([Parameter(Mandatory)][string]$Cwd, [string]$StdIn = '')
-        $errFile = Join-Path $script:Tmp ('chk-' + [guid]::NewGuid().ToString('N') + '.txt')
-        Push-Location -LiteralPath $Cwd
-        try { $out = $StdIn | & $script:Bash $script:CheckSh 2>$errFile }
-        finally { Pop-Location }
-        $code = $LASTEXITCODE
-        $err = if (Test-Path -LiteralPath $errFile) { Get-Content -LiteralPath $errFile -Raw } else { '' }
-        [pscustomobject]@{ ExitCode = $code; StdErr = ($err ?? ''); StdOut = $out }
-    }
-
     # The Node guard's verdict for the same directory, so the two can be compared.
     # The destination half of the guard (#471), asked of the Node side so the
     # table below can pin it against the PowerShell one. Run WITH the checkout
@@ -487,59 +462,6 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
     }
 }
 
-Describe 'check-dirty-primary-checkout -- the session-level safety net' {
-    It 'reports a dirty primary checkout on the protected branch' {
-        $work = New-Checkout -Name 'net-dirty' -TrackedHooks -HooksPath '.githooks'
-        # An untracked output directory: exactly what the incident produced.
-        New-Item -ItemType Directory -Path (Join-Path $work 'www.example.com') -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $work 'www.example.com/catalogue.json') -Value '{}'
-
-        $r = Invoke-DirtyCheck -Cwd $work
-
-        $r.ExitCode | Should -Be 2 -Because 'exit 2 is what feeds the message back to the agent'
-        $r.StdErr | Should -Match 'www\.example\.com'
-        $r.StdErr | Should -Match 'git worktree add'
-    }
-
-    It 'is silent when the primary checkout is clean' {
-        $work = New-Checkout -Name 'net-clean' -TrackedHooks -HooksPath '.githooks'
-        $r = Invoke-DirtyCheck -Cwd $work
-        $r.ExitCode | Should -Be 0
-    }
-
-    It 'ignores a dirty worktree -- the sanctioned place to work' {
-        $work = New-Checkout -Name 'net-wt' -TrackedHooks -HooksPath '.githooks'
-        $wt = Join-Path $script:Tmp 'net-wt-tree'
-        Invoke-Git $work @('worktree', 'add', $wt, '-b', 'feat/net') | Out-Null
-        Set-Content -LiteralPath (Join-Path $wt 'stray.txt') -Value 'x'
-        $r = Invoke-DirtyCheck -Cwd $wt
-        $r.ExitCode | Should -Be 0
-    }
-
-    It 'ignores a repo that declares no such rule' {
-        $work = New-Checkout -Name 'net-undeclared'
-        Set-Content -LiteralPath (Join-Path $work 'stray.txt') -Value 'x'
-        $r = Invoke-DirtyCheck -Cwd $work
-        $r.ExitCode | Should -Be 0
-    }
-
-    It 'does not block twice -- stop_hook_active ends the loop' {
-        # A Stop hook that keeps blocking on a condition the agent cannot always
-        # clear is an infinite loop, so the second pass has to stand down.
-        $work = New-Checkout -Name 'net-loop' -TrackedHooks -HooksPath '.githooks'
-        Set-Content -LiteralPath (Join-Path $work 'stray.txt') -Value 'x'
-        $r = Invoke-DirtyCheck -Cwd $work -StdIn '{"stop_hook_active":true}'
-        $r.ExitCode | Should -Be 0
-    }
-
-    It 'is wired as a Stop hook in this repository' {
-        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.claude/settings.json') -Raw |
-            ConvertFrom-Json
-        $commands = $settings.hooks.Stop.hooks.command
-        ($commands -join ' ') | Should -Match 'check-dirty-primary-checkout'
-    }
-}
-
 Describe 'the destination question -- will THIS write strand anything (#471)' {
     It 'reports a path that is not gitignored as committable' {
         $work = New-Checkout -Name 'dest-plain' -TrackedHooks -HooksPath '.githooks'
@@ -826,12 +748,11 @@ Describe 'the destination guards agree -- one rule, two runtimes (#471)' {
     }
 }
 
-Describe 'the guards agree -- one rule, three runtimes' {
+Describe 'the guards agree -- one rule, two runtimes' {
     # Reimplementing one rule per runtime is how the original defect got in.
-    # There are three implementations here because there are three runtimes --
-    # Node for the recorder, PowerShell for the front doors, bash for the
-    # harness-level net -- and this is the table that stops them drifting: every
-    # shape that matters, all three, same verdict.
+    # There are two implementations here because there are two runtimes --
+    # Node for the recorder, PowerShell for the front doors -- and this is the
+    # table that stops them drifting: every shape that matters, both, same verdict.
     It 'reaches the same verdict for <Name>' -ForEach @(
         @{ Name = 'primary checkout on the protected branch'; Setup = 'declared' }
         @{ Name = 'a feature branch in the primary checkout'; Setup = 'feature' }
@@ -880,12 +801,5 @@ Describe 'the guards agree -- one rule, three runtimes' {
         $ps.RuleSource      | Should -Be $js.ruleSource      -Because 'ruleSource must agree'
         $ps.ShouldWarn      | Should -Be $js.shouldWarn      -Because 'the verdict must agree'
 
-        # The bash net answers a narrower question -- "is this checkout dirty
-        # AND in the state the guards warn about" -- so dirtying the target
-        # first is what makes the two comparable. With the tree dirty, it must
-        # report exactly when the guards would have warned.
-        Set-Content -LiteralPath (Join-Path $target 'stray-output.txt') -Value 'x'
-        $net = Invoke-DirtyCheck -Cwd $target
-        ($net.ExitCode -eq 2) | Should -Be $ps.ShouldWarn -Because 'the safety net must agree too'
     }
 }

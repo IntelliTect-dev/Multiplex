@@ -144,6 +144,59 @@ function findLiteralHits(text, literals) {
     return hits;
 }
 
+/**
+ * `findLiteralHits` over a FILE, read in chunks, never held as one string
+ * (issue #34). Same needles, same order, and the same count: each needle is
+ * matched leftmost and non-overlapping exactly as `split` counts it, with the
+ * tail of one chunk carried into the next so a match spanning a boundary is
+ * found once.
+ */
+function findLiteralHitsInFile(filePath, literals, chunkBytes) {
+    const fs = require('fs');
+    const { StringDecoder } = require('string_decoder');
+    const plan = byDescendingLength(literals).map(({ literal, sentinel }) => ({
+        sentinel,
+        needles: encodedForms(literal).map((needle) => ({ needle, carry: '', count: 0 })),
+    }));
+    const scan = (text, final) => {
+        for (const p of plan) {
+            for (const n of p.needles) {
+                const buf = n.carry + text;
+                let from = 0;
+                let end = 0;
+                for (;;) {
+                    const at = buf.indexOf(n.needle, from);
+                    if (at === -1) break;
+                    n.count++;
+                    from = at + n.needle.length;
+                    end = from;
+                }
+                // Keep what could still begin a match: never re-offer text a
+                // match already consumed.
+                n.carry = final ? '' : buf.slice(Math.max(end, buf.length - (n.needle.length - 1)));
+            }
+        }
+    };
+    const decoder = new StringDecoder('utf8');
+    const fd = fs.openSync(filePath, 'r');
+    const chunk = Buffer.alloc(chunkBytes || 8 * 1024 * 1024);
+    try {
+        let n;
+        while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+            scan(decoder.write(chunk.subarray(0, n)), false);
+        }
+        scan(decoder.end(), true);
+    } finally {
+        fs.closeSync(fd);
+    }
+    const hits = [];
+    for (const p of plan) {
+        const count = p.needles.reduce((sum, n) => sum + n.count, 0);
+        if (count > 0) hits.push({ sentinel: p.sentinel, count });
+    }
+    return hits;
+}
+
 function percentDecode(value) {
     try {
         return decodeURIComponent(String(value).replace(/\+/g, ' '));
@@ -231,6 +284,7 @@ module.exports = {
     byDescendingLength,
     applyLiteralPass,
     findLiteralHits,
+    findLiteralHitsInFile,
     decodeNestedJson,
     transformEncodedParams,
     isPlausibleSecretValue,

@@ -513,6 +513,20 @@ const ENTRIES_MARKER = '\u0000__HAR_STREAM_ENTRIES__\u0000';
  * own column in that output gives the indentation `JSON.stringify` would have
  * used. Hard-coding six spaces would be right for today's `log.entries` and
  * wrong the moment an envelope nests differently.
+ *
+ * Two options exist for a stage that rewrites TEXT as well as values -- the
+ * scrub's literal pass runs over the serialized document (issue #10):
+ *
+ *   mapText(text)             applied to every piece of text written: the
+ *                             envelope before the entries, each entry as it
+ *                             is placed, and the envelope after. Never to the
+ *                             punctuation between them.
+ *   finalizeEnvelope(env)     called once the last entry is written; returns
+ *                             the envelope to take the part AFTER the entries
+ *                             from. A stage that learns something while
+ *                             writing (the scrub's blunt record) adds it here.
+ *                             The part BEFORE the entries is already on disk,
+ *                             so it must not change -- that is checked.
  */
 function writeHarDocument(outPath, envelope, entriesIterable, options) {
     const opts = options || {};
@@ -563,7 +577,8 @@ function writeHarDocument(outPath, envelope, entriesIterable, options) {
     const elementIndent = keyIndent + '  ';
 
     const head = text.slice(0, at);
-    const tail = text.slice(at + needle.length);
+    let tail = text.slice(at + needle.length);
+    const mapText = typeof opts.mapText === 'function' ? opts.mapText : (x) => x;
 
     const fd = fs.openSync(outPath, flag);
     // Buffered rather than one write per entry: an entry is typically a few KB
@@ -581,7 +596,7 @@ function writeHarDocument(outPath, envelope, entriesIterable, options) {
 
     let count = 0;
     try {
-        push(head);
+        push(mapText(head));
         push('[');
         for (const entry of entriesIterable) {
             push(count === 0 ? '\n' : ',\n');
@@ -589,19 +604,43 @@ function writeHarDocument(outPath, envelope, entriesIterable, options) {
             // entry is re-indented to the depth it sits at in the document.
             // Only newlines inside the entry are touched; string contents carry
             // their newlines escaped, so no value can be corrupted by this.
-            push(elementIndent + JSON.stringify(entry, null, 2).replace(/\n/g, '\n' + elementIndent));
+            push(mapText(elementIndent + JSON.stringify(entry, null, 2).replace(/\n/g, '\n' + elementIndent)));
             count += 1;
         }
         // An empty array is `[]` on one line, which is what JSON.stringify
         // emits and therefore what byte-identity requires.
         if (count > 0) push('\n' + keyIndent);
         push(']');
-        push(tail);
+        if (typeof opts.finalizeEnvelope === 'function') {
+            tail = finalTail(outPath, opts.finalizeEnvelope(envelope), head);
+        }
+        push(mapText(tail));
         if (pending.length > 0) fs.writeSync(fd, pending, null, 'utf8');
     } finally {
         fs.closeSync(fd);
     }
     return { entries: count };
+}
+
+/**
+ * The text after `log.entries` for an envelope finalized once the entries are
+ * written. The text BEFORE them is already on disk, so an envelope whose head
+ * changed would make a document that is two envelopes spliced together: that
+ * is refused, never written around.
+ */
+function finalTail(outPath, envelope, writtenHead) {
+    const marked = Object.assign({}, envelope, {
+        log: Object.assign({}, envelope.log, { entries: ENTRIES_MARKER }),
+    });
+    const text = JSON.stringify(marked, null, 2);
+    const needle = JSON.stringify(ENTRIES_MARKER);
+    const at = text.indexOf(needle);
+    if (at === -1 || text.slice(0, at) !== writtenHead) {
+        throw new HarStreamError(
+            `cannot write ${outPath}: the envelope changed before log.entries after that part was written`,
+            ENVELOPE_UNPARSEABLE);
+    }
+    return text.slice(at + needle.length);
 }
 
 module.exports = {

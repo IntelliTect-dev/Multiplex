@@ -33,6 +33,7 @@ const { spawnSync } = require('child_process');
 const harDocument = require(path.join(__dirname, 'har-document.js'));
 const { readHarDocument, iterateHarEntries, HarFormatError } = harDocument;
 
+const STRING_LIMIT = require('buffer').constants.MAX_STRING_LENGTH;
 const SCRIPTS = path.join(__dirname, '..');
 const FIXTURES = path.join(__dirname, '..', '..', '..', '..', 'tests', 'fixtures', 'har');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'har-large-read-'));
@@ -159,32 +160,64 @@ test('readHarDocument reads exactly what JSON.parse reads, key order included', 
     }
 });
 
+// The precondition behind the test below, stated as what it MEANS: this file
+// cannot be held in one JavaScript string, so a reader that gets through it did
+// not build one.
+//
+// Asserted from the file's byte size against the string ceiling -- the same two
+// numbers the fixture is built from -- and NOT by reading the file, because a
+// read is not available as a witness. Up to Node 20, `fs.readFileSync(f,
+// 'utf8')` on an oversize file raised a catchable `ERR_STRING_TOO_LONG`; from
+// Node 21 the utf8 path is `binding.readFileUtf8`, which `ToLocalChecked()`s the
+// string V8 just refused to create and so ABORTS the process: `FATAL ERROR:
+// v8::ToLocalChecked Empty MaybeLocal`, exit 134, nothing to catch, the rest of
+// this file never runs (issue #86). Comparing numbers says the same thing on
+// every Node and depends on no runtime failure mode at all.
+//
+// `codeUnits` is how many UTF-16 code units were written. A file's byte size
+// bounds the string it decodes to only when every byte is its own character --
+// multi-byte UTF-8 decodes to FEWER characters than bytes, so an oversize
+// multi-byte file would prove nothing. That equality is therefore asserted, not
+// assumed, and it is the reason this precondition can still fail.
+function assertCannotBeOneString(file, codeUnits) {
+    const name = path.basename(file);
+    const bytes = fs.statSync(file).size;
+    assert.strictEqual(bytes, codeUnits,
+        `${name} is not one byte per character (${bytes} bytes, ${codeUnits} chars), so its size does not bound its string length`);
+    assert.ok(bytes > STRING_LIMIT,
+        `${name} is ${bytes} bytes, within the ${STRING_LIMIT}-character string limit, so this test proves nothing`);
+}
+
 test('readHarDocument reads a capture past the JavaScript string limit', () => {
     // The issue's own failure, at the boundary. Few, fat entries keep the
     // parsed object cheap while the FILE crosses the limit, which is the only
     // thing this assertion is about.
     const huge = path.join(tmp, 'past-the-limit.har');
-    const LIMIT = require('buffer').constants.MAX_STRING_LENGTH;
     const fat = 'z'.repeat(16 * 1024 * 1024);
+    const OPEN = '{"log":{"version":"1.2","entries":[';
+    const CLOSE = ']}}';
     const fd = fs.openSync(huge, 'w');
     let count = 0;
+    // Every character written, envelope included, so the precondition can check
+    // the file against its own byte size.
+    let chars = 0;
     try {
-        fs.writeSync(fd, '{"log":{"version":"1.2","entries":[');
-        let written = 0;
-        while (written <= LIMIT + 1024 * 1024) {
+        fs.writeSync(fd, OPEN);
+        chars += OPEN.length;
+        while (chars <= STRING_LIMIT + 1024 * 1024) {
             const chunk = (count === 0 ? '' : ',') + JSON.stringify({ i: count, text: fat });
             fs.writeSync(fd, chunk);
-            written += chunk.length;
+            chars += chunk.length;
             count += 1;
         }
-        fs.writeSync(fd, ']}}');
+        fs.writeSync(fd, CLOSE);
+        chars += CLOSE.length;
     } finally {
         fs.closeSync(fd);
     }
-    // Prove the precondition rather than assume it: the old read cannot even
-    // produce the string.
-    assert.throws(() => fs.readFileSync(huge, 'utf8'), /longer than|string/i,
-        'the file is not past the string limit, so this test proves nothing');
+    // Prove the precondition rather than assume it: no single string can hold
+    // this file, so what follows is about streaming and nothing else.
+    assertCannotBeOneString(huge, chars);
 
     try {
         const read = readHarDocument(huge);
@@ -194,6 +227,32 @@ test('readHarDocument reads a capture past the JavaScript string limit', () => {
     } finally {
         fs.rmSync(huge, { force: true });
     }
+});
+
+test('the past-the-limit precondition still FAILS on a file that is not past the limit', () => {
+    // The falsifier for the precondition above. A precondition that cannot fail
+    // is worse than no precondition: it reads as proof while proving nothing, so
+    // the day the fixture stops being oversize -- a shortened fixture, a Node
+    // with a larger string ceiling -- the suite would still claim to have read
+    // past the limit. Both ways it can be wrong are checked.
+    const small = path.join(tmp, 'well-within-the-limit.har');
+    const text = '{"log":{"version":"1.2","entries":[]}}';
+    fs.writeFileSync(small, text, 'utf8');
+    assert.throws(() => assertCannotBeOneString(small, text.length),
+        /within the \d+-character string limit/,
+        'the precondition accepted a file one string holds easily');
+
+    // ...and it refuses to read a byte size as a character count when the file
+    // is not one byte per character, where the comparison would mean nothing.
+    const wide = path.join(tmp, 'multi-byte.har');
+    // Escaped, not pasted: this file stays ASCII, and the point is the BYTES the
+    // encoder produces for a character that is not one of them.
+    const widetext = '{"log":{"version":"1.2","entries":[{"t":"\u00e9\u00e9\u00e9"}]}}';
+    fs.writeFileSync(wide, widetext, 'utf8');
+    assert.notStrictEqual(Buffer.byteLength(widetext, 'utf8'), widetext.length, 'fixture is not multi-byte');
+    assert.throws(() => assertCannotBeOneString(wide, widetext.length),
+        /not one byte per character/,
+        'the precondition read a multi-byte file\'s byte size as a character count');
 });
 
 test('a walk refuses a corrupt entry AT that entry, as the one canonical error', () => {

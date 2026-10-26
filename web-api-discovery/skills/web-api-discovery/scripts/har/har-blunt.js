@@ -333,24 +333,36 @@ function bluntHar(har, opts) {
         blocked.push(...r.blocked);
     });
 
-    const values = new Set(findings.map((f) => `${f.kind}:${f.fingerprint}`)).size;
-    const bytes = findings.reduce((n, f) => n + f.bytes, 0);
-    if (har && har.log) {
-        // A re-scrub replaces the record rather than appending to it: a stale
-        // record must never read as current.
-        delete har.log[RECORD_KEY];
-        if (findings.length) {
-            har.log[RECORD_KEY] = {
-                schemaVersion: RECORD_SCHEMA_VERSION,
-                stage: 'scrub',
-                policyVersion: opts && opts.policy && opts.policy.version || null,
-                values,
-                bytes,
-                findings,
-            };
-        }
-    }
-    return { values, bytes, findings, unblunted, blocked };
+    const record = bluntRecord(findings, opts);
+    if (har && har.log) placeBluntRecord(har, record);
+    return { values: record.values, bytes: record.bytes, findings, unblunted, blocked };
+}
+
+/**
+ * The record a run's blunting leaves in the artifact, from the findings of
+ * every entry. Split from `bluntHar` because the streaming scrub (issue #10)
+ * blunts entry by entry and knows the whole record only after the last one.
+ */
+function bluntRecord(findings, opts) {
+    return {
+        schemaVersion: RECORD_SCHEMA_VERSION,
+        stage: 'scrub',
+        policyVersion: opts && opts.policy && opts.policy.version || null,
+        values: new Set(findings.map((f) => `${f.kind}:${f.fingerprint}`)).size,
+        bytes: findings.reduce((n, f) => n + f.bytes, 0),
+        findings,
+    };
+}
+
+/**
+ * Put `record` on `har.log`, or take a stale one off. A re-scrub REPLACES the
+ * record rather than appending to it -- a stale record must never read as
+ * current -- and the key is re-added, so it sits after everything else in
+ * `log`.
+ */
+function placeBluntRecord(har, record) {
+    delete har.log[RECORD_KEY];
+    if (record.findings.length) har.log[RECORD_KEY] = record;
 }
 
 /**
@@ -377,6 +389,8 @@ module.exports = {
     DEBT,
     bluntEntry,
     bluntHar,
+    bluntRecord,
+    placeBluntRecord,
     sentinelFor,
     saltedFingerprint,
     summarize,

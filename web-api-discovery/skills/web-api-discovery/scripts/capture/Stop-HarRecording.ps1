@@ -30,6 +30,13 @@
     recording, and a developer's machine may hold real signed-in windows whose
     loss has nothing to do with this capture.
 
+    Under -Browser Native and -Attach it does not even CLOSE one. The recording
+    process detaches from the browser and leaves it, its window and every tab in
+    it exactly as they are, because that browser was borrowed rather than
+    created -- so a window still standing after this returns is the contract and
+    not a leak. Close it yourself, or keep it and record the next session in the
+    same signed-in profile.
+
     It is idempotent. Against a window the operator already closed, the work is
     already done, so it verifies and reports rather than failing.
 
