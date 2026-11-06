@@ -3,7 +3,6 @@
 /har/
 
 # --- Browser profile (sensitive: contains session cookies) ---
-.chrome-cdp-profile/
 .chrome-profile/
 
 # --- Local session file ---

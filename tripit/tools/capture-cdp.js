@@ -17,15 +17,36 @@ const path = require('path');
 const http = require('http');
 let harFromMessages; // loaded dynamically (ESM)
 
-// Resolve the repo root (this script lives in tools/) so har/ and .chrome-cdp-profile/
-// land in their conventional gitignored locations regardless of cwd.
+// Resolve the repo root (this script lives in tools/) so har/ lands in its conventional
+// gitignored location regardless of cwd.
 const ROOT = path.resolve(__dirname, '..');
 const OUT  = path.join(ROOT, 'har');
 fs.mkdirSync(OUT, { recursive: true });
 
-const CHROME_EXE  = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const PROFILE_DIR = path.join(ROOT, '.chrome-cdp-profile');
+const CHROME_EXE  = process.env.TRIPIT_CHROME_EXE
+  || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+// The capture profile, shared with tools/extract-session.js so one browser sign-in serves
+// both. Defaults to the web-api-discovery skill's own profile; a PATH is used as given and
+// a bare NAME lands beside the other capture profiles.
+const PROFILE_DIR = resolveProfileDir();
 fs.mkdirSync(PROFILE_DIR, { recursive: true });
+
+function resolveProfileDir() {
+  const argIdx = process.argv.indexOf('--profile');
+  const explicit = (argIdx !== -1 && process.argv[argIdx + 1])
+    || process.env.TRIPIT_CAPTURE_PROFILE
+    || process.env.HAR_CAPTURE_PROFILE;
+  const root = path.join(
+    process.env.LOCALAPPDATA || process.env.XDG_DATA_HOME
+      || path.join(require('os').homedir(), '.local', 'share'),
+    'har-capture');
+  if (!explicit) return path.join(root, 'profile');
+  if (path.isAbsolute(explicit) || explicit.includes('/') || explicit.includes('\\')) {
+    return path.resolve(explicit);
+  }
+  return path.join(root, `profile-${explicit.trim().toLowerCase().replace(/[^a-z0-9]/g, '-')}`);
+}
 const DEBUG_PORT  = 9222;
 
 const BASE          = 'https://www.tripit.com';

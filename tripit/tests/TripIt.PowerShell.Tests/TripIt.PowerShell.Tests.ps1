@@ -11,20 +11,49 @@
 #>
 
 BeforeAll {
-    $repoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
-    $moduleDir  = Join-Path $repoRoot 'src/TripIt.PowerShell/bin/Debug/net10.0'
-    $manifest   = Join-Path $moduleDir 'TripIt.psd1'
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
 
-    if (-not (Test-Path $manifest)) {
-        throw "Module manifest not found at $manifest. Run 'dotnet build src/TripIt.PowerShell' first."
+    # Find the built module rather than assuming a configuration: CI builds Release while
+    # a local `dotnet build` and scripts/Start-TripItShell.ps1 default to Debug. Hardcoding
+    # Debug here meant CI could never pass. Honour an explicit choice, else take whichever
+    # manifest was built most recently -- that is the one the developer just produced.
+    $configurations = if ($env:TRIPIT_TEST_CONFIGURATION) {
+        @($env:TRIPIT_TEST_CONFIGURATION)
+    } else {
+        @('Release', 'Debug')
     }
 
+    $candidates = foreach ($configuration in $configurations) {
+        Join-Path $repoRoot "src/TripIt.PowerShell/bin/$configuration/net10.0/TripIt.psd1"
+    }
+
+    $manifest = $candidates |
+        Where-Object { Test-Path $_ } |
+        Sort-Object { (Get-Item $_).LastWriteTimeUtc } -Descending |
+        Select-Object -First 1
+
+    if (-not $manifest) {
+        throw ("Module manifest not found. Looked at:`n  " + ($candidates -join "`n  ") +
+            "`nRun 'dotnet build src/TripIt.PowerShell' first, or set " +
+            '$env:TRIPIT_TEST_CONFIGURATION to the configuration you built.')
+    }
+
+    # The module's name comes from the MANIFEST filename (TripIt.psd1 -> "TripIt"), not
+    # from the assembly (TripIt.PowerShell.dll). Looking up "TripIt.PowerShell" returned
+    # $null and silently failed three assertions against an empty module.
+    $script:ModuleName = [System.IO.Path]::GetFileNameWithoutExtension($manifest)
+
     Import-Module $manifest -Force
-    $script:Module = Get-Module TripIt.PowerShell
+    $script:Module = Get-Module $script:ModuleName
+    if (-not $script:Module) {
+        throw "Imported $manifest but no module named '$script:ModuleName' is loaded."
+    }
 }
 
 AfterAll {
-    Remove-Module TripIt.PowerShell -Force -ErrorAction SilentlyContinue
+    if ($script:ModuleName) {
+        Remove-Module $script:ModuleName -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Describe 'Module manifest' {
