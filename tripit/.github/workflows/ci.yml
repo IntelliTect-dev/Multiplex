@@ -38,7 +38,10 @@ jobs:
       - name: Install Pester 5.x
         shell: pwsh
         run: |
-          Install-Module -Name Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          # Pin to 5.x: these are Pester 5 tests, and -MinimumVersion alone installed
+          # Pester 6, whose breaking changes the suite was never written against.
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -MaximumVersion 5.99.99 `
+            -Force -SkipPublisherCheck -Scope CurrentUser
 
       - name: Run Pester
         shell: pwsh

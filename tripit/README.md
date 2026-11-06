@@ -9,10 +9,19 @@ The repository ships three projects on top of a shared HTTP/auth library:
 | `TripItMcp` | `src/TripItMcp/` | [Model Context Protocol](https://modelcontextprotocol.io/) stdio server exposing the library to LLM clients |
 | `TripIt.PowerShell` | `src/TripIt.PowerShell/` | Binary PowerShell module with `Get-TripItProfile`, `Get-TripItTrip`, `Connect-TripIt`, etc. |
 
-Endpoints were derived from a HAR capture of the live site (sanitized samples in
-`samples/har/`). Only endpoints that returned 200 / `application/json` are exposed as typed
-methods; a `SendRawAsync` / `Invoke-TripItRaw` / `tripit_raw_get` escape hatch covers
-everything else.
+**[`docs/api-surface.md`](docs/api-surface.md) is the authoritative endpoint reference** —
+68 endpoints including the full create / replace / delete surface, derived from the SPA's
+own JavaScript bundle and verified with live probes. The typed methods below currently
+cover only a read-only subset of it.
+
+The HAR captures in `samples/har/` are a **poor** guide to this API and should not be read
+as the surface: the SPA builds paths with `prefixUrl: '/api'`, so the recorded traffic
+makes the API look an order of magnitude smaller than it is, and the probe sweep in
+`har/tripit-api-capture-2026-05-01.har` contains many 404/400 paths that are not endpoints
+at all. See the provenance section of `docs/api-surface.md`.
+
+Only endpoints that returned 200 / `application/json` are exposed as typed methods; a
+`SendRawAsync` / `Invoke-TripItRaw` / `tripit_raw_get` escape hatch covers everything else.
 
 The available tools were derived from a HAR capture of the live site (see
 `tools/capture-cdp.js` and the gitignored `har/` directory; sanitized copies live in
@@ -58,15 +67,29 @@ Provide them in **one** of these ways:
 
 ### Auto-extracting the session
 
-Run the helper (uses the existing `.chrome-cdp-profile` from `tools/capture-cdp.js`):
+Run the helper:
 
 ```powershell
-node tools/extract-session.js
+node tools/extract-session.js                      # shared capture profile (default)
+node tools/extract-session.js --profile tripit     # a named profile
+node tools/extract-session.js --profile .\.chrome-profile
 ```
 
-It opens (or attaches to) a Chrome instance signed in to TripIt, intercepts an
-`/api/v2/*` request fired by the SPA, and writes the headers to `~/.tripit-mcp/session.json`.
-Re-run it any time the server reports a 302/401.
+It attaches to a Chrome already listening on the CDP port, or else spawns one on the
+capture profile, and writes `~/.tripit-mcp/session.json`. The default profile is the
+shared `%LOCALAPPDATA%\har-capture\profile` used by the `web-api-discovery` skill, so one
+browser sign-in serves every project; `--profile`, `TRIPIT_CAPTURE_PROFILE` or
+`HAR_CAPTURE_PROFILE` override it.
+
+Session cookies are read from the browser's **cookie jar**, not from an intercepted
+request: Chrome attaches the `Cookie` header after Playwright surfaces a request, so the
+`httpOnly` cookies that actually carry the session (`session_id`, `it_session_id`,
+`it_csrf`) never appear in `request.headers()`. The helper refuses to write a session file
+unless those cookies are present, so "signed out" fails loudly instead of producing a file
+that 302s on first use.
+
+Re-run it any time the client reports a 302/401. Observed expiries: `it_wa_csrf` ~2 days,
+the Akamai bot cookies ~2 hours.
 
 ## Build & run
 
@@ -163,9 +186,15 @@ In CI, push the secrets via `Sync-TripItSecretToGitHub` and trigger the
 
 ## Notes & limitations
 
-* Only **GET** endpoints used by the SPA are exposed. Mutating endpoints (create trip,
-  add segment, etc.) were not part of the captured surface and are intentionally not
-  wrapped here.
+* Only **GET** endpoints are exposed *so far*. The mutating surface is now known and
+  documented in [`docs/api-surface.md`](docs/api-surface.md) — `v2/create`,
+  `v2/create/trip`, `v2/replace/trip/uuid/{uuid}`, `v2/replacePlan/{type}/uuid/{uuid}`,
+  `v2/delete/{type}/uuid/{uuid}`, `v2/move/`, `v2/merge/trip` and more — but it is **not
+  wrapped yet**, because the request *payloads* are built dynamically by the SPA and are
+  not statically resolvable. They need a capture of the SPA performing each mutation
+  before they can be typed honestly.
+* Account-destruction, password and payment endpoints exist but are deliberately excluded
+  from the wrapper surface; see "Deliberately NOT wrapped" in `docs/api-surface.md`.
 * Session cookies expire / rotate; the helper extractor must be re-run periodically.
 * `/web/v2/*` endpoints are listed in the catalogue but returned 404 for direct probes,
   so they are NOT wrapped — the SPA appears to use only `/api/v2/*`. `tripit_raw_get`
