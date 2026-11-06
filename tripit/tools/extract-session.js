@@ -1,12 +1,19 @@
-// Extract a fresh TripIt session (Cookie + X-CSRF-Token-WA) for the .NET MCP server.
+// Extract a fresh TripIt session (Cookie + X-CSRF-Token-WA) for the .NET client,
+// MCP server and PowerShell module.
 //
 // Strategy:
-//   1. Spawn / attach to a Chrome instance using ./.chrome-cdp-profile (the same profile
-//      created by capture-cdp.js), so the user is already logged in.
-//   2. Open https://www.tripit.com/app/trips and intercept the SPA's own /api/v2/* XHR.
-//   3. Save its Cookie + X-CSRF-Token-WA headers to ~/.tripit-mcp/session.json.
+//   1. Attach to a Chrome already listening on the CDP port; otherwise spawn one on
+//      the capture profile (shared skill profile by default), so the user is already
+//      logged in.
+//   2. Read the session cookies from the browser CONTEXT -- not from an intercepted
+//      request. Chrome attaches the Cookie header after Playwright surfaces a request,
+//      so `request.headers()['cookie']` is empty and the httpOnly cookies that actually
+//      carry the session (session_id, it_session_id, it_csrf) never appear there at all.
+//   3. Observe one /api/v2/* XHR to learn the SPA's own header set, and to cross-check
+//      the CSRF token against the it_wa_csrf cookie.
+//   4. Save to ~/.tripit-mcp/session.json.
 //
-// Re-run this any time the .NET server reports a 302/401 (session expired).
+// Re-run this any time the client reports a 302/401 (session expired).
 
 const { chromium } = require('playwright');
 const { spawn } = require('child_process');
@@ -15,11 +22,41 @@ const path = require('path');
 const http = require('http');
 const os = require('os');
 
-const ROOT         = path.resolve(__dirname, '..');
-const CHROME_EXE   = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const PROFILE_DIR  = path.join(ROOT, '.chrome-cdp-profile');
-const DEBUG_PORT   = 9222;
-const OUT_FILE     = path.join(os.homedir(), '.tripit-mcp', 'session.json');
+const CHROME_EXE = process.env.TRIPIT_CHROME_EXE
+  || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const DEBUG_PORT = Number(process.env.TRIPIT_CDP_PORT || 9222);
+const OUT_FILE = process.env.TRIPIT_SESSION_FILE
+  || path.join(os.homedir(), '.tripit-mcp', 'session.json');
+const START_URL = 'https://www.tripit.com/app/trips';
+const ORIGIN = 'https://www.tripit.com';
+
+// The session cookies that must be present for a capture to be worth saving. Anything
+// else in the jar is analytics or bot-management state.
+const REQUIRED_COOKIES = ['session_id', 'it_session_id'];
+
+// Header names that are per-session secrets; their VALUES are never logged.
+const SECRET_HEADERS = new Set(['cookie', 'x-csrf-token-wa']);
+
+/**
+ * The capture profile, in precedence order. A PATH is used as given; a bare NAME lands
+ * beside the other capture profiles. Defaults to the shared web-api-discovery profile so
+ * one browser sign-in serves every project, matching that skill's own default.
+ */
+function resolveProfileDir() {
+  const argIdx = process.argv.indexOf('--profile');
+  const explicit = (argIdx !== -1 && process.argv[argIdx + 1])
+    || process.env.TRIPIT_CAPTURE_PROFILE
+    || process.env.HAR_CAPTURE_PROFILE;
+  const root = path.join(
+    process.env.LOCALAPPDATA || process.env.XDG_DATA_HOME
+      || path.join(os.homedir(), '.local', 'share'),
+    'har-capture');
+  if (!explicit) return path.join(root, 'profile');
+  if (path.isAbsolute(explicit) || explicit.includes('/') || explicit.includes('\\')) {
+    return path.resolve(explicit);
+  }
+  return path.join(root, `profile-${explicit.trim().toLowerCase().replace(/[^a-z0-9]/g, '-')}`);
+}
 
 function isCdpUp(port) {
   return new Promise(resolve => {
@@ -29,13 +66,16 @@ function isCdpUp(port) {
     req.on('timeout', () => { req.destroy(); resolve(false); });
   });
 }
+
 function waitForCdp(port, timeout = 30000) {
   const deadline = Date.now() + timeout;
   return new Promise((resolve, reject) => {
     (function tick() {
       isCdpUp(port).then(up => {
         if (up) return resolve();
-        if (Date.now() > deadline) return reject(new Error('CDP not up'));
+        if (Date.now() > deadline) {
+          return reject(new Error(`CDP did not come up on port ${port} within ${timeout}ms`));
+        }
         setTimeout(tick, 500);
       });
     })();
@@ -43,65 +83,101 @@ function waitForCdp(port, timeout = 30000) {
 }
 
 (async () => {
-  fs.mkdirSync(PROFILE_DIR, { recursive: true });
+  const profileDir = resolveProfileDir();
+  const attached = await isCdpUp(DEBUG_PORT);
 
-  const running = await isCdpUp(DEBUG_PORT);
-  if (!running) {
-    console.log('Spawning Chrome with --remote-debugging-port=' + DEBUG_PORT);
+  if (!attached) {
+    console.log(`Spawning Chrome on ${profileDir} with --remote-debugging-port=${DEBUG_PORT}`);
+    fs.mkdirSync(profileDir, { recursive: true });
     const child = spawn(CHROME_EXE, [
-      '--remote-debugging-port=' + DEBUG_PORT,
-      '--user-data-dir=' + PROFILE_DIR,
+      `--remote-debugging-port=${DEBUG_PORT}`,
+      `--user-data-dir=${profileDir}`,
       '--no-first-run', '--no-default-browser-check',
-      'https://www.tripit.com/app/trips',
+      START_URL,
     ], { detached: true, stdio: 'ignore' });
     child.unref();
     await waitForCdp(DEBUG_PORT);
+  } else {
+    console.log(`Attaching to Chrome already on port ${DEBUG_PORT}`);
   }
 
-  const browser = await chromium.connectOverCDP('http://127.0.0.1:' + DEBUG_PORT);
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${DEBUG_PORT}`);
   const ctx = browser.contexts()[0];
-  let page = ctx.pages().find(p => /tripit\.com/.test(p.url())) || await ctx.newPage();
+  if (!ctx) throw new Error('CDP endpoint exposed no browser context.');
 
-  if (!/tripit\.com\/app/.test(page.url())) {
-    await page.goto('https://www.tripit.com/app/trips', { waitUntil: 'domcontentloaded' });
+  // Observe the SPA's own API traffic: it teaches us the real header set to replay, and
+  // lets the CSRF token be cross-checked against the cookie jar.
+  let observed = null;
+  const onRequest = req => {
+    if (observed) return;
+    if (!/^https:\/\/www\.tripit\.com\/api\/v2\//.test(req.url())) return;
+    observed = { url: req.url().split('?')[0], headers: req.headers() };
+  };
+  ctx.on('request', onRequest);
+
+  let page = ctx.pages().find(p => /tripit\.com\/app/.test(p.url()));
+  if (page) {
+    await page.bringToFront().catch(() => {});
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  } else {
+    page = await ctx.newPage();
+    await page.goto(START_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   }
 
-  console.log('Waiting for /api/v2/* request to capture headers...');
-  let captured = null;
-  const onReq = req => {
-    const url = req.url();
-    if (!/tripit\.com\/api\/v2\//.test(url)) return;
-    const h = req.headers();
-    if (!h['cookie'] || !h['x-csrf-token-wa']) return;
-    captured = { cookie: h['cookie'], csrf_token: h['x-csrf-token-wa'], sample_url: url };
-  };
-  page.on('request', onReq);
-
-  try { await page.goto('https://www.tripit.com/app/dashboard', { waitUntil: 'domcontentloaded' }); } catch {}
-  try { await page.goto('https://www.tripit.com/app/trips', { waitUntil: 'domcontentloaded' }); } catch {}
-
-  const deadline = Date.now() + 20000;
-  while (!captured && Date.now() < deadline) {
+  const deadline = Date.now() + 25000;
+  while (!observed && Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 250));
   }
+  ctx.off('request', onRequest);
 
-  page.off('request', onReq);
-  if (!captured) {
-    console.error('Could not capture /api/v2/* headers. Make sure you are logged in.');
+  // The cookie jar -- not the intercepted headers -- is the source of truth.
+  const jar = await ctx.cookies(ORIGIN);
+  const missing = REQUIRED_COOKIES.filter(n => !jar.some(c => c.name === n));
+  if (missing.length) {
+    console.error(
+      `Not signed in: ${ORIGIN} is missing cookie(s) ${missing.join(', ')}.\n` +
+      `Sign in to TripIt in the Chrome window on ${profileDir}, then re-run.`);
     process.exit(1);
+  }
+
+  const cookieHeader = jar.map(c => `${c.name}=${c.value}`).join('; ');
+
+  // The SPA sends it_wa_csrf's value as X-CSRF-Token-WA. Prefer the observed header when
+  // we have one; fall back to the cookie. Disagreement means the page is mid-rotation.
+  const cookieCsrf = jar.find(c => c.name === 'it_wa_csrf')?.value || null;
+  const headerCsrf = observed?.headers['x-csrf-token-wa'] || null;
+  const csrf = headerCsrf || cookieCsrf;
+  if (!csrf) {
+    console.error('No CSRF token found (neither an X-CSRF-Token-WA header nor an it_wa_csrf cookie).');
+    process.exit(1);
+  }
+  if (headerCsrf && cookieCsrf && headerCsrf !== cookieCsrf) {
+    console.warn('WARNING: X-CSRF-Token-WA header and it_wa_csrf cookie disagree; using the header.');
+  }
+
+  // The SPA's non-secret headers, so the client can replay what the site actually expects
+  // rather than a hand-maintained guess. Secret-bearing headers are excluded by name.
+  const spaHeaders = {};
+  for (const [k, v] of Object.entries(observed?.headers || {})) {
+    if (!SECRET_HEADERS.has(k.toLowerCase())) spaHeaders[k] = v;
   }
 
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
   fs.writeFileSync(OUT_FILE, JSON.stringify({
-    cookie: captured.cookie,
-    csrf_token: captured.csrf_token,
-    captured_from: captured.sample_url,
+    cookie: cookieHeader,
+    csrf_token: csrf,
+    spa_headers: spaHeaders,
+    captured_from: observed?.url || START_URL,
     captured_at: new Date().toISOString(),
+    profile_dir: profileDir,
   }, null, 2));
 
   console.log('Wrote', OUT_FILE);
-  console.log('  cookie length :', captured.cookie.length);
-  console.log('  csrf token    :', captured.csrf_token.slice(0, 8) + '…');
+  console.log('  cookies       :', jar.length, `(${REQUIRED_COOKIES.join(', ')} present)`);
+  console.log('  cookie length :', cookieHeader.length);
+  console.log('  csrf source   :', headerCsrf ? 'X-CSRF-Token-WA header' : 'it_wa_csrf cookie');
+  console.log('  spa headers   :', Object.keys(spaHeaders).sort().join(', ') || '(none observed)');
 
-  browser.close().catch(() => {});
+  // Detaching from CDP must not close the user's browser.
+  await browser.close().catch(() => {});
 })().catch(err => { console.error(err); process.exit(1); });
