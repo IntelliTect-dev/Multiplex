@@ -24,7 +24,7 @@ const os = require('os');
 
 const CHROME_EXE = process.env.TRIPIT_CHROME_EXE
   || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const DEBUG_PORT = Number(process.env.TRIPIT_CDP_PORT || 9222);
+const DEFAULT_DEBUG_PORT = Number(process.env.TRIPIT_CDP_PORT || 9222);
 const OUT_FILE = process.env.TRIPIT_SESSION_FILE
   || path.join(os.homedir(), '.tripit-mcp', 'session.json');
 const START_URL = 'https://www.tripit.com/app/trips';
@@ -82,9 +82,39 @@ function waitForCdp(port, timeout = 30000) {
   });
 }
 
+/**
+ * Chrome records the port it is actually listening on in <profile>/DevToolsActivePort.
+ * Reading it lets us attach to a capture browser that was started on another port (another
+ * tool may have launched it with --remote-debugging-port=9333), instead of failing to spawn
+ * a second Chrome on a profile that is already locked.
+ */
+function portFromProfile(profileDir) {
+  try {
+    const first = fs.readFileSync(path.join(profileDir, 'DevToolsActivePort'), 'utf8').split(/\r?\n/)[0];
+    const port = Number(first);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+// Ports other capture tooling is known to use for the shared profile (the
+// web-api-discovery skill launches its browser on 9333).
+const FALLBACK_PORTS = [9333];
+
 (async () => {
   const profileDir = resolveProfileDir();
-  const attached = await isCdpUp(DEBUG_PORT);
+  let DEBUG_PORT = DEFAULT_DEBUG_PORT;
+  let attached = await isCdpUp(DEBUG_PORT);
+  if (!attached && !process.env.TRIPIT_CDP_PORT) {
+    for (const candidate of [portFromProfile(profileDir), ...FALLBACK_PORTS]) {
+      if (candidate && candidate !== DEBUG_PORT && await isCdpUp(candidate)) {
+        DEBUG_PORT = candidate;
+        attached = true;
+        break;
+      }
+    }
+  }
 
   if (!attached) {
     console.log(`Spawning Chrome on ${profileDir} with --remote-debugging-port=${DEBUG_PORT}`);

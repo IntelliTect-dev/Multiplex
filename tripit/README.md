@@ -20,29 +20,35 @@ makes the API look an order of magnitude smaller than it is, and the probe sweep
 `har/tripit-api-capture-2026-05-01.har` contains many 404/400 paths that are not endpoints
 at all. See the provenance section of `docs/api-surface.md`.
 
-Only endpoints that returned 200 / `application/json` are exposed as typed methods; a
-`SendRawAsync` / `Invoke-TripItRaw` / `tripit_raw_get` escape hatch covers everything else.
+> **Why not TripIt's documented public API?** `api.tripit.com/v1` still answers, but TripIt
+> stopped issuing OAuth consumer keys to new developers ("The TripIt public API is no longer
+> available for new developer integrations" — TripIt help center; see also
+> `tripit/api#287`, `#288`). `/developer/create` now just redirects to the trips page. The
+> v1 docs remain a useful oracle for field names, because the web backend shares its
+> envelope and verbs.
 
-The available tools were derived from a HAR capture of the live site (see
-`tools/capture-cdp.js` and the gitignored `har/` directory; sanitized copies live in
-`samples/har/`). Only endpoints that returned 200 / `application/json` for the captured
-session
-are exposed as first-class tools; a generic `tripit_raw_get` escape hatch covers anything
-else.
+## MCP tools (read)
 
-## Tools
+All tools are read-only. Output is compact JSON: trips are summarized, and each trip's
+contents are flattened into a chronological **itinerary** — one line per flight leg, hotel
+stay, car rental, train, transfer, reservation or note, with local times, time zones,
+confirmation numbers and type-specific details (seats, flight status, room type …).
 
-| Tool                            | Endpoint                              | Purpose |
-|---------------------------------|---------------------------------------|---------|
-| `tripit_list_trips`             | `GET /api/v2/list/trip`               | Upcoming/past trips with filters |
-| `tripit_get_profile`            | `GET /api/v2/get/profile`             | Signed-in user profile |
-| `tripit_get_traveler_profile`   | `GET /api/v2/travelerProfile/get`     | Passport, KTN, frequent-flyer numbers, prefs |
-| `tripit_list_pro_alerts`        | `GET /api/v2/listProAlerts`           | TripIt Pro alerts (price drops, fare watches…) |
-| `tripit_get_purchased_products` | `GET /api/v2/purchasedProductInfo`    | Pro subscription / entitlements |
-| `tripit_get_app_config`         | `GET /api/v2/appConfig`               | Web SPA feature flags |
-| `tripit_get_gtm_data`           | `GET /api/v2/gtmDataAsJson`           | Analytics dataLayer (user_id, member_status…) |
-| `tripit_session_status`         | (local)                               | Reports whether a session is configured |
-| `tripit_raw_get`                | `GET /<arbitrary path>`               | Authenticated escape hatch |
+| Tool | Backing endpoint | Purpose |
+|---|---|---|
+| `tripit_get_upcoming_itinerary` | `GET v2/list/trip?include_objects=true` | Every upcoming trip with its full itinerary, in one call |
+| `tripit_list_trips` | `GET v2/list/trip` | Upcoming or past trips (paged) |
+| `tripit_search_trips` | `GET v2/list/trip` (client-side filter) | Find trips by name, location, description, start date |
+| `tripit_get_trip` | `GET v2/get/trip/uuid/{uuid}/include_objects/true` | One trip: itinerary, who it is shared with, optional raw objects |
+| `tripit_list_objects` | `GET v2/list/object` | A trip's objects, or Unfiled Items |
+| `tripit_get_object` | `GET v2/get/{type}/uuid/{uuid}` | One reservation/plan with every field |
+| `tripit_get_profile` | `GET v2/get/profile` | Signed-in user profile |
+| `tripit_get_traveler_profile` | `GET v2/travelerProfile/get` | Travel documents, loyalty numbers (masked unless `reveal_numbers`) |
+| `tripit_list_alerts` | `GET v2/listProAlerts` | Pro alerts and account notices |
+| `tripit_get_purchased_products` | `GET v2/purchasedProductInfo` | Subscription status |
+| `tripit_lookup` | `GET v2/autocomplete*` | Airports, airlines, places, countries, states, addresses |
+| `tripit_session_status` | `GET v2/get/profile` | Is the session configured, refreshable, accepted? |
+| `tripit_raw_get` | `GET /api/v2/…` | Escape hatch for anything else |
 
 ## Authentication
 
@@ -88,8 +94,23 @@ request: Chrome attaches the `Cookie` header after Playwright surfaces a request
 unless those cookies are present, so "signed out" fails loudly instead of producing a file
 that 302s on first use.
 
-Re-run it any time the client reports a 302/401. Observed expiries: `it_wa_csrf` ~2 days,
-the Akamai bot cookies ~2 hours.
+If no Chrome is listening on 9222, the helper also tries the port recorded in the
+profile's `DevToolsActivePort` file and 9333 (the `web-api-discovery` skill's capture
+browser), so it attaches to an already-open capture browser instead of failing to launch a
+second Chrome on a locked profile.
+
+Observed expiries: `it_wa_csrf` ~2 days, the Akamai bot cookies ~2 hours. A stale session
+fails as **403 with an Akamai HTML block page**, which the client reports as
+`TripItAuthenticationException`.
+
+### Automatic session refresh
+
+On an authentication failure (302, 401 or Akamai 403) `TripItClient` re-reads the session
+file and, if that has not changed, runs an `ISessionRefresher`, then retries once. The MCP
+server wires in `CommandSessionRefresher`, which runs `node tools/extract-session.js`
+(discovered beside or above the server binary) — so as long as the signed-in capture
+browser stays open, the server keeps working past the ~2-hour cookie lifetime.
+`TRIPIT_SESSION_REFRESH_COMMAND` overrides the command; `none` disables refreshing.
 
 ## Build & run
 
@@ -137,7 +158,13 @@ Import-Module .\src\TripIt.PowerShell\bin\Release\net10.0\TripIt.psd1
 Connect-TripIt -StoreLocation UserSecrets
 
 Get-TripItProfile
-Get-TripItTrip -PageSize 5
+Get-TripItTrip -PageSize 5                       # upcoming; -Past, -All
+Get-TripItTrip -Uuid <trip-uuid>                 # TripDetail with .Itinerary
+Get-TripItItinerary                              # every upcoming trip, chronological
+Search-TripItTrip VSLive | Get-TripItItinerary
+Get-TripItObject -TripUuid <trip-uuid> -Type air
+Get-TripItObject -Unfiled -Type note
+Find-TripItReference Airport SEA
 Invoke-TripItRaw -Path '/api/v2/list/trip' | ConvertFrom-Json
 
 # Push the captured session to GitHub Actions secrets for CI:
@@ -153,14 +180,17 @@ Sync-TripItSecretToGitHub -Repository MarkMichaelis/TripItEx
 TripItEx.slnx                .NET solution (src + tests)
 Directory.Build.props        Common build settings (net10.0, nullable, warnings-as-errors)
 src/
-  TripIt/                    Library: TripItClient (typed methods + SendRawAsync),
-                             TripItSession, ISessionStore (UserSecrets / DPAPI),
-                             TripItAuthenticator (CLI + browser-fallback), Models/
+  TripIt/                    Library: TripItClient (+ Trips / Objects / Lookup
+                             sub-clients, SendAsync), TripItSession, ISessionStore
+                             (UserSecrets / DPAPI), ISessionRefresher,
+                             TripItAuthenticator, Json/ (lenient converters),
+                             Models/ (Trip, TripDetail, ItineraryBuilder …)
   TripItMcp/                 MCP server (references TripIt)
   TripIt.PowerShell/         Binary PowerShell module (references TripIt)
 tests/
-  TripIt.FunctionalTests/    xUnit; SkippableFact tests hit live TripIt when
-                             TRIPIT_COOKIE is set
+  TripIt.UnitTests/          xUnit; fake HTTP handler + synthetic fixtures (no network)
+  TripIt.FunctionalTests/    xUnit; SkippableFact tests hit live TripIt when a
+                             session is available
   TripIt.PowerShell.Tests/   Pester 5 tests for the module
 samples/har/                 Sanitized HAR captures (no secrets)
 har/                         Raw HAR captures (gitignored)
@@ -186,16 +216,11 @@ In CI, push the secrets via `Sync-TripItSecretToGitHub` and trigger the
 
 ## Notes & limitations
 
-* Only **GET** endpoints are exposed *so far*. The mutating surface is now known and
-  documented in [`docs/api-surface.md`](docs/api-surface.md) — `v2/create`,
-  `v2/create/trip`, `v2/replace/trip/uuid/{uuid}`, `v2/replacePlan/{type}/uuid/{uuid}`,
-  `v2/delete/{type}/uuid/{uuid}`, `v2/move/`, `v2/merge/trip` and more — but it is **not
-  wrapped yet**, because the request *payloads* are built dynamically by the SPA and are
-  not statically resolvable. They need a capture of the SPA performing each mutation
-  before they can be typed honestly.
+* **Read surface: complete** for trips, objects, profile, traveler profile, alerts,
+  subscription and lookups. Write operations (create / replace / delete / move) are the
+  next milestone — the payloads are being captured from the SPA against a throwaway trip.
 * Account-destruction, password and payment endpoints exist but are deliberately excluded
   from the wrapper surface; see "Deliberately NOT wrapped" in `docs/api-surface.md`.
-* Session cookies expire / rotate; the helper extractor must be re-run periodically.
-* `/web/v2/*` endpoints are listed in the catalogue but returned 404 for direct probes,
-  so they are NOT wrapped — the SPA appears to use only `/api/v2/*`. `tripit_raw_get`
-  remains available if a path is found later.
+* `list/object` ignores any object-type filter server-side, so type filters are applied
+  client-side (per page).
+* Trips and objects are addressed by **UUID**: `get/trip/id/{id}` answers 400.

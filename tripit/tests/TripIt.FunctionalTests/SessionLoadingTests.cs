@@ -6,8 +6,16 @@ using Xunit;
 namespace TripIt.FunctionalTests;
 
 /// <summary>
+/// These tests mutate process-wide environment variables, so they must not run in
+/// parallel with tests that build a session from the environment.
+/// </summary>
+[CollectionDefinition(nameof(EnvironmentVariableCollection), DisableParallelization = true)]
+public sealed class EnvironmentVariableCollection;
+
+/// <summary>
 /// Tests for <see cref="TripItSession"/> precedence rules. These do NOT hit the network.
 /// </summary>
+[Collection(nameof(EnvironmentVariableCollection))]
 public sealed class SessionLoadingTests : IDisposable
 {
     private readonly string _tempDir;
@@ -24,7 +32,9 @@ public sealed class SessionLoadingTests : IDisposable
         _origFile = Environment.GetEnvironmentVariable("TRIPIT_SESSION_FILE");
         Environment.SetEnvironmentVariable("TRIPIT_COOKIE", null);
         Environment.SetEnvironmentVariable("TRIPIT_CSRF", null);
-        Environment.SetEnvironmentVariable("TRIPIT_SESSION_FILE", null);
+        // Point the file fallback at a path that does not exist, so a real
+        // ~/.tripit-mcp/session.json on the developer's machine cannot leak in.
+        Environment.SetEnvironmentVariable("TRIPIT_SESSION_FILE", Path.Combine(_tempDir, "absent-session.json"));
     }
 
     public void Dispose()
