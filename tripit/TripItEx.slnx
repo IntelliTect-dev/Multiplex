@@ -6,5 +6,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TripIt.FunctionalTests/TripIt.FunctionalTests.csproj" />
+    <Project Path="tests/TripIt.UnitTests/TripIt.UnitTests.csproj" />
   </Folder>
 </Solution>

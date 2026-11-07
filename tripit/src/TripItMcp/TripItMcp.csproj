@@ -15,4 +15,8 @@
     <ProjectReference Include="..\TripIt\TripIt.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="TripIt.UnitTests" />
+  </ItemGroup>
+
 </Project>

@@ -23,6 +23,13 @@ public sealed class TripItSession
     public string CsrfToken { get; private set; } = "";
     public string? Source { get; private set; }
 
+    /// <summary>
+    /// Browser headers captured alongside the cookies (<c>spa_headers</c> in session.json):
+    /// user agent, client hints, accept-language. Lower-case names. Empty when unknown.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> SpaHeaders { get; private set; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
     public TripItSession() : this(null) { }
 
     public TripItSession(ISessionStore? store)
@@ -65,6 +72,9 @@ public sealed class TripItSession
                 {
                     Cookie = data.Cookie ?? "";
                     CsrfToken = data.CsrfToken ?? "";
+                    SpaHeaders = data.SpaHeaders is null
+                        ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(data.SpaHeaders, StringComparer.OrdinalIgnoreCase);
                     Source = path;
                 }
             }
@@ -99,5 +109,6 @@ public sealed class TripItSession
     {
         [JsonPropertyName("cookie")]      public string? Cookie { get; set; }
         [JsonPropertyName("csrf_token")]  public string? CsrfToken { get; set; }
+        [JsonPropertyName("spa_headers")] public Dictionary<string, string>? SpaHeaders { get; set; }
     }
 }

@@ -66,6 +66,10 @@ Describe 'Module manifest' {
             'Connect-TripIt',
             'Get-TripItProfile',
             'Get-TripItTrip',
+            'Get-TripItItinerary',
+            'Get-TripItObject',
+            'Search-TripItTrip',
+            'Find-TripItReference',
             'Get-TripItTravelerProfile',
             'Get-TripItProAlert',
             'Get-TripItPurchasedProduct',
@@ -107,6 +111,28 @@ Describe 'Connect-TripIt' {
         $cmd = Get-Command Connect-TripIt
         $params = $cmd.ParameterSets | Where-Object Name -EQ 'Credentials'
         ($params.Parameters | Where-Object Name -EQ 'Password').IsMandatory | Should -BeTrue
+    }
+}
+
+Describe 'Read cmdlets' {
+    It 'Get-TripItTrip has List and Uuid parameter sets' {
+        (Get-Command Get-TripItTrip).ParameterSets.Name | Should -Contain 'Uuid'
+        (Get-Command Get-TripItTrip).ParameterSets.Name | Should -Contain 'List'
+    }
+
+    It 'Get-TripItObject -Type completes object types' {
+        $line = 'Get-TripItObject -Type lod'
+        $r = TabExpansion2 -inputScript $line -cursorColumn $line.Length
+        $r.CompletionMatches.CompletionText | Should -Contain 'lodging'
+    }
+
+    It 'Get-TripItObject rejects an unknown type' {
+        { Get-TripItObject -Type spaceship -Uuid 11111111-aaaa-9000-0001-000000000001 } |
+            Should -Throw '*Unknown TripIt object type*'
+    }
+
+    It 'Find-TripItReference validates Kind' {
+        { Find-TripItReference -Kind Planet -Query x } | Should -Throw
     }
 }
 
