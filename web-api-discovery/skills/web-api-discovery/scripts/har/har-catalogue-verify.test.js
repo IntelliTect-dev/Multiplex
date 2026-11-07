@@ -49,7 +49,11 @@ function runVerify(dir) {
 
 const FORM_BODY = 'message=hello+world&tags%5B0%5D=100000123456789&audience=SELF';
 const HOLLOW_BODY = 'REDACTED_FORM_URLENCODED_BODY';
-const REF = 'example/example-create-post-2026-08-26.har';
+// One field and a trailing `&` -- the wire shape of every RPC Google's web
+// client sends, with the real prefix of a scrubbed Google Flights envelope.
+const GOOGLE_RPC_BODY =
+    'f.req=%5Bnull%2C%22%5Bnull%2C%5Bnull%2Cnull%2C2%2Cnull%2C%5B%5D%2C1%2C%5B1%2C0%2C0%2C0%5D%5D%5D%22%5D&';
+const REF ='example/example-create-post-2026-08-26.har';
 
 function entryFor(body) {
     const request = {
@@ -151,6 +155,22 @@ test('a row declaring POST on a reference with no request body FAILS', () => {
     assert.notStrictEqual(r.code, 0, 'a hollow reference passed the guard');
     assert.match(r.stderr, /request body/i);
     assert.match(r.stderr, /POST/);
+});
+
+test('a POST whose one field is followed by a trailing ampersand passes the falsifier', () => {
+    // The falsifier's false positive. Google's web client sends every RPC as
+    // ONE `f.req` field and a trailing `&`; while the shared body grammar
+    // counted the empty segment as a non-pair, this honest row failed with
+    // "declares POST but no request body", measured on a real scrubbed
+    // reference. Driven through the CLI, because the gate is what an operator
+    // runs and the measurement test alone would not show the two agree.
+    const dir = makeProject('trailing-ampersand', (s) => {
+        s.body = GOOGLE_RPC_BODY;
+        s.row.RequestBytes = Buffer.byteLength(GOOGLE_RPC_BODY);
+    });
+
+    const r = runVerify(dir);
+    assert.strictEqual(r.code, 0, `${r.stdout}\n${r.stderr}`);
 });
 
 test('a body on a GET does not let a hollow POST reference through', () => {

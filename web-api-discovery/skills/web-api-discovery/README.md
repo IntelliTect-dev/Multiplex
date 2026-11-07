@@ -19,10 +19,12 @@ skills/web-api-discovery/
 │   │   │                            #   scrub, verify, digest
 │   │   ├── capture-har.test.js      # zero-dep behavior suite for the above
 │   │   ├── capture-store.js         # the ONE walk over a capture store; classifies
-│   │   │                            #   current / legacy / not-recorder-output
+│   │   │                            #   current / legacy / imported / not-recorder-output
 │   │   ├── capture-store.test.js    # zero-dep behavior suite for the walk
 │   │   ├── Invoke-HarCatalogue.ps1  # digest + catalogue; a folder means all of them
 │   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
+│   │   ├── Get-HarCapture.ps1       # list the recordings in the store, as objects
+│   │   ├── Remove-HarCapture.ps1    # delete ONE recording, on purpose; asks first
 │   │   ├── Stop-HarRecording.ps1    # end a recording (automation / AI path)
 │   │   ├── ConvertFrom-HarCatalogue.ps1  # catalogue.json -> typed objects
 │   │   ├── HarCapture.Format.ps1xml # console rendering for those objects

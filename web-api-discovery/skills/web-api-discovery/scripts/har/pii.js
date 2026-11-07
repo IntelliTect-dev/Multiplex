@@ -101,6 +101,21 @@ const harPolicy = require('./har-policy.js');
 // committed references. A second copy of the predicate here would only drift
 // again, so the predicate is imported and the issuer table is not duplicated.
 const { hasAssignedIin, LEAK_PATTERNS, settingFor, isIdentifierShaped } = require('./har-shapes.js');
+// ONE traversal of the encoding layers, consumed rather than copied (issue #24).
+//
+// This module is the THIRD engine. `har-nested.js` gave the gate and the secret
+// scrubber one walk, one cap and one byte-preservation rule (#454); the identity
+// axis kept a private descent that stopped at the first parsed JSON document, so
+// a value whose sensitivity is knowable only from its FIELD NAME was unreachable
+// two layers down -- while the shared walk delivered that same value as a whole
+// leaf. Measured: the walk reached it at hops 1-7 and this pass acted only at
+// hop 1.
+//
+// Shape evidence was never affected, which is why #24 is the INTERSECTION of
+// name-only sensitivity and nesting rather than a general failure to descend:
+// the flat text pass finds a shaped value at any depth, because it does not
+// need the layer to be decoded to recognise it.
+const { transformNested, MAX_DEPTH: NESTED_MAX_DEPTH } = require('./har-nested.js');
 
 /**
  * One slot of the gate's own leak table, taken from the gate rather than
@@ -728,11 +743,22 @@ function detectInValue(value, key, entryIndex, loc, out, policy) {
     return false;
 }
 
-function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
+function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy, depth) {
     if (node === null || node === undefined) return;
     if (typeof node === 'string') {
         const handled = detectInValue(node, key, entryIndex, { jsonPath }, out, policy);
         if (!handled) detectInString(node, entryIndex, { jsonPath }, out, policy, key);
+        // AND THEN ASK WHETHER THE LEAF IS ITSELF A PAYLOAD (issue #24).
+        //
+        // This is the whole of the identity axis's reach gap. The two calls
+        // above are the flat detectors: they see this string as text, so a
+        // SHAPED value in it is found at any depth. A value whose sensitivity
+        // is knowable only from its FIELD NAME is not -- the name it travels
+        // under is a key inside the string, and nothing here parsed the string.
+        //
+        // Returning without descending is what made a name-only value two hops
+        // down invisible while the shared walk delivered it as a whole leaf.
+        descendNestedLeaf(node, key, entryIndex, jsonPath, out, policy, depth || 0);
         return;
     }
     if (typeof node === 'number' || typeof node === 'boolean') {
@@ -740,14 +766,87 @@ function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
         return;
     }
     if (Array.isArray(node)) {
-        node.forEach((v, i) => walkJsonForDetect(v, key, entryIndex, `${jsonPath}[${i}]`, out, policy));
+        node.forEach((v, i) => walkJsonForDetect(v, key, entryIndex, `${jsonPath}[${i}]`, out, policy, depth));
         return;
     }
     if (typeof node === 'object') {
         for (const k of Object.keys(node)) {
-            walkJsonForDetect(node[k], k, entryIndex, jsonPath ? `${jsonPath}.${k}` : k, out, policy);
+            walkJsonForDetect(node[k], k, entryIndex, jsonPath ? `${jsonPath}.${k}` : k, out, policy, depth);
         }
     }
+}
+
+/**
+ * Detect inside the encoding layers a single string leaf may still carry.
+ *
+ * THE TRAVERSAL IS `har-nested.js`'s, not a fourth private one. The gate and
+ * the secret scrubber have shared it since #454; this is the identity axis
+ * joining them, so all three now agree about WHERE a value can be -- which is
+ * the half of agreement that rule parity never covered.
+ *
+ * READ-ONLY: `visit` returns its input, the mode the gate already runs in, so
+ * nothing here can rewrite the document. Replacement is the symmetric call in
+ * `replaceNestedLeaf`, and detection and replacement must descend identically
+ * or a value is found in one shape and rewritten in another.
+ *
+ * ACCEPTED LIMIT, pre-existing and disclosed rather than introduced: the shared
+ * walk offers STRING leaves only, so a card or a coordinate serialised as a
+ * JSON NUMBER inside a nested document is still missed by the name-keyed rules.
+ * It was missed entirely before this function existed, so this is a strict
+ * improvement; closing it means teaching the shared walk about scalar leaves,
+ * which changes all three engines and belongs in its own change.
+ */
+function descendNestedLeaf(text, key, entryIndex, jsonPath, out, policy, depth) {
+    if (typeof text !== 'string' || text.length === 0) return;
+    transformNested(text, (node) => {
+        const at = node.path || jsonPath;
+        // Counted from the array's own growth, so the number means DETECTIONS
+        // found below the surface and not merely layers visited. A count of
+        // visits would report a figure on every nested capture and say nothing
+        // about whether the deeper reach changed any outcome.
+        // The LOCATION is the key path and nothing more. `node.depth` is used
+        // for the counter below and deliberately NOT written into the finding:
+        // a detection's shape is compared field-for-field by several suites,
+        // and a new key on every nested finding would be a change to the
+        // artifact contract bought for no information a reader needs -- the key
+        // path already says how deep the value sat.
+        const before = out.length;
+        const handled = detectInValue(node.value, node.name, entryIndex,
+            { jsonPath: at }, out, policy);
+        if (!handled) {
+            detectInString(node.value, entryIndex, { jsonPath: at }, out, policy, node.name);
+        }
+        countDeep(out, node.depth, out.length - before);
+        return node.value;
+    }, {
+        depth,
+        name: key,
+        path: jsonPath,
+        // A walk that stopped early has not looked everywhere, and one that
+        // stops early while reporting nothing fails OPEN -- the D3 half of
+        // #454. The gate reports its own early stop; so must this.
+        onDepthLimit: () => countDepthLimited(out),
+    });
+}
+
+/**
+ * The two run-wide counters, carried ON the detections array.
+ *
+ * WHY NOT A PARAMETER. `detectPiiInEntry(entry, index, policy, out)` is the
+ * entry point the streaming scrub (#10) calls once per entry, and `out` is
+ * already the one object both it and the whole-document path thread. A fifth
+ * parameter would be a fifth thing a future caller can forget to pass, and a
+ * counter nobody passed reads as a clean walk -- the same fail-open shape this
+ * change exists to remove. Counting on the array keeps the numbers travelling
+ * with the detections they describe.
+ *
+ * Both are counts. Neither can carry a value.
+ */
+function countDeep(out, depth, added) {
+    if (depth > 1 && added > 0) out.deepDetections = (out.deepDetections || 0) + added;
+}
+function countDepthLimited(out) {
+    out.depthLimited = (out.depthLimited || 0) + 1;
 }
 
 /**
@@ -846,15 +945,22 @@ function detectPiiInEntry(entry, entryIndex, policy, out) {
     return out;
 }
 
-// How many nested form-encoded layers to unwrap. The observed provider shape
-// needs two (a form parameter whose value is encoded JSON, whose own value is
-// an encoded string). The bound exists because the layering is provider-defined
-// and the payload is attacker-influenced. Past the bound the remainder goes to
-// the plain-text scanner -- which is the pre-existing behaviour, and therefore
-// ALSO the pre-existing defect: a body nested deeper than this can still have an
-// escape read as payload digits. A disclosed limit, not a guarantee; the bound
-// sits above the deepest shape yet observed (2) rather than at it.
-const FORM_DEPTH_LIMIT = 4;
+// How many nested layers to unwrap -- THE SHARED CAP, not a second one.
+//
+// This was a private `4` while `har-nested.js` held `8`. Two engines, two
+// numbers, one name for the idea, which is the exact hazard that module's own
+// header warns about: "Leaving the gate uncapped while the scrubber capped at 3
+// is what reintroduces this bug one layer further down; two different caps are
+// two different reaches wearing the same name." The identity axis was the
+// engine still wearing the name.
+//
+// Taking the shared value rather than restating it means a change to the cap
+// moves all three engines at once. It also RAISES this axis's reach from 4 to
+// 8, so values nested deeper than the old private bound are now detected and
+// replaced where previously they went to the plain-text scanner. That increase
+// is reported on every run rather than left to be discovered in a diff -- see
+// `deepDetections` below and the NOTE `sanitize-har.js` prints from it.
+const FORM_DEPTH_LIMIT = NESTED_MAX_DEPTH;
 
 /**
  * The `name=value` pairs of an `application/x-www-form-urlencoded` body, or
@@ -894,9 +1000,15 @@ function formEncodedPairs(text) {
 }
 
 /**
- * Percent-decode a form value, LENIENTLY, and never fail.
+ * Percent-decode a URL-ish value, LENIENTLY, and never fail.
  *
- * `+` means space in a form body, which decodeURIComponent does not know.
+ * `plusIsSpace` is the whole reason this takes a parameter, and getting it
+ * wrong would corrupt a path to fix a payload. `+` means space in
+ * `application/x-www-form-urlencoded` DATA -- a body or a query string -- and
+ * means a literal `+` everywhere else in a URL. Decoding a path segment with
+ * form semantics would turn a legitimate `+` into a space, and re-encoding it
+ * would emit `%20`: a changed URL, in the one direction issue #22's own scope
+ * note warns about.
  *
  * A MALFORMED ESCAPE DOES NOT DISQUALIFY THE VALUE, and getting this wrong cost
  * two rounds. Returning null and SKIPPING the parameter hid every other secret
@@ -916,14 +1028,20 @@ function formEncodedPairs(text) {
  * `%25zz`). Only a value that was already being rewritten pays it, and a
  * well-formed escape is a better artifact than the malformed one it replaces.
  */
-function formDecode(raw) {
+function percentDecode(raw, plusIsSpace, offsets) {
     let out = '';
+    // `offsets[k]` is the index in `raw` where decoded character `k` began, so a
+    // caller can map a position in the decoded text back to the bytes it came
+    // from. An escape run that decodes to several characters records the RUN's
+    // start for each of them, which maps a boundary inside the run to the whole
+    // run -- the safe direction, since the run is then re-encoded as a unit.
+    const mark = (n, at) => { if (offsets) { for (let k = 0; k < n; k++) offsets.push(at); } };
     for (let i = 0; i < raw.length; i++) {
         const c = raw[i];
-        if (c === '+') { out += ' '; continue; }
-        if (c !== '%') { out += c; continue; }
+        if (c === '+') { mark(1, i); out += plusIsSpace ? ' ' : '+'; continue; }
+        if (c !== '%') { mark(1, i); out += c; continue; }
         const hex = raw.slice(i + 1, i + 3);
-        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) { out += '%'; continue; }
+        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) { mark(1, i); out += '%'; continue; }
         // A multi-byte UTF-8 sequence has to decode as a unit, so hand the
         // whole run of escapes to the real decoder and fall back to literals
         // when it is not valid UTF-8.
@@ -932,60 +1050,448 @@ function formDecode(raw) {
             run += raw.slice(j, j + 3);
             j += 3;
         }
-        try { out += decodeURIComponent(run); }
-        catch (_) { out += run; }
+        let piece;
+        try { piece = decodeURIComponent(run); }
+        catch (_) { piece = run; }
+        mark(piece.length, i);
+        out += piece;
         i = j - 1;
     }
+    if (offsets) offsets.push(raw.length);
     return out;
 }
 
+/** A URL path segment or fragment: `+` is a literal `+`. */
+function urlDecode(raw) { return percentDecode(raw, false); }
+
 
 /**
- * A URL's query string, scanned and rewritten the way a form body is.
+ * A URL, split into the four places a value can sit: origin, path, query and
+ * fragment.
  *
- * WHY THIS EXISTS (issue #479, found in review). A query string is
+ * WHY THE QUERY BRANCH EXISTS (issue #479, found in review). A query string is
  * percent-encoded form data that happens to live in a URL, and it was going
  * straight to the plain-text scanner -- so every failure this module's form
  * branch removes was still fully reachable through `request.url`. GraphQL over
  * GET puts an entire JSON payload there, which is precisely the shape that
  * turns an escape's digits into part of an adjacent value.
  *
- * ONLY THE QUERY. The origin, path and fragment stay on the plain-text pass:
- * they are not `name=value` data, and rewriting a path risks changing a URL's
- * meaning to fix a payload that is usually not there.
+ * WHY IT IS NO LONGER ONLY THE QUERY (issue #22). #479 fixed the two shapes
+ * that are form data and DISCLOSED the rest as a known limit: the origin, path
+ * and fragment stayed on the plain-text pass. Some REST APIs put a JSON or
+ * base64 blob in a path SEGMENT rather than a query, and there the original
+ * corruption was fully reachable -- `%22`'s digits completed a 14-digit id into
+ * a Luhn-valid card-length run and the 16-digit fake overwrote the escape, so
+ * `%22` became `%42` and the segment decoded with a `B` where its delimiting
+ * quote had been.
  *
- * That is a real, disclosed limit rather than a complete fix. A path segment
- * carrying the same percent-encoded payload -- some REST APIs put a JSON or
- * base64 blob in a segment instead of a query -- is still read as plain text
- * and can still be corrupted exactly as a body used to be. Closing that means
- * decoding percent-encoded runs everywhere they occur, not just where they are
- * form data, which is a larger change than this one and is tracked separately.
+ * The general statement of the defect is not about form data at all:
+ *
+ *     percent-encoded text scanned as plain text has its escapes read as
+ *     payload.
+ *
+ * So the fix is stated the same way -- decode a percent-encoded run wherever
+ * it occurs, and let replacement act on DECODED text only. Escape-awareness
+ * then costs nothing and is not a second mechanism: decoded text contains no
+ * `%XX` for a write to land inside, and the re-encode happens afterwards over
+ * a whole component. A decode WITHOUT that write guard would have relocated
+ * the corruption rather than removed it, which is why the two always travel
+ * together here.
+ *
+ * THE ORIGIN IS STILL STRUCTURE, NOT PAYLOAD. A scheme and an authority are
+ * not a place a provider hides a JSON document, and a `/` inside the authority
+ * would be the path's first delimiter rather than a character of it. So the
+ * origin keeps the plain-text treatment and ends at the first `/` after the
+ * scheme. A URL with no `://` is read as all path, which is the tolerant
+ * reading -- this module never rejects a URL it failed to parse, because
+ * refusing one would hide every value in it.
+ *
+ * ONE COST, STATED. The path is scanned per SEGMENT rather than as one string,
+ * so a value that spanned a `/` is no longer matched. That is a tightening: a
+ * `/` is a delimiter, and a digit run reaching across one was the same
+ * accidental-length reading this fix exists to stop.
  */
 function splitUrl(url) {
     const hash = url.indexOf('#');
     const head = hash < 0 ? url : url.slice(0, hash);
-    const tail = hash < 0 ? '' : url.slice(hash);
+    const fragment = hash < 0 ? null : url.slice(hash + 1);
     const q = head.indexOf('?');
-    if (q < 0) return null;
-    return { base: head.slice(0, q), query: head.slice(q + 1), tail };
+    const beforeQuery = q < 0 ? head : head.slice(0, q);
+    const query = q < 0 ? null : head.slice(q + 1);
+
+    const scheme = beforeQuery.indexOf('://');
+    let origin = '';
+    let pathText = beforeQuery;
+    if (scheme >= 0) {
+        const slash = beforeQuery.indexOf('/', scheme + 3);
+        origin = slash < 0 ? beforeQuery : beforeQuery.slice(0, slash);
+        pathText = slash < 0 ? '' : beforeQuery.slice(slash);
+    } else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(beforeQuery)) {
+        // A NON-HIERARCHICAL URL HAS NO PATH TO SEGMENT. `mailto:` and
+        // `data:` carry a scheme with no `//` authority, so looking for the
+        // first `/` after `://` finds nothing and the whole URL reads as one
+        // path segment. Re-encoding that segment then escapes the delimiters
+        // that give it its meaning -- `mailto:` became `mailto%3A`, and a
+        // `data:` URL lost the `,` between its media type and its payload.
+        // `data:` requests do appear in browser HARs.
+        //
+        // Its syntax is scheme-specific, so there is no general decomposition
+        // to apply. It keeps the plain-text treatment, which is what `main`
+        // did for every URL and is still right for this one.
+        origin = beforeQuery;
+        pathText = '';
+    }
+    return { origin, pathText, query, fragment };
+}
+
+/**
+ * The path, as its `/`-delimited segments.
+ *
+ * Detection and replacement BOTH go through this. A path the two split
+ * differently is a value found at one index and rewritten at another, which is
+ * the twin-divergence failure the rest of this module keeps warning about.
+ *
+ * An EMPTY segment -- a leading, trailing or doubled `/` -- is a delimiter and
+ * not a value. Detection skips it and replacement maps it through untouched:
+ * one decision, stated on each side.
+ */
+function pathSegments(pathText) { return pathText.split('/'); }
+
+/**
+ * Is this component `name=value` FORM DATA, or one opaque value?
+ *
+ * The answer decides which of two treatments a component gets, and the two
+ * must not be mixed -- mixing them is what double-encoded a replacement (found
+ * by independent review):
+ *
+ * - **Form data** goes to the form branch raw, exactly as a query does. That
+ *   branch decodes and re-encodes each part itself, so the caller must NOT
+ *   re-encode its result.
+ * - **One opaque value** is decoded here, acted on as decoded text, and
+ *   re-encoded here -- so the form branch must be suppressed, or it would
+ *   encode a second time.
+ *
+ * A PATH SEGMENT IS NEVER FORM DATA, whatever it happens to look like. A
+ * segment reading `a=b` is a segment whose text contains `=`; `/` is its
+ * delimiter and `+` is a literal `+` in it. Reading it as form data would
+ * apply `+`-is-space to a path and re-encode the space as `%20`, changing the
+ * URL -- the direction #22's scope note warns about.
+ *
+ * A FRAGMENT GENUINELY CAN BE. RFC 6749's implicit flow returns
+ * `#access_token=...&token_type=Bearer` as `application/x-www-form-urlencoded`,
+ * so a form-shaped fragment is a routine capture shape and is treated as the
+ * parameter list it is -- which also keeps its `&` a delimiter instead of
+ * escaping it away.
+ */
+function isFormComponent(raw, mayBeForm) {
+    return mayBeForm && formEncodedPairs(raw) !== null;
+}
+
+/**
+ * The decoded component, or null when decoding it once is NOT ENOUGH.
+ *
+ * HALF A DECODE IS WORSE THAN NONE, and this is the guard that says so. The
+ * premise "decoded text holds no `%XX` for a write to land inside" is only
+ * true when the component carried exactly one layer of encoding. A proxied or
+ * redirect URL in a path segment carries two:
+ *
+ *     /go/https%3A%2F%2Fother.test%2Fx%3Fq%3D%257B%2522id%2522...
+ *
+ * Decoding once yields `https://other.test/x?q=%7B%22id%22...` -- text that
+ * still holds escapes, which the plain-text scanner then reads as payload. The
+ * digit run that two layers had pushed to 18 characters (out of card range,
+ * and therefore safe on `main` by accident) comes back to 16, and the write
+ * lands inside the inner escape. That is this stage's own defect, relocated
+ * one layer down instead of removed -- found by independent review.
+ *
+ * So a component is decoded only when the result is unambiguously decoded.
+ * Otherwise it keeps the plain-text treatment, which is what `main` does: the
+ * multi-layer case stays open and tracked rather than being made worse.
+ *
+ * Decoding the layers properly means recursing the COMPONENT treatment -- the
+ * inner text is a URL with its own origin, path, query and fragment, so
+ * blanket re-encoding would mangle its structure. That is a design, not a
+ * tweak, and it belongs in its own change.
+ */
+function decodedOnceOrNull(raw, plusIsSpace, offsets) {
+    const decoded = percentDecode(raw, plusIsSpace === undefined ? false : plusIsSpace, offsets);
+    return /%[0-9A-Fa-f]{2}/.test(decoded) ? null : decoded;
+}
+
+function detectInUrlComponent(raw, entryIndex, basePath, out, policy, mayBeForm, plusIsSpace) {
+    plusIsSpace = plusIsSpace === true;
+    if (isFormComponent(raw, mayBeForm)) {
+        tryWalkJsonText(raw, entryIndex, basePath, out, policy, 0, false, plusIsSpace);
+        return;
+    }
+    // The twin of the no-escape guard in `replaceUrlComponent`. The two must
+    // agree about which reading a component gets.
+    const decoded = /%[0-9A-Fa-f]{2}/.test(raw) ? decodedOnceOrNull(raw, plusIsSpace) : null;
+    if (decoded === null) {
+        detectInString(raw, entryIndex, { jsonPath: basePath }, out, policy);
+        return;
+    }
+    tryWalkJsonText(decoded, entryIndex, basePath, out, policy, 0, true, plusIsSpace);
 }
 
 function detectInUrl(url, entryIndex, out, policy) {
     const parts = splitUrl(url);
-    if (!parts || parts.query.length === 0) {
-        detectInString(url, entryIndex, { jsonPath: 'request.url' }, out, policy);
-        return;
+    detectInString(parts.origin, entryIndex, { jsonPath: 'request.url' }, out, policy);
+    pathSegments(parts.pathText).forEach((segment, i) => {
+        if (segment.length === 0) return;
+        detectInUrlComponent(segment, entryIndex,
+            `request.url.path[${i}]`, out, policy, false);
+    });
+    if (parts.query) {
+        // THE QUERY IS A COMPONENT TOO. It had its own route into the form
+        // branch, which covered a `name=value` query and left a BARE encoded
+        // payload -- a query with no `=` in it -- on the plain-text scanner, so
+        // #22's defect was fully live there. `plusIsSpace: true`: a query string
+        // is form data by convention, which is #479's reading and is not a
+        // choice the way a fragment's is.
+        detectInUrlComponent(parts.query, entryIndex, 'request.url.query', out, policy, true, true);
     }
-    detectInString(parts.base + parts.tail, entryIndex, { jsonPath: 'request.url' }, out, policy);
-    tryWalkJsonText(parts.query, entryIndex, 'request.url.query', out, policy, 0);
+    if (parts.fragment) {
+        detectInUrlComponent(parts.fragment, entryIndex,
+            'request.url.fragment', out, policy, true);
+    }
+}
+
+/**
+ * One path segment or fragment, rewritten on its DECODED text.
+ *
+ * A CHANGED COMPONENT IS RE-ENCODED; AN UNCHANGED ONE IS RE-EMITTED VERBATIM.
+ * Same asymmetry and same reason as `replaceJsonOrText`'s form branch --
+ * `encodeURIComponent(urlDecode(x))` is not the identity, so round-tripping
+ * every segment would rewrite bytes the scrub was never asked to touch. Here it
+ * carries a second weight: issue #22's scope note warns that a wrong path
+ * rewrite is worse than the corruption it prevents, so a segment carrying no
+ * detected value has to come back byte-identical rather than normalised.
+ *
+ * `encodeURIComponent` over-escapes for a path segment -- `:`, `@`, `,` and
+ * `;` are legal `pchar` and come back as escapes. That is meaning-preserving
+ * (a segment's `%3A` and `:` denote the same character) and it is the safe
+ * direction: it can never introduce a delimiter. Only a segment that actually
+ * changed pays it.
+ */
+/**
+ * Percent-encode text for the component it will sit in.
+ *
+ * `encodeURIComponent` encodes for a QUERY PARAMETER -- it escapes `/` and
+ * `?`, which are legal in a path segment's siblings and in a fragment, and
+ * which carry STRUCTURE there. Replacing a value inside an SPA hash route
+ * `#/users/<email>/edit` therefore produced `#%2Fusers%2F...%2Fedit`, which no
+ * hash router matches: the component was re-encoded correctly for somewhere it
+ * was not going.
+ *
+ * So each component gets back the characters that are legal in it. A FRAGMENT
+ * keeps `/` and `?` (RFC 3986 `fragment = *( pchar / "/" / "?" )`); a PATH
+ * SEGMENT keeps `?` escaped, because a `?` in a segment would start the query,
+ * but is otherwise the same; a QUERY keeps both, since it is already past the
+ * `?`. Everything else stays escaped -- over-escaping is meaning-preserving
+ * and is the safe direction, and only a component that actually changed pays
+ * any of it.
+ *
+ * `&` AND `=` ARE RETURNED ONLY IF THE INPUT NEVER SPELLED THEM ESCAPED, and
+ * that condition is the whole of it. Withholding them unconditionally -- on the
+ * reasoning that handing them back could let a rewritten opaque component start
+ * parsing as form data on a later pass -- destroyed the structure of four real
+ * shapes that `origin/main` preserved: a query with a flag part
+ * (`?email=…&debug`), a hash-router query, a `name=value` path segment, and a
+ * matrix-parameter segment.
+ *
+ * The reasoning was wrong in the half it did not cover. A component whose raw
+ * text ALREADY held `=` or `&` literally was classified opaque *with them
+ * present*, and no replacement can repair whatever made it opaque: every fake
+ * keeps the character that disqualified the name (`@` for an email, `+` for a
+ * phone, `:` for a MAC), and a flag-style part with no `=` at all is never
+ * touched. So returning a character the input spelled literally cannot change
+ * the classification -- the input already had it.
+ *
+ * What WOULD change it is handing back a character the input had escaped, so
+ * that is the case the condition excludes. The output then carries exactly the
+ * literal-or-escaped spelling the input carried, which is what keeps
+ * classification -- and therefore idempotence -- stable.
+ *
+ * A mixed spelling in one component (a literal `/` and a `%2F` together) still
+ * resolves to the one answer this rule gives. Fixing that properly means
+ * splicing positionally -- carrying an offset map through `percentDecode` and
+ * re-encoding only the replaced spans -- which would delete this table
+ * outright. Tracked as the end state on #132.
+ */
+/**
+ * Write a rewritten component back, keeping every byte the scrub did not change.
+ *
+ * WHY NOT `encodeURIComponent` OVER THE WHOLE THING, and why not a table of
+ * per-component exceptions either. Both were tried and both respell bytes
+ * nobody asked about.
+ *
+ * `encodeURIComponent` encodes for a QUERY PARAMETER: it escapes `/` and `?`,
+ * which are legal in a fragment and carry structure there, so rewriting a value
+ * inside an SPA hash route `#/users/<email>/edit` produced `#%2Fusers%2F...`
+ * that no hash router matches.
+ *
+ * A table of characters to hand back per component kind fixed that and then had
+ * its own failure, because it can only give ONE answer per character per
+ * component -- and a component routinely spells the same character both ways. A
+ * hash-route query beside a base64-padded parameter (`token=abc%3D%3D`), or a
+ * path with one encoded separator among literal ones (`/a%2Fb/`), made every
+ * literal occurrence withhold too: a four-segment route collapsed to one.
+ *
+ * SO THE ANSWER IS POSITIONAL, NOT A RULE ABOUT CHARACTERS. Detection and
+ * replacement happen on decoded text; the write-back then re-emits the INPUT's
+ * own bytes everywhere except the span that actually changed, and encodes only
+ * that span. A byte the scrub did not touch is therefore spelled exactly as it
+ * arrived, whatever its neighbours do -- which is the guarantee the rest of this
+ * module already makes for whole parameters, applied inside one.
+ *
+ * The span is found by common prefix and suffix against the decoded text, so a
+ * component with several disjoint replacements re-encodes the stretch BETWEEN
+ * the first and last of them as one span. That is a narrower version of the old
+ * defect rather than a new one, and the general fix -- carrying the map through
+ * replacement so each match is spliced on its own -- is #132.
+ */
+/**
+ * Widen a decoded-text range to the edges of the escape runs it touches.
+ *
+ * The offset map records a run's START for every character it decodes to, so a
+ * boundary landing inside a run resolves to the run's beginning. Slicing there
+ * would take the rest of the run with it or leave it behind -- the defect that
+ * consumed a `":"` delimiter, left a name's final letter in the artifact, and
+ * dropped an `x!` prefix outright. Widening puts the whole run inside the
+ * re-encoded span, where it comes back as its own bytes.
+ */
+function snapToRuns(from, to, offsets, decodedLength) {
+    while (from > 0 && offsets[from - 1] === offsets[from]) from--;
+    while (to < decodedLength && to > 0 && offsets[to] === offsets[to - 1]) to++;
+    return [from, to];
+}
+
+/**
+ * Write each accepted replacement back on its own.
+ *
+ * WHY PER SPAN. The whole-span diff below covers everything from the first
+ * change to the last, so a component carrying two replaced values had every
+ * delimiter BETWEEN them re-encoded -- two query parameters merged into one,
+ * three route segments into one. Writing each match back separately leaves the
+ * text between them exactly as it arrived, which is the same guarantee the
+ * no-escape route gets for free.
+ *
+ * The characters a snap pulls in are untouched text, so they are carried into
+ * the encoded span rather than replaced: `decoded.slice(from, span.from)` and
+ * `decoded.slice(span.to, to)` bracket the replacement.
+ *
+ * Returns null if the spans cannot be mapped, so the caller falls back rather
+ * than emitting something it cannot justify.
+ */
+function writeBackSpans(raw, decoded, spans, offsets) {
+    let out = '';
+    let copiedTo = 0;
+    for (const span of spans) {
+        const [from, to] = snapToRuns(span.from, span.to, offsets, decoded.length);
+        const rawFrom = offsets[from];
+        const rawTo = offsets[to];
+        if (rawFrom === undefined || rawTo === undefined || rawFrom < copiedTo) return null;
+        const keptBefore = decoded.slice(from, span.from);
+        const keptAfter = decoded.slice(span.to, to);
+        out += raw.slice(copiedTo, rawFrom) +
+            encodeURIComponent(keptBefore + span.replacement + keptAfter);
+        copiedTo = rawTo;
+    }
+    return out + raw.slice(copiedTo);
+}
+
+function writeBackChangedSpan(raw, decoded, next, offsets) {
+    const max = Math.min(decoded.length, next.length);
+    let pre = 0;
+    while (pre < max && decoded[pre] === next[pre]) pre++;
+    let suf = 0;
+    while (suf < max - pre &&
+        decoded[decoded.length - 1 - suf] === next[next.length - 1 - suf]) suf++;
+
+    // SNAP EACH BOUNDARY TO ITS RUN'S EDGE BEFORE SLICING. A multi-escape run
+    // decodes to several characters that all record the run's START, so a
+    // boundary landing inside one resolves to the run's beginning -- and the
+    // slice then takes the rest of the run with it, or leaves it behind.
+    //
+    // A non-ASCII letter IS such a run, so any value beginning or ending with
+    // one hit this. Both directions were live and the second is the worse pair:
+    // a start boundary inside the preceding `":"` run consumed that delimiter
+    // and produced invalid JSON; an end boundary inside the value's own last
+    // run left that character behind -- someone's real initial, still there --
+    // and because the leftover is still part of a detectable value, every
+    // later pass replaced it again with a DIFFERENT fake, so the artifact never
+    // settled.
+    //
+    // Snapping puts the whole run inside the re-encoded span, where it comes
+    // back as its own bytes. Found by independent review.
+    let end;
+    [pre, end] = snapToRuns(pre, decoded.length - suf, offsets, decoded.length);
+
+    const rawStart = offsets[pre];
+    const rawEnd = offsets[end];
+    // `offsets` is built by `percentDecode` and carries a final sentinel at
+    // `raw.length`, so both ends are always addressable.
+    if (rawStart === undefined || rawEnd === undefined) return encodeURIComponent(next);
+    return raw.slice(0, rawStart) +
+        encodeURIComponent(next.slice(pre, next.length - (decoded.length - end))) +
+        raw.slice(rawEnd);
+}
+
+function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace) {
+    // THE TWIN OF `detectInUrlComponent`, branching on the same predicate over
+    // the same raw text. The two must agree about which treatment a component
+    // gets, or a value is found under one reading and rewritten under the
+    // other.
+    if (isFormComponent(raw, mayBeForm)) {
+        // `plusIsSpace: false`, AND THIS IS THE LEAK-SAFE DIRECTION rather
+        // than a stylistic preference. Reading `+` as a space made an E.164
+        // phone in a form-shaped fragment undetectable -- the pattern needs a
+        // literal `+` -- so the number shipped in the clear where `main` had
+        // caught it. The mirror case, a conforming producer's space coming
+        // back as `%2B`, only respells a value. One direction loses a value
+        // and the other does not, which settles it. Found by independent
+        // review on issue #22.
+        return replaceJsonOrText(raw, replacements, policy, 0, false, plusIsSpace === true);
+    }
+    // NO ESCAPE, NO DECODE. The decode route exists to stop an escape's
+    // characters being read as payload; a component holding no `%XX` has none to
+    // misread, so decoding buys nothing and the re-encode on the way out is
+    // pure cost -- it respelled `@` as `%40`, and where two values changed it
+    // escaped the `=` and `&` between them. For this case `main` was simply
+    // right, and this is the cheapest way to keep being right about it.
+    if (!/%[0-9A-Fa-f]{2}/.test(raw)) return replaceAll(raw, replacements);
+    const offsets = [];
+    const decoded = decodedOnceOrNull(raw, plusIsSpace === true, offsets);
+    if (decoded === null) return replaceAll(raw, replacements);
+    const spans = [];
+    const next = replaceJsonOrText(decoded, replacements, policy, 0, true,
+        plusIsSpace === true, spans);
+    if (next === decoded) return raw;
+    // Per span when the replacement pass could say where it landed; the
+    // whole-span diff otherwise (the JSON branch, which reproduces its own
+    // delimiters anyway).
+    const exact = spans.length > 0 ? writeBackSpans(raw, decoded, spans, offsets) : null;
+    return exact !== null ? exact : writeBackChangedSpan(raw, decoded, next, offsets);
 }
 
 function replaceInUrl(url, replacements, policy) {
     const parts = splitUrl(url);
-    if (!parts || parts.query.length === 0) return replaceAll(url, replacements);
-    const base = replaceAll(parts.base, replacements);
-    const query = replaceJsonOrText(parts.query, replacements, policy, 0);
-    return base + '?' + query + replaceAll(parts.tail, replacements);
+    const pathText = pathSegments(parts.pathText)
+        .map((s) => (s.length === 0 ? s : replaceUrlComponent(s, replacements, policy, false, false)))
+        .join('/');
+    let out = replaceAll(parts.origin, replacements) + pathText;
+    // `!== null` rather than a truthiness test, and the detection twin's
+    // falsy skip is the same decision: an EMPTY query or fragment has nothing
+    // to detect, but its delimiter is still part of the URL and `http://h/x?`
+    // must not come back as `http://h/x`.
+    if (parts.query !== null) {
+        out += '?' + replaceUrlComponent(parts.query, replacements, policy, true, true);
+    }
+    if (parts.fragment !== null) {
+        out += '#' + replaceUrlComponent(parts.fragment, replacements, policy, true, false);
+    }
+    return out;
 }
 
 /**
@@ -1005,28 +1511,58 @@ function replaceInUrl(url, replacements, policy) {
  * Decoding first removes the whole class: the scanner sees the value the
  * operator actually sent, with delimiters as delimiters.
  */
-function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth) {
+function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth, noForm, plusIsSpace) {
+    if (plusIsSpace === undefined) plusIsSpace = true;
     depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
-        walkJsonForDetect(parsed, null, entryIndex, basePath, out, policy);
+        // `depth` goes with it, so the form layers already unwrapped here and
+        // the layers a leaf still carries draw on ONE budget. Restarting the
+        // count inside the document would make the effective reach the sum of
+        // two caps, which is a third number nobody declared.
+        walkJsonForDetect(parsed, null, entryIndex, basePath, out, policy, depth);
         return;
     }
-    if (depth < FORM_DEPTH_LIMIT) {
+    if (!noForm && depth < FORM_DEPTH_LIMIT) {
         const pairs = formEncodedPairs(text);
         if (pairs) {
             for (const p of pairs) {
                 if (p.empty) continue;
-                tryWalkJsonText(formDecode(p.raw), entryIndex,
-                    basePath + '.' + p.name, out, policy, depth + 1);
+                // `plusIsSpace` TRAVELS WITH THE COMPONENT; `noForm` DOES NOT.
+                // The two options describe different things, and conflating them
+                // cost a leak. `noForm` is a statement about the CALLER's own
+                // layer -- "I already decoded this text" -- so it must stop
+                // here; a string one level down is raw wire text again.
+                // `plusIsSpace` is a statement about the COMPONENT's encoding
+                // convention, which holds for every layer inside it: a nested
+                // form pair in a fragment is still in a fragment.
+                //
+                // Letting it fall back to the default split an RFC 5233
+                // subaddressed address (`user+tag@host`) at its `+` and replaced
+                // only the email-shaped tail, leaving the real local-part
+                // prefix in the clear.
+                // THE SAME MULTI-LAYER REFUSAL THE OPAQUE ROUTE MAKES. Half a
+                // decode is worse than none wherever it happens, and a form
+                // branch is not exempt: a fragment is form-routed, so an OAuth
+                // `state` carrying an encoded redirect URL arrives here with
+                // two layers on it. Decoding once left escapes that the
+                // plain-text scanner then read as payload.
+                const value = decodedOnceOrNull(p.raw, plusIsSpace);
+                if (value === null) {
+                    detectInString(p.raw, entryIndex,
+                        { jsonPath: basePath + '.' + p.name }, out, policy);
+                } else {
+                    tryWalkJsonText(value, entryIndex,
+                        basePath + '.' + p.name, out, policy, depth + 1, false, plusIsSpace);
+                }
                 // The NAME is scanned too. The plain-text path made no
                 // distinction between the two sides of an `=`, so leaving names
                 // out would silently stop detecting a secret used as a key.
                 // The path names the PARAMETER as well as the side, or two
                 // secrets used as two names in one body report the same
                 // location and the findings cannot be told apart.
-                detectInString(formDecode(p.name), entryIndex,
+                detectInString(percentDecode(p.name, plusIsSpace), entryIndex,
                     { jsonPath: basePath + '.' + p.name + '.<name>' }, out, policy);
             }
             return;
@@ -1042,7 +1578,12 @@ function scrubPii(har, policy) {
     for (const entry of entries) {
         applyReplacementsToEntry(entry, plan.replacements, policy);
     }
-    return { substitutions: plan.substitutions, retained: plan.retained };
+    return {
+        substitutions: plan.substitutions,
+        retained: plan.retained,
+        deepDetections: plan.deepDetections,
+        depthLimited: plan.depthLimited,
+    };
 }
 
 /**
@@ -1057,7 +1598,20 @@ function scrubPii(har, policy) {
  * values and stays in memory; `substitutions` is the value-free record.
  */
 function planPiiReplacements(detections, policy) {
-    if (detections.length === 0) return { replacements: [], substitutions: [], retained: [] };
+    // The two walk counters travel on the detections array (see `countDeep`),
+    // so they are read here and carried into the result whatever else this
+    // function decides. Read BEFORE the empty-detections return: a capture
+    // nested past the shared cap can legitimately yield zero detections, and
+    // that is precisely the run where "I stopped before the bottom" is the only
+    // thing worth saying. Dropping it there would make the quietest possible
+    // output the least informative one.
+    const walk = {
+        deepDetections: detections.deepDetections || 0,
+        depthLimited: detections.depthLimited || 0,
+    };
+    if (detections.length === 0) {
+        return { replacements: [], substitutions: [], retained: [], ...walk };
+    }
 
     // Split out the detections the policy asked us to leave alone (issue #346).
     // DETECTION is untouched above: a disabled class is still found, and is
@@ -1131,7 +1685,7 @@ function planPiiReplacements(detections, policy) {
     replaceable.push(...survivors);
 
     if (replaceable.length === 0) {
-        return { replacements: [], substitutions: [], retained: summariseRetained(retainedDetections, new Set()) };
+        return { replacements: [], substitutions: [], retained: summariseRetained(retainedDetections, new Set()), ...walk };
     }
 
     // Group by (type, original value) so we record one substitution per unique original.
@@ -1169,7 +1723,7 @@ function planPiiReplacements(detections, policy) {
         return a.originalHash < b.originalHash ? -1 : 1;
     });
     const replacedValues = new Set(replacements.map((r) => String(r.value)));
-    return { replacements, substitutions: safe, retained: summariseRetained(retainedDetections, replacedValues) };
+    return { replacements, substitutions: safe, retained: summariseRetained(retainedDetections, replacedValues), ...walk };
 }
 
 /**
@@ -1286,6 +1840,16 @@ function applyReplacementsToEntry(entry, replacements, policy) {
  * for branch, because detection and replacement disagreeing about what a body
  * IS is how a value gets detected in one shape and rewritten in another.
  *
+ * `noForm` SUPPRESSES THE FORM BRANCH AT THIS LEVEL ONLY, and exists because
+ * the form branch re-encodes what it changes (below). That is correct when it
+ * is handed raw wire text -- how the query branch uses it -- and a DOUBLE
+ * encode when it is handed text the caller already decoded and will re-encode
+ * itself. `%40` then comes back as `%2540`, which decodes to the literal text
+ * `%40` rather than to `@`: the value's meaning destroyed, not merely
+ * over-escaped. It is deliberately NOT propagated into the recursion -- a
+ * string leaf inside a parsed document IS raw wire text, so the form branch's
+ * re-encode is right there. Found by independent review on issue #22.
+ *
  * A CHANGED PARAMETER IS RE-ENCODED; AN UNCHANGED ONE IS RE-EMITTED VERBATIM.
  * That asymmetry is load-bearing. `encodeURIComponent(decodeURIComponent(x))`
  * is not the identity -- `%7E` decodes to `~` and re-encodes to `~`, `+`
@@ -1294,15 +1858,30 @@ function applyReplacementsToEntry(entry, replacements, policy) {
  * whose whole purpose is to be a faithful record. Only a parameter that
  * actually changed pays that cost, and only because it had to.
  */
-function replaceJsonOrText(text, replacements, policy, depth) {
+function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpace, spansOut) {
+    if (plusIsSpace === undefined) plusIsSpace = true;
     depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
-        const rebuilt = replaceInJson(parsed, null, replacements, policy);
-        return JSON.stringify(rebuilt);
+        // `depth` threaded for the reason stated on the detection twin: one
+        // budget, not two added together.
+        const rebuilt = replaceInJson(parsed, null, replacements, policy, depth);
+        const next = JSON.stringify(rebuilt);
+        // NOTHING CHANGED MEANS THE ORIGINAL BYTES, not a re-serialization of
+        // them. `JSON.stringify(JSON.parse(x))` is not the identity: it drops
+        // insignificant whitespace, normalises `1.0` to `1`, resolves `\uXXXX`
+        // -- and ROUNDS AN INTEGER PAST 2^53, which is not cosmetic. An id of
+        // `12345678901234567890` came back `12345678901234567000`.
+        //
+        // Returning the rebuilt text unconditionally also lies to every caller
+        // that reads "different bytes" as "something was scrubbed". The URL
+        // component path does exactly that to decide whether to re-encode, so
+        // a document that merely round-tripped was re-encoded as though the
+        // scrub had rewritten it (found by independent review on issue #22).
+        return next === JSON.stringify(parsed) ? text : next;
     }
-    if (depth < FORM_DEPTH_LIMIT) {
+    if (!noForm && depth < FORM_DEPTH_LIMIT) {
         const pairs = formEncodedPairs(text);
         if (pairs) {
             let changed = false;
@@ -1312,10 +1891,34 @@ function replaceJsonOrText(text, replacements, policy, depth) {
                 // else in it. The byte-identical promise covers the whole body,
                 // not only the parameters that carry values.
                 if (p.empty) return '';
-                const value = formDecode(p.raw);
-                const nextValue = replaceJsonOrText(value, replacements, policy, depth + 1);
+                // The multi-layer refusal, mirroring the detection twin. A
+                // refused value is rewritten as PLAIN TEXT on its raw bytes, so
+                // it is neither half-decoded nor re-encoded.
+                const decodedValue = decodedOnceOrNull(p.raw, plusIsSpace);
+                const value = decodedValue === null ? p.raw : decodedValue;
+                // `plusIsSpace` threaded for the reason stated on the detection
+                // twin: it belongs to the component, not to this layer.
+                const nextValue = decodedValue === null
+                    ? replaceAll(p.raw, replacements)
+                    : replaceJsonOrText(value, replacements, policy,
+                        depth + 1, false, plusIsSpace);
 
-                const name = formDecode(p.name);
+                // THE NAME HALF IS DECODED BLINDLY, AND THAT IS DELIBERATE --
+                // giving it the value half's multi-layer refusal was tried and
+                // LEAKS. Refusing a doubly-encoded name leaves its raw bytes to
+                // `replaceAll`, and the enrolled needles cover a value and its
+                // SINGLE-encoded spelling, so a twice-encoded name matches
+                // neither and the address survives in the clear. The blind
+                // decode reaches it, because one decode is all the needle needs.
+                //
+                // The cost of reaching it is a respelling: the needle that
+                // matches is the encoded one, whose replacement is already
+                // wire-form, and the wrap below then encodes it again -- so this
+                // half can come back one level deeper than its own value half.
+                // Raised by independent review as the asymmetry it is; the
+                // respelling is the lesser of the two, and the real fix is the
+                // nested re-encode contract on #133 rather than a guard here.
+                const name = percentDecode(p.name, plusIsSpace);
                 const nextName = replaceAll(name, replacements);
 
                 const valueChanged = nextValue !== value;
@@ -1323,17 +1926,39 @@ function replaceJsonOrText(text, replacements, policy, depth) {
                 if (!valueChanged && !nameChanged) return p.name + '=' + p.raw;
                 changed = true;
                 // Only the half that changed is re-encoded; the other half is
-                // re-emitted exactly as it arrived.
-                return (nameChanged ? encodeURIComponent(nextName) : p.name) +
-                    '=' + (valueChanged ? encodeURIComponent(nextValue) : p.raw);
+                // re-emitted exactly as it arrived. A half the multi-layer guard
+                // refused was rewritten on its RAW bytes, so it is already in
+                // wire form and must not be encoded again -- the same rule on
+                // both sides of the `=`.
+                // A half that ARRIVED unencoded goes back unencoded, provided
+                // the replacement carries nothing that has to be escaped to
+                // stay one `name=value` half. Same reasoning as the opaque
+                // route's no-escape guard: re-encoding a half that held no
+                // escape respells bytes the scrub had no reason to touch, and
+                // `main` left them alone. The fakes contain none of these
+                // characters, so the fast path is the normal one.
+                const mustEscape = /[&=+%# ]/;
+                const encodeHalf = (refused, rawHalf, next) => {
+                    if (refused === null) return next;            // rewritten on raw bytes already
+                    if (!/%[0-9A-Fa-f]{2}/.test(rawHalf) && !mustEscape.test(next)) return next;
+                    return encodeURIComponent(next);
+                };
+                const valueOut = !valueChanged ? p.raw : encodeHalf(decodedValue, p.raw, nextValue);
+                const nameOut = !nameChanged ? p.name : encodeHalf(undefined, p.name, nextName);
+                return nameOut + '=' + valueOut;
             });
             return changed ? rebuilt.join('&') : text;
         }
     }
-    return replaceAll(text, replacements);
+    // Only the plain-text branch reports spans. The JSON branch rebuilds a
+    // document and the form branch re-encodes its own halves, so neither has
+    // spans in the caller's coordinate space -- and the caller falls back to
+    // the whole-span diff, which is harmless there because those branches
+    // reproduce their own delimiters.
+    return replaceAll(text, replacements, spansOut);
 }
 
-function replaceInJson(node, parentKey, replacements, policy) {
+function replaceInJson(node, parentKey, replacements, policy, depth) {
     if (node === null || node === undefined) return node;
     if (typeof node === 'string') {
         // Honor field-typed replacements: if the parent key declares a context
@@ -1345,7 +1970,15 @@ function replaceInJson(node, parentKey, replacements, policy) {
             const target = indexFor(replacements).byTypeValue.get(`${pickContextType(fType)}${node}`);
             if (target) return target.replacement;
         }
-        return replaceAll(node, replacements);
+        // Flat first, then the layers -- the order `sanitize-har.js:scrubString`
+        // already uses. By the time the nested pass runs, every spelling the
+        // flat pass could match is already a fake, so the descent only reaches
+        // what the flat pass structurally could not: a value whose FIELD NAME
+        // lives inside an encoded layer. Detection's twin is
+        // `descendNestedLeaf`, and the two must descend identically or a value
+        // is found in one shape and rewritten in another.
+        return replaceNestedLeaf(replaceAll(node, replacements), parentKey,
+            replacements, policy, depth || 0);
     }
     if (typeof node === 'number') {
         const fType = fieldTypeFor(parentKey, policy);
@@ -1362,16 +1995,51 @@ function replaceInJson(node, parentKey, replacements, policy) {
         return node;
     }
     if (Array.isArray(node)) {
-        return node.map(v => replaceInJson(v, parentKey, replacements, policy));
+        return node.map(v => replaceInJson(v, parentKey, replacements, policy, depth));
     }
     if (typeof node === 'object') {
         const out = {};
         for (const k of Object.keys(node)) {
-            out[k] = replaceInJson(node[k], k, replacements, policy);
+            out[k] = replaceInJson(node[k], k, replacements, policy, depth);
         }
         return out;
     }
     return node;
+}
+
+/**
+ * Rewrite inside the encoding layers a single string leaf may still carry.
+ *
+ * The replacement twin of `descendNestedLeaf`, over the same shared traversal,
+ * so the two reach equally. A value detected at a depth the replacement pass
+ * could not reach is the shape the gate then reports as an unremovable secret
+ * -- #454's fail-CLOSED half, which is an operability dead end rather than a
+ * leak but is no more acceptable.
+ *
+ * BYTE PRESERVATION IS THE SHARED WALK'S, not restated here. `transformNested`
+ * returns the ORIGINAL bytes of any subtree nothing changed, which is what
+ * keeps a committed reference from churning on a re-scrub that altered nothing
+ * in it.
+ */
+function replaceNestedLeaf(text, parentKey, replacements, policy, depth) {
+    if (typeof text !== 'string' || text.length === 0) return text;
+    return transformNested(text, (node) => {
+        // A field-typed replacement is keyed on (type, exact value), which is
+        // how a name-only kind -- a person's name, a city -- is rewritten at
+        // all: it has no shape for the flat pass to match on. Reaching it here
+        // is the whole of #24.
+        const fType = fieldTypeFor(node.name, policy);
+        if (fType && fType !== 'geo-lat' && fType !== 'geo-lng') {
+            const target = indexFor(replacements).byTypeValue
+                .get(`${pickContextType(fType)}${node.value}`);
+            if (target) return target.replacement;
+        }
+        return replaceAll(node.value, replacements);
+        // `path` below is threaded even though this callback never reads it.
+        // The twin passes it, and two functions documented as twins diverging
+        // in their options bag is how the next person extending one to use
+        // `path` ships a half-wired change.
+    }, { depth, name: parentKey, path: null });
 }
 
 function pickContextType(fType) {
@@ -1596,7 +2264,7 @@ function scratch(buf, need) {
     return buf;
 }
 
-function replaceAll(text, replacements) {
+function replaceAll(text, replacements, spansOut) {
     const idx = indexFor(replacements);
     if (idx.empty || text.length === 0) return text;
 
@@ -1640,6 +2308,13 @@ function replaceAll(text, replacements) {
         const from = starts[k];
         out += text.slice(copiedTo, from) + hits[k].replacement;
         copiedTo = from + hits[k].length;
+        // WHERE each accepted match landed, for a caller that has to write the
+        // result back into differently-encoded bytes. Arbitration already
+        // happened above, so these spans are ascending and non-overlapping --
+        // the invariant the per-span write-back relies on.
+        if (spansOut) {
+            spansOut.push({ from, to: from + hits[k].length, replacement: hits[k].replacement });
+        }
     }
     return copiedTo === 0 ? text : out + text.slice(copiedTo);
 }

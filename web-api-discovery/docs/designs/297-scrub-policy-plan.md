@@ -318,6 +318,209 @@ friendly name. The failure direction is under-reporting, which manufactures
 false alarms about missing captures. Grouping coarsely is better than grouping
 on a value that changes between captures; add a test that pins this.
 
+## Stage 13 -- The identity axis joins the shared walk (issue #24)
+
+Added 2026-10-26, after re-measuring the three issues that point at this one.
+Not in the original breakdown because the shared walk did not exist then: it
+arrived with #454, for the gate and the secret scrubber only.
+
+**The gap, stated as the four cells it belongs to.** There are two parity axes
+and three engines. Three cells were covered and one was empty:
+
+| | secret axis | identity axis |
+|---|---|---|
+| rule parity | `har-scrub-gate-parity.test.js` | `har-scrub-gate-parity.test.js` |
+| reach parity | `har-nested-reach.test.js` | **empty** |
+
+`pii.js` kept a private descent that stopped at the first parsed JSON document
+-- `walkJsonForDetect` handed a string leaf to the flat detectors and never
+asked whether the leaf was itself a payload -- plus a private cap
+(`FORM_DEPTH_LIMIT = 4`) that did not agree numerically with the shared
+`MAX_DEPTH = 8`. Two engines, two caps, one name for the idea, which is the
+hazard `har-nested.js`'s own header warns about.
+
+**Measured before the change,** with the shared walk as the oracle: it delivers
+a name-keyed value as a whole leaf at hops 1-7 and the identity pass acted only
+at hop 1. Six failing depths. A SHAPED value was replaced at every depth, which
+is why #24 is the intersection of name-only sensitivity and nesting rather than
+a general failure to descend -- the flat text pass does not need a layer decoded
+to recognise a shape.
+
+**Task 13.1 (test-first).** `pii-nested-reach.test.js`, the missing cell. It
+carries **no depth literal**: each depth is asked of both sides -- does
+`transformNested` deliver the value as a whole leaf, and did the identity pass
+act on it -- so the boundary comes from the module and moves with it. Section 5
+is the self-check that stops the oracle going blind and taking the assertions
+with it; section 0 asserts the fixture premise, because a probe value inside any
+`isFake*` predicate would make the whole file pass vacuously. That is a live
+trap, not a hypothetical: `+1555XXXXXXX` is the phone faker's own output, and a
+first measurement of #24 read a correctly-declined `+15551234567` as a reach
+failure.
+
+**Task 13.2.** `pii.js` takes the shared traversal for both halves --
+`descendNestedLeaf` for detection and `replaceNestedLeaf` for replacement, which
+must descend identically or a value is found in one shape and rewritten in
+another. `FORM_DEPTH_LIMIT` becomes the shared `MAX_DEPTH` rather than a second
+number, and the depth budget is threaded rather than restarted inside a parsed
+document, so the effective reach is one cap and not the sum of two.
+
+**Task 13.3.** `har-nested.js`'s visit node gains a `path`, composed from the
+form parameter names, object keys and array indices the traversal passed
+through. A location, never a value. Without it a nested finding could only say
+"somewhere inside `request.postData.text`" -- which is what #297 measured when
+135 of 176 findings resolved no key path. Additive: the two existing callers
+ignore the field.
+
+**Task 13.4.** The deeper reach is REPORTED, not silent. `sanitize-har.js`
+prints how many typed-PII detections came from below the surface, so a capture
+whose scrub quietly started doing more says so on the run rather than in an
+unexplained diff weeks later; and it prints when the walk hit the shared depth
+limit, because an early stop that reports nothing reads as a clean walk and
+fails open -- the D3 half of #454.
+
+**Accepted limit, disclosed rather than introduced.** The shared walk offers
+STRING leaves only, so a card or a coordinate serialised as a JSON NUMBER
+inside a nested document is still missed by the name-keyed rules. It was missed
+entirely before, so this is a strict improvement; closing it means teaching the
+shared walk about scalar leaves, which changes all three engines and belongs in
+its own change.
+
+## Stage 14 -- Escape-aware URL coverage (issue #22)
+
+Added 2026-11-01. Stage C of the four-stage breakdown agreed on 2026-10-26;
+numbered here so the plan and the issue use one set of names.
+
+**The gap.** #479 routed a URL's **query** through the decoding path and
+disclosed the rest as a known limit in `detectInUrl`'s own doc comment: the
+origin, path and fragment stayed on the plain-text scanner. A path segment
+carrying a percent-encoded payload -- some REST APIs put a JSON or base64 blob
+in a segment rather than a query -- was therefore fully exposed to the original
+corruption, and so was the fragment, and so was every part of a URL with no
+`?` in it at all.
+
+**Both directions were live, and the second is the serious one.**
+
+| direction | what happened |
+|---|---|
+| false positive | `%22`'s digits completed a 14-digit id into a Luhn-valid, assigned-IIN 16-digit run; the 16-digit fake was written over a span including the `22` *inside* the escape, so `%22` became `%42` and the segment decoded with a `B` where its delimiting quote had been |
+| false **negative** | the same two digits extended a genuine 16-digit card to 18 and pushed it out of every detector's range, so it was never found and shipped in the clear |
+
+Measured end to end through the real CLI on a four-entry fixture: before,
+1 of 4 URLs carried a corrupted payload **and** the genuine card survived;
+after, 0 of 4 and the card is replaced.
+
+**Task 14.1 (test-first).** `pii-url-escape-scrub.test.js`. **31 checks**, eight
+of which fail behaviourally with `pii.js` reverted to `origin/main`. Sections:
+the fixture premise (the escape digits really do form a Luhn-valid card-length
+run); the corruption, in each location the query branch did not cover; the
+falsifiers that prove the fix is not a detection kill-switch; the
+meaning-preservation guards; idempotence across every component kind; and the
+four regressions the review panel found.
+
+**Task 14.2.** State the defect generally rather than per-location --
+*percent-encoded text scanned as plain text has its escapes read as payload* --
+and fix it the same way. `splitUrl` decomposes a URL into origin, path, query
+and fragment; each path segment and the fragment are percent-decoded before
+detection and rewritten on their **decoded** text.
+
+Escape-awareness then costs nothing and is not a second mechanism: decoded text
+holds no `%XX` for a write to land inside, and the re-encode happens afterwards
+over a whole component. A decode **without** that write guard would have
+relocated the corruption rather than removing it, which is why the two always
+travel together.
+
+**Task 14.3.** `formDecode` becomes `percentDecode(raw, plusIsSpace)`. `+` is a
+space in form **data** and a literal `+` everywhere else in a URL; decoding a
+path with form semantics would turn a legitimate `+` into a space and re-encode
+it as `%20` -- a changed URL, in exactly the direction #22's scope note warns
+about.
+
+**Three things it deliberately does not do.**
+
+- The **origin** keeps the plain-text treatment. A scheme and an authority are
+  structure, not a place a provider hides a document, and a `/` inside the
+  authority would be the path's first delimiter rather than a character of it.
+- An **unchanged component is re-emitted verbatim**, never round-tripped
+  through the decoder. `encodeURIComponent(urlDecode(x))` is not the identity,
+  and a wrong path rewrite is worse than the corruption it prevents.
+- The path is scanned **per segment**, so a value spanning a `/` is no longer
+  matched. That is a tightening, not a loss: a `/` is a delimiter, and a digit
+  run reaching across one was the same accidental-length reading this stage
+  exists to stop.
+
+**What the review panel changed about this stage.** Two models reviewed the
+diff under explicit overrides. The first found one Critical -- a component whose
+decoded text read as `name=value` was encoded twice, so `%40` became `%2540`,
+text rather than an `@`. The second found four more regressions against `main`,
+and they reshaped the design rather than patching it:
+
+- A no-op scrub rewrote any JSON-shaped path segment, because
+  `JSON.stringify(JSON.parse(x))` is not the identity and **rounds an integer
+  past 2^53**. "Nothing changed" now means the original bytes.
+- **One decode is not always enough, and half a decode is worse than none.** A
+  proxied URL in a path segment carries two layers; decoding once left escapes
+  the plain-text scanner then read as payload, bringing an 18-character digit
+  run back into card range. A component is decoded only when the result is
+  unambiguously decoded.
+- Reading a form-shaped fragment with `+`-is-space made an E.164 phone
+  **undetectable**, and it shipped in the clear where `main` had caught it.
+  That settles what #130 was filed to decide: the two readings looked like
+  mirror images, but one loses a value and the other only respells one. A
+  fragment takes `+`-literal; a query keeps `+`-is-space, which is correct for
+  form data.
+- `mailto:` and `data:` have no `//` authority, so the whole URL read as one
+  path segment and re-encoding escaped the delimiters that give it meaning.
+  Non-hierarchical URLs keep the plain-text treatment.
+
+**A third round, and what it says about the work.** Both models reviewed again
+after those fixes, and found one Critical leak plus three more:
+
+- The form branch's recursive calls did not pass `plusIsSpace` on, so depth 2
+  reverted to the default inside a fragment that had asked for `+`-literal. An
+  RFC 5233 subaddressed address (`user+tag@host`) was split at its `+` and only
+  the email-shaped tail replaced -- **the real local-part prefix survived in the
+  clear**, where `main` had replaced the whole address. The lesson generalises
+  past the bug: `noForm` describes the CALLER's layer and must stop there, while
+  `plusIsSpace` describes the COMPONENT's convention and holds for every layer
+  inside it. One propagates and one does not, and the code now says why.
+- The multi-layer refusal had been applied to the opaque route only, so a
+  form-routed fragment carrying an encoded redirect URL was still half-decoded.
+  Both twins now share the predicate.
+- The query had never been given the component treatment: a BARE encoded query,
+  one with no `=`, still went to the plain-text scanner, so #22's defect was
+  fully live there and a genuine card in one survived. Now routed, with
+  `+`-is-space, which is #479's reading and correct for a query.
+- `encodeURIComponent` escapes `/` and `?`, which are legal in a fragment, so
+  rewriting a value inside an SPA hash route produced `#%2Fusers%2F...` that no
+  router matches. Each component now gets back the characters legal in it --
+  except `&` and `=`, deliberately, because handing those back would let a
+  rewritten opaque component start parsing as form data on a later pass and be
+  classified differently from one run to the next.
+
+**Three review rounds on one stage is itself a finding.** Every one of them
+landed on the same seam: not the decoding, but **deciding which layer each rule
+belongs to**. The encode/decode boundary in a URL is where this module's
+hardest defects live, and it is worth approaching the next change there
+expecting that rather than discovering it.
+
+**Accepted limits, disclosed rather than discovered later.** Header, cookie and
+`queryString[]` values are still plain-text-scanned, so an entry can disagree
+with itself when a `Referer` mirrors its own URL (#131). The multi-layer
+refusal is coarse and also declines a single-layer payload holding an encoded
+string leaf, which is the common shape rather than only the proxied-URL one
+(#132). A nested form value is re-encoded once per layer (#133). A query with
+an unencoded `+` still hides an E.164 number from its own detector, which
+scanning both spellings would fix for good (#130). And the path is read per
+`/` segment. The gate's own version of this reading defect is #127, and the
+userinfo mis-scan is #128.
+
+**Accepted limit, disclosed rather than introduced.** The **gate**
+(`har-shapes.js`) still reads an encoded path as plain text, so it reports the
+same shape as an identity advisory. The count and disposition are unchanged by
+this stage -- one advisory before, one after, artifact kept either way -- so it
+is the complementary half of the defect on the other engine rather than a
+regression here. Filed as its own follow-up.
+
 ## Stage 11 -- Documentation
 
 **Task 11.1.** `SKILL.md`: the three files and what each may contain; the

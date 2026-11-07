@@ -69,11 +69,20 @@ $script:OutcomeFailed    = 'failed'
     a PowerShell reimplementation of it would be free to disagree about what a
     capture is, and the store having two answers to that is the defect this
     subsystem exists to avoid (#387).
+
+.PARAMETER Path
+    What to enumerate: a store, a host folder in one, or a single capture.
+
+    OMIT IT for the store this clone records into. That default is resolved by
+    capture-store.js, from the same function the recorder anchors to -- the
+    repository's MAIN working tree, not the working directory (#367). Deriving
+    it here instead would be the second answer to "where is the store" that
+    this function exists to avoid being (#102).
 #>
 function Get-HarCaptureInventory {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Path,
+        [Parameter()][string]$Path,
         # Where capture-store.js is. Passed in rather than derived, because the
         # two entry points sit in different directories and neither should have
         # to agree with this module about the other's layout.
@@ -84,9 +93,15 @@ function Get-HarCaptureInventory {
         throw "capture-store.js not found at $CaptureStoreJs"
     }
 
-    $json = & node $CaptureStoreJs $Path
+# The path is appended rather than always passed: an empty string argument
+    # is dropped by some native-command paths and kept by others, so "omitted"
+    # has to mean omitted rather than mean "empty, probably".
+    $nodeArgs = @($CaptureStoreJs)
+    if ($Path) { $nodeArgs += $Path }
+    $json = & node @nodeArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "capture-store.js failed with exit code $LASTEXITCODE while enumerating $Path."
+        $what = if ($Path) { $Path } else { "this clone's capture store" }
+        throw "capture-store.js failed with exit code $LASTEXITCODE while enumerating $what."
     }
     $parsed = ($json -join "`n") | ConvertFrom-Json
     # ConvertFrom-Json unwraps a one-element array, and a store with exactly one
@@ -150,7 +165,15 @@ function Invoke-HarCaptureBatch {
         # session.json, so there is no URI, no intent and no provenance to
         # attribute the traffic to, and a scrub that cannot say what it scrubbed
         # is not one worth having.
-        if ($capture.captureClass -eq 'foreign') {
+        #
+        # ASKED AS `recorderOutput`, NOT AS `captureClass -eq 'foreign'` (#102).
+        # The walk now also reports `imported` -- a dump somebody brought in on
+        # purpose and described in a CAPTURE.md -- and a test that named the one
+        # class it knew about would have handed that capture to the scrub the
+        # moment the class was added, silently. The question is whether THIS
+        # recorder made it; a class added later defaults to "not ours", which is
+        # the only safe default for the stage that opens the file.
+        if (-not $capture.recorderOutput) {
             $record.Outcome = $script:OutcomeDeclined
             $record.Reason = "not recorder output ($($capture.reason))"
             $results.Add([pscustomobject]$record)

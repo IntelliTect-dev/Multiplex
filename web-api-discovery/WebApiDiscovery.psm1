@@ -2,12 +2,24 @@
 #
 # The entry points stay scripts inside the skill folder -- the one copy every AI
 # agent reads -- and each command here is generated from its script: the same
-# parameters, the same [CmdletBinding()] (so -WhatIf and -Verbose flow through),
-# and its comment-based help (forwarded to the script). Nothing is duplicated, so a `git pull` of the
+# parameters, the script's own [CmdletBinding()], and its comment-based help
+# (forwarded to the script). Nothing is duplicated, so a `git pull` of the
 # clone updates the commands too.
 #
-# The module sits at the repository root so that a module-path link to the clone
-# (Install.ps1) resolves the skill folder through the link.
+# Because the binding is COPIED rather than restated, a ShouldProcess-gated
+# parameter is on a command exactly when its script declares it: -WhatIf and
+# -Confirm reach Invoke-SanitizeHar and Remove-HarCapture, the two that declare
+# SupportsShouldProcess, and none of the other five. Declaring it on a script is
+# the whole of adding -WhatIf to the command. The rest of the common parameters
+# are not gated that way -- -Verbose, -Debug and -ErrorAction ride along with
+# [CmdletBinding()] itself, so they are on all seven.
+#
+# The module sits at the repository root because that is where the managed
+# profile block Install.ps1 writes expects the manifest -- it probes
+# <clone>/WebApiDiscovery.psd1 -- and because the skill folder below resolves
+# relative to this file. A link in the modules folder is DELIBERATELY not how
+# this is installed; Install.ps1 explains why (a reparse point there roams as a
+# placeholder that cannot be hydrated on any other machine).
 
 Set-StrictMode -Version Latest
 
@@ -15,6 +27,8 @@ $script:SkillRoot = Join-Path $PSScriptRoot 'skills' 'web-api-discovery'
 
 $script:EntryPoints = [ordered]@{
     'Invoke-HarCapture'        = 'scripts/capture/Invoke-HarCapture.ps1'
+    'Get-HarCapture'           = 'scripts/capture/Get-HarCapture.ps1'
+    'Remove-HarCapture'        = 'scripts/capture/Remove-HarCapture.ps1'
     'Invoke-HarCatalogue'      = 'scripts/capture/Invoke-HarCatalogue.ps1'
     'Stop-HarRecording'        = 'scripts/capture/Stop-HarRecording.ps1'
     'ConvertFrom-HarCatalogue' = 'scripts/capture/ConvertFrom-HarCatalogue.ps1'

@@ -87,16 +87,38 @@ process.stdout.write(JSON.stringify(m.START_OPTIONS || null));
         # launch. The issue names both flags, and the argument for them is written
         # up on capture-har.js and in SKILL.md rather than here.
         #
+        # `ai` joined the list in #98, which is a third question again: WHO
+        # DRIVES. The recorder could only record, so having an AI drive a capture
+        # meant somebody opening an agent session and hand-writing a long prompt
+        # -- the goal, the endpoint, what to vary, what never to do, when to stop
+        # -- which is the same every time except the goal, and most of which is
+        # safety text. No existing lever can express it: -Describe is the goal and
+        # is already required, --browser says whose BROWSER it is (and `--ai`
+        # implies native rather than adding a mode), and --attach names one that
+        # is already running. The issue names the switch, and the argument for it
+        # is written up on capture-har.js and in SKILL.md rather than here.
+        #
+        # It takes no value and brought no companion: there is deliberately no
+        # `--agent`, because a second driver would be a second option and nothing
+        # needs one yet.
+        #
+        # `ai-tools` joined in #112, owner-approved on that issue: WHICH TOOLS the
+        # driver has. `auto` (the default) runs it in auto permission mode, whose
+        # classifier approves or blocks each action; `browser-only` adds
+        # `--tools ""` so every built-in tool is removed and only the browser
+        # tools remain, for a site the operator is signed into something
+        # sensitive on. No existing lever can say it, and it is refused without --ai.
+        #
         # THE EQUALITY IS KEPT DELIBERATELY. Loosening it to a subset check would
         # end the prompt-first gate for every future option, which is the whole
         # value of this assertion -- the next one has to come through here.
         ($options | Sort-Object) -join ',' | Should -Be (
-            (@('attach', 'browser', 'describe', 'isolated', 'log-level', 'no-wait',
+            (@('ai', 'ai-tools', 'attach', 'browser', 'describe', 'isolated', 'log-level', 'no-wait',
                'output-path', 'port', 'profile', 'snapshot-seconds', 'uri', 'validate-only') |
              Sort-Object) -join ',') -Because (
-            'issue #512 adds no command-line option, and the two #73 added are the ones ' +
-            'it names; changing this list is a deliberate API decision that the Adding ' +
-            'Command-Line Options rule says to prompt for')
+            'issue #512 adds no command-line option; the two #73 added and the ones #98 and #112 added ' +
+            'are the ones those issues name. Changing this list is a deliberate API decision ' +
+            'that the Adding Command-Line Options rule says to prompt for')
     }
 
     It 'rejects an unknown option rather than ignoring it' {

@@ -292,9 +292,15 @@ Describe 'WebApiDiscovery module' {
         $module = Import-Module (Join-Path $PSScriptRoot 'WebApiDiscovery.psd1') -Force -PassThru
         try {
             $module.ExportedFunctions.Keys | Sort-Object | Should -Be @(
-                'ConvertFrom-HarCatalogue', 'Invoke-HarCapture', 'Invoke-HarCatalogue', 'Invoke-SanitizeHar', 'Stop-HarRecording')
+                'ConvertFrom-HarCatalogue', 'Get-HarCapture', 'Invoke-HarCapture', 'Invoke-HarCatalogue',
+                'Invoke-SanitizeHar', 'Remove-HarCapture', 'Stop-HarRecording')
             (Get-Command Invoke-HarCapture).Parameters.Keys | Should -Contain 'Describe'
             (Get-Command Invoke-SanitizeHar).Parameters.Keys | Should -Contain 'WhatIf'
+            # The generated proxy has to carry ShouldProcess through, or the
+            # confirmation and the dry run exist on the script and not on the
+            # command anybody actually types (#102).
+            (Get-Command Remove-HarCapture).Parameters.Keys | Should -Contain 'WhatIf'
+            (Get-Command Remove-HarCapture).Parameters.Keys | Should -Contain 'Confirm'
         }
         finally { Remove-Module $module }
     }

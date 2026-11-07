@@ -627,6 +627,20 @@ Describe 'raw captures are gitignored' {
 
 Describe 'Invoke-HarCapture.ps1' {
 
+    # Invoke-FrontDoor stubs node under $script:Tmp. This block used to inherit
+    # whatever path the previous Describe left there -- already deleted, and
+    # null when a filtered run skips that Describe -- so it gets its own.
+    BeforeEach {
+        $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("har-fd-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:Tmp -and (Test-Path -LiteralPath $script:Tmp)) {
+            Remove-Item -LiteralPath $script:Tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'exists at the canonical path' {
         Test-Path -LiteralPath $script:InvokePs1 | Should -BeTrue
     }
@@ -643,7 +657,7 @@ Describe 'Invoke-HarCapture.ps1' {
         }
     }
 
-    It 'exposes exactly the eight documented parameters' {
+    It 'exposes exactly the ten documented parameters' {
         # Was six, down from eight: -StorageState is auto-discovered and
         # -ValidateOnly stays on capture-har.js where it is the test seam.
         #
@@ -657,6 +671,24 @@ Describe 'Invoke-HarCapture.ps1' {
         # mechanism, and -Isolated is the opposite end of the same axis (it is
         # refused alongside both).
         #
+        # NINE with #98, and the addition is WHO DRIVES -- `-AI` hands the
+        # browsing to an agent while the recorder goes on recording. The issue
+        # names the switch and the design is its Proposal section; it is the one
+        # thing no existing parameter can say. -Browser and -Attach answer whose
+        # BROWSER it is, which is a different question and already decided by the
+        # time this one is asked: `-AI` implies -Browser Native, because an agent
+        # driving a Playwright-launched browser would be driving the launch the
+        # protected sites refuse. It takes no value, because -Describe -- already
+        # mandatory -- is the goal, and there is deliberately no `-Agent` yet:
+        # a second driver would be a second option, and nothing needs one.
+        #
+        # TEN with #112, owner-approved there: -AITools says WHICH TOOLS the agent
+        # has. Auto (the default) runs it in auto permission mode, whose
+        # classifier approves or blocks each action; BrowserOnly removes every
+        # built-in tool (`--tools ""`) so only the browser tools remain, for a
+        # site signed into something sensitive. It only means something with
+        # -AI, and is refused without it.
+        #
         # This assertion is the gate the "Adding Command-Line Options" rule
         # relies on, so it is DELIBERATELY still an equality over the whole list:
         # the next parameter has to arrive through this test and the argument for
@@ -667,7 +699,134 @@ Describe 'Invoke-HarCapture.ps1' {
             ForEach-Object { $_.Name.VariablePath.UserPath } |
             Sort-Object
         $names | Should -Be @(
-            'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Port', 'Profile', 'Uri')
+            'AI', 'AITools', 'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Port',
+            'Profile', 'Uri')
+    }
+
+    It 'forwards -AI to the recorder, and nothing when it is absent' {
+        # The front door forwards and the recorder decides -- the rule this file
+        # already holds for -Attach and -Browser. So what is pinned here is only
+        # that the switch REACHES the recorder: the implication to native, the
+        # exclusivity with -Isolated and the refusal when no agent is installed
+        # are capture-har.js's, asserted against it in
+        # scripts/capture/capture-ai-drive.test.js.
+        #
+        # Asserted on the arguments node actually receives, not on the source
+        # text: a grep for 'ai' passes just as happily when the condition is
+        # inverted.
+        $plain = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture' }).Args
+        $plain | Should -Match 'start --uri' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
+        $plain | Should -Not -Match '--ai'
+
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; AI = $true }).Args |
+            Should -Match '--ai'
+    }
+
+    It 'treats -AI:$false as off, not as "the switch was mentioned"' {
+        # Same hazard as -Verbose:$false, and the same fix: a switch is read by
+        # its VALUE, never by whether it appears in $PSBoundParameters.
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; AI = $false }).Args |
+            Should -Not -Match '--ai'
+    }
+
+    It 'refuses -AI with an explicitly typed -Browser Playwright, at exit 2' {
+        # FOUND IN REVIEW. -Browser was forwarded only when it differed from its
+        # default, so `-AI -Browser Playwright` reached the recorder as a bare
+        # `--ai` and was silently driven in the native browser -- while the help
+        # for -AI and SKILL.md both say the combination is refused. The operator
+        # typed both; honouring one of them is a guess.
+        #
+        # Run through the real front door and the real recorder, because "the
+        # refusal happens" is a property of the two together. PATH has every
+        # `claude` removed so that, if the refusal is ever lost again, the run
+        # stops at "no agent installed" (exit 1) rather than driving a browser.
+        $agentNames = @('claude.exe', 'claude.cmd', 'claude.bat', 'claude')
+        $kept = foreach ($dir in ($env:PATH -split [System.IO.Path]::PathSeparator)) {
+            if (-not $dir) { continue }
+            $holdsAgent = $false
+            foreach ($name in $agentNames) {
+                if (Test-Path -LiteralPath (Join-Path $dir $name)) { $holdsAgent = $true }
+            }
+            if (-not $holdsAgent) { $dir }
+        }
+        $pwsh = (Get-Command pwsh).Source
+        $savedPath = $env:PATH
+        $env:PATH = $kept -join [System.IO.Path]::PathSeparator
+        Push-Location -LiteralPath $TestDrive
+        try {
+            $out = & $pwsh -NoProfile -File $script:InvokePs1 -Uri 'https://example.com' `
+                -Describe 'pester fixture' -AI -Browser Playwright 2>&1
+            $exit = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+            $env:PATH = $savedPath
+        }
+        $text = $out | Out-String
+        $exit | Should -Be 2 -Because "-AI with -Browser Playwright is a usage error: got $exit`n$text"
+        $text | Should -Match '(?i)--ai and --browser playwright'
+    }
+
+    It 'forwards -AITools to the recorder only when it was typed (#112)' {
+        # Same rule as -Browser: the front door forwards what the operator TYPED
+        # and the recorder decides -- so a typed -AITools without -AI reaches the
+        # recorder and is refused there, while the default forwards nothing.
+        $browserOnly = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; AI = $true; AITools = 'BrowserOnly' }).Args
+        $browserOnly | Should -Match '--ai(\s|$)' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
+        $browserOnly | Should -Match '--ai-tools browser-only'
+
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; AI = $true; AITools = 'Auto' }).Args |
+            Should -Match '--ai-tools auto'
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; AI = $true }).Args |
+            Should -Not -Match '--ai-tools'
+    }
+
+    It 'accepts only Auto and BrowserOnly for -AITools (#112)' {
+        { & $script:InvokePs1 -Uri 'https://example.com' -Describe 'pester fixture' -AI -AITools None } |
+            Should -Throw -ErrorId 'ParameterArgumentValidationError,Invoke-HarCapture.ps1'
+    }
+
+    It 'refuses -AITools without -AI, at exit 2, naming both (#112)' {
+        # Which agent's tools? With no agent there is nothing to limit, and an
+        # operator who typed it believes something is. Run through the real front
+        # door and the real recorder, because the refusal is a property of the
+        # two together. $TestDrive holds no .har-profile.json, so were the refusal
+        # ever lost the run would stop at the profile preflight (exit 1) rather
+        # than launch a browser.
+        $pwsh = (Get-Command pwsh).Source
+        Push-Location -LiteralPath $TestDrive
+        try {
+            $out = & $pwsh -NoProfile -File $script:InvokePs1 -Uri 'https://example.com' `
+                -Describe 'pester fixture' -AITools BrowserOnly 2>&1
+            $exit = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+        $text = $out | Out-String
+        $exit | Should -Be 2 -Because "-AITools without -AI is a usage error: got $exit`n$text"
+        $text | Should -Match '(?i)--ai-tools needs --ai'
+    }
+
+    It 'forwards -Browser only when it was typed, so -Attach alone is not refused' {
+        # The other half of the same fix. Forwarding the DEFAULT would turn
+        # `-Attach 9222` into a refusal about a browser nobody named (--attach
+        # refuses --browser playwright), so the test is whether the operator
+        # TYPED it, not whether it differs from the default.
+        $attachOnly = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; Attach = '9222' }).Args
+        $attachOnly | Should -Match '--attach 9222' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
+        $attachOnly | Should -Not -Match '--browser'
+
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; Browser = 'Playwright' }).Args |
+            Should -Match '--browser playwright'
     }
 
     It 'takes the URI positionally, so the parameter name is optional' {
@@ -923,6 +1082,71 @@ Describe 'The catalogue phase is never silently dropped' {
     It 'SKILL.md points an agent at that same prompt' {
         $skill = Get-Content -LiteralPath $script:SkillMd -Raw
         $skill | Should -Match 'catalogue-prompt\.md'
+    }
+}
+
+Describe 'An AI can be told to drive the recording (#98)' {
+
+    It 'SKILL.md has a section saying how, and what the agent will refuse to do' {
+        # The issue asks for this section by name. It is asserted rather than
+        # trusted because the switch is unusable without it: an operator who does
+        # not know the prompt is generated has no reason to believe the rules are
+        # in it, and the rules are the reason the switch is safe to use at all.
+        $skill = Get-Content -LiteralPath $script:SkillMd -Raw
+        $skill | Should -Match '(?i)Let an AI drive'
+        $skill | Should -Match '-AI'
+        $skill | Should -Match 'drive-prompt\.md'
+        $skill | Should -Match 'discovery-checklist\.md'
+        # The three facts an operator has to know before they use it: what it
+        # will not do, where the record of what it did lands, and that they can
+        # still stop it.
+        $skill | Should -Match '(?i)no stealth'
+        $skill | Should -Match 'agent-log\.txt'
+        $skill | Should -Match '(?i)hands? back'
+    }
+
+    It 'documents the one-time extension setup and the browser-selection rule (#117)' {
+        # The extension is the default driver only once it is installed, signed in
+        # and connected under the capture browser name in the CAPTURE profile --
+        # a step no run automates. And the rule that keeps the agent out of the
+        # operator's everyday Chrome has to be one the operator can read, not only
+        # one the agent is told. Both places an operator looks: SKILL.md and the
+        # -AI help.
+        $help = (Get-Help -Name $script:InvokePs1 -Parameter AI | Out-String)
+        foreach ($doc in @(@{ Name = 'SKILL.md'; Text = (Get-Content -LiteralPath $script:SkillMd -Raw) },
+                           @{ Name = '-AI help'; Text = $help })) {
+            $doc.Text | Should -Match 'chromewebstore\.google\.com/detail/\S*fcoeoabgfenejglbffodgkkbkcdhcgfn' -Because "$($doc.Name) says where to install it"
+            $doc.Text | Should -Match '(?i)capture\s+profile' -Because "$($doc.Name) says which profile"
+            $doc.Text | Should -Match '(?i)sign\s+in\W+to\s+the\s+extension' -Because "$($doc.Name) says to sign in to the extension"
+            $doc.Text | Should -Match '`har-capture`' -Because "$($doc.Name) names the default capture browser name"
+            $doc.Text | Should -Match '(?i)capture\s+browser\s+only' -Because "$($doc.Name) says the name is for the capture browser alone"
+            $doc.Text | Should -Match 'select_browser' -Because "$($doc.Name) states the selection rule"
+            $doc.Text | Should -Match '(?i)enforced\s+by\s+the\s+prompt' -Because "$($doc.Name) says the rule is the prompt's, not code"
+            $doc.Text | Should -Match '(?i)hands? back' -Because "$($doc.Name) says what happens when it cannot select"
+            $doc.Text | Should -Match '--chrome' -Because "$($doc.Name) says the child is given the extension"
+            $doc.Text | Should -Match '--no-chrome' -Because "$($doc.Name) says a run without the extension disables it"
+            $doc.Text | Should -Match '(?i)(mov|renam)\w*[\s\S]{0,200}reconnect' -Because "$($doc.Name) says moving a profile changes its name"
+            $doc.Text | Should -Match '(?i)attach[\s\S]{0,400}hands?\s+back\s+rather\s+than' -Because "$($doc.Name) says an attached run hands back rather than falling back"
+            $doc.Text | Should -Match '(?i)drives?\s+through\s+Playwright\s+MCP' -Because "$($doc.Name) says a run without the extension uses Playwright MCP"
+        }
+        (Get-Content -LiteralPath $script:SkillMd -Raw) | Should -Match '(?i)default\s+driver\s+once\s+it\s+is\s+set\s+up' -Because 'it is the default only after the one-time setup'
+    }
+
+    It 'ships the driving prompt and the checklist as files an agent can read' {
+        # Same reasoning as the catalogue prompt above: a prompt that lives in a
+        # string literal cannot be reviewed, and this one is mostly safety rules.
+        # The checklist is separate because issue #76 owns that text and will lift
+        # it into SKILL.md -- a file move rather than a rewrite.
+        $driveMd = Join-Path (Split-Path -Parent $script:PromptMd) 'drive-prompt.md'
+        $checklistMd = Join-Path (Split-Path -Parent $script:PromptMd) 'discovery-checklist.md'
+        Test-Path -LiteralPath $driveMd | Should -BeTrue
+        Test-Path -LiteralPath $checklistMd | Should -BeTrue
+        $drive = Get-Content -LiteralPath $driveMd -Raw
+        $drive | Should -Match '(?i)no stealth measures'
+        $drive | Should -Match '(?i)never enter a password'
+        $drive | Should -Match '(?i)payment page'
+        $drive | Should -Match '(?i)bot check'
+        (Get-Content -LiteralPath $checklistMd -Raw) | Should -Match '(?i)error cases'
     }
 }
 
