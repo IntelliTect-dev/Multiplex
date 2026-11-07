@@ -26,7 +26,10 @@ public sealed class GetTripItTripCommand : TripItCmdletBase
     [Parameter(ParameterSetName = ListSet)] public int? PageSize { get; set; }
     [Parameter(ParameterSetName = ListSet)] public int? PageNum { get; set; }
     [Parameter(ParameterSetName = ListSet)] public string? TripPermissionFilter { get; set; }
-    [Parameter(ParameterSetName = ListSet)] public string? Traveler { get; set; }
+    /// <summary>All (default), Mine (trips I travel on) or Others (trips I'm on but not travelling).</summary>
+    [Parameter(ParameterSetName = ListSet)]
+    [ValidateSet("All", "Mine", "Others")]
+    public string Traveler { get; set; } = "All";
     [Parameter(ParameterSetName = ListSet)] public string? ExcludeTypes { get; set; }
     [Parameter(ParameterSetName = ListSet)] public SwitchParameter SortByDate { get; set; }
 
@@ -45,7 +48,8 @@ public sealed class GetTripItTripCommand : TripItCmdletBase
             var trips = RunSync(async ct =>
             {
                 var list = new List<Trip>();
-                await foreach (var t in client.Trips.ListAllAsync(timeframe, PageSize ?? 500, ct).ConfigureAwait(false))
+                await foreach (var t in client.Trips.ListAllAsync(timeframe, PageSize ?? 500, ct,
+                    TripsClient.ParseTravelerFilter(Traveler)).ConfigureAwait(false))
                 {
                     list.Add(t);
                 }
@@ -56,7 +60,8 @@ public sealed class GetTripItTripCommand : TripItCmdletBase
         }
 
         var result = RunSync(ct => client.ListTripsAsync(
-            Past.IsPresent, PageSize, PageNum, TripPermissionFilter, Traveler,
+            Past.IsPresent, PageSize, PageNum, TripPermissionFilter,
+            TripsClient.TravelerParam(TripsClient.ParseTravelerFilter(Traveler)),
             ExcludeTypes, SortByDate.IsPresent ? true : null, ct));
         foreach (var trip in result.ItemsOf("Trip"))
         {

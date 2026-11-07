@@ -197,6 +197,61 @@ mean handling card numbers:
 
 Wrapping them would need an explicit opt-in flag and a deliberate decision.
 
+## Writes (verified 2026-11-06)
+
+Every write below was exercised against a dated, private throwaway trip and cleaned up.
+Request bodies were first **captured from the SPA itself** (route interception — CDP does
+not surface fetch bodies to `request.postData()`), then reproduced by the client from the
+serializer tables decoded out of the bundle (`getModelMap()` per class in
+`index-*.js`). `src/TripIt/PlanSchema.cs` is the transcription.
+
+| Operation | Request | Response |
+|---|---|---|
+| Create trip | `POST v2/create/trip` `{"Trip":{is_owner_traveler, description, display_name, primary_location, start_date, end_date, is_private, TripPurposes:[{purpose_type_code}]}}` | `{Trip, Profile}` |
+| Replace trip | `POST v2/replace/trip/uuid/{uuid}` — same body, **complete state** | `{Trip, Profile}` |
+| Delete trip | `POST v2/delete/trip/uuid/{uuid}` — no body. **Deletes the trip's plans too** (none were left in Unfiled Items) | |
+| Create plan | `POST v2/create` `{"LodgingObject":{trip_uuid, …}}` — one envelope key | `{<Type>Object, Warning?}` |
+| Replace plan | `POST v2/replacePlan/{type}/uuid/{uuid}` — same body shape, **complete state** (the SPA re-sends every writable field) | `{<Type>Object}` |
+| Delete plan | `POST v2/delete/{type}/uuid/{uuid}` | |
+| Delete one leg | `POST v2/delete/segment/uuid/{segmentUuid}` — the reservation keeps its other legs | |
+| Move plan | `GET v2/move/{type}/uuid/{uuid}?trip_uuid={tripUuid}` — **empty `trip_uuid` moves to Unfiled Items** | `{<Type>Object}` |
+| Flight schedule | `GET v2/flightInfo?departure_date=yyyy-MM-dd&airline_code=FI&flight_num=680` | `{FlightInfo:{orig_airport_code, dest_airport_code, departure_time, arrival_time, arrival_date_diff, …}}`; 400 with an empty description when unknown |
+
+| Merge trips | `POST v2/merge/trip?uuid={from}&into_uuid={into}` — no body. The source trip's plans move into the destination and the source is **deleted** (404 afterwards) | |
+| Invite | `POST v2/invite` `{"Invitation":{"EmailAddresses":{"email_address":"a@x" or [..]},"TripShare":{"trip_uuid","is_read_only","is_traveler","is_sent_with_details":false},"message"}}` — **real JSON booleans** here, unlike every other payload. TripIt emails each address | |
+| Change role | `POST v2/changeTripInvitations` `{"TripInvitations":{"trip_uuid","Invitees":[{"Invitee":{"@attributes":{"profile_ref"},"is_read_only":"…","is_traveler":"…"}}]}}` — string booleans, order matters | |
+| Remove participant | `POST v2/delete/trip_participant/trip_uuid/{uuid}/profile_ref/{ref}` | |
+
+Roles map to two flags: viewer = read-only; editor = `is_read_only:false,is_traveler:false`;
+traveler = `is_traveler:true`.
+
+**Trips the user is not travelling on.** `list/trip` filters by `traveler`: `true` (TripIt's
+default when omitted), `false`, or `all`. On the test account the default hid 75 of 392
+past trips. The client defaults to `all`. The owner's travelling flag is
+`is_owner_traveler` on the trip payload — **`create/trip` ignores `"false"` (the owner is
+always made a traveler) but `replace/trip` honours it**, so creating a non-travelling trip
+is create + replace. Editing, adding plans and deleting work the same on such trips.
+
+Rules learned the hard way:
+
+- **Element order matters.** TripIt turns the JSON into XML and validates it against an
+  ordered XSD. The same fields in a different order answer **400 "JSON did not validate
+  with the xsd"**. Emit fields in serializer order at every level (plan, Segment, date,
+  address, traveler) — `PlanSchema.Order` does this.
+- **Every value is a string**, including booleans (`"is_purchased":"false"`) and counts.
+- **Dates/times**: `{"date":"2027-01-18","time":"15:00:00","timezone":"…","is_timezone_manual":"true|false"}`.
+  With no time zone, omit `timezone` (the SPA sends the string `"null"`) and send
+  `is_timezone_manual:"false"`; TripIt infers the zone from airports/addresses and fills
+  `utc_offset`.
+- **Flights need only codes**: `marketing_airline_code`, `marketing_flight_number`,
+  `start/end_airport_code`, `StartDateTime`, `EndDateTime`. TripIt fills airport names,
+  cities, zones, aircraft, distance and duration. It answers with a non-fatal
+  `Warning` that `marketing_airline_code` is read-only, yet keeps it and resolves the
+  airline name — harmless.
+- **Traveler arrays have type-specific keys**: `Traveler` (air, rail, transport, cruise),
+  `Guest` (lodging), `Driver` (car), `Attendee` (restaurant), `Participant` (activity).
+- `list/object` rejects `page_size` above **100** with 400 (`list/trip` accepts any size).
+
 ## Authentication
 
 Session-cookie plus CSRF header. Both are read from a signed-in browser profile by
@@ -249,13 +304,9 @@ The header set the SPA actually sends, captured into `session.json` as `spa_head
 
 Honest gaps, so nobody mistakes this for a settled specification:
 
-- Every `json(obj)` above. The field lists for `create`, `create/trip`,
-  `replace/trip`, `replacePlan`, `travelerProfile/update`, `invite`,
-  `changeTripInvitations`, `updateMultipleCosts` and `merge/trip` are **not yet known** —
-  the call sites build them dynamically. They need a capture of the SPA performing each
-  mutation.
-- No mutating request has ever been recorded against this API in this repository. All
-  three HARs are `GET`-only, so no create/replace/delete payload is evidenced anywhere.
+- Trip and plan create/replace/delete/move, merge, invite, role change and participant
+  removal are verified (see **Writes**). Still unverified and unwrapped:
+  `travelerProfile/update`, `updateMultipleCosts`, `documents`.
 - Response field names and nullability are known only for the endpoints probed live
   (`get/profile`, `list/trip`, `get/trip`, `list/object`, `travelerProfile/get`,
   `purchasedProductInfo`, `list/points_program`) and only for one account's data.

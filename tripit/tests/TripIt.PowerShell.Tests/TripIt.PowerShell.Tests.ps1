@@ -70,6 +70,19 @@ Describe 'Module manifest' {
             'Get-TripItObject',
             'Search-TripItTrip',
             'Find-TripItReference',
+            'New-TripItTrip',
+            'Set-TripItTrip',
+            'Remove-TripItTrip',
+            'New-TripItPlan',
+            'Set-TripItPlan',
+            'Remove-TripItPlan',
+            'Move-TripItPlan',
+            'Get-TripItPlanSchema',
+            'Merge-TripItTrip',
+            'Get-TripItParticipant',
+            'Add-TripItParticipant',
+            'Set-TripItParticipant',
+            'Remove-TripItParticipant',
             'Get-TripItTravelerProfile',
             'Get-TripItProAlert',
             'Get-TripItPurchasedProduct',
@@ -133,6 +146,46 @@ Describe 'Read cmdlets' {
 
     It 'Find-TripItReference validates Kind' {
         { Find-TripItReference -Kind Planet -Query x } | Should -Throw
+    }
+}
+
+Describe 'Write cmdlets' {
+    It '<Name> supports -WhatIf' -ForEach @(
+        @{ Name = 'New-TripItTrip' }, @{ Name = 'Set-TripItTrip' }, @{ Name = 'Remove-TripItTrip' },
+        @{ Name = 'New-TripItPlan' }, @{ Name = 'Set-TripItPlan' }, @{ Name = 'Remove-TripItPlan' },
+        @{ Name = 'Move-TripItPlan' }
+    ) {
+        (Get-Command $Name).Parameters.ContainsKey('WhatIf') | Should -BeTrue
+    }
+
+    It '<Name> has ConfirmImpact High' -ForEach @(
+        @{ Name = 'Remove-TripItTrip' }, @{ Name = 'Remove-TripItPlan' }, @{ Name = 'Merge-TripItTrip' },
+        @{ Name = 'Add-TripItParticipant' }, @{ Name = 'Remove-TripItParticipant' }
+    ) {
+        $type = (Get-Command $Name).ImplementingType
+        $attr = $type.GetCustomAttributes([System.Management.Automation.CmdletAttribute], $false) | Select-Object -First 1
+        $attr.ConfirmImpact | Should -Be 'High'
+    }
+
+    It 'New-TripItTrip -WhatIf makes no request' {
+        { New-TripItTrip -Destination 'Nowhere' -StartDate 2030-01-01 -EndDate 2030-01-02 -WhatIf } | Should -Not -Throw
+    }
+
+    It 'New-TripItPlan rejects unknown fields before any request' {
+        { New-TripItPlan -Type lodging -Fields @{ hotel_name = 'x' } -TripUuid 11111111-aaaa-9000-0001-000000000001 } |
+            Should -Throw '*Unknown lodging field*'
+    }
+
+    It 'Get-TripItTrip -Traveler accepts All, Mine, Others' {
+        (Get-Command Get-TripItTrip).Parameters['Traveler'].Attributes.ValidValues | Should -Be @('All', 'Mine', 'Others')
+    }
+
+    It 'New-TripItTrip has -NotTraveling' {
+        (Get-Command New-TripItTrip).Parameters.ContainsKey('NotTraveling') | Should -BeTrue
+    }
+
+    It 'Get-TripItPlanSchema lists the air segment fields' {
+        (Get-TripItPlanSchema air).SegmentFields | Should -Contain 'marketing_flight_number'
     }
 }
 
