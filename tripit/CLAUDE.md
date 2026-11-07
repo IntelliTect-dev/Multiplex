@@ -4,8 +4,16 @@ A .NET 10 toolkit wrapping the TripIt web SPA backend (`https://www.tripit.com/a
 a typed client library, an MCP server, and a binary PowerShell module.
 
 **Goal:** full CRUD over every TripIt entity (trips, flights, lodging, cars, rail, …)
-exposed through both a PowerShell module and an MCP server. Only the read groundwork
-exists so far — see **Next steps**.
+exposed through both a PowerShell module and an MCP server. The **read surface is done**
+(sub-clients, itinerary builder, MCP tools, cmdlets, unit + live tests); writes are next —
+see **Next steps**.
+
+**Why the web backend and not TripIt's documented public API (decided 2026-11-06, owner's
+call):** `api.tripit.com/v1` is alive (401 without credentials) but TripIt no longer issues
+OAuth consumer keys — its help center says the public API "is no longer available for new
+developer integrations", `/developer/create` redirects a signed-in user to the trips page,
+and `tripit/api#287/#288` confirm it. HTTP Basic on v1 needs support to enable it per
+account. Don't re-investigate; use the v1 docs only as a field-name oracle.
 
 ## Read this before touching the API surface
 
@@ -56,7 +64,9 @@ name, then look for `.post(const, {json:{…}})`. The bundle hash changes betwee
   `"hour_clock":"1"`. Any `int?` / `long?` / `bool?` DTO property therefore throws
   `Utf8JsonReader.GetInt32()` on deserialization. DTOs need string-tolerant converters for
   every numeric and boolean property; this is the v1 API's long-standing behaviour, not a
-  quirk of one endpoint. See #7.
+  quirk of one endpoint. Deserialize with `TripItJson.Options` (lenient converters).
+- **A one-item collection is an object, not an array** (`"Trip":{…}`). Always read
+  collections with `TripItJson.AsList`.
 
 ## Authentication
 
@@ -69,7 +79,8 @@ node tools/extract-session.js      # -> ~/.tripit-mcp/session.json
 - Default capture profile is the **shared** `%LOCALAPPDATA%\har-capture\profile` (the
   `web-api-discovery` skill's own), so one browser sign-in serves every project.
   Override with `--profile <name|path>`, `TRIPIT_CAPTURE_PROFILE` or `HAR_CAPTURE_PROFILE`.
-- It attaches to a Chrome already on the CDP port (9222), else spawns one on the profile.
+- It attaches to a Chrome already on the CDP port (9222), then tries the profile's
+  `DevToolsActivePort` and 9333 (the capture browser the skill launches), else spawns one.
 - Session cookies come from the **cookie jar**, not from an intercepted request: Chrome
   attaches `Cookie` *after* Playwright surfaces a request, so `request.headers()['cookie']`
   is always empty and the `httpOnly` cookies carrying the session (`session_id`,
@@ -82,8 +93,9 @@ node tools/extract-session.js      # -> ~/.tripit-mcp/session.json
   (`errors.edgesuite.net`, `Reference #18...`) on every endpoint; re-running the extractor
   restored `200` immediately, with no sign-in needed. The `bm_sz` / `bm_sv` bot-management
   cookies are part of what the API requires, and they are the short-lived part.
-  `TripItClient` currently classifies only 302/401 as auth failure, so this surfaces as a
-  generic `HttpRequestException` and reads as an unrelated bug. See #7.
+  `TripItClient.Classify` maps it to `TripItAuthenticationException`, and the client then
+  re-reads the session file / runs its `ISessionRefresher` (the MCP server uses
+  `CommandSessionRefresher` → `node tools/extract-session.js`) and retries once.
   **A 403 with a small HTML body means re-extract the session, not "the client is broken".**
 - A 302 or 401 also means the session rotated: re-run the extractor.
 
@@ -120,24 +132,12 @@ binary module targets `net10.0` and will not load in 5.1 or 7.4.
 
 Tracked on GitHub (`MarkMichaelis/TripItEx`) — read the issues for detail:
 
-1. **[#6](https://github.com/MarkMichaelis/TripItEx/issues/6)** — commit or discard four
-   pre-existing uncommitted local changes (`.gitignore`, `package.json`,
-   `package-lock.json`, untracked `scripts/Start-TripItShell.ps1`). Local-only, not
-   recoverable from GitHub. Needs the owner's call.
-2. **[#2](https://github.com/MarkMichaelis/TripItEx/issues/2)** — capture SPA mutations.
-   **Blocks all CRUD.** No mutating request has ever been recorded against this API; all
-   HARs here are GET-only, so every `json(obj)` payload in `docs/api-surface.md` is
-   genuinely unknown. Guessing is dangerous: real mutations carry internal flags that are
+1. **[#2](https://github.com/MarkMichaelis/TripItEx/issues/2)** — capture SPA mutations.
+   **Blocks all CRUD.** Every `json(obj)` payload in `docs/api-surface.md` is still
+   unverified. Guessing is dangerous: real mutations carry internal flags that are
    silently required, and omitting one yields an error that doesn't name the field.
-3. **[#3](https://github.com/MarkMichaelis/TripItEx/issues/3)** — expand the typed client
-   to the full read surface with sub-clients, plus unit and functional tests.
-4. **[#4](https://github.com/MarkMichaelis/TripItEx/issues/4)** — CRUD across client,
+2. **[#4](https://github.com/MarkMichaelis/TripItEx/issues/4)** — CRUD across client,
    PowerShell (`New-`/`Set-`/`Remove-TripIt*` with `SupportsShouldProcess` and
    `ConfirmImpact=High`) and MCP. Blocked by #2.
-5. **[#5](https://github.com/MarkMichaelis/TripItEx/issues/5)** — resolve the five
-   unresolved `v2/autocomplete*` call sites. Small, self-contained.
 
-**[PR #1](https://github.com/MarkMichaelis/TripItEx/pull/1)** carries `docs/api-surface.md`
-and the session-extractor fix, on branch `discovery/api-surface-and-session-fix`. It is
-open and unmerged — no independent review has run on it. Until it merges, this file and
-`docs/api-surface.md` exist only on that branch.
+Done: #3 (read surface), #5 (autocomplete), #7 (lenient JSON + Akamai 403).

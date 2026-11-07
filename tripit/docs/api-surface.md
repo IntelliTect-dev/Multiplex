@@ -85,12 +85,25 @@ down.
 | GET | `v2/list/trip` | `query(obj)` — `past`, `page_size`, `page_num`, `traveler`, `exclude_types`, `trip_permission_filter`, `should_sort_trips_by_date` |
 | GET | `v2/get/trip/uuid/${uuid}` | `query(obj)` |
 | GET | `v2/get/trip/uuid/${uuid}/include_objects/true` | trip **and all its objects in one call** |
+| GET | `v2/list/trip?include_objects=true` | every listed trip **plus all their objects** (measured 2026-11-06); objects carry `trip_uuid` |
 | POST | `v2/create/trip` | `json(obj)` |
 | POST | `v2/replace/trip/uuid/${uuid}` | `json(obj)` |
 | POST | `v2/delete/trip/uuid/${uuid}` | — |
 | POST | `v2/merge/trip` | `query(obj)` |
 | POST | `v2/updateTripImage` | `json{trip_uuid,url,image_data}` |
 | POST | `v2/updatePublicTripShareUrl` | `json{trip_uuid}` |
+
+Measured 2026-11-06:
+
+- `page_size` is honoured at any size — `past=true&page_size=500` returned all 317 past
+  trips in one page. Defaults are small (5 for past trips).
+- `traveler=all` equals the default; `traveler=false` returns no trips for an account that
+  travels on all of its own trips.
+- `v2/get/trip/id/${id}` answers **400** "you must specify an uuid" — the web API is
+  UUID-only.
+- A list holding one item returns it as an **object**, not a one-element array
+  (`"Trip":{…}` vs `"Trip":[…]`), exactly as the v1 API does. Read every collection with
+  a helper that accepts both (`TripItJson.AsList`).
 
 ### Trip objects (segments)
 
@@ -106,6 +119,9 @@ down.
 | POST | `v2/updateMultipleCosts` | `json(obj)` |
 | POST | `v2/deleteUnfiledItems` | `json(obj) query(obj)` |
 | GET | `v2/flightInfo` | — |
+
+> `v2/get/${type}/uuid/${uuid}` needs the **object's** UUID (e.g. the `AirObject`), not a
+> segment's — a segment UUID answers 400 "uuid provided is for the wrong type".
 
 > **`object_type` does not filter `list/object`.** All twelve values return a
 > byte-identical response (10,009 B, measured). The honoured filters are `trip_uuid` and
@@ -132,10 +148,18 @@ down.
 
 ### Autocomplete (the real replacement for the dead `/typeahead/search`)
 
-`GET v2/autocompleteAddress`, `autocompleteAddressDetail`, `autocompleteAirline`,
-`autocompleteAirport`, `autocompleteCountry`, `autocompletePlace`, `autocompleteState`.
-Only `autocompleteAddressDetail` has a statically resolvable call site (`query(obj)`); the
-other five are referenced but their call sites were not resolved — they need a capture.
+All take a single `query` parameter (resolved live 2026-11-06; `q` and `term` answer 400)
+and return a bare JSON **array** (no envelope):
+
+| Endpoint | Item shape | `id` meaning |
+|---|---|---|
+| `GET v2/autocompleteAirport?query=SEA` | `{id,label}` | IATA airport code |
+| `GET v2/autocompleteAirline?query=Alaska` | `{id,label}` | IATA airline code |
+| `GET v2/autocompletePlace?query=Paris` | `{id,label}` | opaque place hash |
+| `GET v2/autocompleteCountry?query=New` | `{id,label}` | ISO 3166 alpha-2 |
+| `GET v2/autocompleteState?query=Wa` | `{id,label}` | state code (`country_code` accepted) |
+| `GET v2/autocompleteAddress?query=…` | `{place_id,display_name,main_name,secondary_name}` | Google place id |
+| `GET v2/autocompleteAddressDetail` | `query(obj)` | resolves a `place_id` to an address |
 
 ### Documents and attachments
 
@@ -232,9 +256,9 @@ Honest gaps, so nobody mistakes this for a settled specification:
   mutation.
 - No mutating request has ever been recorded against this API in this repository. All
   three HARs are `GET`-only, so no create/replace/delete payload is evidenced anywhere.
-- Five of the seven autocomplete endpoints have unresolved call sites.
 - Response field names and nullability are known only for the endpoints probed live
   (`get/profile`, `list/trip`, `get/trip`, `list/object`, `travelerProfile/get`,
   `purchasedProductInfo`, `list/points_program`) and only for one account's data.
 - `list/points_program` returned an empty payload (43 B) because the test account has no
-  points programs — its populated shape is unknown.
+  points programs — its populated shape is unknown. (One probe answered 401 with a session
+  that was otherwise accepted; a retry seconds later answered 200. Not reproduced.)
