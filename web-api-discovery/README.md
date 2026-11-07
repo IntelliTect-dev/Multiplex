@@ -59,6 +59,18 @@ A browser opens. Do the things worth documenting, then press ENTER. The
 capture is scrubbed and verified, and a catalogue of the endpoints it saw is
 printed.
 
+To see what you have recorded, and to remove one recording:
+
+```powershell
+Get-HarCapture                                                 # the whole store
+Remove-HarCapture example.com/2026-01-02-143000 -WhatIf        # say it, do nothing
+Remove-HarCapture example.com/2026-01-02-143000                # ask, then delete
+```
+
+Nothing deletes a recording on its own -- there is no age sweep, no size cap
+and no bulk delete. A raw capture is a browser session somebody drove by hand,
+so every one is kept until you remove that one deliberately.
+
 **In a folder that isn't a git repository**, the recorder first asks whether
 to create one (`[Y/n]`). A repository plus the `.gitignore` the recorder writes
 keeps raw captures and the scrub's substitution tables, which can reverse the

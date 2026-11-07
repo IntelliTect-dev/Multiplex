@@ -116,16 +116,30 @@ function looksWhollyEncoded(text) {
 /**
  * Walk the encoding layers inside one string, visiting every nested value.
  *
- * `visit({ name, value, depth })` returns the replacement for that value.
+ * `visit({ name, value, path, depth })` returns the replacement for that value.
  * READ-ONLY MODE IS JUST A CALLER WHOSE `visit` RETURNS ITS INPUT -- the
  * pattern `transformEncodedParams` already established, and the reason the
  * gate and the scrubber can share one traversal without the gate acquiring the
  * ability to rewrite anything.
  *
+ * `path` IS A LOCATION, NEVER A VALUE, and it is what makes a nested finding
+ * reportable (#24). A caller that can only say "somewhere inside
+ * `request.postData.text`" has told an operator nothing they can act on -- #297
+ * measured 135 of 176 findings resolving no key path for exactly this reason.
+ * The composed path names the form parameter, object keys and array indices the
+ * traversal passed through, so the engines report WHERE without reporting WHAT.
+ * For a `{name, value}` pair the path carries the pair's NAME rather than the
+ * literal `value` key, matching the `name` substitution below.
+ *
+ * Additive for every pre-existing caller: `har-secrets.js`, `sanitize-har.js`
+ * and `har-blunt.js` all ignore the field.
+ *
  * @param {string} text the string to walk
- * @param {(node: {name: string|null, value: string, depth: number}) => string} visit
- * @param {{depth?: number, name?: string|null,
- *          onDepthLimit?: (info: {name: string|null, depth: number}) => void}} [options]
+ * @param {(node: {name: string|null, value: string, path: string|null,
+ *                 depth: number}) => string} visit
+ * @param {{depth?: number, name?: string|null, path?: string|null,
+ *          onDepthLimit?: (info: {name: string|null, path: string|null,
+ *                                 depth: number}) => void}} [options]
  * @returns {string} `text` with every changed subtree written back, or the
  *   ORIGINAL bytes when nothing changed
  */
@@ -134,18 +148,21 @@ function transformNested(text, visit, options) {
     const opts = options || {};
     const depth = opts.depth || 0;
     const name = opts.name === undefined ? null : opts.name;
+    const path = opts.path === undefined ? null : opts.path;
 
     if (depth >= MAX_DEPTH) {
-        if (typeof opts.onDepthLimit === 'function') opts.onDepthLimit({ name, depth });
+        if (typeof opts.onDepthLimit === 'function') opts.onDepthLimit({ name, path, depth });
         return text;
     }
 
-    const descend = (childName, childValue) => {
-        const replaced = visit({ name: childName, value: childValue, depth: depth + 1 });
+    const descend = (childName, childValue, childPath) => {
+        const at = childPath === undefined ? path : childPath;
+        const replaced = visit({ name: childName, value: childValue, path: at, depth: depth + 1 });
         const next = typeof replaced === 'string' ? replaced : childValue;
         return transformNested(next, visit, {
             depth: depth + 1,
             name: childName,
+            path: at,
             onDepthLimit: opts.onDepthLimit,
         });
     };
@@ -155,13 +172,14 @@ function transformNested(text, visit, options) {
     //    `transformEncodedParams` already preserves the original bytes of any
     //    parameter whose value comes back unchanged.
     if (looksFormEncoded(text)) {
-        return transformEncodedParams(text, (paramName, decoded) => descend(paramName, decoded));
+        return transformEncodedParams(text, (paramName, decoded) =>
+            descend(paramName, decoded, joinPath(path, paramName)));
     }
 
     // 2. A JSON document, percent-encoded or not. `decodeNestedJson` parses
     //    first and only percent-decodes as a fallback (#454 D3).
     const parsed = decodeNestedJson(text);
-    if (parsed !== null) return transformJsonDocument(text, parsed, descend);
+    if (parsed !== null) return transformJsonDocument(text, parsed, descend, path);
 
     // 3. One wholly percent-encoded payload carrying neither `=` nor `&`.
     if (looksWhollyEncoded(text)) {
@@ -171,7 +189,7 @@ function transformNested(text, visit, options) {
         } catch {
             return text;
         }
-        const replaced = descend(name, decoded);
+        const replaced = descend(name, decoded, path);
         return replaced === decoded ? text : encodeURIComponent(replaced);
     }
 
@@ -187,16 +205,16 @@ function transformNested(text, visit, options) {
  * would otherwise re-spell the document's whitespace and drop its original
  * formatting, churning a committed reference that nothing actually edited.
  */
-function transformJsonDocument(originalText, parsed, descend) {
+function transformJsonDocument(originalText, parsed, descend, basePath) {
     let changed = false;
 
-    const walk = (node, key) => {
+    const walk = (node, key, at) => {
         if (typeof node === 'string') {
-            const replaced = descend(key, node);
+            const replaced = descend(key, node, at);
             if (replaced !== node) changed = true;
             return replaced;
         }
-        if (Array.isArray(node)) return node.map((item) => walk(item, key));
+        if (Array.isArray(node)) return node.map((item, i) => walk(item, key, `${at || ''}[${i}]`));
         if (node !== null && typeof node === 'object') {
             // A `{name, value}` pair is keyed by its SIBLING, not by its key.
             //
@@ -216,14 +234,27 @@ function transformJsonDocument(originalText, parsed, descend) {
             const pairKeyed = typeof node.name === 'string' && typeof node.value === 'string';
             const out = {};
             for (const k of Object.keys(node)) {
-                out[k] = walk(node[k], pairKeyed && k === 'value' ? node.name : k);
+                // THE PAIR'S NAME REACHES THE PATH TOO, not only the `name`.
+                //
+                // Substituting it into one and not the other was this field's
+                // first bug, found in independent review. HAR stores query
+                // parameters, cookies, headers and form fields as
+                // `{name, value}`, so the pair IS the common shape -- and for
+                // exactly that shape the location read `...queryString[0].value`
+                // while the sensitivity decision correctly used `first_name`.
+                // A finding that cannot name the field it sat in is the
+                // "somewhere inside request.postData.text" report this field
+                // exists to replace, so the feature was failing precisely where
+                // it was needed most.
+                const childName = pairKeyed && k === 'value' ? node.name : k;
+                out[k] = walk(node[k], childName, joinPath(at, childName));
             }
             return out;
         }
         return node;
     };
 
-    const result = walk(parsed, null);
+    const result = walk(parsed, null, basePath === undefined ? null : basePath);
     if (!changed) return originalText;
 
     const serialized = JSON.stringify(result);
@@ -232,6 +263,19 @@ function transformJsonDocument(originalText, parsed, descend) {
     return decodeNestedJson(originalText) !== null && looksWhollyEncodedJson(originalText)
         ? encodeURIComponent(serialized)
         : serialized;
+}
+
+/**
+ * One segment appended to a key path, with no leading dot when there is no
+ * path yet.
+ *
+ * A path is a LOCATION. Segments are form parameter names and object keys,
+ * which a provider chose and which a finding may name; the VALUE under them
+ * never enters a path.
+ */
+function joinPath(at, segment) {
+    if (segment === null || segment === undefined || segment === '') return at || null;
+    return at ? `${at}.${segment}` : String(segment);
 }
 
 /** Was this JSON document carried percent-encoded rather than as literal JSON? */

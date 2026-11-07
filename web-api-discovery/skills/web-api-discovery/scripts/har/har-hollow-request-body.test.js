@@ -95,6 +95,14 @@ const body = (text, mimeType) => ({
     mimeType: mimeType || 'application/x-www-form-urlencoded', text,
 });
 
+// The wire shape of every RPC Google's web client sends (`batchexecute`,
+// `FlightsFrontendService`): ONE `f.req` field carrying a percent-encoded JSON
+// envelope, then a trailing `&`. These bytes are that envelope's real prefix
+// from a scrubbed Google Flights capture, closed off short. All 26 POST bodies
+// in that reference have this shape, and gate 7 reported every one of them.
+const GOOGLE_RPC_BODY =
+    'f.req=%5Bnull%2C%22%5Bnull%2C%5Bnull%2Cnull%2C2%2Cnull%2C%5B%5D%2C1%2C%5B1%2C0%2C0%2C0%5D%5D%5D%22%5D&';
+
 // A multipart body, assembled rather than pasted, so the preamble and the
 // leading-CRLF variants differ from the plain one in exactly one way each.
 const multipartBody = ({ boundary = "b1", preamble = "", leadingCrlf = false } = {}) =>
@@ -224,6 +232,15 @@ const SHAPES = [
     // A REAL bracketed field name. Without this the bracket rule could quietly
     // become a flat ban on brackets and every test would still pass.
     { label: 'form pair with a bracketed name', hollow: false, post: body('user[name]=x&user[id]=2') },
+    // ONE FIELD AND A TRAILING `&`. It splits to `['f.req=...', '']`, and while
+    // an EMPTY segment counted as a non-pair this was one pair of two parts --
+    // the same verdict as `REDACTED&token=` -- so a correctly scrubbed
+    // reference failed gate 7 on every entry. An empty segment is serializer
+    // output, not content; the scrubber's own form parser already says so.
+    { label: 'one field and a trailing ampersand (Google RPC shape)', hollow: false,
+        post: body(GOOGLE_RPC_BODY, 'application/x-www-form-urlencoded;charset=utf-8') },
+    { label: 'a leading ampersand', hollow: false, post: body('&alpha=one') },
+    { label: 'a doubled ampersand between fields', hollow: false, post: body('alpha=one&&beta=two') },
     // XML is a recognised grammar. It occurred ZERO times in 755 sampled
     // bodies, and that is a fact about the three JSON-era providers sampled
     // rather than about XML: this template ships to consumers nobody sampled,
@@ -352,6 +369,17 @@ const SHAPES = [
     // EVERY `&`-part must be a pair, not merely one of them: a single real
     // field does not make the rest of a half-scrubbed body into a payload.
     { label: 'one real field beside a bare token', hollow: true, post: body('REDACTED&token=') },
+    // The shapes one step sideways from ignoring EMPTY segments. An empty
+    // segment carries nothing, so it must not move a verdict in EITHER
+    // direction: it is not a pair that helps a lone field reach two, and it is
+    // not a non-pair that sinks a real body. And a body made of nothing but
+    // delimiters has no field in it at all -- dropping the empties must not
+    // leave an empty list that "every part is a pair" vacuously clears.
+    { label: 'one real field beside a bare token, trailing ampersand', hollow: true,
+        post: body('REDACTED&token=&') },
+    { label: 'a bare token and a trailing ampersand', hollow: true, post: body('REDACTED&') },
+    { label: 'a lone ampersand', hollow: true, post: body('&') },
+    { label: 'nothing but ampersands', hollow: true, post: body('&&&') },
 ];
 
 // --- 1. The classification, over adjacent shapes, in ONE file. ---
@@ -504,9 +532,13 @@ const SHAPES = [
 //
 //   A.  A bare token under any wrapper a redaction sentinel is conventionally
 //       written with, carrying ANY number of punctuation marks, is reported.
+//   A2. One real field beside a bare token is reported, however many EMPTY
+//       segments are spliced into it and wherever they go.
 //   B1. A well-formed form-urlencoded body is never reported -- including a
-//       single pair, a pair with an empty value, and the measured real case of
-//       one valueless flag segment among several real pairs.
+//       single pair, a pair with an empty value, the measured real case of
+//       one valueless flag segment among several real pairs, and one to three
+//       real pairs with empty segments (leading, trailing or doubled `&`)
+//       spliced in.
 //   B2. A JSON composite is never reported, down to `{}` and `[]`.
 //   B3. A multipart body is never reported -- with and without a declared
 //       boundary, with and without a preamble, with and without a leading
@@ -578,6 +610,39 @@ const SHAPES = [
         const parts = [word() + '=' + word(), word(), word() + '=' + word(), word() + '=' + word()];
         formPosts.push(body(parts.join('&')));
     }
+    // EMPTY segments -- leading, trailing, doubled -- spliced into well-formed
+    // bodies at random positions, starting from ONE pair because that is
+    // Google's whole RPC wire format (`f.req=...&`). An empty segment is
+    // serializer output: no number of them, anywhere, makes a body a
+    // placeholder.
+    const withEmptySegments = (parts) => {
+        const out = parts.slice();
+        const empties = 1 + Math.floor(rnd() * 3);
+        for (let e = 0; e < empties; e++) out.splice(Math.floor(rnd() * (out.length + 1)), 0, '');
+        return out.join('&');
+    };
+    for (let i = 0; i < 30; i++) {
+        const pairs = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => word() + '=' + word());
+        formPosts.push(body(withEmptySegments(pairs)));
+    }
+
+    // A2 -- the other direction for the same injection. One real field beside
+    // a bare token is a half-scrubbed body, not a payload, and empty segments
+    // spliced in anywhere must not launder it: they count as neither a pair
+    // nor a non-pair.
+    const halfScrubbed = [];
+    for (let i = 0; i < 30; i++) {
+        const parts = [word() + '=' + (rnd() < 0.5 ? '' : word()), token()];
+        if (rnd() < 0.5) parts.reverse();
+        halfScrubbed.push(withEmptySegments(parts));
+    }
+    const dirA2 = project('property-half-scrubbed');
+    writeHar(dirA2, 'reference.har', halfScrubbed.map((t) => entry(body(t))));
+    const gotA2 = hollowIndexes(verify(dirA2).out);
+    const missedA2 = halfScrubbed.map((_, i) => i).filter((i) => !gotA2.includes(i));
+    assert.deepStrictEqual(missedA2, [],
+        `7.a2: ${missedA2.length} of ${halfScrubbed.length} bodies of one real field beside a bare `
+        + 'token cleared once empty segments were spliced in -- an empty segment is counting as a pair');
 
     // B2 -- JSON composites, including the two empty ones.
     const jsonPosts = [body('{}'), body('[]')];

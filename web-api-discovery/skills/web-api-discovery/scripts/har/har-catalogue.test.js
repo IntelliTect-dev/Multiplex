@@ -39,6 +39,10 @@ const FORM_BODY = 'message=hello+world&tags%5B0%5D=100000123456789&audience=SELF
 // test says what it is reproducing, not so the code may special-case it --
 // har-catalogue recognises GRAMMARS, never a known sentinel.
 const HOLLOW_BODY = 'REDACTED_FORM_URLENCODED_BODY';
+// One field and a trailing `&` -- the wire shape of every RPC Google's web
+// client sends, with the real prefix of a scrubbed Google Flights envelope.
+const GOOGLE_RPC_BODY =
+    'f.req=%5Bnull%2C%22%5Bnull%2C%5Bnull%2Cnull%2C2%2Cnull%2C%5B%5D%2C1%2C%5B1%2C0%2C0%2C0%5D%5D%5D%22%5D&';
 
 function entry(overrides = {}) {
     const req = Object.assign({
@@ -140,6 +144,24 @@ test('recognises a body by GRAMMAR, not by a list of known placeholders', () => 
         postEntry('{"message":"hello"}', undefined, 'application/json'),
     ]);
     assert.strictEqual(cat.measureReference(realJson).RequestBodies, 1);
+});
+
+test('a one-field form body with a trailing ampersand counts as a body', () => {
+    // Google's web client sends every RPC as ONE `f.req` field and a trailing
+    // `&`. While the shared body grammar counted the empty segment after it as
+    // a non-pair, a correctly scrubbed reference of 26 such POSTs measured
+    // `RequestBodies: 0` and the POST-with-no-body falsifier failed it. This
+    // engine consumes the gate's predicate, so it is pinned here too: a fix
+    // that reached only the gate would leave the catalogue reporting the same
+    // false positive.
+    const facts = cat.measureReference(writeHar('trailing-amp.har', [
+        postEntry(GOOGLE_RPC_BODY, 'https://www.example.invalid/_/FlightsFrontendUi/data/batchexecute',
+            'application/x-www-form-urlencoded;charset=utf-8'),
+    ]));
+
+    assert.strictEqual(facts.RequestBodies, 1);
+    assert.strictEqual(facts.RequestBytes, Buffer.byteLength(GOOGLE_RPC_BODY));
+    assert.strictEqual(facts.BodyBearingWithBody, 1);
 });
 
 test('counts request and response bytes, and counts only bodies that are bodies', () => {

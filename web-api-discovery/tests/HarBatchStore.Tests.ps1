@@ -104,6 +104,10 @@ BeforeAll {
                     startedUtc = '2026-01-01T00:00:00.000Z'; endedUtc = '2026-01-01T00:01:00.000Z'
                 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'session.json') -Encoding utf8
             }
+            if ($opts.Notes) {
+                Set-Content -LiteralPath (Join-Path $dir 'CAPTURE.md') -Encoding utf8 -Value @(
+                    '# Grocery app checkout, iPhone, mitmproxy', '', 'Tapped through the basket.')
+            }
             if ($opts.Scrubbed) { & $writeHar (Join-Path $dir 'scrubbed.har') '{"ok":true}' }
             if ($opts.Catalogued) { Set-Content -LiteralPath (Join-Path $dir 'catalogue.json') -Value '[]' -Encoding utf8 }
         }
@@ -120,6 +124,12 @@ BeforeAll {
         # A dump dropped straight under the captures root: declined, and with no
         # host layer to name it by.
         & $makeCapture (Join-Path $captures '2020-01-01-mitmdump') @{ NoSession = $true; Mitm = $true }
+        # A dump somebody imported ON PURPOSE and described in a CAPTURE.md.
+        # It lists as a described capture rather than as an unrecognised
+        # directory (#102) -- and it must STILL be declined here, which is the
+        # whole risk of having given it its own class.
+        & $makeCapture (Join-Path $hostB '2026-01-03-000002') @{
+            NoSession = $true; Mitm = $true; Notes = $true }
         New-Item -ItemType Directory -Path (Join-Path $captures '_analysis') -Force | Out-Null
 
         return $captures
@@ -214,7 +224,7 @@ Describe 'a folder means every capture under it' {
     It 'names and declines a capture this recorder did not make' {
         $out = (& $script:Sanitize -InputHar $script:Captures 6>&1) -join "`n"
 
-        $out | Should -Match '2 declined'
+        $out | Should -Match '3 declined'
         $out | Should -Match 'www\.other\.test/2026-01-03-000001 -- not recorder output \(raw\.mitm'
 
         # A DECLINED CAPTURE AT THE CAPTURES ROOT has no host layer, so it is
@@ -228,6 +238,29 @@ Describe 'a folder means every capture under it' {
         # whose traffic it is.
         Test-Path -LiteralPath (Join-Path $script:Captures 'www.other.test/2026-01-03-000001/scrubbed.har') |
             Should -BeFalse
+    }
+
+    It 'declines a capture somebody imported and described, exactly as it declines a bare one' {
+        # THE RISK THIS PINS (#102). The shared walk used to have one word for
+        # "this recorder did not make it", and the batch tested for that word.
+        # Giving a described import its own class -- so the operator-facing list
+        # stops calling six described phone captures unrecognised -- would have
+        # slipped it past a `captureClass -eq 'foreign'` test and fed a
+        # mitmproxy dump to a HAR scrub, silently. Being described says what a
+        # capture IS; it says nothing about whose traffic it is, and the scrub
+        # needs the second.
+        $out = (& $script:Sanitize -InputHar $script:Captures 6>&1) -join "`n"
+
+        $out | Should -Match 'www\.other\.test/2026-01-03-000002 -- not recorder output'
+        Test-Path -LiteralPath (Join-Path $script:Captures 'www.other.test/2026-01-03-000002/scrubbed.har') |
+            Should -BeFalse -Because 'there is still no session.json to attribute the traffic to'
+
+        # AND THE DESCRIPTION STAYS OUT OF THE SUMMARY. #386 permits host,
+        # stamp, class and reason -- never the operator's describe, which the
+        # 'never prints a captured value' test above pins for the recorder's own
+        # captures. A description read off disk is no more printable for being
+        # hand-written.
+        $out | Should -Not -Match 'Grocery app checkout'
     }
 
     It 'records a malformed capture against itself and keeps going' {
@@ -263,7 +296,7 @@ Describe 'a folder means every capture under it' {
 
         # Reviewable without reading 88 directories -- one line of counts, then
         # only the captures that need a decision.
-        $out | Should -Match 'Scrub over 6 capture\(s\): 2 processed, 1 skipped, 2 declined, 1 failed'
+        $out | Should -Match 'Scrub over 7 capture\(s\): 2 processed, 1 skipped, 3 declined, 1 failed'
         foreach ($section in 'skipped:', 'declined:', 'failed:') { $out | Should -Match $section }
     }
 
@@ -308,7 +341,7 @@ Describe 'a folder means every capture under it' {
         # unprocessed and nothing ever reported it.
         $out | Should -Match 'www\.example\.test/2026-01-02-000003 -- no scrubbed\.har'
         $out | Should -Match 'www\.example\.test/2026-01-02-000002 -- already catalogued'
-        $out | Should -Match '2 declined'
+        $out | Should -Match '3 declined'
     }
 }
 

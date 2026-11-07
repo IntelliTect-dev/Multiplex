@@ -8,6 +8,8 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Invoke-HarCapture'
+        'Get-HarCapture'
+        'Remove-HarCapture'
         'Invoke-HarCatalogue'
         'Stop-HarRecording'
         'ConvertFrom-HarCatalogue'

@@ -69,8 +69,8 @@ function isFormPair(part) {
     return depth === 0;
 }
 
-// A form-urlencoded body: every `&`-part is a pair, OR at least two of them
-// are.
+// A form-urlencoded body: at least one `&`-part is a pair, and every NON-EMPTY
+// part is a pair OR at least two of them are.
 //
 // The second clause is not a ratio and not a tuning knob -- it is measured. 7
 // of 755 real bodies carry a single valueless flag-style segment (a bare token
@@ -78,10 +78,22 @@ function isFormPair(part) {
 // them. Two real pairs is the point at which a body carries named fields
 // whatever else is in it, and it still rejects `REDACTED&token=`, where one
 // lone pair sits beside a placeholder.
+//
+// EMPTY SEGMENTS ARE NOT PARTS. A leading, trailing or doubled `&` is
+// serializer output, and Google's web client ends EVERY RPC body with one:
+// `f.req=<encoded JSON>&` splits to one pair and an empty string, which
+// counted as a non-pair here and gave a real one-field body the same verdict
+// as `REDACTED&token=` -- 26 of 26 entries of a correctly scrubbed reference
+// reported, and its catalogue row measured `RequestBodies: 0`. The scrubber's
+// own form parser (pii.js `formEncodedPairs`) already treats an empty segment
+// as ordinary output. Dropping them changes nothing else: an empty segment is
+// neither a pair that lifts a lone field to two, nor a non-pair that sinks a
+// real body. `pairs > 0` is what keeps a body of nothing but `&` from being
+// cleared by an empty list satisfying "every part is a pair".
 function isFormUrlEncodedBody(text) {
-    const parts = text.split('&');
+    const parts = text.split('&').filter((part) => part !== '');
     const pairs = parts.filter(isFormPair).length;
-    return pairs === parts.length || pairs >= 2;
+    return pairs > 0 && (pairs === parts.length || pairs >= 2);
 }
 
 const escapeForRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

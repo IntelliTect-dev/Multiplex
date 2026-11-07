@@ -332,12 +332,14 @@ if (Test-Path -LiteralPath $InputHar -PathType Container) {
     # -VerifyOnly and -RemoveSource are single-artifact decisions. -RemoveSource
     # in particular deletes a raw, and "delete the raws for every capture under
     # this folder" is not a thing this pipeline will offer -- nothing under
-    # .har-captures/ is removed in bulk.
+    # .har-captures/ is removed in bulk. Deleting one recording deliberately is
+    # `Remove-HarCapture`, which takes exactly one capture for the same reason
+    # (#102).
     $refusals = [ordered]@{
         OutputHar         = 'names one destination file, and a folder holds many captures. Each capture is scrubbed into its own session directory.'
         SubstitutionsFile = 'names one table, and a folder holds many captures. sanitize-har.js places each table in the gitignored capture tree.'
         VerifyOnly        = 'is a single-artifact inspection. Point it at the HAR you want verified.'
-        RemoveSource      = 'deletes a raw capture. It is not offered over a folder: nothing under .har-captures/ is removed in bulk.'
+        RemoveSource      = 'deletes a raw capture. It is not offered over a folder: nothing under .har-captures/ is removed in bulk. To delete one recording on purpose, use Remove-HarCapture.'
     }
     foreach ($name in $refusals.Keys) {
         if ($PSBoundParameters.ContainsKey($name) -and $PSBoundParameters[$name]) {

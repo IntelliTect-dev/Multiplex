@@ -114,11 +114,15 @@ Describe 'Invoke-HarCapture.ps1 exposes the mode without re-deciding it (#73)' {
         $text | Should -Match ([regex]::Escape("PSBoundParameters.ContainsKey('Port')"))
     }
 
-    It 'does not pass --browser playwright, which --attach refuses' {
+    It 'does not pass --browser playwright, which --attach refuses, unless it was typed' {
         # Forwarding the default explicitly would turn `-Attach 9222` into a
-        # usage error about a browser the operator never named.
+        # usage error about a browser the operator never named. Gated on the
+        # BINDING rather than on the value, because a typed `-Browser Playwright`
+        # must still reach the recorder: with -AI it is a refusal (#98), and
+        # comparing against the default dropped it silently. The forwarded
+        # arguments are asserted in har-recording.Tests.ps1.
         $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
-        $text | Should -Match ([regex]::Escape("if (`$Browser -ne 'Playwright')"))
+        $text | Should -Match ([regex]::Escape("PSBoundParameters.ContainsKey('Browser')"))
     }
 
     It 'RE-STATES NONE of the exclusivity rules -- the recorder owns them' {

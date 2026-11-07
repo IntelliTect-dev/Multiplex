@@ -83,6 +83,44 @@
  * The operator's window, and every signed-in tab in it, survives the recording
  * -- for the same reason nothing in this file kills a process.
  *
+ * ## An agent can drive it, and the prompt is generated (#98)
+ *
+ * `--ai` hands the browsing to an agent while this process goes on recording.
+ * It implies `--browser native`, because a browser Playwright launched is a
+ * browser the sites worth driving an agent at refuse (the table above), so an
+ * agent driving one would be driving the refusal.
+ *
+ * `--describe` BECOMES THE GOAL. It is already required (#366), so the switch
+ * needs no new input: the prompt is assembled from drive-prompt.md, this run's
+ * own facts (the goal, the site, the CDP endpoint, session.json) and
+ * discovery-checklist.md, written to the session directory as agent-prompt.md,
+ * and handed to `claude -p`.
+ *
+ * THE PROMPT IS GENERATED BECAUSE MOST OF IT IS SAFETY TEXT. It was hand-written
+ * for the five-site car-rental capture this feature comes from, and it is the
+ * same every time except the goal: human pace, keep the site's tab in front, NO
+ * STEALTH MEASURES, never a password or personal or payment detail, stop before
+ * any driver-details or payment page, and stop and hand back on any bot check or
+ * sign-in prompt. A prompt somebody retypes in a hurry is a prompt that drops
+ * one of those, and the dropping is invisible until an agent has typed a card
+ * number into somebody's checkout.
+ *
+ * THE AGENT IS AN ENDING, NOT A MODE. Its exit joins the same race as the stop
+ * sentinel, ENTER and SIGINT, so `Stop-HarRecording`, a keypress and a closed
+ * window all still end the recording mid-drive -- a drive is never a loss of
+ * control. Everything after the ending is unchanged: scrub -> verify -> digest
+ * -> catalogue, exactly as a hand-driven capture.
+ *
+ * WHAT IT DOES NOT WIDEN: an agent-driven run records only this capture's tabs,
+ * like any other native or attached run (#85), and nothing about `--ai` closes a
+ * browser -- the agent is told not to, and `stop` still detaches.
+ *
+ * WHAT IS NOT HERE YET, deliberately: `-SignInFirst` (#75) and multi-site (#74).
+ * Without #75 the agent stops at the first sign-in prompt and hands back, which
+ * is what the issue says the behaviour is until then; without #74 one run drives
+ * one site. The checklist text belongs to #76 and is parked in
+ * discovery-checklist.md so that issue can lift it out without a rewrite.
+ *
  * ## Raw captures are confined by construction
  *
  * The raw capture carries live session cookies. It always lands in the fixed,
@@ -107,15 +145,26 @@
  * unconditional: a capture the gate refused keeps both its raw and its refused
  * candidate, because that is the case where losing either is unrecoverable.
  *
- * What that rule no longer says is "a raw is never deleted by anything". An
- * operator may now ask for one to be removed, through
- * `har/Invoke-SanitizeHar.ps1 -RemoveSource`, and only when the scrub of it
- * VERIFIED CLEAN -- never on a rejection and never on an advisory verdict,
- * since advisory means "waive or correct, then scrub again" and scrubbing
- * again needs the raw. The lever exists because raws carry live session
- * cookies and accumulate; it is opt-in per run, it takes the substitution
- * tables with it because they are keyed by the plaintext originals, and there
- * is deliberately no age sweep and no bulk delete command (#352).
+ * What that rule no longer says is "a raw is never deleted by anything".
+ * There are now exactly two ways an operator may ask for one to be removed,
+ * and both are asked for one capture at a time:
+ *
+ *   `har/Invoke-SanitizeHar.ps1 -RemoveSource` -- only when the scrub of that
+ *      capture VERIFIED CLEAN, never on a rejection and never on an advisory
+ *      verdict, since advisory means "waive or correct, then scrub again" and
+ *      scrubbing again needs the raw. Opt-in per run. It takes the
+ *      substitution tables with it, because they are keyed by the plaintext
+ *      originals (#352).
+ *   `capture/Remove-HarCapture.ps1` -- the deliberate delete, for a recording
+ *      an operator simply does not want, scrubbed or not. It takes exactly one
+ *      capture, refuses a wildcard and refuses more than one, asks before it
+ *      acts (ConfirmImpact High), and removes the whole session directory
+ *      (#102).
+ *
+ * WHAT NEITHER OF THEM IS. There is deliberately NO age sweep, no count or
+ * size cap, and no bulk delete command: every recording is kept until somebody
+ * deletes that one recording on purpose. Adding a delete command is not adding
+ * retention (maintainer decision, 2026-10-14).
  *
  * ## Phases
  *
@@ -139,6 +188,7 @@
  *   node capture-har.js start --uri <url> --describe <text>
  *                             [--profile <name|path>] [--isolated]
  *                             [--browser playwright|native] [--attach <cdp>]
+ *                             [--ai]
  *                             [--port <n>] [--output-path <dir>]
  *                             [--snapshot-seconds <n>] [--no-wait]
  *                             [--validate-only]
@@ -175,6 +225,17 @@
  *                    request such a tab makes is recorded, whatever its host.
  *                    The debugging port stays open, unauthenticated, until
  *                    that window closes -- close it when done.
+ *   --ai             an AGENT does the browsing while this process records.
+ *                    Implies --browser native, and so is exclusive with
+ *                    --isolated and with --browser playwright. The prompt is
+ *                    GENERATED -- goal, endpoint, session file, the discovery
+ *                    checklist and the safety rules -- written to the session
+ *                    as agent-prompt.md, and run as `claude -p`. Everything the
+ *                    agent prints is saved beside the capture as agent-log.txt.
+ *                    The recording ends when the agent finishes or hands back;
+ *                    ENTER, `stop` and closing the window still end it sooner.
+ *                    Needs the `claude` CLI on PATH, which is checked before a
+ *                    browser is started.
  *   --port           default 9333, and it never has to be specified: a busy
  *                    port falls forward to the next free one.
  *   --describe       REQUIRED (#366). What this recording is for, in the
@@ -298,6 +359,90 @@ const PUBLISH_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
 const VERIFY_ADVISORY_EXIT = 4;
 const DIGEST_FILE = 'digest.json';
 const CATALOGUE_FILE = 'catalogue.json';
+// The two artifacts an agent-driven capture adds, both inside the session
+// directory beside the raw (#98). The PROMPT is written out rather than only
+// passed as an argument: it is the instruction set a run was actually driven
+// under, including the safety rules, and a capture whose prompt cannot be read
+// afterwards is one nobody can audit. The LOG is the agent's own output -- what
+// it did, where it stopped and why -- which the issue asks for so catalogue
+// segmentation has a record of the actions taken.
+const AGENT_PROMPT_FILE = 'agent-prompt.md';
+const AGENT_LOG_FILE = 'agent-log.txt';
+// The static halves of the generated prompt. Two files rather than one, and the
+// split is the point: DISCOVERY_CHECKLIST is the text issue #76 owns and will
+// move into SKILL.md, so it lives alone and is read rather than inlined -- #76
+// can then relocate it without touching the prompt builder or the rules.
+const DRIVE_PROMPT = 'drive-prompt.md';
+const DISCOVERY_CHECKLIST = 'discovery-checklist.md';
+// The agent the issue names as the default driver. There is deliberately no
+// `--agent` option yet: a second driver is a command-line option, which this
+// repository treats as an API decision needing approval, and nothing yet needs
+// one. The name is carried on the session so the day one arrives, a reader of
+// session.json can already tell which drove.
+const AGENT_CLAUDE = 'claude';
+// THE ONLY TOOLS THE DRIVING AGENT MAY USE WITHOUT ASKING (owner decision, I-2
+// on #100). It drives somebody's live, signed-in browser, so the grant is the
+// browser-driving tools and nothing that acts on the machine: no Bash, Write or
+// Edit. Passed as `--allowedTools`; ONE list, so the argv and the prompt that
+// names the tools cannot disagree. The list PRE-APPROVES; what it omits is left
+// to the permission mode (auto, #112) -- or, under --ai-tools browser-only,
+// removed outright.
+//
+// Two drivers, matching the order drive-prompt.md prefers them in. The names are
+// the ones the tools register under -- `claude-in-chrome` per the Claude Code
+// Chrome docs, `playwright` per the Playwright MCP README's own `claude mcp add`
+// line -- checked, not guessed.
+//
+// Left off on purpose, from the extension: javascript_tool (it could patch
+// navigator.webdriver, the stealth the rules forbid), file_upload and
+// upload_image (they send local files to a site), read_network_requests (it
+// reads the live cookies the capture files are kept from the agent for),
+// gif_creator and shortcuts_execute (they do more than drive the page), and
+// browser_batch (a burst of actions is what the human-pace rule exists to stop).
+//
+// ON the list, for SELECTION (#117): list_connected_browsers and select_browser.
+// The extension can be connected in several Chromes -- the operator's everyday
+// one among them -- and the agent must pick the CAPTURE browser by deviceId
+// before it touches a page, or it may act, unrecorded, in somebody's real
+// session. Not switch_browser: that broadcasts a pairing request to every Chrome
+// with the extension and waits for a human to click Connect in one of them.
+// WHICH TOOLS THE DRIVING AGENT HAS (#112): `--ai-tools`. `auto` is the default.
+const AGENT_TOOLS_BROWSER_ONLY = 'browser-only';
+const AGENT_TOOLS_MODES = Object.freeze(['auto', AGENT_TOOLS_BROWSER_ONLY]);
+const AGENT_ALLOWED_TOOLS = Object.freeze([
+    'mcp__claude-in-chrome__tabs_context_mcp',
+    'mcp__claude-in-chrome__tabs_create_mcp',
+    'mcp__claude-in-chrome__navigate',
+    'mcp__claude-in-chrome__computer',
+    'mcp__claude-in-chrome__read_page',
+    'mcp__claude-in-chrome__find',
+    'mcp__claude-in-chrome__form_input',
+    'mcp__claude-in-chrome__get_page_text',
+    'mcp__claude-in-chrome__list_connected_browsers',
+    'mcp__claude-in-chrome__select_browser',
+    'mcp__playwright__browser_navigate',
+    'mcp__playwright__browser_click',
+    'mcp__playwright__browser_type',
+    'mcp__playwright__browser_take_screenshot',
+    'mcp__playwright__browser_snapshot'
+]);
+// The allowlist for one run: without the extension (--no-chrome, review of
+// #122) its tools are not pre-approved either, so the argv and the prompt name
+// only Playwright MCP's.
+function agentAllowedTools(chrome) {
+    return chrome ? AGENT_ALLOWED_TOOLS : AGENT_ALLOWED_TOOLS.filter((t) => !t.startsWith('mcp__claude-in-chrome__'));
+}
+// CLAUDE IN CHROME, AS INSTALLED IN THE CAPTURE PROFILE (#117). The Chrome Web
+// Store ID, which is also the folder Chrome installs it under:
+// <profile>/<Default|Profile N>/Extensions/<id>/<version>/manifest.json. Checked
+// against an installed copy (its manifest names itself "Claude") and the store
+// listing, whose URL is keyed by the same ID.
+const CLAUDE_EXTENSION_ID = 'fcoeoabgfenejglbffodgkkbkcdhcgfn';
+const CLAUDE_EXTENSION_STORE_URL =
+    `https://chromewebstore.google.com/detail/claude/${CLAUDE_EXTENSION_ID}`;
+// The name the operator gives the capture browser when connecting the extension,
+// and the name the agent selects it by. See captureBrowserName.
+const CAPTURE_BROWSER_NAME = 'har-capture';
 // Where committed references live in a consuming project. Named here only to
 // PRINT the promote command -- nothing in this file writes into it.
 const REFERENCE_DIR = path.join('docs', 'har-reference');
@@ -322,6 +467,27 @@ const NATIVE_CDP_POLL_MS = 250;
 // A pause longer than this between two requests is the only signal in the
 // traffic that says "the human moved on to a different action".
 const ACTION_GAP_SECONDS = 5;
+// HOW LONG AN AGENT-DRIVEN ENDING WAITS BEFORE TEARING THE RECORDING DOWN (#98).
+//
+// Measured, not anticipated: a stub agent clicked a button, the fixture server
+// logged the request, and raw.har did not contain it. An agent exits the instant
+// its last action returns, and `stop()` then ran while the handler for that
+// request was still awaiting its response body over CDP. A human takes seconds
+// to walk back to the keyboard and press ENTER, which is why no ending before
+// this one had the problem -- and the last response of a session is routinely the
+// most valuable entry in it.
+//
+// The GRACE covers what cannot be observed: a request the browser has not yet
+// reported as finished. The CAP covers a handler that never completes -- a body
+// the browser will never hand over must not hold a capture hostage.
+const AGENT_SETTLE_GRACE_MS = 500;
+const AGENT_SETTLE_MAX_MS = 15000;
+// HOW LONG AN EXITED AGENT'S OUTPUT IS WAITED FOR (#98). Its pipes normally
+// drain within milliseconds of 'exit'; this bounds the case where a grandchild
+// holds one open, so a stray process cannot keep the recording running.
+const AGENT_DRAIN_MAX_MS = 5000;
+// HOW LONG `claude --version` MAY TAKE before the agent counts as not usable.
+const AGENT_PROBE_TIMEOUT_MS = 30000;
 
 // ---------------------------------------------------------------------------
 // Console levels
@@ -396,7 +562,7 @@ const log = {
 const START_OPTIONS = [
     'uri', 'profile', 'isolated', 'port', 'output-path', 'describe',
     'snapshot-seconds', 'no-wait', 'validate-only', 'log-level',
-    'browser', 'attach'
+    'browser', 'attach', 'ai', 'ai-tools'
 ];
 
 /**
@@ -507,7 +673,7 @@ function parseArgs(argv) {
     const out = { _: [] };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
-        if (a === '--isolated' || a === '--validate-only' || a === '--no-wait') {
+        if (a === '--isolated' || a === '--validate-only' || a === '--no-wait' || a === '--ai') {
             out[a.slice(2)] = true;
             continue;
         }
@@ -522,7 +688,7 @@ function usage(msg) {
     process.stderr.write(
         'usage: node capture-har.js start --uri <url> --describe <text>\n' +
         '                                 [--isolated] [--port <n>] [--output-path <dir>]\n' +
-        '                                 [--browser playwright|native] [--attach <cdp>]\n' +
+        '                                 [--browser playwright|native] [--attach <cdp>] [--ai]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
         '       node capture-har.js status\n' +
         '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
@@ -538,6 +704,18 @@ function usage(msg) {
         '                              opened from it, and tabs on the --uri\'s site.\n' +
         '                              Its debugging port stays open until that\n' +
         '                              window closes -- close it when done.\n' +
+        '  --ai                        an agent drives the browsing while this process\n' +
+        '                              records. Implies --browser native. The prompt is\n' +
+        '                              generated and saved beside the capture, and so is\n' +
+        '                              the agent\'s step log. The recording ends when the\n' +
+        '                              agent finishes or hands back.\n' +
+        '  --ai-tools auto|browser-only  with --ai: which tools the agent has. auto\n' +
+        '                              (default): auto permission mode, its classifier\n' +
+        '                              approves or blocks each action. browser-only:\n' +
+        '                              every built-in tool removed (`--tools ""`), only\n' +
+        '                              MCP tools remain. Use it when signed into\n' +
+        '                              something sensitive, with only the browser MCP\n' +
+        '                              configured.\n' +
         '  --log-level normal|verbose  how much the console says (default normal).\n' +
         '                              Invoke-HarCapture sets it from -Verbose.\n');
     return 2;
@@ -1175,11 +1353,39 @@ function discoverStorageState(startDir, stopAt) {
  * be a 403 they then spend an afternoon on.
  */
 function resolveBrowserMode(args) {
+    // `--ai` MOVES THE DEFAULT (#98), it does not add a third mode.
+    //
+    // An agent driving a Playwright-launched browser is an agent driving the one
+    // launch the protected sites in the table above refuse outright -- which are
+    // the sites `--ai` was built for. So the implication is part of the switch
+    // rather than something the operator has to remember to type, and the two
+    // combinations that contradict it are refused below rather than resolved by
+    // precedence. Precedence here would silently record in the browser the
+    // operator was avoiding, and the evidence would be a 403 an afternoon later.
+    const ai = !!args.ai;
     const asked = args.browser === undefined
-        ? BROWSER_PLAYWRIGHT
+        ? (ai ? BROWSER_NATIVE : BROWSER_PLAYWRIGHT)
         : String(args.browser).trim().toLowerCase();
     if (!BROWSER_MODES.includes(asked)) {
         return { error: `--browser takes ${BROWSER_MODES.join(' or ')}, not '${args.browser}'` };
+    }
+    // Named BEFORE the --isolated/--attach rules below so the message quotes the
+    // flags the operator actually typed. Without this, `--ai --isolated` would be
+    // refused as "--browser native and --isolated are exclusive" -- true, and
+    // about a flag they never wrote.
+    if (ai && args.isolated) {
+        return {
+            error: '--ai and --isolated are exclusive. --isolated launches Playwright\'s bundled' +
+                '\n  Chromium, which IS the launch a protected site refuses -- and an agent ' +
+                'driving\n  that browser is an agent driving the refusal'
+        };
+    }
+    if (ai && asked !== BROWSER_NATIVE) {
+        return {
+            error: `--ai and --browser ${asked} are exclusive: --ai implies --browser native.` +
+                '\n  Playwright\'s launch is detectable and the sites worth driving an agent at ' +
+                'refuse\n  it, so there would be nothing to drive'
+        };
     }
     const attaching = args.attach !== undefined;
     if (!attaching) {
@@ -1842,6 +2048,14 @@ class IncrementalRecorder {
         this.pending = [];
         this.written = 0;
         this.timer = null;
+        // Handlers that have begun and not finished (#98). Maintained by
+        // attachRecorder, which is the only writer: reading a request's headers
+        // and its response body are awaits, so between "the browser says this
+        // request finished" and "the entry exists" the recording holds work
+        // nothing else can see. An ending that tears the recorder down inside
+        // that window loses the entry and nothing reports it missing.
+        // settleRecorder waits on this count.
+        this.inFlight = 0;
         // Counted as it is appended rather than stat-ed per flush: the flush
         // interval is short by design and the log is the largest file the
         // session writes. Seeded from what is already there, because the log is
@@ -2086,6 +2300,13 @@ function createCaptureScope(targetUri) {
  */
 function attachRecorder(context, recorder, scope) {
     const record = async (request, failure) => {
+        // COUNTED FROM THE FIRST LINE TO THE LAST (#98). Everything below is
+        // awaits, so an ending that arrives mid-handler -- which is what an agent
+        // exiting the instant its last action returns produces -- would take the
+        // recorder down while this entry is still being built. The count is what
+        // settleRecorder waits on, and it is incremented here rather than inside
+        // the try so no path can begin without being counted.
+        recorder.inFlight = (recorder.inFlight || 0) + 1;
         // The whole handler is guarded, not just the calls known to be
         // fragile: an unhandled rejection here would crash the driver
         // mid-capture, which is the exact loss this recorder exists to prevent.
@@ -2130,6 +2351,8 @@ function attachRecorder(context, recorder, scope) {
             }));
         } catch (e) {
             log.verbose(`capture-har: entry skipped: ${e.message}`);
+        } finally {
+            recorder.inFlight = Math.max(0, (recorder.inFlight || 0) - 1);
         }
     };
 
@@ -2478,11 +2701,509 @@ function decideCatalogueRunner(ctx = {}) {
     return { delegatedTo: 'none', pending: true, promptPath };
 }
 
+/**
+ * Is there a `claude` this process can actually RUN?
+ *
+ * Asked by spawning it, exactly as the drive and the catalogue pass will -- no
+ * shell -- rather than by `where`/`which`. Those answer "is there a file by that
+ * name", and on Windows the file is often a `claude.cmd` shim, which spawn()
+ * without a shell cannot launch (Node refuses .cmd/.bat since CVE-2024-27980).
+ * The probe then said yes, `--ai` passed the guard that is supposed to refuse
+ * BEFORE a browser is launched, and the run ended `agent-failed` with the
+ * browser already up. Spawning `claude --version` makes the probe's answer and
+ * the launch's answer the same question.
+ */
 function claudeOnPath() {
-    const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['claude'], {
-        encoding: 'utf8', windowsHide: true
+    const probe = spawnSync(AGENT_CLAUDE, ['--version'], {
+        encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: AGENT_PROBE_TIMEOUT_MS
     });
-    return probe.status === 0;
+    return !probe.error && probe.status === 0;
+}
+
+// ---------------------------------------------------------------------------
+// An agent drives the browser while this process records (#98)
+// ---------------------------------------------------------------------------
+
+/**
+ * The prompt an agent-driven capture is driven under.
+ *
+ * GENERATED, NEVER HAND-WRITTEN, and that is the feature. The prompt that drove
+ * the five-site car-rental capture this comes from was typed by hand, and it is
+ * the same every time except for the goal -- so most of it is text that ought
+ * not to be retyped at all. Most of it is also SAFETY TEXT: never a password,
+ * never payment data, stop before a driver-details page, hand back on a bot
+ * check. A prompt somebody retypes in a hurry is a prompt that drops one of
+ * those, and the dropping is invisible until an agent has typed a card number
+ * into somebody's checkout.
+ *
+ * THREE PARTS, assembled here and stored beside the capture:
+ *
+ *   drive-prompt.md         the standing instructions and the rules
+ *   this run's own facts    the goal (-Describe), the site, the CDP endpoint,
+ *                           session.json -- the only part that varies
+ *   discovery-checklist.md  what to vary so the capture exposes parameters
+ *
+ * The checklist is a FILE OF ITS OWN because issue #76 owns that text and will
+ * move it into SKILL.md; read rather than inlined, that move is a file move
+ * instead of a rewrite of this function.
+ *
+ * SEAM FOR #75 (the sign-in checkpoint). Without it, the rule in
+ * drive-prompt.md stands alone: the agent stops at the first sign-in prompt and
+ * hands back. With #75 the session grows a `phase`, a human signs in while the
+ * recording runs, and `-SignInFirst` flips it -- at which point this function
+ * gains a line telling the agent to wait for `phase: "recording"` in the
+ * session.json it is already given. Nothing else here changes.
+ *
+ * SEAM FOR #74 (multi-site). One prompt, one site, one window. Multi-site is one
+ * capture per site, so it is one call to this function per site rather than a
+ * list inside the prompt -- the rule "keep the site's tab in front" only has a
+ * meaning per window.
+ */
+function buildAgentPrompt(session, opts = {}) {
+    const dir = opts.dir || __dirname;
+    const read = (name) => fs.readFileSync(path.join(dir, name), 'utf8').trimEnd();
+    const sessionFile = path.join(session.sessionDir, SESSION_FILE);
+    return [
+        read(DRIVE_PROMPT),
+        '',
+        '## This capture',
+        '',
+        `- **Goal:** ${session.describe}`,
+        `- **Site:** ${session.uri}`,
+        `- **Browser CDP endpoint:** ${session.cdpEndpoint}`,
+        ...(session.chromeExtension === false
+            ? [
+                '- **Driver:** this run drives through Playwright MCP on the CDP endpoint above. The',
+                '  Claude-in-Chrome extension is not installed in the capture profile, so skip',
+                '  "Select the capture browser" and do not use any `mcp__claude-in-chrome__*` tool.'
+            ]
+            : [
+                `- **Capture browser name (Claude in Chrome):** \`${captureBrowserName(session)}\``,
+                '  (select the connected browser with exactly this name; see "Select the capture browser")'
+            ]),
+        `- **Session file:** ${sessionFile}`,
+        '  (everything the recorder resolved for this run, including the endpoint above)',
+        `- **Your step log is saved to:** ${session.agentLogPath}`,
+        '- **The only tools you may use** (the ones this run pre-approves; use nothing else):',
+        ...agentAllowedTools(session.chromeExtension !== false).map((tool) => `  - \`${tool}\``),
+        '',
+        '## Discovery checklist',
+        '',
+        read(DISCOVERY_CHECKLIST),
+        ''
+    ].join('\n');
+}
+
+/**
+ * Is Claude in Chrome installed in this capture profile?
+ *
+ * Read from the profile's own Extensions directory -- the folder Chrome creates
+ * for an extension installed from the Chrome Web Store, keyed by its store ID --
+ * in `Default` and any `Profile N` inside the user-data-dir. A version folder
+ * with no manifest.json is a half-finished install and does not count.
+ *
+ * Read-only, and only a hint: it cannot tell whether the extension is signed in
+ * or connected. That is why its answer is a warning, never a refusal.
+ */
+function chromeExtensionInstalled(profileDir) {
+    let entries;
+    try { entries = fs.readdirSync(profileDir, { withFileTypes: true }); } catch (e) { void e; return false; }
+    return entries.some((entry) => {
+        if (!entry.isDirectory() || !/^(Default|Profile \d+)$/.test(entry.name)) return false;
+        const extDir = path.join(profileDir, entry.name, 'Extensions', CLAUDE_EXTENSION_ID);
+        let versions;
+        try { versions = fs.readdirSync(extDir); } catch (e) { void e; return false; }
+        return versions.some((v) => fs.existsSync(path.join(extDir, v, 'manifest.json')));
+    });
+}
+
+/**
+ * The name the capture browser goes by in Claude in Chrome, and the one fact the
+ * agent selects it by (#117). The extension's list_connected_browsers reports
+ * each connected Chrome by deviceId and display name -- nothing about CDP ports
+ * or profiles -- so the operator names the capture browser once, when connecting
+ * the extension in it, and the run tells the agent which name to select.
+ *
+ * UNIQUE PER PROFILE (review I3). The default profile is plain `har-capture`;
+ * every other profile is `har-capture-<folder slug>-<6 hex>`, the hex a hash of
+ * the resolved profile path. The slug alone collided -- `profile-work` and a
+ * folder named `work` were both `har-capture-work`, and a folder whose slug came
+ * out empty took the default profile's name -- and a collision is the agent
+ * driving the wrong browser. The hash is stable, so a profile keeps its name.
+ * An attached browser has no profile this run can name, so it is the plain name.
+ */
+function captureBrowserName(session) {
+    const profileDir = session && session.profileDir;
+    if (!profileDir) return CAPTURE_BROWSER_NAME;
+    const resolved = path.resolve(profileDir);
+    const key = (dir) => {
+        const r = path.resolve(dir);
+        return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    // The EFFECTIVE default only: with HAR_CAPTURE_PROFILE set, that is the
+    // default and `<root>/profile` is an ordinary profile with its own name.
+    if (key(defaultProfileDir()) === key(resolved)) return CAPTURE_BROWSER_NAME;
+    const base = path.basename(resolved).trim().toLowerCase();
+    const slug = (base.startsWith('profile-') ? base.slice('profile-'.length) : base)
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const hash = require('crypto').createHash('sha256').update(key(resolved)).digest('hex').slice(0, 6);
+    return [CAPTURE_BROWSER_NAME, slug, hash].filter(Boolean).join('-');
+}
+
+/**
+ * What an -AI run says about the extension before the browser launches (#117).
+ * Null when there is no profile to look in (an attached browser). Never an
+ * install: no `--load-extension` (the stealth test forbids it), nothing
+ * automated -- the operator installs it once, by hand, in the capture profile.
+ */
+function chromeExtensionNotice(session) {
+    if (!session.profileDir) return null;
+    const name = captureBrowserName(session);
+    if (chromeExtensionInstalled(session.profileDir)) {
+        return {
+            installed: true,
+            level: 'info',
+            message: 'capture-har: Claude in Chrome is installed in the capture profile. The agent ' +
+                `selects the connected\n  browser named \`${name}\` -- give it that name when you ` +
+                'connect the extension in it.'
+        };
+    }
+    return {
+        installed: false,
+        level: 'warn',
+        message: [
+            'capture-har: Claude in Chrome -- the preferred driver for --ai -- is not installed in ' +
+                'the capture',
+            '  profile, so this run drives through Playwright MCP on the CDP endpoint (the agent is',
+            '  not given the extension at all). One-time setup, for the next run:',
+            '    1. Open the capture browser on this profile (a run without --ai, --browser native):',
+            `       ${session.profileDir}`,
+            '    2. In it, install Claude in Chrome from the Chrome Web Store:',
+            `       ${CLAUDE_EXTENSION_STORE_URL}`,
+            '    3. Sign in to the extension with your Claude account, and connect it under the name',
+            `       \`${name}\` -- the agent selects the capture browser by that name. Give that`,
+            '       name to the capture browser only.'
+        ].join('\n')
+    };
+}
+
+/**
+ * Who, if anyone, drives this capture.
+ *
+ * A pure decision rather than a branch inside the launch, because the only thing
+ * that can make it fail -- no `claude` on PATH -- cannot be produced inside a
+ * test without uninstalling the CLI.
+ *
+ * `--ai` with no agent to run is UNANSWERABLE, so it is a refusal rather than a
+ * warning that falls back to a recording nobody is driving: the operator asked
+ * for a capture to be driven, and a browser sitting open on a bot-protected site
+ * with nothing happening in it is not a lesser version of that.
+ */
+function resolveAgent(ctx = {}) {
+    if (!ctx.ai) return {};
+    if (!ctx.claudeOnPath) {
+        return {
+            error: 'capture-har: --ai drives the recording with the `claude` CLI, and it is not ' +
+                'on PATH.\n' +
+                '  Install it (https://claude.com/claude-code), or record the session yourself in ' +
+                'an\n  ordinary Chrome:\n' +
+                '    node capture-har.js start --uri <url> --describe <text> --browser native\n' +
+                '  Refused here, before a browser is started, so there is nothing to clean up.'
+        };
+    }
+    return { agent: AGENT_CLAUDE };
+}
+
+/**
+ * The agent child:
+ *   `claude -p <prompt> --permission-mode auto --chrome|--no-chrome [--tools ""] --allowedTools <tools>`.
+ *   (`--no-chrome`, and no extension tools in the allowlist, when the capture
+ *   profile has no extension -- see agentAllowedTools.)
+ *
+ * `--chrome` in both modes (#117): "Enable Claude in Chrome integration". The
+ * extension is the preferred driver, and a `-p` child without the flag may have
+ * none of its tools -- leaving only the Playwright MCP fallback.
+ *
+ * TWO MODES (owner decision, #112). `--allowedTools` only PRE-APPROVES the
+ * browser tools; it removes nothing. Without a mode, a `-p` child would run the
+ * read-only built-ins (Read, Grep, Glob) unprompted -- beside raw.ndjson and its
+ * live cookies -- and silently deny everything else, such as a Bash step when it
+ * gets stuck.
+ *
+ *   auto          (default) `--permission-mode auto`: the classifier approves
+ *                 or blocks each action the list does not cover, and the browser
+ *                 tools stay pre-approved so clicking never waits on it.
+ *   browser-only  also `--tools ""`: every BUILT-IN tool is removed. MCP tools
+ *                 remain -- the browser's, and any other server in the
+ *                 operator's own Claude settings, which `--tools` does not
+ *                 govern (documented: keep only the browser MCP configured).
+ *                 `--strict-mcp-config` is deliberately NOT passed: it would
+ *                 drop the browser MCP too. For a site the operator is signed
+ *                 into something sensitive on -- the agent reads untrusted page
+ *                 content beside live cookies, and the classifier is a
+ *                 judgement, not a wall.
+ *
+ * Never `--dangerously-skip-permissions` or `bypassPermissions`: those approve
+ * without judging anything.
+ *
+ * The empty string is its own argv element, and survives because the child is
+ * spawned WITHOUT a shell (a shell would drop the empty word, and `--tools`,
+ * variadic, would then swallow the allowlist).
+ *
+ * `-p` is non-interactive by design. The interactive part of this run is the
+ * BROWSING, and it is happening in the browser; a driver that stopped to ask the
+ * terminal a question would block behind the recorder's own ENTER prompt, which
+ * is still armed because a human may always cut a drive short.
+ *
+ * DELIBERATELY NOT under run-with-heartbeat.js, which the catalogue pass runs
+ * through (#492). That wrapper exists because postProcess is SYNCHRONOUS and
+ * cannot tick while `spawnSync` blocks its event loop; the drive is awaited
+ * inside an async `start`, which can. And decisively: the wrapper inherits
+ * stdio, so the agent's narration would reach the terminal and nowhere else --
+ * while the step log beside the capture is one of the artifacts this mode owes
+ * the cataloguing step. The narration IS the progress signal here, so there is
+ * nothing left for a heartbeat to add.
+ */
+function agentChildCommand(prompt, opts = {}) {
+    // `--allowedTools` LAST, one tool per argument: the CLI declares it
+    // `<tools...>`, variadic, so anything after it would be read as a tool name.
+    return {
+        command: AGENT_CLAUDE,
+        args: [
+            '-p', prompt,
+            '--permission-mode', 'auto',
+            // Boolean, so it may sit anywhere before the variadic flags: without
+            // it a `-p` child need not load the extension's tools at all (#117).
+            // DISABLED when the preflight found the extension missing from the
+            // capture profile (review I1): then the only Chrome the extension
+            // could reach is some other one, and the run is Playwright MCP's.
+            // `--no-chrome`, not merely no flag: Claude Code settings can enable
+            // the integration by default, and an omitted flag would leave it on.
+            opts.chrome === false ? '--no-chrome' : '--chrome',
+            ...(opts.tools === AGENT_TOOLS_BROWSER_ONLY ? ['--tools', ''] : []),
+            '--allowedTools', ...agentAllowedTools(opts.chrome !== false)
+        ]
+    };
+}
+
+/**
+ * Run the agent against the recording, and keep every word it says.
+ *
+ * TEED, not captured: each chunk goes to the step log beside the capture AND to
+ * this process's stderr. The log is for the cataloguing step, which the issue
+ * asks to be able to read what the agent did and where it stopped; the terminal
+ * copy is for the operator, who is otherwise watching a browser move on its own
+ * with no account of why. stderr rather than stdout because stdout carries this
+ * script's one machine-readable line and nothing else.
+ *
+ * It NEVER REJECTS. A driver that could not be started, or that died, is an
+ * ending like any other: the traffic recorded up to that point is real, and
+ * discarding it would be the one outcome worse than a short capture. The exit
+ * status is reported so `start` can say which happened.
+ *
+ * IT ENDS ON 'close', NOT ON 'exit'. 'exit' is the process ending; its stdout
+ * and stderr can still hold output, delivered AFTER it -- and the output that
+ * arrives last is the agent's summary of where it stopped, the part of the
+ * step log the cataloguing step most needs. Ending the log on 'exit' lost that
+ * text, and a chunk landing between `end()` and the stream finishing threw
+ * ERR_STREAM_WRITE_AFTER_END with no listener, killing the recorder before
+ * session.json or the HAR were written. 'close' fires once both pipes drained.
+ *
+ * BUT ONLY SO LONG. A grandchild the agent started can inherit its stdout and
+ * hold the pipe open after the agent is gone, and an unconditional wait for
+ * 'close' would turn that into a recording that never ends. After 'exit' the
+ * drain is given `opts.drainMs`, then the drive ends with what arrived.
+ */
+function driveWithAgent(session, prompt, opts = {}) {
+    const spawnFn = opts.spawn || spawn;
+    const drainMs = opts.drainMs === undefined ? AGENT_DRAIN_MAX_MS : opts.drainMs;
+    const child = agentChildCommand(prompt, {
+        tools: session.agentTools, chrome: session.chromeExtension !== false
+    });
+    return new Promise((resolve) => {
+        let settled = false;
+        let stream = null;
+        // The log is closed exactly once, and nothing is written after that:
+        // `say` checks this rather than trusting the order events arrive in.
+        let logEnded = false;
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (stream && !logEnded) {
+                // Resolved once the log is FLUSHED, because `start` ends in
+                // process.exit and a write still queued then is a write lost.
+                // 'close' rather than the end() callback: it also fires when
+                // the stream fails, so the drive cannot hang on a broken log.
+                logEnded = true;
+                stream.once('close', () => resolve(result));
+                stream.end();
+            } else {
+                resolve(result);
+            }
+        };
+        try {
+            stream = fs.createWriteStream(session.agentLogPath, { flags: 'a' });
+            // A step log that cannot be written is a lost record, not a lost
+            // capture: said once, and the drive goes on without it.
+            stream.on('error', (e) => {
+                log.warn(`capture-har: the agent step log could not be written: ${e.message}`);
+                logEnded = true;
+                stream = null;
+            });
+            stream.write(`capture-har: agent (${session.agent}) started ` +
+                `${new Date().toISOString()}\n`);
+        } catch (e) {
+            log.warn(`capture-har: could not open the agent step log: ${e.message}`);
+        }
+        const say = (text) => {
+            if (stream && !logEnded) stream.write(text);
+            process.stderr.write(text);
+        };
+        let proc;
+        try {
+            proc = spawnFn(child.command, child.args, {
+                cwd: session.sessionDir,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true
+            });
+        } catch (e) {
+            say(`capture-har: could not start ${child.command}: ${e.message}\n`);
+            finish({ status: 127 });
+            return;
+        }
+        // RECORDED, NEVER SIGNALLED -- the same contract the browser's pid is
+        // under. It is here so the warning about an agent that outlived the
+        // recording can name a process the operator can actually find.
+        session.agentPid = proc.pid === undefined ? null : proc.pid;
+        if (proc.stdout) proc.stdout.on('data', say);
+        if (proc.stderr) proc.stderr.on('data', say);
+        proc.once('error', (e) => {
+            say(`capture-har: the agent could not be started: ${e.message}\n`);
+            finish({ status: 127 });
+        });
+        let exited = null;
+        let drainTimer = null;
+        const ended = () => {
+            if (drainTimer) clearTimeout(drainTimer);
+            if (settled) return;
+            const { code, signal } = exited || {};
+            say(`capture-har: agent ended ${new Date().toISOString()}` +
+                (signal ? ` (${signal})` : ` (exit ${code})`) + '\n');
+            finish({ status: code === null || code === undefined ? 1 : code, signal: signal });
+        };
+        proc.once('exit', (code, signal) => {
+            exited = { code, signal };
+            // Not after 'error' already ended the drive: a timer nothing will
+            // clear would hold the event loop open for the whole drain window.
+            if (!settled) drainTimer = setTimeout(ended, drainMs);
+        });
+        proc.once('close', (code, signal) => {
+            if (!exited) exited = { code, signal };
+            ended();
+        });
+    });
+}
+
+/**
+ * What the agent's exit means for the recording (#98).
+ *
+ * `recordingEndedBy` is the reason the recording has ALREADY ended for, or null
+ * while it is still running. An agent that exits after ENTER, the stop command
+ * or a closed window ended nothing: it is not an ending, it earns no warning
+ * that it is "ending the recording", and it does not get to write its exit code
+ * onto a session already recorded as ended by something else. So null.
+ *
+ * @returns {null | {reason: string, warning: string|null}}
+ */
+function agentExitEnding(result, recordingEndedBy) {
+    if (recordingEndedBy) return null;
+    if (result.status === 0) return { reason: 'agent-finished', warning: null };
+    return {
+        reason: 'agent-failed',
+        warning: `capture-har: the agent exited ${result.status} -- ending the recording ` +
+            'and post-processing what it did record.'
+    };
+}
+
+/**
+ * Let the recording go quiet before an agent-driven ending tears it down (#98).
+ *
+ * TWO DIFFERENT WAITS, because two different things are unknown.
+ *
+ * What CAN be observed is waited for exactly: `recorder.inFlight` is the number
+ * of handlers that have begun and not finished, and the wait ends the moment it
+ * reaches zero. A fixed sleep would be both slower than that when nothing is
+ * pending and shorter than it when something is.
+ *
+ * What CANNOT be observed gets a bounded GRACE: a request the browser has not yet
+ * reported as finished is, from here, indistinguishable from no request at all.
+ * Half a second is the measured shape of the defect -- the handler was mid-flight
+ * at `stop()`, not minutes away from starting.
+ *
+ * And the whole thing is CAPPED. A response body the browser will never hand over
+ * must not hold a capture hostage: the artifacts are worth more than the one
+ * entry, so the cap is reported rather than waited through.
+ *
+ * @returns {Promise<{drained: boolean, waitedMs: number}>}
+ */
+async function settleRecorder(recorder, opts = {}) {
+    const graceMs = opts.graceMs === undefined ? AGENT_SETTLE_GRACE_MS : opts.graceMs;
+    const maxMs = opts.maxMs === undefined ? AGENT_SETTLE_MAX_MS : opts.maxMs;
+    const pause = opts.sleep || sleep;
+    const started = Date.now();
+    if (graceMs > 0) await pause(graceMs);
+    while ((recorder.inFlight || 0) > 0 && Date.now() - started < maxMs) {
+        await pause(Math.min(POLL_MS, 50));
+    }
+    return { drained: (recorder.inFlight || 0) === 0, waitedMs: Date.now() - started };
+}
+
+/**
+ * What the operator is told when the recording ended BEFORE the agent did.
+ *
+ * The issue describes the agent ending the recording. The other direction is just
+ * as reachable -- ENTER, `Stop-HarRecording`, or closing the window, all of which
+ * win the same race -- and then an agent is still browsing while nothing is being
+ * recorded any more.
+ *
+ * NOT KILLED. "Nothing in this file kills a process" is older and wider than this
+ * feature, and an agent mid-action is a process whose work is somebody's live
+ * account. So the operator is told, with the pid, because a warning about a
+ * process nobody can find is not actionable.
+ */
+function agentStillDrivingLines(session) {
+    return [
+        ['warn', `capture-har: the ${session.agent} agent is still running (pid ` +
+            `${session.agentPid === undefined || session.agentPid === null
+                ? 'unknown' : session.agentPid}) and what it ` +
+            'does from here is no longer being recorded.\n' +
+            '  This run ended the recording first and killed nothing. End the agent yourself ' +
+            'if\n  you are done with it.'],
+        ['warn', `  Its step log, up to this point: ${session.agentLogPath}`]
+    ];
+}
+
+/**
+ * What the operator is told when an agent takes the wheel.
+ *
+ * Said at info level and before the first action, because a browser that starts
+ * moving on its own is alarming unless it was announced -- and because the two
+ * facts an operator needs while watching it are what it will refuse to do and
+ * how to take over. ENTER still ends the recording: a drive is never a loss of
+ * control.
+ */
+function agentBannerLines(session) {
+    return [
+        ['info', `  An agent (${session.agent}) is driving this recording. It works at a human ` +
+            'pace, keeps\n' +
+            '  this tab in front, enters no passwords, personal details or payment data, and\n' +
+            '  stops and hands back at any bot check or sign-in prompt.'],
+        ['info', `  Its instructions: ${session.agentPromptPath}\n` +
+            `  Its step log:     ${session.agentLogPath}`],
+        ['info', '  The recording ends when the agent finishes or hands back. Press ENTER here ' +
+            'to\n  end it sooner.']
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -3034,10 +3755,16 @@ function describeSize(filePath) {
  */
 function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
     const spawn = opts.spawn || spawnSync;
+    // The probe SPAWNS `claude --version` (see claudeOnPath), so it is asked only
+    // when its answer can change the decision: interactive, and not already
+    // inside an agent. Elsewhere it would cost a process launch on every
+    // post-process for nothing.
+    const isTty = !!process.stdin.isTTY;
+    const insideAgent = !!(process.env.CLAUDECODE || process.env.CLAUDE_CODE_ENTRYPOINT);
     const decision = decideCatalogueRunner(opts.runnerContext || {
         env: process.env,
-        isTty: !!process.stdin.isTTY,
-        claudeOnPath: claudeOnPath()
+        isTty,
+        claudeOnPath: isTty && !insideAgent && claudeOnPath()
     });
     const result = { delegatedTo: decision.delegatedTo, pending: decision.pending };
 
@@ -3046,7 +3773,13 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
             `${fs.readFileSync(decision.promptPath, 'utf8')}\n\n` +
             `Digest: ${digestPath}\nCatalogue: ${cataloguePath}\n` +
             `Raw capture: ${session.harPath}\nOutput path: ${session.outputPath}\n` +
-            (session.describe ? `Operator intent: ${session.describe}\n` : '');
+            (session.describe ? `Operator intent: ${session.describe}\n` : '') +
+            // WHERE THE ACTIONS ARE WRITTEN DOWN, when an agent drove (#98). The
+            // step log is kept so segmentation has a record of what was done and
+            // where it stopped -- which is only true if the step that segments is
+            // told the file exists. Absent for a hand-driven capture, because a
+            // path to a file that is not there is worse than silence.
+            (session.agentLogPath ? `Agent step log: ${session.agentLogPath}\n` : '');
         log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
         const child = catalogueChildCommand(prompt);
         const run = spawn(child.command, child.args, {
@@ -3463,9 +4196,32 @@ async function start(args) {
     // being asked to install a browser and then told the flags were wrong is
     // the shape of failure #512 exists to prevent.
     const browserMode = resolveBrowserMode(args);
+    // WHICH AGENT'S TOOLS (#112)? With no agent there is nothing to limit, and an
+    // operator who typed it believes something is. Refused, not ignored -- and so
+    // is a value that names no mode, which must not quietly fall back to auto.
+    //
+    // PRESENCE, not the value: a trailing `--ai-tools` with nothing after it is
+    // parsed as undefined, which is indistinguishable from "not typed" by value,
+    // and would have run in auto for an operator who meant browser-only.
+    if (Object.hasOwn(args, 'ai-tools')) {
+        if (args['ai-tools'] === undefined) {
+            return usage(`--ai-tools needs a value: ${AGENT_TOOLS_MODES.join(' or ')}`);
+        }
+        if (!args.ai) {
+            return usage('--ai-tools needs --ai: it chooses the driving agent\'s tools, ' +
+                'and\n  without --ai no agent is driving');
+        }
+        if (!AGENT_TOOLS_MODES.includes(args['ai-tools'])) {
+            return usage(`--ai-tools takes ${AGENT_TOOLS_MODES.join(' or ')}, not '${args['ai-tools']}'`);
+        }
+    }
     if (browserMode.error) return usage(browserMode.error);
     const attached = !!browserMode.attached;
     const nativeBrowser = browserMode.browser === BROWSER_NATIVE;
+    // WHO DRIVES (#98). Resolved here, beside WHICH BROWSER, because the two
+    // answers are one decision: an agent drives over the same CDP endpoint the
+    // native mode exists to provide.
+    const ai = !!args.ai;
     // recordHar is Playwright's, and Playwright launched neither of the browsers
     // above. Carried as a fact on the session rather than re-derived from the
     // mode string, because `stop` runs in another process and has to reach the
@@ -3487,6 +4243,24 @@ async function start(args) {
     // and several suites use it to ask the recorder questions on machines
     // where no browser is installed; gating it on a browser would break the
     // one command that exists to have no side effects.
+    // AND CAN ANYTHING DRIVE IT (#98) -- asked above the dependency preflight for
+    // the same reason the preflight itself sits above everything else: this is
+    // the other gate whose answer makes the rest pointless. An operator left with
+    // a Chrome open, a profile warmed up and no driver has to clean up after a run
+    // that could never have worked -- and on the protected sites this mode exists
+    // for, that browser was the expensive part.
+    //
+    // NOT under --validate-only, exactly as the preflight is not: that flag
+    // resolves paths and starts nothing, and suites use it to ask the recorder
+    // questions on machines where neither a browser nor a CLI is installed.
+    if (ai && !args['validate-only']) {
+        const agent = resolveAgent({ ai, claudeOnPath: claudeOnPath() });
+        if (agent.error) {
+            process.stderr.write(agent.error + '\n');
+            return 1;
+        }
+    }
+
     if (!args['validate-only']) {
         const deps = await preflightDependencies({ isTty, requireBrowser: ownsRecordHar });
         if (!deps.ok) {
@@ -3629,6 +4403,31 @@ async function start(args) {
         requestedPort,
         snapshotSeconds: snapshotMs / 1000
     };
+
+    // ONLY WHEN ONE WAS ASKED FOR (#98). A hand-driven capture's session.json
+    // says nothing about an agent rather than saying `ai: false, agent: null`:
+    // the fields are the record of a driver, and inventing empty ones for every
+    // capture ever recorded would make "was this driven by an agent?" a question
+    // about a value's truthiness rather than about a key's presence.
+    if (ai) {
+        session.ai = true;
+        session.agent = AGENT_CLAUDE;
+        session.agentPromptPath = path.join(paths.sessionDir, AGENT_PROMPT_FILE);
+        session.agentLogPath = path.join(paths.sessionDir, AGENT_LOG_FILE);
+        // Only when browser-only, like `ai` itself: auto is the default (#112).
+        if (args['ai-tools'] === AGENT_TOOLS_BROWSER_ONLY) session.agentTools = AGENT_TOOLS_BROWSER_ONLY;
+        // IS THE PREFERRED DRIVER THERE (#117) -- asked before the browser
+        // launches, and before --validate-only returns because it only reads.
+        // A warning, never a refusal: Playwright MCP is the fallback.
+        const extension = chromeExtensionNotice(session);
+        if (extension) {
+            // CARRIED, so the drive and the prompt act on the same answer the
+            // warning gave (review I1): absent means no --chrome and a prompt
+            // that says Playwright MCP. Unknown (attached) is left unset.
+            session.chromeExtension = extension.installed;
+            log[extension.level](extension.message);
+        }
+    }
 
     if (args['validate-only']) {
         // stdout stays pure JSON so a caller can parse it; the human note goes
@@ -3945,6 +4744,40 @@ async function start(args) {
         process.once('SIGINT', () => { settle('ctrl-c'); resolve(); });
     }));
 
+    // THE AGENT IS AN ENDING, and it is only ONE of them (#98).
+    //
+    // Pushed into the same race as the stop sentinel, ENTER and SIGINT, which is
+    // what keeps a drive from being a loss of control: `Stop-HarRecording` still
+    // ends it from another process, ENTER still ends it from here, and closing
+    // the window still ends it. Whichever arrives first wins, as it always did.
+    //
+    // Launched AFTER the banner and after session.json exists, because the prompt
+    // hands the agent that file's path and an agent that read it a moment early
+    // would find no `startedUtc` and no endpoint.
+    if (ai) {
+        const prompt = buildAgentPrompt(session);
+        fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
+        log.lines(agentBannerLines(session));
+        endings.push(driveWithAgent(session, prompt).then((result) => {
+            // AN AGENT THAT OUTLIVED THE RECORDING ENDED NOTHING. When ENTER, the
+            // stop command or a closed window got there first, the operator was
+            // already told the agent is still running (agentStillDrivingLines),
+            // and the session is already recorded as ended by that.
+            const ending = agentExitEnding(result, reason);
+            if (!ending) return;
+            session.agentExitCode = result.status;
+            // A DRIVER THAT FAILED IS STILL AN ENDING. The traffic recorded up to
+            // that point is real and cannot be re-recorded, so the run post-
+            // processes it exactly as a clean finish does; what changes is that
+            // the operator is told, and that the reason on the session says which
+            // happened rather than claiming the agent was done.
+            if (ending.warning) {
+                log.warn(`${ending.warning}\n  Its step log: ${session.agentLogPath}`);
+            }
+            settle(ending.reason);
+        }));
+    }
+
     await Promise.race(endings);
     if (rl) rl.close();
 
@@ -3960,6 +4793,28 @@ async function start(args) {
             cancelled = /^c/i.test((answer || '').trim());
         } else {
             cancelled = true;
+        }
+    }
+
+    // AN AGENT'S LAST ACTION IS STILL BEING RECORDED WHEN THE AGENT IS GONE (#98).
+    //
+    // Only for an agent ending, because only an agent ends a recording in the same
+    // millisecond as its last action. ENTER, a stop command and a closed window all
+    // arrive after a human has moved, and a closed window has no browser left to
+    // wait for -- waiting there would buy nothing and delay every capture.
+    // AND THE OTHER DIRECTION: this run ended first, and the agent did not. Said
+    // before the recorder is torn down, because from here on what the agent does
+    // is not being recorded -- and nothing killed it (see agentStillDrivingLines).
+    if (ai && session.agentExitCode === undefined) {
+        log.lines(agentStillDrivingLines(session));
+    }
+
+    if (reason === 'agent-finished' || reason === 'agent-failed') {
+        const settled = await settleRecorder(recorder);
+        if (!settled.drained) {
+            log.warn('capture-har: some requests were still being recorded when the agent ' +
+                `finished, and did not complete within ${AGENT_SETTLE_MAX_MS / 1000}s. The ` +
+                'capture may be missing its last entry or two.');
         }
     }
 
@@ -4627,7 +5482,22 @@ module.exports = {
     buildCatalogueScaffold,
     decideCatalogueRunner,
     catalogueChildCommand,
+    buildAgentPrompt,
+    agentChildCommand,
+    captureBrowserName,
+    captureProfileRoot,
+    chromeExtensionInstalled,
+    chromeExtensionNotice,
+    CLAUDE_EXTENSION_ID,
+    agentBannerLines,
+    agentStillDrivingLines,
+    agentExitEnding,
+    claudeOnPath,
+    driveWithAgent,
+    settleRecorder,
+    resolveAgent,
     postProcess,
+    runCatalogue,
     catalogueCommand,
     postProcessExitCode,
     publishFile,

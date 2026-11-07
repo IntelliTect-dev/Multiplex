@@ -324,8 +324,13 @@ section('6', () => {
     // two notions of what a capture is -- which is the defect the subsystem
     // exists to avoid, and no amount of testing the batch alone would show it.
     const sessions = store.listSessionDirs(root).map((e) => e.dir).sort();
+    // ASKED AS THE PREDICATE, not as a list of classes to exclude. This
+    // assertion is the guard against the two views disagreeing, and spelling it
+    // `!== CLASS_FOREIGN` made the guard carry the very bug the walk was
+    // changed to remove: a class added later would have been counted as
+    // recorder output here and the disagreement would not have shown.
     const recorderSaw = store.listCaptureDirs(root)
-        .filter((e) => e.captureClass !== store.CLASS_FOREIGN)
+        .filter((e) => store.isRecorderCapture(e.captureClass))
         .map((e) => e.dir).sort();
     assert.deepStrictEqual(sessions, recorderSaw,
         '6.a: the session view and the classified view disagree about the store');
@@ -471,6 +476,273 @@ section('a malformed or older session.json does not crash the walk', () => {
     const entry = store.describeCaptureDir(dir);
     assert.deepStrictEqual(entry.postProcessErrors, []);
     assert.strictEqual(entry.summaryParseError, null);
+});
+
+section('a hand-imported capture is described, not merely unrecognised', () => {
+    // THE FINDING (#102). Measured in a consuming repo on 2026-10-14: of 122
+    // entries, 6 were `foreign` -- and all 6 were phone-app captures somebody
+    // had imported on purpose, each with a hand-written `CAPTURE.md` saying
+    // what it was. The walk read none of it, so an operator asking "what have
+    // I recorded?" was told six directories were unrecognised while the answer
+    // sat in a file beside each raw.
+    //
+    // `foreign` was never wrong about PROVENANCE. It was the only thing being
+    // said, and provenance is not the question the list is asked.
+    const imported = path.join(tmp, 'imported', '.har-captures', 'phone.example.test',
+        '2026-02-01-000001');
+    fs.mkdirSync(imported, { recursive: true });
+    fs.writeFileSync(path.join(imported, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(imported, 'CAPTURE.md'),
+        '# Grocery app checkout, iPhone, mitmproxy\n\nTapped through the basket.\n');
+
+    const entry = store.describeCaptureDir(imported);
+    assert.strictEqual(entry.captureClass, store.CLASS_IMPORTED,
+        'a raw with a CAPTURE.md beside it was imported deliberately, and reads as `' +
+        entry.captureClass + '`');
+    assert.strictEqual(entry.describe, 'Grocery app checkout, iPhone, mitmproxy',
+        'the description is the first heading of CAPTURE.md, got: ' + entry.describe);
+
+    // AND IT IS STILL NOT RECORDER OUTPUT. This is the whole risk of adding a
+    // class: there is no session.json, so nothing can say whose traffic this
+    // is, and a HAR scrub that cannot attribute what it scrubbed must still
+    // decline it. Being described changes what the LIST says, never what the
+    // pipeline will touch.
+    assert.strictEqual(entry.recorderOutput, false,
+        'an imported capture has no session to attribute its traffic to and must not ' +
+        'read as recorder output');
+    assert.strictEqual(entry.scrubbed, false, 'and nothing claims this pipeline processed it');
+    assert.strictEqual(entry.ended, false);
+    assert.deepStrictEqual(entry.postProcessErrors, []);
+
+    // AND IT HAS A SIZE. `rawBytes` is null for a capture with no session only
+    // because `raw` is -- and `raw` is null on purpose, so nothing can hand a
+    // scrub a path to a file it has no provenance for. The SIZE is a fact about
+    // the directory rather than about who produced the capture in it, exactly
+    // as the substitution-table flag is, and it is the number an operator reads
+    // to decide what to keep. A multi-gigabyte mitm dump listed as "--" is the
+    // failure mode #102 exists to remove.
+    assert.ok(entry.rawBytes > 0,
+        "an imported capture reports the size of its raw, got: " + entry.rawBytes);
+    assert.strictEqual(entry.raw, null,
+        "and still hands nobody a path to a capture it cannot attribute");
+
+    // A bare raw with no notes beside it is unchanged: nobody said anything
+    // about it, so there is nothing to report but that it is not ours.
+    const bare = path.join(tmp, 'imported', '.har-captures', 'phone.example.test',
+        '2026-02-01-000002');
+    fs.mkdirSync(bare, { recursive: true });
+    fs.writeFileSync(path.join(bare, 'raw.mitm'), 'not-a-har');
+    const bareEntry = store.describeCaptureDir(bare);
+    assert.strictEqual(bareEntry.captureClass, store.CLASS_FOREIGN,
+        'a raw with nothing written beside it is still foreign');
+    assert.strictEqual(bareEntry.describe, null);
+    assert.strictEqual(bareEntry.recorderOutput, false);
+    assert.ok(bareEntry.rawBytes > 0,
+        "and a bare foreign capture reports its size too -- the question is the file on disk, " +
+        "not whether anybody described it");
+
+    // A recorder session is the other side of the predicate, and it has to be
+    // asserted or `recorderOutput` could be hard-coded false and pass above.
+    assert.strictEqual(store.describeCaptureDir(current).recorderOutput, true,
+        'a <host>/<stamp> session IS recorder output');
+    assert.strictEqual(store.describeCaptureDir(legacy).recorderOutput, true,
+        'and so is a legacy capture at the captures root');
+
+    // Both reach the listing a batch driver and an agent read, not only a
+    // direct call.
+    const listed = byDir(store.listCaptureDirs(path.dirname(imported)));
+    assert.strictEqual(listed.get(imported).captureClass, store.CLASS_IMPORTED);
+    assert.strictEqual(listed.get(bare).captureClass, store.CLASS_FOREIGN);
+});
+
+section('a description with no heading, and one nobody should have to read', () => {
+    const base = path.join(tmp, 'notes', '.har-captures', 'phone.example.test');
+
+    // No heading: the first line somebody actually wrote is the description.
+    // A `CAPTURE.md` is hand-written, so requiring markdown of it would turn
+    // "they wrote it down" into "they wrote it down correctly".
+    const plain = path.join(base, '2026-03-01-000001');
+    fs.mkdirSync(plain, { recursive: true });
+    fs.writeFileSync(path.join(plain, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(plain, 'CAPTURE.md'), '\n\nBanking app, Android, login only\n');
+    assert.strictEqual(store.describeCaptureDir(plain).describe, 'Banking app, Android, login only');
+
+    // An EMPTY notes file is not a description. Classing this `imported` on the
+    // file's existence alone would report a described capture whose description
+    // is blank -- which is the state #102 exists to make visible, not to
+    // manufacture.
+    const empty = path.join(base, '2026-03-01-000002');
+    fs.mkdirSync(empty, { recursive: true });
+    fs.writeFileSync(path.join(empty, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(empty, 'CAPTURE.md'), '#\n\n   \n');
+    const emptyEntry = store.describeCaptureDir(empty);
+    assert.strictEqual(emptyEntry.describe, null, 'an empty CAPTURE.md says nothing');
+    assert.strictEqual(emptyEntry.captureClass, store.CLASS_FOREIGN,
+        'and a capture with nothing said about it is not a described import');
+
+    // A long line is CAPPED and a multi-line one is FLATTENED. This string goes
+    // into a console table and into an agent's context; a notes file with a
+    // 40 KB first line would take the whole listing with it.
+    const long = path.join(base, '2026-03-01-000003');
+    fs.mkdirSync(long, { recursive: true });
+    fs.writeFileSync(path.join(long, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(long, 'CAPTURE.md'), '# ' + 'x'.repeat(5000) + '\n');
+    const longDescribe = store.describeCaptureDir(long).describe;
+    assert.ok(longDescribe.length <= 200,
+        'a description is capped for the table it is printed in, got ' + longDescribe.length);
+    assert.ok(/x{50}/.test(longDescribe), 'and it is still the text that was written');
+
+    // An unreadable notes file is not a crash. The walk over a whole store must
+    // survive one bad directory -- a throw here loses the inventory, which is a
+    // worse failure than the one being fixed.
+    const unreadable = path.join(base, '2026-03-01-000004');
+    fs.mkdirSync(unreadable, { recursive: true });
+    fs.writeFileSync(path.join(unreadable, 'raw.mitm'), 'not-a-har');
+    fs.mkdirSync(path.join(unreadable, 'CAPTURE.md'));   // a DIRECTORY by that name
+    const odd = store.describeCaptureDir(unreadable);
+    assert.strictEqual(odd.captureClass, store.CLASS_FOREIGN);
+    assert.strictEqual(odd.describe, null);
+});
+
+section('the walk decides by what it IS, not by listing what it is not', () => {
+    // `listSessionDirs` and the descent test used to name the classes they
+    // excluded (`!== CLASS_FOREIGN`), so adding `imported` would have silently
+    // promoted an un-attributable capture into the recorder's own enumeration
+    // -- the one `stop` and `status` resolve "which capture" from. The test is
+    // now the complement: a recorder capture, or not one.
+    const storeRoot = path.join(tmp, 'descent', '.har-captures');
+    const host = path.join(storeRoot, 'phone.example.test');
+    fs.mkdirSync(host, { recursive: true });
+    // A described import sitting at HOST level, with real captures under it.
+    fs.writeFileSync(path.join(host, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(host, 'CAPTURE.md'), '# a stray import at host level\n');
+    const under = makeCapture(path.join(host, '2026-04-01-000001'));
+
+    const dirs = store.listSessionDirs(storeRoot).map((e) => e.dir);
+    assert.ok(!dirs.includes(host),
+        'a described import is not a recorder session and must stay out of the enumeration ' +
+        '`stop` and `status` resolve from');
+    assert.ok(dirs.includes(under),
+        'and declining the directory above it must not hide the captures under it');
+});
+
+section('a notes file that is a symlink is not read', () => {
+    // AN ARBITRARY-FILE-READ PRIMITIVE, caught in review. `CAPTURE.md` is the
+    // one file this walk reports the CONTENT of, and the whole point of the
+    // `imported` class is captures brought in from OUTSIDE -- a phone export, a
+    // downloaded archive. An archive that recreates a symlink named CAPTURE.md
+    // pointing at, say, a credentials file would have had its first line read
+    // off disk and printed into the listing, an agent's context, and the delete
+    // confirmation.
+    const dir = path.join(tmp, 'symlink', '.har-captures', 'phone.example.test',
+        '2026-05-01-000001');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'raw.mitm'), 'not-a-har');
+    const elsewhere = path.join(tmp, 'symlink', 'not-a-capture-note.txt');
+    fs.writeFileSync(elsewhere, 'SENTINEL-SHOULD-NEVER-BE-READ\n');
+
+    let linked = true;
+    try { fs.symlinkSync(elsewhere, path.join(dir, 'CAPTURE.md'), 'file'); }
+    catch (e) {
+        // Creating a symlink needs a privilege this machine may not grant.
+        // SAID OUT LOUD rather than passed over: a guard that was never
+        // exercised must not read as one that was.
+        linked = false;
+        process.stderr.write('capture-store.test: the symlink case was not exercised here (' +
+            (e && e.code) + ')\n');
+    }
+
+    if (linked) {
+        const entry = store.describeCaptureDir(dir);
+        assert.strictEqual(entry.describe, null,
+            'a symlinked CAPTURE.md must not be read, got: ' + entry.describe);
+        assert.strictEqual(entry.captureClass, store.CLASS_FOREIGN,
+            'and nothing it pointed at makes this a described import');
+        assert.strictEqual(store.describeFromNotes(dir), null);
+    }
+
+    // THE ABLATION, and it runs everywhere. The same notes file written as a
+    // real file in the same place is read -- without this, the assertions above
+    // would pass against a reader that had simply stopped working.
+    const real = path.join(tmp, 'symlink', '.har-captures', 'phone.example.test',
+        '2026-05-01-000002');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(real, 'CAPTURE.md'), '# a real notes file\n');
+    assert.strictEqual(store.describeCaptureDir(real).describe, 'a real notes file');
+});
+
+section('a notes file that is a hard link is not read either', () => {
+    // THE HALF THE SYMLINK FIX MISSED, caught by the reviewer re-reading it. A
+    // hard link is not indirection the filesystem will own up to: `lstat`
+    // cannot tell one from an ordinary file, because at that level it IS one.
+    // So `isFile()` passed, the open followed the entry to somebody else's
+    // bytes, and the first line came back as this capture's description.
+    //
+    // It is the EASIER attack of the two, not the harder one -- `link()` needs
+    // no privilege on Windows where `symlink()` does, and `tar` carries
+    // hard-link entries, so the archive that delivers an imported capture can
+    // carry this.
+    const dir = path.join(tmp, 'hardlink', '.har-captures', 'phone.example.test',
+        '2026-07-01-000001');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'raw.mitm'), 'not-a-har');
+    const elsewhere = path.join(tmp, 'hardlink', 'not-a-capture-note.txt');
+    fs.writeFileSync(elsewhere, 'SENTINEL-SHOULD-NEVER-BE-READ\n');
+
+    let linked = true;
+    try { fs.linkSync(elsewhere, path.join(dir, 'CAPTURE.md')); }
+    catch (e) {
+        linked = false;
+        process.stderr.write('capture-store.test: the hard-link case was not exercised here (' +
+            (e && e.code) + ')\n');
+    }
+
+    if (linked) {
+        const entry = store.describeCaptureDir(dir);
+        assert.strictEqual(entry.describe, null,
+            'a hard-linked CAPTURE.md must not be read, got: ' + entry.describe);
+        assert.strictEqual(entry.captureClass, store.CLASS_FOREIGN,
+            'and the content it published here does not make this a described import');
+        assert.strictEqual(store.describeFromNotes(dir), null);
+
+        // AND THE DIRECTORY IS STILL A CAPTURE. Refusing the notes file must
+        // cost it its description and nothing else -- dropping the whole entry
+        // would hide a capture, which is the failure this walk exists to
+        // prevent.
+        assert.strictEqual(entry.stamp, '2026-07-01-000001');
+        assert.ok(entry.rawBytes > 0);
+    }
+
+    // The ablation, running everywhere: one directory entry, and it is read.
+    const real = path.join(tmp, 'hardlink', '.har-captures', 'phone.example.test',
+        '2026-07-01-000002');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'raw.mitm'), 'not-a-har');
+    fs.writeFileSync(path.join(real, 'CAPTURE.md'), '# a notes file nothing else references\n');
+    assert.strictEqual(store.describeCaptureDir(real).describe,
+        'a notes file nothing else references');
+});
+
+section('a description is cut between characters, not through one', () => {
+    // A hand-written notes file with an emoji in it is the everyday case, and
+    // `slice` counts UTF-16 code units: a cut landing between the halves of a
+    // surrogate pair leaves a lone surrogate that renders as a replacement
+    // glyph in the table. Raised in review.
+    const dir = path.join(tmp, 'wide', '.har-captures', 'phone.example.test',
+        '2026-06-01-000001');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'raw.mitm'), 'not-a-har');
+    // Each of these is two code units, so a 200-unit cap lands mid-character on
+    // every odd boundary -- the heading is built so that it does.
+    fs.writeFileSync(path.join(dir, 'CAPTURE.md'), '# x' + '\u{1F600}'.repeat(300) + '\n');
+
+    const describe = store.describeCaptureDir(dir).describe;
+    assert.ok(describe.length <= 200, 'still capped, got ' + describe.length);
+    assert.ok(!/[\uD800-\uDBFF]$/.test(describe),
+        'a description must not end in half a character');
+    // And it is still the text that was written, not an empty result.
+    assert.ok(describe.startsWith('x\u{1F600}'), 'got: ' + JSON.stringify(describe.slice(0, 8)));
 });
 
 // `findProfileConflict` is async, and a promise nobody waits on is an assertion

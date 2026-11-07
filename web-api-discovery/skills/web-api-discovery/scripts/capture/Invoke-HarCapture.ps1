@@ -223,6 +223,116 @@
     on a port and already running on a profile, so neither is this run's to
     choose.
 
+.PARAMETER AI
+    AN AGENT DOES THE BROWSING while the recorder records.
+
+        Invoke-HarCapture https://www.avis.com -AI `
+            -Describe 'search DCA->IAD one-way, all classes, pay now vs pay later, rate details'
+
+    -Describe BECOMES THE GOAL, so this switch needs no new input of its own: it
+    is already mandatory. Everything else is generated.
+
+    IT IMPLIES -Browser Native, and is therefore exclusive with -Isolated and
+    with -Browser Playwright. An agent driving a Playwright-launched browser is
+    an agent driving the one launch the protected sites above refuse outright,
+    which are the sites worth driving an agent at in the first place.
+
+    THE PROMPT IS GENERATED, NOT HAND-WRITTEN, and that is the feature. It is
+    assembled from the recorder's own drive-prompt.md, this run's facts (the
+    goal, the site, the CDP endpoint, the session file) and
+    discovery-checklist.md; written into the session directory as
+    `agent-prompt.md`; and run as `claude -p`. Most of that text is SAFETY text
+    -- human pace, keep the site's tab in front, no stealth measures, never a
+    password or personal or payment detail, stop before any driver-details or
+    payment page, and stop and hand back on any bot check or sign-in prompt -- and
+    a prompt somebody retypes per run is a prompt that eventually drops one of
+    them.
+
+    ONLY BROWSER TOOLS ARE PRE-APPROVED. `claude -p` is given an
+    `--allowedTools` list of the Claude-in-Chrome page tools and Playwright MCP's
+    navigate, click, type, screenshot and snapshot -- no shell, no file writes.
+    The list pre-approves rather than removes, so what it leaves out is decided
+    by -AITools:
+
+      Auto         (the default) `--permission-mode auto`: Claude Code's
+                   classifier approves or blocks each action outside the list,
+                   so a stuck agent can still take a reasonable step, while the
+                   browser tools never wait on it. The classifier is a
+                   judgement, not a wall.
+      BrowserOnly  also `--tools ""`: every BUILT-IN tool is removed -- no
+                   Read, Grep or Bash -- so no built-in tool can read the
+                   capture files. Only MCP tools remain.
+
+    The agent reads untrusted page content (a prompt-injection surface) from a
+    folder whose capture files hold LIVE session cookies. Use -AITools BrowserOnly
+    whenever the browser is signed into something sensitive -- banking, an admin
+    console, your own mail.
+
+    `--tools ""` governs only the built-in set: other MCP servers configured in
+    your Claude Code settings (a filesystem or shell server, say) still load, and
+    in auto mode the classifier is their only gate. For a sensitive site, keep
+    only the browser MCP configured.
+
+    THE STEP LOG is saved beside the capture as `agent-log.txt`: what the agent
+    did, what it saw and where it stopped, so the cataloguing step has a record
+    of the actions taken. It is also streamed to this terminal as it happens.
+
+    THE RECORDING ENDS when the agent finishes or hands back, and then the usual
+    scrub -> verify -> digest -> catalogue tail runs, unchanged. A drive is never
+    a loss of control: ENTER here, `Stop-HarRecording` from another process, and
+    closing the browser window all still end it sooner.
+
+    It needs the `claude` CLI on PATH. That is checked BEFORE a browser is
+    started, so a missing driver costs nothing to clean up.
+
+    THE CLAUDE-IN-CHROME EXTENSION IS THE DEFAULT DRIVER once it is set up,
+    once, in the CAPTURE PROFILE -- by hand; nothing installs it and no
+    `--load-extension` is passed:
+
+      1. Open the capture browser on its profile (a run without -AI,
+         -Browser Native).
+      2. In it, install Claude in Chrome from the Chrome Web Store:
+         https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn
+      3. Sign in to the extension, and connect it under the capture browser
+         name the run prints: `har-capture` for the default profile, or
+         `har-capture-<folder>-<6 hex>` (a hash of the profile path) for any
+         other. Give that name to the capture browser only. The hash comes
+         from the path, so moving or renaming a profile changes the name:
+         reconnect the extension under the new one.
+
+    Before the browser launches, every -AI run looks for the extension's store
+    ID under the profile's Extensions folder. Installed: `claude -p` gets
+    `--chrome` and the allowlist includes the extension's
+    list_connected_browsers and select_browser. Missing: the run warns, prints
+    these steps, and drives through Playwright MCP -- `--no-chrome` (off even
+    if your settings enable it by default), no extension tools in the
+    allowlist, and a prompt that says Playwright MCP only. With -Attach nothing
+    is checked and `--chrome` is passed; the name is the plain `har-capture`,
+    so give it only to the browser you attach to -- and an attached run whose
+    only connected Chrome is another browser hands back rather than falling
+    back to Playwright MCP.
+
+    THE BROWSER-SELECTION RULE, enforced by the prompt, not by code. Before
+    any page action the agent lists the connected browsers and selects, with
+    select_browser, the one whose name is exactly the capture browser name. If
+    it cannot identify it unambiguously it never acts in another browser (that
+    could be your everyday Chrome, unrecorded): it stops and hands back.
+
+    NOT YET, and deliberately: a human sign-in checkpoint (`-SignInFirst`, #75)
+    and driving several sites in one run (#74). Until #75 the agent stops at the
+    first sign-in prompt and hands back; until #74 one run drives one site.
+
+.PARAMETER AITools
+    With -AI: which tools the driving agent has.
+
+      Auto         (the default) auto permission mode: its classifier approves
+                   or blocks each action.
+      BrowserOnly  every built-in tool is removed (`--tools ""`); only MCP
+                   tools remain, so keep only the browser MCP configured.
+
+    Forwarded only when typed. Without -AI it is refused, at exit 2: there is no
+    agent whose tools it could choose. See -AI for when to use BrowserOnly.
+
 .OUTPUTS
     WebApiDiscovery.HarCapture.CatalogueEntry
 
@@ -246,6 +356,18 @@
     # Record in a Chrome you started yourself, on a dedicated profile:
     #   chrome --user-data-dir=C:\chrome-capture --remote-debugging-port=9222
     Invoke-HarCapture https://www.avis.com -Describe 'vehicle search' -Attach 9222
+
+.EXAMPLE
+    # Let an agent do the browsing. -Describe is the goal; the prompt, the
+    # discovery checklist and the safety rules are generated.
+    Invoke-HarCapture https://www.avis.com -AI `
+        -Describe 'search DCA->IAD one-way, all classes, pay now vs pay later, rate details, extras'
+
+.EXAMPLE
+    # Signed into something sensitive: the agent gets the browser tools and no
+    # built-in tools at all.
+    Invoke-HarCapture https://admin.example.com -AI -AITools BrowserOnly `
+        -Describe 'list users, open one, view its audit log'
 #>
 
 [CmdletBinding()]
@@ -288,7 +410,20 @@ param(
     [ValidateSet('Playwright', 'Native')]
     [string]$Browser = 'Playwright',
 
-    [string]$Attach
+    [string]$Attach,
+
+    # WHO DRIVES (#98). The recorder owns every rule about it -- the implication
+    # to -Browser Native, the exclusivity with -Isolated, and the refusal when no
+    # agent is installed -- for the same reason this file forwards -Attach and
+    # -Browser without re-stating their exclusivity: one owner decides, and a
+    # second copy of the judgement here would be free to disagree with it.
+    [switch]$AI,
+
+    # WHICH TOOLS THE DRIVER HAS (#112). Forwarded as --ai-tools only when
+    # TYPED, like -Browser, so the recorder -- which owns the rule, as it owns
+    # -AI's -- refuses it without --ai.
+    [ValidateSet('Auto', 'BrowserOnly')]
+    [string]$AITools = 'Auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -476,11 +611,20 @@ if ($Isolated) { $captureArgs += '--isolated' }
 # placement guard (#471) and settles it the same way. So the flags are forwarded
 # and the one owner answers.
 #
-# -Browser is only forwarded when it is not the default: `--browser playwright`
-# is refused alongside --attach, and passing the default explicitly would turn
-# `-Attach x` into that refusal for an operator who never typed a browser.
-if ($Browser -ne 'Playwright') { $captureArgs += @('--browser', $Browser.ToLowerInvariant()) }
+# -Browser is forwarded only when it was TYPED. `--browser playwright` is refused
+# alongside --attach, so forwarding the default would turn `-Attach x` into that
+# refusal for an operator who never named a browser. But the test is the
+# binding, not "differs from the default": a typed `-Browser Playwright` with
+# -AI is a refusal too (#98), and comparing against the default dropped it, so
+# the run went ahead in the native browser the operator had just declined.
+if ($PSBoundParameters.ContainsKey('Browser')) { $captureArgs += @('--browser', $Browser.ToLowerInvariant()) }
 if ($Attach) { $captureArgs += @('--attach', $Attach) }
+# Read by VALUE, never by presence in $PSBoundParameters: `-AI:$false` means off,
+# not "the switch was mentioned" -- the same hazard -Verbose:$false has below.
+if ($AI) { $captureArgs += '--ai' }
+if ($PSBoundParameters.ContainsKey('AITools')) {
+    $captureArgs += @('--ai-tools', $(if ($AITools -eq 'BrowserOnly') { 'browser-only' } else { 'auto' }))
+}
 # -Verbose is the only verbosity switch. capture-har.js prints its own console
 # output directly -- re-streaming it through PowerShell would buffer the ENTER
 # prompt and the Ctrl+C question in the very terminal the operator answers --

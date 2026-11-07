@@ -70,7 +70,7 @@ const harDocument = require(path.join(__dirname, 'har-document.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
-const { transformNested } = require(path.join(__dirname, 'har-nested.js'));
+const { transformNested, MAX_DEPTH: NESTED_MAX_DEPTH } = require(path.join(__dirname, 'har-nested.js'));
 const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 // The substitution table read back as a POST-CONDITION (issue #475): the sweep
 // that removes every occurrence of a value this run decided to replace, and
@@ -1133,6 +1133,41 @@ function main() {
                 `blocks on it. Expect the verify step to fail until the field names or the ` +
                 `policy say which it is.`);
         }
+    }
+
+    // THE DEEPER REACH, STATED ON THE RUN THAT USED IT (issue #24).
+    //
+    // The identity pass used to stop at the first parsed JSON document and cap
+    // its form descent at 4 while the shared walk went to 8. Joining
+    // `har-nested.js` raised that reach, so captures that previously came back
+    // "clean" can now legitimately produce replacements -- and a capture whose
+    // scrub quietly started doing more is exactly the change an operator finds
+    // out about from an unexplained diff three weeks later.
+    //
+    // So it is said here, on the run, with a count. Nothing is suppressed and
+    // nothing asks for confirmation: the deeper reach is the correct behaviour
+    // and it is simply not silent.
+    if (piiResult.deepDetections) {
+        console.error(
+            `sanitize-har: NOTE -- ${piiResult.deepDetections} typed-PII detection EVENT(s) ` +
+            `came from BELOW the surface of a payload (inside a nested or percent-encoded ` +
+            `layer). Events, NOT distinct values: one value visible at several nesting ` +
+            `levels is counted at each, so read this as "how much the deeper reach fired", ` +
+            `never as a population count. The identity pass shares har-nested.js's ` +
+            `traversal, so it reaches every layer the leak gate reaches; before that it ` +
+            `stopped at the first parsed document. A capture that used to scrub clean may ` +
+            `now report substitutions for values that were always there.`);
+    }
+    // An early stop is not a clean walk, and reporting it is what keeps it from
+    // reading like one. The gate says this about its own walk; the scrub has to
+    // say it about this one or "no findings" conflates "nothing there" with
+    // "stopped before the bottom".
+    if (piiResult.depthLimited) {
+        console.error(
+            `sanitize-har: NOTE -- the typed-PII walk hit the shared ${NESTED_MAX_DEPTH}-layer ` +
+            `depth limit ${piiResult.depthLimited} time(s). Values nested BELOW that point ` +
+            `were not examined, so this run's identity findings are a floor rather than ` +
+            `a complete account of the capture.`);
     }
 
     const disabledClasses = pii.disabledIdentityClasses(policy);

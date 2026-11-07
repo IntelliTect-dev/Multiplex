@@ -36,9 +36,19 @@
  * and DECLINED -- reported by path and marker file, never fed to a HAR scrub
  * that has no session to attribute it to.
  *
+ * A DECLINED DIRECTORY IS NOT ALWAYS AN UNKNOWN ONE (issue #102). Measured in
+ * a consuming repo on 2026-10-14: of 122 entries, 6 were foreign -- and all six
+ * were phone-app captures somebody had imported on purpose, each with a
+ * hand-written `CAPTURE.md` saying what it was. `foreign` was never wrong about
+ * their provenance; it was the only thing being said about them, and provenance
+ * is not the question an operator asking "what have I recorded?" is asking. So
+ * a raw with notes beside it is classed IMPORTED and carries its description,
+ * while still not being recorder output -- see `recorderOutput`.
+ *
  * IT NEVER READS A CAPTURE. Only directory entries and file existence, plus
- * `session.json`, which the recorder wrote and which holds no captured traffic.
- * Nothing here can echo a captured value because nothing here opens a HAR.
+ * `session.json` and `CAPTURE.md` -- one written by the recorder, one by the
+ * operator, and neither holding captured traffic. Nothing here can echo a
+ * captured value because nothing here opens a HAR.
  */
 
 const fs = require('fs');
@@ -50,11 +60,22 @@ const path = require('path');
 // Re-spelling '.substitutions.json' / '.har-substitutions.json' here would be
 // a second copy of a definition that now has exactly one.
 const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
+// Where a capture store IS, asked of the one function that decides it -- the
+// same one `capture-har.js` asks, anchoring to the repository's MAIN working
+// tree rather than to the working directory (#367). Required directly rather
+// than through `capture-har.js`, which requires THIS file: a cycle whose
+// partially-initialised exports would be a far subtler problem than the
+// duplication it avoided.
+const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
 
 const CAPTURES_DIR = '.har-captures';
 const SESSION_FILE = 'session.json';
 const RAW_HAR = 'raw.har';
 const RAW_MITM = 'raw.mitm';
+// What somebody writes beside a capture this recorder did not make, to say what
+// it is. Hand-written, by convention and not by any tool here, which is why the
+// reader below is forgiving about its shape.
+const CAPTURE_NOTES = 'CAPTURE.md';
 const SCRUBBED_HAR = 'scrubbed.har';
 const DIGEST_FILE = 'digest.json';
 const CATALOGUE_FILE = 'catalogue.json';
@@ -72,6 +93,49 @@ const CLASS_SESSION = 'session';
 const CLASS_LEGACY = 'legacy';
 /** A capture this recorder did not make. Named, and declined. */
 const CLASS_FOREIGN = 'foreign';
+/**
+ * A capture this recorder did not make, that somebody imported ON PURPOSE and
+ * described in a `CAPTURE.md` beside the raw.
+ *
+ * Declined exactly as `foreign` is -- there is still no `session.json`, so
+ * nothing can say whose traffic it is. The difference is what the LISTING says:
+ * "a phone capture of the grocery app checkout" rather than "unrecognised
+ * directory". Use `recorderOutput`, never a class comparison, to decide what
+ * the pipeline may touch.
+ */
+const CLASS_IMPORTED = 'imported';
+
+/**
+ * Did THIS recorder make the capture in that directory?
+ *
+ * The one question every caller deciding whether to PROCESS a capture is
+ * actually asking, and it is asked as a positive rather than as a list of
+ * classes to exclude. `!== CLASS_FOREIGN` read correctly while `foreign` was
+ * the only non-recorder class; the moment `imported` was added it would have
+ * silently promoted a capture with no session to attribute its traffic to into
+ * the recorder's own enumeration -- the one `stop` and `status` resolve
+ * "which capture" from, and the one the HAR scrub runs over. A class added
+ * later defaults to "not ours", which is the only safe default.
+ */
+function isRecorderCapture(captureClass) {
+    return captureClass === CLASS_SESSION || captureClass === CLASS_LEGACY;
+}
+
+/**
+ * The longest description this will carry, and why there is a limit at all.
+ *
+ * `CAPTURE.md` is hand-written prose of unbounded length, and this string is
+ * printed into a console table and read into an agent's context. One notes file
+ * with a 40 KB first line would take the whole listing with it.
+ */
+const DESCRIBE_MAX = 200;
+/**
+ * How much of the notes file is read. The description is its first line, so
+ * there is no reason to pull a megabyte off disk per capture while walking a
+ * store -- and a bound is also what keeps a pathological file from being read
+ * at all.
+ */
+const NOTES_READ_BYTES = 8192;
 
 /**
  * Legacy or current, decided on the PARENT DIRECTORY and not on the walk's
@@ -155,6 +219,97 @@ function hasSubstitutionTable(dir) {
 }
 
 /**
+ * `DESCRIBE_MAX` units of a string, never half a character.
+ *
+ * A plain `slice` counts UTF-16 code units, so a cut landing between the two
+ * halves of a surrogate pair -- an emoji in a hand-written notes file is the
+ * everyday case -- yields a lone surrogate that renders as a replacement glyph.
+ * Iterating by code point and rebuilding is the cheap correct answer at this
+ * length.
+ */
+function capped(text) {
+    if (text.length <= DESCRIBE_MAX) return text;
+    let out = '';
+    for (const ch of text) {
+        if (out.length + ch.length > DESCRIBE_MAX) break;
+        out += ch;
+    }
+    return out;
+}
+
+/**
+ * The description somebody hand-wrote beside a capture, or null if they did not.
+ *
+ * FORGIVING ABOUT SHAPE ON PURPOSE. Nothing here writes `CAPTURE.md`; a person
+ * does, in whatever markdown they felt like. So the first markdown heading is
+ * preferred and the first non-empty line is accepted, because requiring a
+ * heading would turn "they wrote it down" into "they wrote it down correctly"
+ * and report a described capture as unrecognised.
+ *
+ * Whitespace-only, or a heading with nothing after the hashes, is NOT a
+ * description. Reporting one on the file's existence alone would manufacture a
+ * described capture whose description is blank -- the state #102 exists to make
+ * visible, not to produce.
+ *
+ * A SYMLINK IS NOT READ, and this is the one file in this walk whose CONTENT
+ * is reported. The `imported` class exists for captures brought in from
+ * outside -- a phone export, a downloaded archive -- so an archive that
+ * recreates a symlink named `CAPTURE.md` pointing at, say, a credentials file
+ * would have had its first line read off disk and printed into the listing, an
+ * agent's context and the delete confirmation. Found in review.
+ *
+ * `lstat`, not `stat`: stat resolves the link and answers about the target,
+ * which is the question that was wrong. A link costs the directory its
+ * description, exactly as any other unreadable shape does.
+ *
+ * AND NOT A HARD LINK EITHER, which is the half the first fix missed. A hard
+ * link is not indirection the filesystem will own up to -- `lstat` cannot tell
+ * one from an ordinary file, because at that level it IS one -- so the only
+ * thing that distinguishes it is that something else references the same
+ * bytes. A hand-written notes file has exactly one directory entry; more than
+ * one means this content was published here from somewhere else, and `tar`
+ * carries hard-link entries, so the archive that delivers an imported capture
+ * can carry this. It costs nothing legitimate to refuse: nobody hard-links
+ * their own capture notes.
+ *
+ * Every failure is null. The walk crosses a whole store, and a notes file that
+ * is a directory, unreadable, or not text must cost that directory its
+ * description and nothing more: a throw here loses the entire inventory, which
+ * is a worse failure than the one being fixed.
+ */
+function describeFromNotes(dir) {
+    const notes = path.join(dir, CAPTURE_NOTES);
+    let text;
+    try {
+        const stat = fs.lstatSync(notes);
+        if (!stat.isFile()) return null;
+        // `> 1`, not `!== 1`: a filesystem that does not report a link count at
+        // all answers 0, and refusing on that would cost every capture on it its
+        // description to guard against something that cannot be expressed there.
+        if (stat.nlink > 1) return null;
+        const fd = fs.openSync(notes, 'r');
+        try {
+            const buf = Buffer.alloc(NOTES_READ_BYTES);
+            const read = fs.readSync(fd, buf, 0, NOTES_READ_BYTES, 0);
+            text = buf.slice(0, read).toString('utf8');
+        } finally { fs.closeSync(fd); }
+    } catch (e) { return null; }
+
+    let fallback = null;
+    for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (line.startsWith('#')) {
+            const heading = line.replace(/^#+/, '').trim();
+            if (heading) return capped(heading);
+            continue;   // `#` with nothing after it says nothing
+        }
+        if (!fallback) fallback = capped(line);
+    }
+    return fallback;
+}
+
+/**
  * What one directory IS, or null if it is not a capture at all.
  *
  * The `session.json` test comes first and decides everything: with it, the
@@ -175,7 +330,13 @@ function describeCaptureDir(dir) {
             stamp,
             host: hostOf(dir),
             captureClass: classifySessionDir(dir),
+            // THIS recorder wrote the session.json, so the provenance is
+            // readable and the pipeline may process it. Carried as a field
+            // rather than re-derived by each caller from the class, so the
+            // PowerShell side asks the same question the walk answered.
+            recorderOutput: true,
             reason: null,
+            startedUtc: (session && session.startedUtc) || null,
             raw: exists(raw) ? raw : null,
             rawBytes: byteSize(raw),
             // A session the recorder never finished closing. Reported, not
@@ -218,16 +379,37 @@ function describeCaptureDir(dir) {
     // traffic here, and the operator pointed the batch at it, so it is named.
     const marker = [RAW_MITM, RAW_HAR].find((n) => exists(path.join(dir, n)));
     if (!marker) return null;
+    // Did somebody say what this is? A description is the whole difference
+    // between a directory nothing knows anything about and one an operator
+    // imported deliberately -- and it changes the class so the listing can show
+    // which it is. It does NOT change `recorderOutput`: being described is not
+    // being attributable.
+    const described = describeFromNotes(dir);
     return {
         dir,
         stamp,
         host: hostOf(dir),
-        captureClass: CLASS_FOREIGN,
-        reason: `${marker} with no ${SESSION_FILE}`,
+        captureClass: described ? CLASS_IMPORTED : CLASS_FOREIGN,
+        recorderOutput: false,
+        reason: described
+            ? `${marker} with no ${SESSION_FILE}, described in ${CAPTURE_NOTES}`
+            : `${marker} with no ${SESSION_FILE}`,
+        // NULL ON PURPOSE, and not for want of a path. Handing a caller the
+        // raw of a capture with no session.json is handing it to a scrub that
+        // could not say whose traffic it scrubbed.
         raw: null,
-        rawBytes: null,
+        // THE SIZE, THOUGH, IS REPORTED. It is a fact about the DIRECTORY
+        // rather than about who produced the capture in it -- the same
+        // distinction `substitutions` below is drawn on -- and it is the number
+        // an operator reads to decide what to keep. A multi-gigabyte mitm dump
+        // listed with no size at all is the failure #102 exists to remove, and
+        // a size is not a path: nothing can be opened with it.
+        rawBytes: byteSize(path.join(dir, marker)),
         ended: false,
-        describe: null,
+        // The recorder's own `startedUtc`, which there is none of here. The
+        // stamp is the only time this capture carries, and it is above.
+        startedUtc: null,
+        describe: described,
         scrubbed: false,
         rejected: false,
         digest: false,
@@ -279,6 +461,19 @@ function recordedParseError(session) {
 }
 
 /**
+ * Every root a capture might be FOUND under, when the caller named none.
+ *
+ * The same union `capture-har.js` reads for `stop`, `status` and `catalogue`:
+ * the anchored root, plus the working-directory root a capture may have been
+ * written under before #367 moved the anchor. Reading both is free; relocating
+ * a raw is the one operation this pipeline will not perform.
+ */
+function defaultCaptureRoots(cwd) {
+    const placement = repoGuard.resolveCaptureRoot(cwd || process.cwd(), CAPTURES_DIR);
+    return placement.relocated ? [placement.root, placement.legacyRoot] : [placement.root];
+}
+
+/**
  * Every capture at or under `root`, classified.
  *
  * Two levels and no deeper, which is the whole shape of a store: a capture is
@@ -303,7 +498,11 @@ function listCaptureDirs(root) {
     // a `<stamp>/` directory has no captures under it by construction. So the
     // walk stops there and never calls `scrubbed.har`'s directory a capture.
     //
-    // A DECLINED directory is NOT a leaf, and the difference is load-bearing. A
+    // A DECLINED directory is NOT a leaf -- declined being every class that is
+    // not recorder output, asked as `isRecorderCapture` rather than as a list
+    // of classes to exclude. A described import at host level is declined for
+    // exactly the reason an undescribed one is, and must not hide the captures
+    // beneath it either. A
     // stray `raw.har` at host level is enough to make that directory look like
     // somebody else's capture; if declining also stopped the descent, one stray
     // file would hide every capture under that host, silently -- the exact
@@ -315,7 +514,7 @@ function listCaptureDirs(root) {
         if (!entry) return false;
         seen.add(dir);
         found.push(entry);
-        return entry.captureClass !== CLASS_FOREIGN;
+        return isRecorderCapture(entry.captureClass);
     };
 
     for (const r of roots) {
@@ -365,20 +564,25 @@ function listCaptureDirs(root) {
  */
 function listSessionDirs(root) {
     return listCaptureDirs(root)
-        .filter((e) => e.captureClass === CLASS_SESSION || e.captureClass === CLASS_LEGACY)
+        .filter((e) => isRecorderCapture(e.captureClass))
         .map(({ dir, stamp, captureClass }) => ({ dir, stamp, captureClass }));
 }
 
 module.exports = {
     listCaptureDirs,
+    defaultCaptureRoots,
     isAtCapturesRoot,
+    isRecorderCapture,
+    describeFromNotes,
     listSessionDirs,
     describeCaptureDir,
     classifySessionDir,
     CLASS_SESSION,
     CLASS_LEGACY,
     CLASS_FOREIGN,
+    CLASS_IMPORTED,
     CAPTURES_DIR,
+    CAPTURE_NOTES,
     SCRUBBED_HAR,
     CATALOGUE_FILE,
     REJECTED_PREFIX,
@@ -400,13 +604,20 @@ module.exports = {
 // missing (substitutions, above) instead.
 if (require.main === module) {
     const target = process.argv[2];
-    if (!target) {
-        process.stderr.write('capture-store: a path is required\n');
-        process.exit(2);
-    }
-    if (!exists(target)) {
+    // NO PATH MEANS THE STORE THIS CLONE RECORDS INTO, resolved by the one
+    // function that decides where that is. It used to be a usage error, which
+    // made every caller that wanted the obvious default -- "list what I have
+    // recorded" -- re-derive the anchoring rule for itself, in PowerShell,
+    // where it would have been free to disagree with the recorder (#102).
+    //
+    // A store that does not exist yet is an EMPTY store, not an error: nothing
+    // has been recorded here, and `[]` is the true answer to a question about
+    // it. An explicitly named path that does not exist is still exit 3 below,
+    // because there the operator named something and was wrong about it.
+    const roots = target ? [target] : defaultCaptureRoots();
+    if (target && !exists(target)) {
         process.stderr.write(`capture-store: ${target} does not exist\n`);
         process.exit(3);
     }
-    process.stdout.write(JSON.stringify(listCaptureDirs(target), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(listCaptureDirs(roots), null, 2) + '\n');
 }
