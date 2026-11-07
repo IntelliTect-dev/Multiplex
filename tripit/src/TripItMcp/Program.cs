@@ -21,9 +21,30 @@ builder.Services.AddSingleton(sp => new TripItClient(
     CommandSessionRefresher.FromEnvironment(
         sp.GetRequiredService<ILoggerFactory>().CreateLogger("TripIt.SessionRefresh"))));
 
-builder.Services
-    .AddMcpServer(o => o.ServerInfo = new() { Name = "tripit", Version = "0.2.0" })
+var mcp = builder.Services
+    .AddMcpServer(o => o.ServerInfo = new() { Name = "tripit", Version = "0.3.0" })
     .WithStdioServerTransport()
-    .WithToolsFromAssembly();
+    .WithTools<TripItMcp.TripItTools>()
+    .WithRequestFilters(filters => filters.AddCallToolFilter(next => async (context, ct) =>
+    {
+        try
+        {
+            return await next(context, ct);
+        }
+        catch (Exception ex) when (TripItMcp.ToolErrors.IsReportable(ex))
+        {
+            // The SDK hides exception text by default ("An error occurred invoking …"). These
+            // messages are written for the caller — valid field lists, the trip's real name,
+            // how to refresh a session — so pass them through.
+            return TripItMcp.ToolErrors.ToResult(ex);
+        }
+    }));
+
+// Write tools (create/update/delete/move) are on by default; TRIPIT_MCP_READONLY=1 serves
+// the read tools only, for clients that should never change the account.
+if (Environment.GetEnvironmentVariable("TRIPIT_MCP_READONLY") is not ("1" or "true"))
+{
+    mcp.WithTools<TripItMcp.TripItWriteTools>();
+}
 
 await builder.Build().RunAsync();

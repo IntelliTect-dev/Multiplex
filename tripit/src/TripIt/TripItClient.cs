@@ -16,7 +16,7 @@ namespace TripIt;
 ///
 /// Resource sub-clients: <see cref="Trips"/>, <see cref="Objects"/>, <see cref="Lookup"/>.
 /// </summary>
-public sealed class TripItClient : IDisposable
+public sealed partial class TripItClient : IDisposable
 {
     private const string BaseUrl  = "https://www.tripit.com";
     private const string Referer  = "https://www.tripit.com/app/trips";

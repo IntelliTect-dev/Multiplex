@@ -23,16 +23,21 @@ public sealed class TripItTools(TripItClient client)
 
     [McpServerTool(Name = "tripit_list_trips", ReadOnly = true, Idempotent = true)]
     [Description(
-        "Lists the user's TripIt trips (upcoming by default, or past). Returns each trip's uuid, " +
-        "name, dates, primary location and web URL, plus paging info. Use the uuid with " +
-        "tripit_get_trip to see flights, hotels, cars and other plans in the trip.")]
+        "Lists the user's TripIt trips (upcoming by default, or past) — including trips they are on " +
+        "but not travelling on, unless traveler='mine'. Returns each trip's uuid, name, dates, primary " +
+        "location, web URL and my_role (traveler / editor / viewer, owner or not), plus paging info. " +
+        "Use the uuid with tripit_get_trip to see flights, hotels, cars and other plans in the trip.")]
     public async Task<string> ListTrips(
         [Description("'upcoming' (default) or 'past'.")] string timeframe = "upcoming",
         [Description("Trips per page. Default 25. TripIt accepts large values (e.g. 500).")] int pageSize = 25,
         [Description("1-based page number. Default 1.")] int pageNum = 1,
+        [Description("Whose trips: 'all' (default) — every trip I can see; 'mine' — trips I travel on; " +
+                     "'others' — trips I plan, follow or edit but don't travel on.")] string traveler = "all",
         CancellationToken ct = default)
     {
-        var list = await client.Trips.ListAsync(ParseTimeframe(timeframe), pageSize, pageNum, ct).ConfigureAwait(false);
+        var list = await client.Trips.ListAsync(ParseTimeframe(timeframe), pageSize, pageNum, ct,
+            TripsClient.ParseTravelerFilter(traveler)).ConfigureAwait(false);
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         return ToJson(new
         {
             timeframe = ParseTimeframe(timeframe).ToString().ToLowerInvariant(),
@@ -40,7 +45,7 @@ public sealed class TripItTools(TripItClient client)
             page_size = list.PageSize,
             max_page = list.MaxPage,
             total_items = list.TotalItems ?? list.Trips.Count,
-            trips = list.Trips.Select(Summarize),
+            trips = list.Trips.Select(t => Summarize(t, me)),
         });
     }
 
@@ -53,10 +58,14 @@ public sealed class TripItTools(TripItClient client)
         [Description("Text to look for.")] string text,
         [Description("Also search past trips. Default true.")] bool includePast = true,
         [Description("Maximum results. Default 25.")] int maxResults = 25,
+        [Description("Whose trips: 'all' (default) — every trip I can see; 'mine' — trips I travel on; " +
+                     "'others' — trips I plan, follow or edit but don't travel on.")] string traveler = "all",
         CancellationToken ct = default)
     {
-        var trips = await client.Trips.SearchAsync(text, includePast, maxResults, ct).ConfigureAwait(false);
-        return ToJson(new { query = text, count = trips.Count, trips = trips.Select(Summarize) });
+        var trips = await client.Trips.SearchAsync(text, includePast, maxResults, ct,
+            TripsClient.ParseTravelerFilter(traveler)).ConfigureAwait(false);
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
+        return ToJson(new { query = text, count = trips.Count, trips = trips.Select(t => Summarize(t, me)) });
     }
 
     [McpServerTool(Name = "tripit_get_trip", ReadOnly = true, Idempotent = true)]
@@ -74,7 +83,8 @@ public sealed class TripItTools(TripItClient client)
         CancellationToken ct = default)
     {
         var detail = await client.Trips.GetAsync(tripUuid, includeObjects: true, ct).ConfigureAwait(false);
-        return ToJson(DescribeTrip(detail, includeRaw, includeWeather));
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
+        return ToJson(DescribeTrip(detail, includeRaw, includeWeather, me));
     }
 
     [McpServerTool(Name = "tripit_get_upcoming_itinerary", ReadOnly = true, Idempotent = true)]
@@ -86,14 +96,18 @@ public sealed class TripItTools(TripItClient client)
         [Description("Only include trips starting within this many days (0 = no limit). Default 0.")]
         int withinDays = 0,
         [Description("Include destination weather forecasts. Default false.")] bool includeWeather = false,
+        [Description("Whose trips: 'all' (default) — every trip I can see; 'mine' — trips I travel on; " +
+                     "'others' — trips I plan, follow or edit but don't travel on.")] string traveler = "all",
         CancellationToken ct = default)
     {
-        var trips = await client.Trips.ListWithObjectsAsync(TripTimeframe.Upcoming, 100, 1, ct).ConfigureAwait(false);
+        var trips = await client.Trips.ListWithObjectsAsync(TripTimeframe.Upcoming, 100, 1, ct,
+            TripsClient.ParseTravelerFilter(traveler)).ConfigureAwait(false);
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         var cutoff = withinDays > 0 ? DateOnly.FromDateTime(DateTime.Today.AddDays(withinDays)) : (DateOnly?)null;
         var selected = trips
             .Where(t => cutoff is null || !DateOnly.TryParse(t.Trip.StartDate, System.Globalization.CultureInfo.InvariantCulture, out var s) || s <= cutoff)
             .OrderBy(t => t.Trip.StartDate, StringComparer.Ordinal)
-            .Select(t => DescribeTrip(t, includeRaw: false, includeWeather));
+            .Select(t => DescribeTrip(t, includeRaw: false, includeWeather, me));
         return ToJson(new { trips = selected });
     }
 
@@ -319,54 +333,51 @@ public sealed class TripItTools(TripItClient client)
 
     // ── Shaping helpers ──────────────────────────────────────────────────────
 
-    internal static object Summarize(Trip t) => new
+    internal static object Summarize(Trip t, string? me = null)
     {
-        uuid = t.Uuid,
-        name = t.DisplayName,
-        start_date = t.StartDate,
-        end_date = t.EndDate,
-        location = t.PrimaryLocation,
-        description = t.Description,
-        is_private = t.IsPrivate,
-        url = t.WebUrl,
-    };
+        var mine = me is null ? null : MyInvitee(t, me);
+        return new
+        {
+            uuid = t.Uuid,
+            name = t.DisplayName,
+            start_date = t.StartDate,
+            end_date = t.EndDate,
+            location = t.PrimaryLocation,
+            description = t.Description,
+            is_private = t.IsPrivate,
+            i_am_traveling = mine?.IsTraveler,
+            my_role = mine is null ? null : RoleText(mine),
+            url = t.WebUrl,
+        };
+    }
 
-    internal static object DescribeTrip(TripDetail detail, bool includeRaw, bool includeWeather)
+    private static TripParticipant? MyInvitee(Trip t, string me)
+        => TripsClient.Participants(new TripDetail { Trip = t, Objects = new Dictionary<TripItObjectType, IReadOnlyList<JsonElement>>() }, me)
+            .FirstOrDefault(p => p.IsMe);
+
+    private static string RoleText(TripParticipant p)
+        => (p.IsOwner ? "owner, " : "") + p.Role.ToString().ToLowerInvariant();
+
+    internal static object DescribeTrip(TripDetail detail, bool includeRaw, bool includeWeather, string? me = null)
     {
-        var trip = detail.Trip;
-        var sharedWith = TripItJson.AsList(trip.AdditionalData.TryGetValue("TripInvitees", out var inv)
-                ? inv : default, "Invitee")
-            .Select(i => new
+        var participants = TripsClient.Participants(detail, me)
+            .Select(p => new
             {
-                is_owner = TripItJson.Bool(i, "is_owner") ?? false,
-                is_traveler = TripItJson.Bool(i, "is_traveler") ?? false,
-                is_read_only = TripItJson.Bool(i, "is_read_only") ?? false,
-                name = ProfileName(detail.Profiles,
-                    TripItJson.Obj(i, "@attributes") is { } a ? TripItJson.Str(a, "profile_ref") : null),
+                profile_ref = p.ProfileRef,
+                name = p.Name ?? p.ScreenName,
+                role = p.Role.ToString().ToLowerInvariant(),
+                is_owner = p.IsOwner,
+                is_me = p.IsMe,
             })
             .ToList();
         return new
         {
-            trip = Summarize(trip),
+            trip = Summarize(detail.Trip, me),
             object_count = detail.ObjectCount,
-            shared_with = sharedWith.Count == 0 ? null : sharedWith,
+            participants = participants.Count == 0 ? null : participants,
             itinerary = ItineraryBuilder.Build(detail.Objects, includeWeather),
             raw = includeRaw ? RawObjects(detail.Objects) : null,
         };
-    }
-
-    private static string? ProfileName(IReadOnlyList<JsonElement> profiles, string? profileRef)
-    {
-        if (profileRef is null) return null;
-        foreach (var p in profiles)
-        {
-            var attrs = TripItJson.Obj(p, "@attributes");
-            if (attrs is { } a && TripItJson.Str(a, "ref") == profileRef)
-            {
-                return TripItJson.Str(p, "public_display_name") ?? TripItJson.Str(p, "screen_name");
-            }
-        }
-        return null;
     }
 
     private static Dictionary<string, JsonNode?> RawObjects(

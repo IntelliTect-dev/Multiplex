@@ -4,9 +4,9 @@ A .NET 10 toolkit wrapping the TripIt web SPA backend (`https://www.tripit.com/a
 a typed client library, an MCP server, and a binary PowerShell module.
 
 **Goal:** full CRUD over every TripIt entity (trips, flights, lodging, cars, rail, …)
-exposed through both a PowerShell module and an MCP server. The **read surface is done**
-(sub-clients, itinerary builder, MCP tools, cmdlets, unit + live tests); writes are next —
-see **Next steps**.
+exposed through both a PowerShell module and an MCP server. **Read and write are done**
+for trips and all twelve plan types (client sub-clients, MCP tools, cmdlets, unit + live
+tests). What is left is the long tail — see **Next steps**.
 
 **Why the web backend and not TripIt's documented public API (decided 2026-11-06, owner's
 call):** `api.tripit.com/v1` is alive (401 without credentials) but TripIt no longer issues
@@ -128,16 +128,35 @@ binary module targets `net10.0` and will not load in 5.1 or 7.4.
   can delete an account or charge a card is a bad idea however it is described. Revisit
   only behind an explicit opt-in flag. The full list is in `docs/api-surface.md`.
 
+## Writes: how they work (read before changing PlanSchema)
+
+- Payload shapes come from the SPA's serializer tables (`getModelMap()` per class in the
+  `index-*.js` bundle) and were confirmed against bodies captured from the SPA. They are
+  transcribed in `src/TripIt/PlanSchema.cs`, **in serializer order**.
+- **Order is load-bearing.** TripIt converts the JSON to XML and validates it against an
+  ordered XSD: right fields in the wrong order → 400 "JSON did not validate with the xsd".
+  `TripItWrite.PreparePlan` validates, stringifies, normalizes dates/times, then
+  `PlanSchema.Order`s every level. Add new fields at their serializer position.
+- `replacePlan` / `replace/trip` take the **complete** state. Updates are fetch →
+  `PlanSchema.ToWritable` → `TripItWrite.DeepMerge` → replace.
+- To capture a new mutation: drive the SPA in the capture browser (port 9333) with
+  Playwright and read bodies via `page.route` — `request.postData()` is null over CDP for
+  the SPA's fetch calls.
+- Live write tests need `TRIPIT_ALLOW_WRITES=1` and stay inside one dated, private
+  throwaway trip that is deleted in `finally`. Deleting a trip deletes its plans.
+
+- **`list/trip` defaults to `traveler=true`** and silently hides trips the user is on but
+  not travelling on. Always send `traveler` (the client defaults to `all`).
+- **`create/trip` ignores `is_owner_traveler:"false"`**; `replace/trip` honours it, so
+  `TripsClient.CreateAsync` follows up with a replace.
+- `v2/invite` uses real JSON booleans (not strings) and emails people. Live tests invite
+  only `tripitex-test@example.com` (RFC 2606, undeliverable).
+
 ## Next steps, in order
 
-Tracked on GitHub (`MarkMichaelis/TripItEx`) — read the issues for detail:
+1. `v2/documents` (attachments), `v2/updateMultipleCosts`, `v2/travelerProfile/update`.
+2. Incremental sync (`modified_since`) and an all-objects listing with a past filter, if
+   the web backend honours them (unprobed).
 
-1. **[#2](https://github.com/MarkMichaelis/TripItEx/issues/2)** — capture SPA mutations.
-   **Blocks all CRUD.** Every `json(obj)` payload in `docs/api-surface.md` is still
-   unverified. Guessing is dangerous: real mutations carry internal flags that are
-   silently required, and omitting one yields an error that doesn't name the field.
-2. **[#4](https://github.com/MarkMichaelis/TripItEx/issues/4)** — CRUD across client,
-   PowerShell (`New-`/`Set-`/`Remove-TripIt*` with `SupportsShouldProcess` and
-   `ConfirmImpact=High`) and MCP. Blocked by #2.
-
-Done: #3 (read surface), #5 (autocomplete), #7 (lenient JSON + Akamai 403).
+Done: #2 (mutation capture), #3 (read surface), #4 (CRUD), #5 (autocomplete),
+#7 (lenient JSON + Akamai 403).

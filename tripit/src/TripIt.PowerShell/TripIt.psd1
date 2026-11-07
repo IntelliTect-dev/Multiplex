@@ -1,6 +1,6 @@
 @{
     RootModule          = 'TripIt.PowerShell.dll'
-    ModuleVersion       = '0.2.0'
+    ModuleVersion       = '0.4.0'
     GUID                = 'd7e1a0a6-9b4a-4b1b-9a30-5d6e3c2c1d2e'
     Author              = 'Mark Michaelis'
     CompanyName         = 'TripItEx'
@@ -17,6 +17,19 @@
         'Get-TripItObject',
         'Search-TripItTrip',
         'Find-TripItReference',
+        'New-TripItTrip',
+        'Set-TripItTrip',
+        'Remove-TripItTrip',
+        'New-TripItPlan',
+        'Set-TripItPlan',
+        'Remove-TripItPlan',
+        'Move-TripItPlan',
+        'Get-TripItPlanSchema',
+        'Merge-TripItTrip',
+        'Get-TripItParticipant',
+        'Add-TripItParticipant',
+        'Set-TripItParticipant',
+        'Remove-TripItParticipant',
         'Get-TripItTravelerProfile',
         'Get-TripItProAlert',
         'Get-TripItPurchasedProduct',
