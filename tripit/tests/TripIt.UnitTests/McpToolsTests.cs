@@ -19,8 +19,11 @@ public sealed class McpToolsTests
 
         Assert.Equal("Test Trip to Lisbon", root.GetProperty("trip").GetProperty("name").GetString());
         Assert.Equal(3, root.GetProperty("itinerary").GetArrayLength());
-        Assert.Equal(["Test User", "Friend User"],
-            root.GetProperty("shared_with").EnumerateArray().Select(s => s.GetProperty("name").GetString()));
+        var participants = root.GetProperty("participants").EnumerateArray().ToList();
+        Assert.Equal(["Test User", "Friend User"], participants.Select(s => s.GetProperty("name").GetString()));
+        Assert.Equal(["traveler", "viewer"], participants.Select(s => s.GetProperty("role").GetString()));
+        Assert.True(participants[0].GetProperty("is_me").GetBoolean());
+        Assert.True(root.GetProperty("trip").GetProperty("i_am_traveling").GetBoolean());
         Assert.False(root.TryGetProperty("raw", out _));
     }
 

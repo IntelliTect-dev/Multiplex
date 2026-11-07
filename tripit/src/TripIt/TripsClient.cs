@@ -15,9 +15,24 @@ public enum TripTimeframe
 }
 
 /// <summary>
+/// Whose trips to list. TripIt's own default (when the parameter is omitted) is
+/// <see cref="Mine"/>, which silently hides every trip the user is on but not travelling
+/// on (measured: 75 of 392 past trips). This client defaults to <see cref="All"/>.
+/// </summary>
+public enum TripTravelerFilter
+{
+    /// <summary>Every trip the user can see (<c>traveler=all</c>).</summary>
+    All,
+    /// <summary>Trips the user is travelling on (<c>traveler=true</c>).</summary>
+    Mine,
+    /// <summary>Trips the user plans, follows or edits but is not travelling on (<c>traveler=false</c>).</summary>
+    Others,
+}
+
+/// <summary>
 /// Trips sub-client: <c>v2/list/trip</c>, <c>v2/get/trip/uuid/{uuid}[/include_objects/true]</c>.
 /// </summary>
-public sealed class TripsClient
+public sealed partial class TripsClient
 {
     private readonly TripItClient _client;
 
@@ -31,9 +46,10 @@ public sealed class TripsClient
         TripTimeframe timeframe = TripTimeframe.Upcoming,
         int? pageSize = null,
         int? pageNum = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        TripTravelerFilter traveler = TripTravelerFilter.All)
     {
-        var q = BuildListQuery(timeframe == TripTimeframe.Past, pageSize, pageNum, null, null, null, null);
+        var q = BuildListQuery(timeframe == TripTimeframe.Past, pageSize, pageNum, null, TravelerParam(traveler), null, null);
         using var doc = await _client.GetJsonAsync("/api/v2/list/trip", q, ct).ConfigureAwait(false);
         return ParseTripList(doc.RootElement);
     }
@@ -42,11 +58,12 @@ public sealed class TripsClient
     public async IAsyncEnumerable<Trip> ListAllAsync(
         TripTimeframe timeframe = TripTimeframe.Upcoming,
         int pageSize = 100,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default,
+        TripTravelerFilter traveler = TripTravelerFilter.All)
     {
         for (var page = 1; ; page++)
         {
-            var list = await ListAsync(timeframe, pageSize, page, ct).ConfigureAwait(false);
+            var list = await ListAsync(timeframe, pageSize, page, ct, traveler).ConfigureAwait(false);
             foreach (var t in list.Trips) yield return t;
             if (list.Trips.Count == 0 || list.MaxPage is null || page >= list.MaxPage) yield break;
         }
@@ -73,9 +90,10 @@ public sealed class TripsClient
         TripTimeframe timeframe = TripTimeframe.Upcoming,
         int? pageSize = null,
         int? pageNum = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        TripTravelerFilter traveler = TripTravelerFilter.All)
     {
-        var q = BuildListQuery(timeframe == TripTimeframe.Past, pageSize, pageNum, null, null, null, null);
+        var q = BuildListQuery(timeframe == TripTimeframe.Past, pageSize, pageNum, null, TravelerParam(traveler), null, null);
         q.Add(new("include_objects", "true"));
         using var doc = await _client.GetJsonAsync("/api/v2/list/trip", q, ct).ConfigureAwait(false);
         var root = doc.RootElement.Clone();
@@ -108,14 +126,15 @@ public sealed class TripsClient
         string text,
         bool includePast = true,
         int maxResults = 25,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        TripTravelerFilter traveler = TripTravelerFilter.All)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
         var matches = new List<Trip>();
         var timeframes = includePast ? new[] { TripTimeframe.Upcoming, TripTimeframe.Past } : [TripTimeframe.Upcoming];
         foreach (var tf in timeframes)
         {
-            await foreach (var trip in ListAllAsync(tf, 500, ct).ConfigureAwait(false))
+            await foreach (var trip in ListAllAsync(tf, 500, ct, traveler).ConfigureAwait(false))
             {
                 if (Matches(trip, text))
                 {
@@ -126,6 +145,23 @@ public sealed class TripsClient
         }
         return matches;
     }
+
+    /// <summary>The <c>traveler</c> query value for a filter: all / true / false.</summary>
+    public static string TravelerParam(TripTravelerFilter traveler) => traveler switch
+    {
+        TripTravelerFilter.Mine => "true",
+        TripTravelerFilter.Others => "false",
+        _ => "all",
+    };
+
+    /// <summary>Parses "all" / "mine" / "others" (and true/false/yes/no), for tool and cmdlet input.</summary>
+    public static TripTravelerFilter ParseTravelerFilter(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "all" or "any" => TripTravelerFilter.All,
+        "mine" or "me" or "true" or "yes" or "traveling" or "travelling" => TripTravelerFilter.Mine,
+        "others" or "other" or "false" or "no" or "not_traveling" or "not-traveling" => TripTravelerFilter.Others,
+        _ => throw new ArgumentException("traveler must be 'all', 'mine' (trips I travel on) or 'others' (trips I'm on but not travelling)."),
+    };
 
     internal static bool Matches(Trip trip, string text)
     {
@@ -196,9 +232,12 @@ public sealed class TripsClient
 /// <summary>
 /// Travel-object sub-client: <c>v2/list/object</c>, <c>v2/get/{type}/uuid/{uuid}</c>.
 /// </summary>
-public sealed class ObjectsClient
+public sealed partial class ObjectsClient
 {
     private readonly TripItClient _client;
+
+    /// <summary>Largest page TripIt accepts for <c>list/object</c>.</summary>
+    public const int MaxObjectPageSize = 100;
 
     internal ObjectsClient(TripItClient client) => _client = client;
 
@@ -215,6 +254,8 @@ public sealed class ObjectsClient
         CancellationToken ct = default)
     {
         if (tripUuid is not null) TripsClient.ValidateUuid(tripUuid);
+        // TripIt answers 400 for page_size > 100 on list/object (measured 2026-11-06).
+        if (pageSize is > MaxObjectPageSize) pageSize = MaxObjectPageSize;
         var q = new List<KeyValuePair<string, string?>>
         {
             new("trip_uuid", tripUuid),
@@ -252,6 +293,13 @@ public sealed class ObjectsClient
     }
 }
 
+/// <summary>A scheduled flight as reported by <c>v2/flightInfo</c>; times are local to each airport.</summary>
+public sealed record FlightSchedule(
+    string AirlineCode, string FlightNumber, string DepartureDate,
+    string OriginAirportCode, string? OriginAirportName, string? OriginLocation, string? DepartureTime,
+    string DestinationAirportCode, string? DestinationAirportName, string? DestinationLocation,
+    string ArrivalDate, string? ArrivalTime);
+
 /// <summary>A lookup suggestion: an id (IATA code, ISO code, place id) and a label.</summary>
 public sealed record LookupResult(string Id, string Label);
 
@@ -281,6 +329,51 @@ public sealed class LookupClient
     /// <summary>States/provinces. Id is the state code.</summary>
     public Task<IReadOnlyList<LookupResult>> StatesAsync(string query, CancellationToken ct = default)
         => GetAsync("autocompleteState", query, ct);
+
+    /// <summary>
+    /// Looks up a scheduled flight (<c>v2/flightInfo</c>): origin, destination and local
+    /// departure/arrival times for an airline code, flight number and departure date.
+    /// Returns null when TripIt has no schedule for it.
+    /// </summary>
+    public async Task<FlightSchedule?> FlightAsync(string airlineCode, string flightNumber, string departureDate,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(airlineCode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flightNumber);
+        var date = TripItWrite.NormalizeDate(departureDate)!;
+        var code = airlineCode.Trim().ToUpperInvariant();
+        var number = flightNumber.Trim();
+        JsonDocument doc;
+        try
+        {
+            doc = await _client.GetJsonAsync("/api/v2/flightInfo",
+            [
+                new("departure_date", date),
+                new("airline_code", code),
+                new("flight_num", number),
+            ], ct).ConfigureAwait(false);
+        }
+        catch (TripItApiException ex) when (ex.StatusCode == 400)
+        {
+            // TripIt answers 400 with an empty description when it has no schedule.
+            return null;
+        }
+        using (doc)
+        {
+            var fi = TripItJson.AsList(doc.RootElement, "FlightInfo").FirstOrDefault();
+            if (fi.ValueKind != JsonValueKind.Object || TripItJson.Str(fi, "orig_airport_code") is null) return null;
+            var diff = TripItJson.Int(fi, "arrival_date_diff") ?? 0;
+            var arrival = DateOnly.ParseExact(date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+                .AddDays(diff).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            return new FlightSchedule(
+                code, number, date,
+                TripItJson.Str(fi, "orig_airport_code")!, TripItJson.Str(fi, "orig_airport_display_name"),
+                TripItJson.Str(fi, "orig_location_display_name"), TripItJson.Str(fi, "departure_time"),
+                TripItJson.Str(fi, "dest_airport_code")!, TripItJson.Str(fi, "dest_airport_display_name"),
+                TripItJson.Str(fi, "dest_location_display_name"),
+                arrival, TripItJson.Str(fi, "arrival_time"));
+        }
+    }
 
     /// <summary>Street addresses (Google Places). Id is the place id; label the full address.</summary>
     public async Task<IReadOnlyList<LookupResult>> AddressesAsync(string query, CancellationToken ct = default)

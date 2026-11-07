@@ -21,11 +21,14 @@ public sealed class GetTripItItineraryCommand : TripItCmdletBase
 
     [Parameter] public SwitchParameter IncludeWeather { get; set; }
 
+    [Parameter] [ValidateSet("All", "Mine", "Others")] public string Traveler { get; set; } = "All";
+
     protected override void ProcessRecord()
     {
         var client = GetClient();
         var details = TripUuid is null
-            ? RunSync(ct => client.Trips.ListWithObjectsAsync(TripTimeframe.Upcoming, 100, 1, ct))
+            ? RunSync(ct => client.Trips.ListWithObjectsAsync(TripTimeframe.Upcoming, 100, 1, ct,
+                TripsClient.ParseTravelerFilter(Traveler)))
             : [RunSync(ct => client.Trips.GetAsync(TripUuid, includeObjects: true, ct))];
 
         foreach (var detail in details.OrderBy(d => d.Trip.StartDate, StringComparer.Ordinal))
@@ -138,11 +141,13 @@ public sealed class SearchTripItTripCommand : TripItCmdletBase
 
     [Parameter] public SwitchParameter UpcomingOnly { get; set; }
     [Parameter] public int MaxResults { get; set; } = 25;
+    [Parameter] [ValidateSet("All", "Mine", "Others")] public string Traveler { get; set; } = "All";
 
     protected override void ProcessRecord()
     {
         var client = GetClient();
-        var trips = RunSync(ct => client.Trips.SearchAsync(Text, !UpcomingOnly.IsPresent, MaxResults, ct));
+        var trips = RunSync(ct => client.Trips.SearchAsync(Text, !UpcomingOnly.IsPresent, MaxResults, ct,
+            TripsClient.ParseTravelerFilter(Traveler)));
         WriteObject(trips, enumerateCollection: true);
     }
 }

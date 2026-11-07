@@ -43,6 +43,11 @@ internal sealed class FakeHandler : HttpMessageHandler
             var respond = q.Count > 1 ? q.Dequeue() : q.Peek();
             return respond(request);
         }
+        if (path == "/api/v2/get/profile")
+        {
+            // Default identity for tools that need "who am I"; tests may route it explicitly.
+            return Json("""{"Profile":{"@attributes":{"ref":"p1"},"screen_name":"tester","public_display_name":"Test User"}}""");
+        }
         return Json("""{"Error":{"code":"404","description":"no route in FakeHandler"}}""", HttpStatusCode.NotFound);
     }
 }

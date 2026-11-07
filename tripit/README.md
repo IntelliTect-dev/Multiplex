@@ -27,6 +27,16 @@ at all. See the provenance section of `docs/api-surface.md`.
 > v1 docs remain a useful oracle for field names, because the web backend shares its
 > envelope and verbs.
 
+## Trips you are not travelling on
+
+TripIt's trip list hides, by default, every trip you are on but not travelling on (on the
+test account: 75 of 392 past trips). TripItEx lists **all** trips by default; the list,
+search and itinerary tools take `traveler` = `all` | `mine` | `others`, and every trip
+summary carries `i_am_traveling` and `my_role`. Such trips can be edited, planned and
+deleted like any other; `tripit_create_trip` / `New-TripItTrip` take `i_am_traveling` /
+`-NotTraveling` to create one, and `tripit_update_trip` / `Set-TripItTrip -IAmTraveling`
+switch it.
+
 ## MCP tools (read)
 
 All tools are read-only. Output is compact JSON: trips are summarized, and each trip's
@@ -49,6 +59,37 @@ confirmation numbers and type-specific details (seats, flight status, room type 
 | `tripit_lookup` | `GET v2/autocomplete*` | Airports, airlines, places, countries, states, addresses |
 | `tripit_session_status` | `GET v2/get/profile` | Is the session configured, refreshable, accepted? |
 | `tripit_raw_get` | `GET /api/v2/…` | Escape hatch for anything else |
+
+## MCP tools (write)
+
+Registered by default; set `TRIPIT_MCP_READONLY=1` to serve the read tools only. Payloads
+follow the TripIt web app's own serializers (field order included — TripIt validates the
+XML it derives from the JSON against an ordered XSD), and were verified live against a
+throwaway trip. Destructive tools carry the MCP `destructive` annotation.
+
+| Tool | Backing endpoint | Notes |
+|---|---|---|
+| `tripit_create_trip` | `POST v2/create/trip` | Private (not shared with the Inner Circle) unless `share_with_inner_circle` |
+| `tripit_update_trip` | `POST v2/replace/trip/uuid/{uuid}` | Fetch → change only what was passed → replace |
+| `tripit_delete_trip` | `POST v2/delete/trip/uuid/{uuid}` | Deletes the trip **and its plans**; requires `confirm_name` = the trip's exact name |
+| `tripit_add_flight` | `POST v2/create` | Legs from airline + number + date; route and times looked up when omitted |
+| `tripit_add_lodging` | `POST v2/create` | |
+| `tripit_add_note` | `POST v2/create` | |
+| `tripit_add_plan` | `POST v2/create` | Any type (car, rail, transport, cruise, restaurant, activity, parking, map, directions …) from TripIt field names |
+| `tripit_describe_plan_fields` | (local) | The writable fields of a type |
+| `tripit_update_plan` | `GET` + `POST v2/replacePlan/{type}/uuid/{uuid}` | Deep-merges changes into the current state; `segment_uuid` targets one leg |
+| `tripit_delete_plan` | `POST v2/delete/{type}/uuid/{uuid}` | Whole reservation |
+| `tripit_delete_segment` | `POST v2/delete/segment/uuid/{uuid}` | One leg; the rest stays |
+| `tripit_move_plan` | `GET v2/move/{type}/uuid/{uuid}?trip_uuid=` | To another trip, or Unfiled Items |
+| `tripit_merge_trips` | `POST v2/merge/trip` | Moves the source trip's plans into the destination and deletes the source; requires `confirm_source_name` |
+| `tripit_add_participants` | `POST v2/invite` | **Emails invitations**; role viewer / editor / traveler |
+| `tripit_change_participant_role` | `POST v2/changeTripInvitations` | |
+| `tripit_remove_participant` | `POST v2/delete/trip_participant/...` | Refuses the owner |
+| `tripit_lookup_flight` | `GET v2/flightInfo` | Scheduled route and local times |
+
+Tool errors (unknown fields, a mismatched `confirm_name`, TripIt's own validation
+messages, an expired session) are returned as readable tool errors rather than the SDK's
+generic "An error occurred".
 
 ## Authentication
 
@@ -165,6 +206,23 @@ Search-TripItTrip VSLive | Get-TripItItinerary
 Get-TripItObject -TripUuid <trip-uuid> -Type air
 Get-TripItObject -Unfiled -Type note
 Find-TripItReference Airport SEA
+
+# Writes: -WhatIf / -Confirm everywhere; Remove-* is ConfirmImpact High.
+$trip = New-TripItTrip 'Reykjavik, Iceland' -StartDate 2027-01-18 -EndDate 2027-01-21 -Name 'Iceland'
+New-TripItPlan lodging @{ supplier_name = 'Hotel Borg'; supplier_conf_num = 'ABC123'
+    StartDateTime = @{ date = '2027-01-18'; time = '15:00' }; EndDateTime = @{ date = '2027-01-21' } } -TripUuid $trip.Uuid
+Get-TripItObject -TripUuid $trip.Uuid -Type lodging | Set-TripItPlan -Changes @{ room_type = 'Suite' }
+Get-TripItPlanSchema air                         # writable fields per type
+Move-TripItPlan note <uuid> -Unfiled
+Remove-TripItPlan lodging <uuid>
+Remove-TripItTrip $trip.Uuid
+
+Get-TripItTrip -Past -All -Traveler Others        # trips I'm on but not travelling on
+New-TripItTrip 'Gulu, Uganda' -StartDate 2027-06-01 -EndDate 2027-06-20 -NotTraveling
+Merge-TripItTrip -SourceUuid <dup> -DestinationUuid <keep>
+Get-TripItParticipant <trip-uuid>
+Add-TripItParticipant <trip-uuid> -Email a@example.com -Role Editor   # sends an email
+Get-TripItParticipant <trip-uuid> | ? Name -eq 'X' | Remove-TripItParticipant
 Invoke-TripItRaw -Path '/api/v2/list/trip' | ConvertFrom-Json
 
 # Push the captured session to GitHub Actions secrets for CI:
@@ -216,11 +274,14 @@ In CI, push the secrets via `Sync-TripItSecretToGitHub` and trigger the
 
 ## Notes & limitations
 
-* **Read surface: complete** for trips, objects, profile, traveler profile, alerts,
-  subscription and lookups. Write operations (create / replace / delete / move) are the
-  next milestone — the payloads are being captured from the SPA against a throwaway trip.
+* **Read and write surfaces are complete** for trips and all twelve plan types: list, get,
+  search, create, update (merge), replace, delete, delete one leg, move — including trips
+  you are not travelling on — plus trip merge and participants (invite, change role,
+  remove). Not wrapped yet: documents, cost updates, traveler-profile updates.
 * Account-destruction, password and payment endpoints exist but are deliberately excluded
   from the wrapper surface; see "Deliberately NOT wrapped" in `docs/api-surface.md`.
-* `list/object` ignores any object-type filter server-side, so type filters are applied
-  client-side (per page).
+* `list/object` ignores any object-type filter server-side (type filters are applied
+  client-side, per page) and rejects `page_size` above 100.
 * Trips and objects are addressed by **UUID**: `get/trip/id/{id}` answers 400.
+* Live write tests (`WriteSurfaceTests`) run only with `TRIPIT_ALLOW_WRITES=1`; they create
+  one dated private trip, exercise every plan type, and delete it.
