@@ -217,6 +217,24 @@ function main() {
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
     // say so rather than reporting a check that never ran as a pass.
     let literalStatus = 'skipped (no profile)';
+    // The values a recording signed in with (#115) are checked whether or not
+    // there is a profile: they did not come from one.
+    let sessionLiterals = [];
+    if (args.literals === '-') {
+        try {
+            sessionLiterals = harProfile.parseSessionLiterals(fs.readFileSync(0, 'utf8'));
+        } catch (e) {
+            console.error(`verify-scrub: ${e.message}`);
+            process.exit(1);
+        }
+        const hits = raw !== null
+            ? harLiterals.findLiteralHits(raw, sessionLiterals)
+            : harLiterals.findLiteralHitsInFile(args.in, sessionLiterals);
+        for (const hit of hits) {
+            leaks.push({ kind: 'forbidden-literal', sample: `${hit.sentinel} (x${hit.count})` });
+        }
+        literalStatus = `${sessionLiterals.length} sign-in literal(s); profile skipped`;
+    }
     try {
         const profile = harProfile.loadProfile({ profilePath: args.profile });
         const hits = raw !== null
@@ -225,7 +243,8 @@ function main() {
         for (const hit of hits) {
             leaks.push({ kind: 'forbidden-literal', sample: `${hit.sentinel} (x${hit.count})` });
         }
-        literalStatus = `${profile.literals.length} literal(s)`;
+        literalStatus = `${profile.literals.length} literal(s)` +
+            (sessionLiterals.length ? ` + ${sessionLiterals.length} sign-in literal(s)` : '');
     } catch (e) {
         if (args.profile) {
             console.error(`verify-scrub: ${e.message}`);

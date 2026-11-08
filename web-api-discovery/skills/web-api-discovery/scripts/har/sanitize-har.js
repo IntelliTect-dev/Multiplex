@@ -768,6 +768,11 @@ function main() {
     let profile;
     try {
         profile = harProfile.loadProfile({ profilePath: args.profile });
+        // The values the recording signed in with (#115), on stdin. Added to
+        // the profile's own literals so the one literal pass removes both.
+        if (args.literals === '-') {
+            profile.literals.push(...harProfile.parseSessionLiterals(fs.readFileSync(0, 'utf8')));
+        }
     } catch (e) {
         console.error(`sanitize-har: ${e.message}`);
         process.exit(1);
