@@ -675,10 +675,69 @@ exits the instant its last action returns and that last response is routinely th
 most valuable entry in the capture.
 
 **Not yet, deliberately:** a human sign-in checkpoint (`-SignInFirst`, issue #75)
-and driving several sites in one run (issue #74). Until #75, the agent stops at
-the first sign-in prompt and hands back; until #74, one run drives one site. The
+and driving several sites in one run (issue #74). The agent still stops at a
+sign-in prompt and hands back -- but the **recorder** now signs in on its own
+when someone is at the terminal (see **Signing in**, below), so with a vault or a
+prompt the agent usually never meets one. Until #74, one run drives one site. The
 checklist text belongs to issue #76 and is parked in `discovery-checklist.md` so
 that issue can lift it out without rewriting the prompt.
+
+### Signing in
+
+When a sign-in form appears in a capture tab, **the recorder fills it -- never
+the agent, and never the human typing into the capture browser** (#115). There
+is no option to turn on; it happens only when a form is actually seen.
+
+| Situation | What happens |
+|---|---|
+| A saved session (`.har-storage-state.json`, or the signed-in capture profile) | No form appears, so nothing happens. |
+| `bw` installed and unlocked | The Bitwarden login whose saved URIs match the site is filled in. Several matches give a numbered pick by item name; a TOTP comes from `bw get totp`. |
+| `bw` installed and locked | Your master password is asked for, masked, and the vault unlocked for this run only. |
+| `bw` installed but logged out | It says `bw login`, then prompts. |
+| `bw` not installed | It prints the install command (`winget install Bitwarden.CLI` on Windows), then asks for username, password (masked) and, if the site asks, a one-time code. A blank password means "I'll sign in in the browser". |
+| **Nobody at the terminal** (an agent or a schedule started the run) | **Nothing is read from the vault, even an unlocked one.** If the *first* page is the login wall, the run ends at once with exit **8**, *sign-in needed*, keeping the raw and skipping post-processing. A session that expires *mid-run* is a notice instead -- what was recorded is kept. |
+| A terminal nobody is reading (`--no-wait`) | No vault read and no prompt (there is no reader to answer one), and no exit 8 either. Sign in in the browser. |
+
+What is guaranteed:
+
+- **Values go only into the page and the scrub.** Nothing prints a username,
+  password, code or vault session key. The master password and session key
+  reach `bw` through the child's environment, never its command line. The filled
+  values reach `sanitize-har.js` and `verify-scrub.js` over **stdin**
+  (`--literals -`), so they are replaced with `<SignInCredential>` under
+  whatever field name the site used, and the gate proves them gone.
+- **Only on the right site.** A Bitwarden credential is filled only on a host
+  its saved URIs cover (the same host or a subdomain -- never a look-alike);
+  a prompted one only on the capture's own host. The address is checked again
+  immediately before every fill, so a page that moved while you typed is not
+  filled, and plain `http` is filled only on this machine (`localhost`).
+- **Only a real sign-in form.** Exactly one password field (two is a sign-up or
+  change-password form, left alone). An email box alone counts only with
+  `autocomplete="username"` or on a sign-in path (`/login`, `/signin`, `/auth`,
+  `/sso`, `/oauth` ...) -- never a newsletter box.
+- **The `bw` that runs is the one on your PATH** -- found through absolute PATH
+  entries only, never the project folder you started the capture from.
+- **One try.** A sign-in step that comes back (a wrong password, a lockout
+  page) is handed to you rather than filled again.
+- **The session is saved, the password is not.** After a successful sign-in
+  the site's cookies are merged into `.har-storage-state.json` (other sites in
+  the file are kept) -- only when git ignores that file, only when the site set
+  a cookie it did not have before the password went in (so a consent page
+  cannot replace a working session), and never from a browser the run attached
+  to. Storage state has no field for a password. A later `-Isolated` capture
+  reads it; the default capture profile keeps its own sign-in regardless.
+- **A `stop` after the recorder died** still scrubs by field name, but the
+  filled values died with the recorder, so the post-process reports a warning
+  (exit 7) rather than a pass it could not check.
+- **Out of scope:** CAPTCHAs, passkeys, push approvals and codes sent by SMS or
+  email. Finish those in the browser; the recording carries on.
+- `session.json` records `signIn: { source, signedIn }` -- where the
+  credentials came from, never what they were.
+
+**Starting captures unattended (from a phone, a schedule, an agent).** Sign in
+once from a terminal; the saved session carries the unattended runs that
+follow. When it expires, the next unattended run ends with exit 8 instead of
+recording a login page, and whoever started it tells you to sign in again.
 
 **Every ending is safe.** ENTER, closing the browser window, and
 `Stop-HarRecording` all produce a full HAR and all run the same

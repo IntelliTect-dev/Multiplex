@@ -273,6 +273,10 @@
  *   7 -- recorded, scrubbed and catalogued, but the leak gate reported
  *        ADVISORY findings (identity evidence by shape). Every artifact is
  *        where it should be; the findings need a human verdict.
+ *   8 -- sign-in needed: a sign-in form appeared with nobody at the terminal
+ *        to start one (#115). The raw is kept and not post-processed. A
+ *        person signs in once from a terminal and the saved session carries
+ *        the unattended runs after it.
  */
 
 'use strict';
@@ -311,6 +315,8 @@ const { ensureRepoRootGitignoreHasScaffoldEntries } =
 // the recorder run out of the upstream checkout could not see an install in the
 // folder the operator was standing in -- and told them to make one there.
 const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
+// The recorder signs in, from Bitwarden or a masked prompt (#115).
+const signIn = require(path.join(__dirname, 'sign-in.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -2255,6 +2261,12 @@ function createCaptureScope(targetUri) {
         site,
         /** Rule 1: a page this run opened is in scope from the start. */
         claim(page) { if (page) inScope.add(page); },
+        /**
+         * Already admitted -- synchronous, and deliberately without the opener
+         * walk: the sign-in watcher (#115) asks this of a page that has just
+         * loaded, by which time any request it made has been through `admits`.
+         */
+        owns(page) { return !!page && inScope.has(page); },
         async admits(request) {
             try {
                 let frame = null;
@@ -3210,9 +3222,19 @@ function agentBannerLines(session) {
 // Post-processing: scrub -> verify -> digest -> catalogue
 // ---------------------------------------------------------------------------
 
-function runNode(script, argv, cwd) {
+// `--literals -` and its stdin document, or nothing when there are no values.
+function literalArgs(literals) {
+    return literals && literals.length ? ['--literals', '-'] : [];
+}
+function literalInput(literals) {
+    return literals && literals.length ? JSON.stringify(literals) : undefined;
+}
+
+// `input` is written to the child's stdin -- the only channel the sign-in
+// values (#115) take to the scrub: not argv, not the environment, not a file.
+function runNode(script, argv, cwd, input) {
     const result = spawnSync(process.execPath, [script, ...argv], {
-        encoding: 'utf8', cwd, windowsHide: true
+        encoding: 'utf8', cwd, windowsHide: true, input
     });
     return {
         ok: result.status === 0,
@@ -3240,10 +3262,11 @@ function runNode(script, argv, cwd) {
  *
  * @returns {{path: string, verified: boolean, advisory: boolean}} state.scrubbed
  */
-function askTheGate(candidate, state, run) {
+function askTheGate(candidate, state, run, literals) {
     log.info('capture-har: verifying the scrub ...');
     const verify = (run || runNode)(
-        path.join(__dirname, '..', 'har', 'verify-scrub.js'), ['--in', candidate]);
+        path.join(__dirname, '..', 'har', 'verify-scrub.js'),
+        ['--in', candidate, ...literalArgs(literals)], undefined, literalInput(literals));
     const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
     state.scrubbed = { path: candidate, verified: verify.ok, advisory };
     // verify-scrub.js already names itself in what it prints, so a second
@@ -3452,8 +3475,23 @@ function postProcess(session, opts = {}) {
         ? ['--subs', path.join(session.sessionDir, subsDestination.LEGACY_SUBS_FILENAME),
             '--pii-subs', path.join(session.sessionDir, subsDestination.PII_SUBS_FILENAME)]
         : [];
+    // The values the recorder signed in with (#115), handed to BOTH the scrub
+    // and the gate: removed under whatever name the site used for them, and
+    // then proved absent.
+    const literals = opts.literals || [];
+    // The values live only in the recorder's memory. A post-process that runs
+    // without them -- `stop` after the recorder died -- still scrubs by key
+    // name, but cannot prove the filled values gone, and says so rather than
+    // letting a pass read as one that checked.
+    if (!opts.literals && session.signIn
+        && (session.signIn.source === 'bitwarden' || session.signIn.source === 'prompt')) {
+        state.warnings.push('sign-in: this capture signed in, but the values it filled were not ' +
+            'available to this scrub (the recorder that held them has exited). They were scrubbed ' +
+            'by field name only; check the scrubbed capture for them before sharing it.');
+    }
     const sanitize = run(path.join(harDir, 'sanitize-har.js'),
-        ['--in', session.harPath, '--out', candidate, ...tables]);
+        ['--in', session.harPath, '--out', candidate, ...tables, ...literalArgs(literals)],
+        undefined, literalInput(literals));
     if (!sanitize.ok) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false, advisory: false };
@@ -3468,7 +3506,7 @@ function postProcess(session, opts = {}) {
             state.warnings.push(`sanitize-har: BLUNTED ${blunted[1]} -- values the leak gate ` +
                 'would have blocked, replaced by typed sentinels and recorded in the artifact');
         }
-        askTheGate(candidate, state, run);
+        askTheGate(candidate, state, run, literals);
     }
 
     // Phase B input -- the digest an AI segments from.
@@ -4150,6 +4188,72 @@ async function askLine(question) {
     }
 }
 
+/**
+ * The recording's terminal, for the sign-in prompts (#115), over the ONE
+ * readline the recording already reads ENTER from.
+ *
+ * One reader, because two on the same stdin each receive half the keystrokes.
+ * The recording's line handler offers every line to `take` first: a pending
+ * prompt consumes it, and only an unclaimed line is ENTER.
+ *
+ * A SECRET IS ONLY ASKED FOR WHERE IT CAN BE HIDDEN. readline in terminal mode
+ * echoes through `_writeToOutput`, which is muted for the answer. Without
+ * terminal mode the console echoes the keystrokes itself and nothing here can
+ * stop it, so the question is not asked and the answer is "none" -- the
+ * operator signs in in the browser instead.
+ */
+function createTerminal(rl, present = !!rl) {
+    let pending = null;
+    let muted = false;
+    // `_writeToOutput` is readline's own, not public API. If a Node release
+    // renames it there is nothing to mute -- and then no secret is asked for,
+    // rather than one asked for and echoed.
+    const canMute = !!rl && typeof rl._writeToOutput === 'function';
+    if (canMute) {
+        const write = rl._writeToOutput.bind(rl);
+        rl._writeToOutput = (text) => { if (!muted) write(text); };
+    }
+    function question(text, secret) {
+        if (!rl || (secret && !(rl.terminal && canMute))) return Promise.resolve(null);
+        return new Promise((resolve) => {
+            pending = (line) => {
+                if (secret) process.stderr.write('\n');
+                muted = false;
+                resolve(line);
+            };
+            process.stderr.write(text);
+            muted = secret;
+        });
+    }
+    return {
+        // PRESENCE and PROMPTING are separate answers. `--no-wait` at a real
+        // terminal may have a person there, so it is not "unattended" (no
+        // exit 8) -- but with no reader it is not prompted, and so never
+        // reads the vault (sign-in.js resolveCredentials).
+        isTty: !!present,
+        canPrompt: !!rl,
+        say: (lines) => lines.forEach((l) => process.stderr.write(`${l}\n`)),
+        ask: (text) => question(text, false),
+        askSecret: (text) => question(text, true),
+        take(line) {
+            if (!pending) return false;
+            const p = pending;
+            pending = null;
+            p(line);
+            return true;
+        }
+    };
+}
+
+/** An unattended run met a sign-in form (#115). */
+function signInNeededLines(host) {
+    return [
+        ['warn', `capture-har: ${host} needs a sign-in, and nobody is at this terminal to start one.`],
+        ['warn', '  Ending now rather than recording a login page. Sign in once from a terminal'],
+        ['warn', '  (Bitwarden or the prompt fills it); the saved session lets unattended runs through.']
+    ];
+}
+
 async function start(args) {
     if (!args.uri) return usage('start requires --uri');
     for (const key of Object.keys(args)) {
@@ -4705,6 +4809,67 @@ async function start(args) {
     // made for this event.
     if (cdpBrowser) cdpBrowser.on('disconnected', () => settle('browser-closed'));
 
+    // THE TERMINAL IS SHARED (#115): ENTER ends the recording, and the sign-in
+    // prompts read from the same stdin. Created BEFORE the first navigation,
+    // because the start page is the most likely place to meet a sign-in form.
+    let rl = null;
+    let enterPressed = null;
+    if (!args['no-wait'] && isTty) {
+        // STDERR, with every other human-facing line: a username echoed to
+        // stdout would land in the stream the front door captures.
+        rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        // In terminal mode readline takes Ctrl+C itself and raises it on `rl`,
+        // not on the process -- which would silently disarm the Ctrl+C ending
+        // below. Passed on, so Ctrl+C means what it always meant.
+        // Before the Ctrl+C ending is armed (a prompt on the start page) there
+        // is no process listener to hand it to, so it settles directly.
+        rl.on('SIGINT', () => {
+            if (process.listenerCount('SIGINT')) process.emit('SIGINT');
+            else settle('ctrl-c');
+        });
+    }
+    const terminal = createTerminal(rl, isTty);
+    if (rl) {
+        enterPressed = new Promise((resolve) => rl.on('line', (line) => {
+            if (terminal.take(line)) return;
+            settle('enter');
+            resolve();
+        }));
+    }
+    const signInWatcher = signIn.createSignInWatcher(context, {
+        uri: args.uri,
+        inScope: scope ? (p) => scope.owns(p) : null,
+        resolve: (host) => signIn.resolveCredentials(host, signIn.createBitwarden(), terminal),
+        say: (lines) => log.lines(lines.map((l) => ['info', l])),
+        onUnattended: (host) => {
+            log.lines(signInNeededLines(host));
+            settle('sign-in-needed');
+        },
+        onSignedIn: async ({ cookiesBefore } = {}) => {
+            // On the session AS IT HAPPENS, not only at the end: a `stop` that
+            // post-processes after this driver died must still be able to see
+            // that a sign-in was filled (see postProcess).
+            session.signIn = signInWatcher.result();
+            writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+            // Not from a browser this run borrowed: its cookies are the
+            // operator's whole browsing session, not this capture's.
+            if (attached) return;
+            // Read back by a later `--isolated` run (discoverStorageState);
+            // the default profile keeps its own sign-in regardless.
+            const file = storageState || path.join(process.cwd(), STORAGE_STATE_FILENAME);
+            const saved = await signIn.saveSession(context, file, signInWatcher.hosts(),
+                subsDestination.classifyDestination, { cookiesBefore });
+            const why = {
+                unchanged: 'the saved session was already current',
+                'no-new-session': 'the site set no new cookie, so there is no session to save -- ' +
+                    'the existing saved session is left as it was'
+            }[saved.status] || `${file} would not be gitignored`;
+            log.info(saved.saved
+                ? `capture-har: signed in -- session saved to ${file}`
+                : `capture-har: signed in -- session NOT saved: ${why}`);
+        }
+    });
+
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
@@ -4723,6 +4888,9 @@ async function start(args) {
     await page.goto(args.uri, { waitUntil: 'domcontentloaded' }).catch((e) => {
         log.warn(`capture-har: initial navigation failed (${e.message}); recording anyway`);
     });
+    // Not awaited: a prompt here must not hold back the banner or the endings.
+    // A `load` the watcher missed during `goto` is covered by looking now.
+    signInWatcher.check(page);
 
     log.lines(startBannerLines(session));
 
@@ -4735,11 +4903,9 @@ async function start(args) {
         settle('stop-command');
     })());
 
-    let rl = null;
-    if (!args['no-wait'] && isTty) {
-        rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        endings.push(new Promise((resolve) => rl.once('line', () => { settle('enter'); resolve(); })));
-    }
+    // The unattended sign-in ending (#115) needs no entry of its own: the
+    // watcher settles it, and the stop-sentinel poll above ends on any reason.
+    if (enterPressed) endings.push(enterPressed);
     endings.push(new Promise((resolve) => {
         process.once('SIGINT', () => { settle('ctrl-c'); resolve(); });
     }));
@@ -4882,6 +5048,10 @@ async function start(args) {
     session.cancelled = cancelled;
     session.assembledFromLog = !!assembled;
     session.summary = summary;
+    // Only when a sign-in form was met (#115), and only where the credentials
+    // came from -- the same keys-only-when-relevant rule as `ai` above.
+    const signInResult = signInWatcher.result();
+    if (signInResult.source) session.signIn = signInResult;
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
 
     if (!summary.exists) {
@@ -4899,6 +5069,17 @@ async function start(args) {
         return 0;
     }
 
+    // A login page is not a capture of the API (#115). The raw is kept, as a
+    // cancel keeps it, and the exit code is its own so whatever started this
+    // run unattended -- an agent, a phone -- can say "sign in" rather than
+    // "failed".
+    if (reason === 'sign-in-needed') {
+        log.info(
+            `\ncapture-har: ended -- sign-in needed. ${describeSummary(summary)}\n` +
+            `  raw kept, not post-processed: ${paths.harPath}`);
+        return 8;
+    }
+
     log.info(`\ncapture-har: stopped (${reason}) -- ${describeSummary(summary)}`);
     // Said out loud, because the operator is about to wonder. Every other mode
     // ends with the browser gone, so a window still sitting there looks like
@@ -4910,7 +5091,7 @@ async function start(args) {
         log.info(`  ${recorder.excluded} request(s) from outside this capture's tabs were not ` +
             'recorded -- see "Only this capture\'s tabs are recorded" in SKILL.md.');
     }
-    session.postProcess = postProcess(session);
+    session.postProcess = postProcess(session, { literals: signInWatcher.secrets() });
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
 
@@ -5477,6 +5658,7 @@ module.exports = {
     BROWSER_NATIVE,
     BROWSER_MODES,
     discoverStorageState,
+    createTerminal,
     pathTemplate,
     buildDigest,
     buildCatalogueScaffold,

@@ -940,6 +940,45 @@ test('postProcess writes nothing to the output path when the scrub does not VERI
     });
 });
 
+test('postProcess hands the sign-in values to the scrub and the gate on stdin, never argv (#115)', () => {
+    // The values the recorder filled into a sign-in form. argv is readable by
+    // every other process on the machine; stdin is not.
+    const filled = ['operator@example.test', 'pp-literal-password-115'];
+    withSandbox('pp-literals', [okEntry], (session) => {
+        const calls = [];
+        capture.postProcess(session, {
+            literals: filled,
+            run: (script, argv, cwd, input) => {
+                calls.push({ script: path.basename(script), argv, input });
+                return capture.runNode(script, argv, cwd, input);
+            }
+        });
+        for (const name of ['sanitize-har.js', 'verify-scrub.js']) {
+            const call = calls.find((c) => c.script === name);
+            assert.ok(call, `${name} was not run`);
+            assert.ok(call.argv.join(' ').includes('--literals -'), `${name} was not told to read stdin`);
+            assert.deepStrictEqual(JSON.parse(call.input), filled, `${name} did not receive the values`);
+            for (const v of filled) {
+                assert.ok(!call.argv.join(' ').includes(v), `${name} received a value on its command line`);
+            }
+        }
+    });
+});
+
+test('postProcess says so when a signed-in capture is scrubbed without its sign-in values (#115)', () => {
+    // `stop` after the recorder died: the values died with it.
+    withSandbox('pp-literals-missing', [okEntry], (session) => {
+        session.signIn = { source: 'bitwarden', signedIn: true };
+        const state = capture.postProcess(session);
+        assert.ok(state.warnings.some((w) => /sign-in/.test(w) && /field name only/.test(w)),
+            'the missing check must be reported, not read as a pass');
+    });
+    withSandbox('pp-literals-none', [okEntry], (session) => {
+        const state = capture.postProcess(session);
+        assert.ok(!state.warnings.some((w) => /sign-in/.test(w)), 'no sign-in, no warning');
+    });
+});
+
 test('postProcess still produces artifacts when the scrub verifies', () => {
     // The mirror of the gate above. Without it, "withhold on failure" could
     // regress into "withhold always" and every test above would still pass.

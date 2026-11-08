@@ -171,11 +171,39 @@ function loadProfile(opts = {}) {
     };
 }
 
+// Every value the recorder signed in with gets the same sentinel: the reader
+// of a scrubbed capture needs to know a credential was there, not which one.
+const SIGN_IN_SENTINEL = '<SignInCredential>';
+
+/**
+ * The literals a recording signed in with (#115), read from `--literals -`.
+ *
+ * They arrive on STDIN as a JSON array of strings and nowhere else -- not argv,
+ * which other processes can read, and not a file, which outlives the run.
+ * Short values are dropped by the same rule as the profile's, and a malformed
+ * document is an error that names its shape, never its contents.
+ *
+ * @param {string} text the stdin document
+ * @returns {Array<{literal: string, sentinel: string}>}
+ */
+function parseSessionLiterals(text) {
+    let values;
+    try { values = JSON.parse(text); } catch (_) { values = null; }
+    if (!Array.isArray(values) || !values.every((v) => typeof v === 'string')) {
+        throw new ProfileError('--literals -: stdin must be a JSON array of strings.');
+    }
+    return Array.from(new Set(values))
+        .filter((v) => v.length >= MIN_LITERAL_LENGTH)
+        .map((literal) => ({ literal, sentinel: SIGN_IN_SENTINEL }));
+}
+
 module.exports = {
     PROFILE_FILENAME,
     MIN_LITERAL_LENGTH,
+    SIGN_IN_SENTINEL,
     ProfileError,
     findUpward,
     findProfilePath,
     loadProfile,
+    parseSessionLiterals,
 };

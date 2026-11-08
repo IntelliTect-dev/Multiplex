@@ -706,6 +706,16 @@ switch ($exit) {
         # answer survives the trip back.
         exit 2
     }
+    8 {
+        # SIGN-IN NEEDED KEEPS ITS CODE (#115), for the same reason 2 does: the
+        # caller is usually not a person. An agent started this run with no
+        # terminal -- from a phone, a schedule -- and the code is how it tells
+        # the person "sign in once" rather than "it broke".
+        Write-Warning ('Sign-in needed, and nobody was at a terminal to start one. Run ' +
+            'Invoke-HarCapture once from a terminal: Bitwarden (or a masked prompt) signs in ' +
+            'and the session is saved, so unattended runs after it go straight through.')
+        exit 8
+    }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."
         return
