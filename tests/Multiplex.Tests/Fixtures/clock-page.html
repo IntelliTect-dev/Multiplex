@@ -1,0 +1,11 @@
+<!-- Trimmed from time.now country/city page markup; keep selectors in sync with TimeNowPage.
+     The server-rendered clock is stale (06:00:00) until the first client-side tick, as on the live site. -->
+<html><head><base href="https://time.now/"></head><body>
+<h1 class="city-name-heading">Current Time in Japan 🇯🇵</h1>
+<div class="current-time-digital">
+  <span id="cityTimeDigital">06:00:00</span>
+  <span class="timezone-abbr"><a href="/timezones/jst/">JST</a></span>
+</div>
+<div class="current-date" id="cityDateDisplay">Monday, November 16, 2026</div>
+<script>setTimeout(() => { document.getElementById('cityTimeDigital').textContent = '08:11:27'; }, 300);</script>
+</body></html>
