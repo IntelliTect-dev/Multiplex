@@ -1,12 +1,20 @@
+using Multiplex.Web.Mcp;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorPages();
 builder.Services.AddHealthChecks();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 
 // Stateless Streamable HTTP: no Mcp-Session-Id, safe behind a load balancer without sticky sessions.
 builder.Services
     .AddMcpServer()
-    .WithHttpTransport(options => options.Stateless = true)
+    .WithHttpTransport(options =>
+    {
+        options.Stateless = true;
+        options.ConfigureSessionOptions = McpEndpointRouting.ScopeToolsToEndpoint;
+    })
     .WithToolsFromAssembly();
 
 var app = builder.Build();
@@ -27,7 +35,7 @@ app.MapStaticAssets();
 app.MapRazorPages()
    .WithStaticAssets();
 app.MapHealthChecks("/healthz");
-app.MapMcp("/mcp");
+app.MapMcpEndpoints();
 
 app.Run();
 

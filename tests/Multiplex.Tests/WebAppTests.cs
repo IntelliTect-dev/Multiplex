@@ -27,9 +27,24 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     }
 
     [Fact]
-    public async Task Mcp_ListsEchoTool()
+    public async Task RootMcp_IsNotMapped()
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/mcp")
+        var response = await _client.PostAsync("/mcp", new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        Assert.False(response.IsSuccessStatusCode);
+    }
+
+    [Fact]
+    public async Task TimeMcp_ListsTimeTool()
+    {
+        var body = await ListTools("/time/mcp");
+
+        Assert.Contains("\"get_local_time\"", body);
+    }
+
+    private async Task<string> ListTools(string path)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new StringContent(
                 """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""",
@@ -42,6 +57,6 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
         var response = await _client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("\"echo\"", await response.Content.ReadAsStringAsync());
+        return await response.Content.ReadAsStringAsync();
     }
 }
