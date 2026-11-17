@@ -5188,19 +5188,19 @@ async function start(args) {
     // they use first wins: ENTER here ends the recording, `continue` + ENTER
     // hands back; the phone's two buttons do the same.
     let handOver = null;
-    const closePhoneView = (h) => {
+    const closePhoneView = (h, text) => {
         if (h && h.timer) clearTimeout(h.timer);
         if (h && h.phone) {
             const view = h.phone;
             h.phone = null;
-            void view.close().catch(() => {});
+            void view.close(text).catch(() => {});
         }
     };
     const handBack = (by) => {
         if (!handOver || reason) return false;
         const h = handOver;
         handOver = null;
-        closePhoneView(h);
+        closePhoneView(h, 'Handed back -- the capture carries on. You can close this page.');
         const record = pauses.resume(by);
         throttleMonitor.handedBack();
         if (session.handOver) session.handOver.resolved = `handed-back-${by}`;
@@ -5521,7 +5521,10 @@ async function start(args) {
     // itself after its current turn. Never ended by this process.
     const endedBy = { enter: 'terminal', 'ended-on-phone': 'phone' }[reason] || 'recording-ended';
     if (pauses.end(endedBy) || (session.pauses && session.pauses.length)) syncPauses();
-    if (handOver) { closePhoneView(handOver); handOver = null; }
+    if (handOver) {
+        closePhoneView(handOver, 'The capture has ended; what was recorded is kept. You can close this page.');
+        handOver = null;
+    }
     if (agentRunning && agentControl.end) {
         agentControl.end(agentStream.agentMessages.ended());
         // A moment for it to say its last words into the step log: told the

@@ -162,9 +162,12 @@ async function main() {
                 if (!decision || decision.action === 'none') return;
                 if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
                 if (decision.action === 'hand-over') handedOver = decision;
+                // noHold: this tool pauses its own next step; it does not hold
+                // the browser's requests the way capture-har.js does.
                 const say = args.headless
-                    ? { tool: 'capture-cdp', noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' }
-                    : { tool: 'capture-cdp', finish: 'close the window to finish' };
+                    ? { tool: 'capture-cdp', noHold: true,
+                        noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' }
+                    : { tool: 'capture-cdp', noHold: true, finish: 'close the window to finish' };
                 for (const [, line] of pacing.throttleLines(decision, 'script', say)) {
                     console.error(line);
                 }
