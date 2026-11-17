@@ -1,11 +1,21 @@
 using Multiplex.Web.Mcp;
+using Multiplex.Web.Servers.TripIt.SignIn;
+using Multiplex.Web.SignIn;
 
-var builder = WebApplication.CreateBuilder(args);
+// `hash-passcode` prints a connect-passcode hash for the installer and exits; no web server.
+if (args is [PasscodeCli.Command, ..])
+    return PasscodeCli.Run(Console.In, Console.Out, Console.Error, interactive: !Console.IsInputRedirected);
+
+// `adopt-profile <site> <dir>` copies a signed-in browser profile into the data folder and exits.
+var adoptArgs = args is [SiteProfileAdopter.Command, ..] ? args : null;
+
+var builder = WebApplication.CreateBuilder(adoptArgs is null ? args : []);
 
 builder.Services.AddRazorPages();
 builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
+builder.Services.AddSiteSignIn(builder.Configuration).AddSite<TripItSignInDefinition>();
 
 // Stateless Streamable HTTP: no Mcp-Session-Id, safe behind a load balancer without sticky sessions.
 builder.Services
@@ -19,6 +29,9 @@ builder.Services
 
 var app = builder.Build();
 
+if (adoptArgs is not null)
+    return await SiteProfileAdopter.RunCliAsync(app.Services, adoptArgs, Console.Out, Console.Error);
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
@@ -26,6 +39,8 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseWebSockets();
 
 app.UseRouting();
 
@@ -36,8 +51,10 @@ app.MapRazorPages()
    .WithStaticAssets();
 app.MapHealthChecks("/healthz");
 app.MapMcpEndpoints();
+app.MapConnectPages();
 
 app.Run();
+return 0;
 
 // Exposed so WebApplicationFactory<Program> can reach the entry point from the test project.
 public partial class Program;

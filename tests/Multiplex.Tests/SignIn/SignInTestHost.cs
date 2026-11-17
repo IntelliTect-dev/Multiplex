@@ -1,0 +1,256 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Mvc.Testing.Handlers;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Web.SignIn;
+using Multiplex.Web.Sites;
+
+namespace Multiplex.Tests.SignIn;
+
+/// <summary>All tests that drive a real Chromium run one at a time.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class SignInBrowserCollection
+{
+    public const string Name = "SignIn browser";
+}
+
+public sealed class SignInTestOptions
+{
+    public bool WithPasscode { get; set; } = true;
+    public string[] AllowedAccounts { get; set; } = [StubLoginSite.Email];
+
+    /// <summary>The stub site the definition points at; null registers the definition against an unused address.</summary>
+    public Uri? StubBaseUrl { get; set; }
+
+    /// <summary>When set, replaces the real refresher.</summary>
+    public FakeRefresher? Refresher { get; set; }
+
+    /// <summary>Defaults to the local Chromium, else a path that does not exist (so no browser ever starts).</summary>
+    public string ExecutablePath { get; set; } = ChromiumLocator.Path ?? Path.Combine(Path.GetTempPath(), "no-such-chrome.exe");
+
+    public TimeSpan AttemptTimeout { get; set; } = TimeSpan.FromMinutes(2);
+}
+
+/// <summary>
+/// Multiplex in-process with Auth/ faked, a throwaway data folder, the stub site's sign-in
+/// definition and (optionally) a passcode. Nothing touches the real %LOCALAPPDATA%.
+/// </summary>
+public sealed class SignInTestHost : IAsyncDisposable
+{
+    public const string Passcode = "test-passcode-42";
+    private static readonly Lazy<string> s_passcodeHash = new(() => PasscodeHasher.Hash(Passcode));
+
+    public string DataPath { get; } = Path.Combine(Path.GetTempPath(), "multiplex-signin-tests", Guid.NewGuid().ToString("N"));
+    public FakeCompleter Completer { get; } = new();
+    public FakeRevoker Revoker { get; } = new();
+    public WebApplicationFactory<Program> Factory { get; }
+    public StubSignInDefinition Definition { get; }
+
+    public SignInTestHost(SignInTestOptions? options = null)
+    {
+        options ??= new SignInTestOptions();
+        Definition = new StubSignInDefinition(options.StubBaseUrl ?? new Uri("http://127.0.0.1:9/"));
+        Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("Multiplex:DataPath", DataPath);
+            b.UseSetting("Browser:ExecutablePath", options.ExecutablePath);
+            b.UseSetting("SignIn:Headless", "true");
+            b.UseSetting("SignIn:PollInterval", "00:00:00.500");
+            b.UseSetting("SignIn:AttemptTimeout", options.AttemptTimeout.ToString("c"));
+            b.UseSetting("SignIn:RefreshTimeout", "00:00:20");
+            b.UseSetting(PasscodeGate.HashKey, options.WithPasscode ? s_passcodeHash.Value : "");
+            for (var i = 0; i < options.AllowedAccounts.Length; i++)
+                b.UseSetting($"Multiplex:Sites:{StubSignInDefinition.SiteSlug}:AllowedAccounts:{i}", options.AllowedAccounts[i]);
+
+            b.ConfigureTestServices(services =>
+            {
+                services.AddSingleton<ISiteSignInDefinition>(Definition);
+                services.RemoveAll<IAuthorizationCompleter>();
+                services.AddSingleton<IAuthorizationCompleter>(Completer);
+                services.RemoveAll<IGrantRevoker>();
+                services.AddSingleton<IGrantRevoker>(Revoker);
+                if (options.Refresher is { } refresher)
+                {
+                    services.RemoveAll<ISiteSessionRefresher>();
+                    services.AddSingleton<ISiteSessionRefresher>(refresher);
+                }
+            });
+        });
+    }
+
+    public IServiceProvider Services => Factory.Services;
+
+    public T Get<T>() where T : notnull => Factory.Services.GetRequiredService<T>();
+
+    public string ProfilesDirectory => Path.Combine(DataPath, "sites", StubSignInDefinition.SiteSlug, "profiles");
+
+    public string[] TempProfiles() =>
+        Directory.Exists(ProfilesDirectory) ? Directory.GetDirectories(ProfilesDirectory, "temp-*") : [];
+
+    public ConnectClient NewClient() => new(Factory);
+
+    public async ValueTask DisposeAsync()
+    {
+        await Factory.DisposeAsync();
+        for (var attempt = 0; attempt < 20 && Directory.Exists(DataPath); attempt++)
+        {
+            try { Directory.Delete(DataPath, recursive: true); }
+            catch (IOException) { await Task.Delay(250); }
+            catch (UnauthorizedAccessException) { await Task.Delay(250); }
+        }
+    }
+}
+
+/// <summary>A phone browser, as far as the connect pages can tell: cookies, antiforgery tokens, no auto-redirects.</summary>
+public sealed partial class ConnectClient
+{
+    private readonly WebApplicationFactory<Program> _factory;
+
+    public CookieContainer Cookies { get; } = new();
+    public HttpClient Http { get; }
+
+    public ConnectClient(WebApplicationFactory<Program> factory)
+    {
+        _factory = factory;
+        Http = factory.CreateDefaultClient(new Uri("http://localhost"), new CookieContainerHandler(Cookies));
+    }
+
+    public async Task<(HttpResponseMessage Response, string Html)> GetAsync(string path)
+    {
+        var response = await Http.GetAsync(path);
+        return (response, await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>Posts a form the way the page would, with the antiforgery token from <paramref name="pageHtml"/>.</summary>
+    public async Task<(HttpResponseMessage Response, string Html)> PostAsync(string path, string pageHtml, params (string Name, string Value)[] fields)
+    {
+        var values = fields.Select(f => new KeyValuePair<string, string>(f.Name, f.Value)).ToList();
+        if (TokenOf(pageHtml) is { } token) values.Add(new("__RequestVerificationToken", token));
+        var response = await Http.PostAsync(path, new FormUrlEncodedContent(values));
+        return (response, await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>Opens the connect page and submits the passcode; returns the POST's response.</summary>
+    public async Task<(HttpResponseMessage Response, string Html)> PassGateAsync(string pendingId, string passcode = SignInTestHost.Passcode)
+    {
+        var (_, page) = await GetAsync($"/connect/{StubSignInDefinition.SiteSlug}?p={pendingId}");
+        return await PostAsync($"/connect/{StubSignInDefinition.SiteSlug}?p={pendingId}", page, ("passcode", passcode));
+    }
+
+    public static string? TokenOf(string html) =>
+        TokenPattern().Match(html) is { Success: true } m ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
+
+    public static string AttemptIdOf(Uri location) =>
+        Regex.Match(location.OriginalString, @"[?&]a=([^&]+)").Groups[1].Value;
+
+    public async Task<MirrorClient> OpenMirrorAsync(string attemptId)
+    {
+        var client = _factory.Server.CreateWebSocketClient();
+        var path = $"/connect/{StubSignInDefinition.SiteSlug}/live";
+        client.ConfigureRequest = request => request.Headers.Cookie = Cookies.GetCookieHeader(new Uri("http://localhost" + path));
+        var socket = await client.ConnectAsync(new Uri($"ws://localhost{path}?a={Uri.EscapeDataString(attemptId)}"), CancellationToken.None);
+        return new MirrorClient(socket);
+    }
+
+    [GeneratedRegex("name=\"__RequestVerificationToken\" value=\"([^\"]+)\"")]
+    private static partial Regex TokenPattern();
+}
+
+/// <summary>The test's end of the live WebSocket: collects frames and status messages, sends input.</summary>
+public sealed class MirrorClient : IAsyncDisposable
+{
+    private readonly WebSocket _socket;
+    private readonly Task _receive;
+    private readonly ConcurrentQueue<JsonElement> _messages = new();
+    private int _frames;
+
+    public MirrorClient(WebSocket socket)
+    {
+        _socket = socket;
+        _receive = Task.Run(ReceiveAsync);
+    }
+
+    public int Frames => Volatile.Read(ref _frames);
+    public byte[]? LastFrame { get; private set; }
+    public IReadOnlyCollection<JsonElement> Messages => _messages;
+
+    private async Task ReceiveAsync()
+    {
+        var buffer = new byte[1 << 20];
+        try
+        {
+            while (_socket.State == WebSocketState.Open)
+            {
+                using var message = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _socket.ReceiveAsync(buffer, CancellationToken.None);
+                    message.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage && result.MessageType != WebSocketMessageType.Close);
+
+                if (result.MessageType == WebSocketMessageType.Close) return;
+                if (result.MessageType == WebSocketMessageType.Binary)
+                {
+                    LastFrame = message.ToArray();
+                    Interlocked.Increment(ref _frames);
+                }
+                else
+                {
+                    _messages.Enqueue(JsonDocument.Parse(message.ToArray()).RootElement.Clone());
+                }
+            }
+        }
+        catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+    }
+
+    public Task SendAsync(object message) =>
+        _socket.SendAsync(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message)), WebSocketMessageType.Text, true, CancellationToken.None);
+
+    public async Task<JsonElement> WaitForAsync(Func<JsonElement, bool> predicate, TimeSpan? timeout = null, string? what = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
+        while (DateTime.UtcNow < deadline)
+        {
+            foreach (var m in _messages)
+                if (predicate(m)) return m;
+            await Task.Delay(100);
+        }
+        throw new TimeoutException($"No message matching {what ?? "the condition"}; got: {string.Join(" | ", _messages.Select(m => m.GetRawText()))}");
+    }
+
+    public Task<JsonElement> WaitForStatusAsync(string state, TimeSpan? timeout = null) =>
+        WaitForAsync(m => m.GetProperty("t").GetString() == "status" && m.GetProperty("s").GetString() == state, timeout, $"status '{state}'");
+
+    public async Task WaitForFramesAsync(int count, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
+        while (Frames < count)
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Only {Frames} frames arrived.");
+            await Task.Delay(100);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_socket.State == WebSocketState.Open)
+                await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test done", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception) { }
+        await _receive.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        _socket.Dispose();
+    }
+}
