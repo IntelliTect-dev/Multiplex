@@ -331,9 +331,17 @@ function classifyResponse(r, nowMs = Date.now()) {
 
     if (status === 403 || status === 503) {
         if (known) return signal('blocked', `${status} ${known.name}`);
+        // EDGE HEADERS ALONE are weak evidence: a CDN-fronted site puts cf-ray
+        // or x-amz-cf-id on EVERY response, its own error pages included, and
+        // the checklist asks for error cases. So without a known signature only
+        // the page itself refused with a small HTML 403 counts -- never a
+        // sub-resource, and never a 503, which without Retry-After or a
+        // signature is an outage rather than a refusal.
         const server = headerValue(headers, 'server') || '';
         const fromEdge = CDN_SERVERS.test(server) || CDN_HEADERS.some((h) => headerValue(headers, h) !== undefined);
-        if (fromEdge && small) return signal('blocked', `${status} from the CDN (${server || 'edge headers'})`);
+        if (status === 403 && r.isDocument && fromEdge && small) {
+            return signal('blocked', `403 from the CDN (${server || 'edge headers'})`);
+        }
         return null;
     }
     // A page that answered 200 but IS an interstitial: judged on main-frame
@@ -441,6 +449,21 @@ function createRateWatch(perMinute, opts = {}) {
     };
 }
 
+/**
+ * Where a signal came from, as the operator is told it: origin and path. The
+ * query string is where sites put search terms, emails and tokens, and the
+ * message only has to say WHERE the site refused.
+ */
+function whereOf(url) {
+    try {
+        const u = new URL(url);
+        return u.origin + u.pathname;
+    } catch (e) {
+        void e;
+        return String(url || '').split('?')[0];
+    }
+}
+
 function describeWait(ms) {
     if (ms === null || ms === undefined) return 'an unspecified time';
     return ms >= 1000 ? `${seconds(Math.round(ms / 100) * 100)} s` : `${ms} ms`;
@@ -459,6 +482,8 @@ const WHY = {
  *
  *   'agent'   an -AI agent: the recorder cannot slow it down, so a pause is a
  *             warning, and a hand-over means the agent has been stopped
+ *   'agent-unstarted'  an -AI run whose agent had not been launched yet (the
+ *             start page itself refused): it never will be
  *   'script'  this tooling's own navigation: a pause is taken, and a
  *             hand-over means it stopped
  *   'you'     a person browsing by hand, who gets advice rather than a
@@ -473,7 +498,7 @@ function throttleLines(decision, who = 'you', opts = {}) {
     const tool = opts.tool || 'capture-har';
     const finish = opts.finish || 'press ENTER here (or close the window) to finish';
     const s = decision.signal;
-    const at = `${s.signature} on ${s.url}`;
+    const at = `${s.signature} on ${whereOf(s.url)}`;
     if (decision.action === 'pause') {
         const wait = describeWait(decision.waitMs);
         const named = s.retryAfterMs !== null ? 'the wait the site named' : 'a backoff with jitter';
@@ -495,8 +520,12 @@ function throttleLines(decision, who = 'you', opts = {}) {
         return [['warn', `${head}\n  ${evade} Answer it yourself in the browser if you choose\n` +
             '  to, or end the recording; what was recorded so far is kept.']];
     }
+    const stopped = {
+        agent: 'The agent has been stopped',
+        'agent-unstarted': 'The agent was not started, and will not be'
+    }[who] || 'Automated browsing has stopped';
     return [['warn', `${head}\n` +
-        `  ${who === 'agent' ? 'The agent has been stopped' : 'Automated browsing has stopped'}. ${evade}\n` +
+        `  ${stopped}. ${evade}\n` +
         '  THE BROWSER IS YOURS: it is still open, and still recording. Take over there --\n' +
         '  answer the check yourself if you choose to, or wait and carry on by hand -- then\n' +
         `  ${finish}. What was recorded is kept.`]];
@@ -517,5 +546,6 @@ module.exports = {
     classifyResponse,
     createThrottleMonitor,
     createRateWatch,
-    throttleLines
+    throttleLines,
+    whereOf
 };

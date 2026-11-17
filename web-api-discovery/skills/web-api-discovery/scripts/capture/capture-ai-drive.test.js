@@ -67,6 +67,7 @@
 //   A19 --pace is recorded on every session, and an unreadable one is refused
 //   A20 a hand-over stops the agent once, through the handle the drive holds,
 //       and the agent's exit is then not an ending
+//   A21 a site that refused the start page means the agent is never started
 //   I3  a site that keeps throttling the agent: the first 429 pauses, the next
 //       one inside the pause stops the agent and hands over; with nobody at
 //       the terminal the recording ends `handed-over`, is post-processed, and
@@ -1253,6 +1254,26 @@ function driveAndStopFakeAgent() {
         log: fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
     };
 }
+
+test('A21: a site that refused the START page means the agent is never started', () => {
+    // FOUND IN REVIEW. Under --ai the start page loads before the agent is
+    // launched. A block there used to set the hand-over, find no agent to stop,
+    // and then launch one anyway -- onto a page that had already said no, with
+    // the monitor already handed over, so nothing would ever stop it.
+    assert.strictEqual(typeof capture.agentStartRefusal, 'function');
+    assert.strictEqual(capture.agentStartRefusal(fakeSession(), null), null, 'nothing refused: start it');
+    const refused = capture.agentStartRefusal(fakeSession({ handOver: {
+        signature: '403 Imperva', url: 'https://www.example.com/rentals', by: 'agent-not-started'
+    } }), null);
+    assert.ok(refused, 'a hand-over before launch must stop the launch');
+    const text = refused.map(([, t]) => t).join('\n');
+    assert.match(text, /the agent was not started/);
+    assert.match(text, /403 Imperva on https:\/\/www\.example\.com\/rentals/);
+    assert.ok(refused.every(([level]) => level === 'warn'), 'never hidden behind -Verbose');
+    // And a recording that has already ended has nothing left for an agent to do.
+    assert.match(capture.agentStartRefusal(fakeSession(), 'sign-in-needed').map(([, t]) => t).join('\n'),
+        /already ended \(sign-in-needed\)/);
+});
 
 test('A20: a hand-over stops the agent through its own handle, once, and that is not an ending', () => {
     // THE ONE PROCESS THE RECORDER EVER ENDS, and only for this: the site is
