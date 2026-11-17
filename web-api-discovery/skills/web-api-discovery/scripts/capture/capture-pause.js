@@ -59,6 +59,9 @@ function deferred() {
  *   opts.holds(request)      is this request the site's, from this capture?
  *                            May be async. A predicate that throws HOLDS: when
  *                            in doubt during a pause, the site is not sent it.
+ *   opts.onError(e, installing)  the route could not be installed (or
+ *                            removed): told, so a pause is never announced as
+ *                            held when it is not
  *
  * `route` is Playwright's shape: request(), continue(), abort(code).
  */
@@ -71,8 +74,9 @@ function createSiteHold(opts) {
     let routing = Promise.resolve();
     const held = new Set();
     let total = 0;
+    let failures = 0;
 
-    const pass = (route) => Promise.resolve().then(() => route.continue()).catch(() => {});
+    const pass =(route) => Promise.resolve().then(() => route.continue()).catch(() => {});
 
     async function handler(route) {
         // The gate as it was when the request ARRIVED: a pause that ends (or
@@ -95,7 +99,11 @@ function createSiteHold(opts) {
         routing = routing.then(async () => {
             if (on && !installed) { installed = true; await install(handler); }
             if (!on && installed) { installed = false; await uninstall(handler); }
-        }).catch(() => {});
+        }).catch((e) => {
+            // SAID, never swallowed: a pause announced as held that is not.
+            if (on) { installed = false; failures++; }
+            if (opts.onError) opts.onError(e, on);
+        });
         return routing;
     }
 
@@ -120,6 +128,8 @@ function createSiteHold(opts) {
         active: () => !!gate,
         heldCount: () => held.size,
         totalHeld: () => total,
+        /** How many times the hold could not be installed (opts.onError was told each time). */
+        failures: () => failures,
         /** For tests: resolves once install/uninstall has settled. */
         settled: () => routing
     };

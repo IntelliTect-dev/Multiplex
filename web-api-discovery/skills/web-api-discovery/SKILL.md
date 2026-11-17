@@ -792,8 +792,13 @@ Don't use the browser; end your turn and wait" -- and, when it ends, "The wait
 is over (paused 5 min). Re-check the page, then continue where you left off."
 Under `-AI` the agent is not *launched* until a pause on the start page is over.
 A throttle that arrives during a pause was already in flight, so it is the same
-pause (lengthened if it names a later end), never a hand-over. A hand-driven
-run is not held: you are told how long the site asked you to wait.
+pause (lengthened if it names a later end), never a hand-over. If the browser
+cannot install the hold, the run **says so** rather than claiming a hold it does
+not have. Without `-AI` and with nobody at the terminal, whatever drives the
+browser is automation over CDP: the browser holds for it too, though nothing
+can tell it. A hand-driven run -- someone at the terminal -- is not held: you
+are told how long the site asked you to wait, and only the recorder's own steps
+(the sign-in fills) wait it out.
 
 A burst of throttled requests on one page load is one pause, not three. A
 page that merely embeds a CAPTCHA widget (reCAPTCHA v3 runs invisibly on many
@@ -843,9 +848,13 @@ not sent). Then the browser is yours, still open and still recording:
 - **The phone view is private by construction.** It listens only on this PC's
   Tailscale IPv4 address, read at run time from `tailscale status --json` --
   never on every interface, never on a LAN address -- so only devices on your
-  own tailnet can reach it. The link carries a long random token, is good for
-  that hand-over only, and is claimed by the first browser that opens it;
-  anything else gets a bare 404. It is plain HTTP inside the tailnet (WireGuard
+  own tailnet can reach it. The link carries a long random token and is good
+  for that hand-over only; anything without it gets a bare 404. **One browser
+  at a time**: the first to start watching holds the view, and another gets 404
+  while it is connected -- so a link fetched by something that is not a browser
+  (an AI session reading it, a link preview) locks nobody out, and if an in-app
+  browser opened it first you can switch to Chrome once that one is closed.
+  The link is never written to `session.json` or the agent's log. It is plain HTTP inside the tailnet (WireGuard
   encrypts it end to end); `tailscale serve` is not used, because it writes
   persistent tailnet configuration. Without Tailscale installed and running,
   the line says so and the hand-over is the PC-only one. Windows Firewall may

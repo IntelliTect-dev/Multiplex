@@ -726,6 +726,8 @@ function httpOf(signal) {
  *             still holds the site's requests, and that is all
  *   'agent-unstarted'  an -AI run whose agent had not been launched yet (the
  *             start page itself was refused or throttled)
+ *   'external'  no -AI, and nobody at the terminal: automation driving the
+ *             browser over CDP. The browser holds; nothing can be told
  *   'script'  this tooling's own navigation: the next step waits
  *   'you'     a person browsing by hand, who gets advice rather than a pause
  *             or a hand-over -- it is already their browser
@@ -763,7 +765,8 @@ function throttleLines(decision, who = 'you', opts = {}) {
         const holds = opts.noHold ? 'the next step waits' : {
             agent: 'the browser holds this capture\'s requests to the site, and the agent has been told to wait',
             'agent-unmessaged': 'the browser holds this capture\'s requests to the site (this agent cannot be messaged)',
-            'agent-unstarted': 'the browser holds this capture\'s requests to the site, and the agent starts after it'
+            'agent-unstarted': 'the browser holds this capture\'s requests to the site, and the agent starts after it',
+            external: 'the browser holds this capture\'s requests to the site, whatever drives it over CDP'
         }[who] || 'the browser holds this capture\'s requests to the site, and the next step waits';
         return [['warn', `${head} -- ${why}\n` +
             `  ${at}. Nothing reaches the site until then:\n  ${holds}. It carries on by itself when the time is up.`]];
@@ -779,7 +782,8 @@ function throttleLines(decision, who = 'you', opts = {}) {
     const told = {
         agent: 'The agent has been told to wait',
         'agent-unmessaged': 'This agent cannot be messaged; its instructions tell it to stop at a check like this',
-        'agent-unstarted': 'The agent has not been started, and will not be unless you hand back'
+        'agent-unstarted': 'The agent has not been started, and will not be unless you hand back',
+        external: 'Whatever drives this browser over CDP cannot be told; it should stop at a check like this'
     }[who] || 'Automated browsing has stopped';
     if (opts.noHuman) {
         return [['warn', `${tool}: ${why} (${at}).${wait}\n  ${told}. ${evade}\n  ${opts.noHuman} What was recorded is kept.`]];
@@ -808,6 +812,7 @@ function resumeLines(record, opts = {}) {
     const next = {
         agent: '; the agent has been told to carry on',
         'agent-unmessaged': '; the browser no longer holds the site\'s requests',
+        external: '; the browser no longer holds the site\'s requests',
         'agent-unstarted': '; the agent starts now'
     }[record.driver] || '';
     return [['warn', `${tool}: Resumed after ${after}${by}${next}.`]];
