@@ -78,8 +78,33 @@ scrub, out of any commit. If you answer no, it records anyway and warns you.
 Don't capture inside Dropbox, OneDrive or any other synced folder: raw
 captures carry live session cookies.
 
+## Pacing and throttling
+
+**Where the line is.** Polite pacing and honouring a site's throttling are in.
+Anything whose purpose is hiding automation from a site's bot detection is out:
+no user-agent or fingerprint spoofing, no `navigator.webdriver` or stealth
+patches, no CAPTCHA solving. When a site blocks or challenges, the tooling
+stops and hands the browser -- which is on screen -- to you, rather than
+working around it.
+
+- **Human-scale pacing is the default.** What the recorder does to a page
+  itself (its first navigation, the sign-in fills) waits a random 1.5–4 s
+  between navigations and 0.3–1.2 s between clicks or typing steps, one
+  navigation at a time, at most 12 a minute. An `-AI` agent is given the same
+  numbers in its prompt. `-Pace 'nav=2000-6000,action=500-1500,per-minute=6'`
+  changes them; `-Pace off` makes them zero, for tests.
+- **Throttling is honoured.** The recorder reads every response from the site.
+  A `429`, or a `503` with `Retry-After`, pauses for what the site asked (or
+  backs off with jitter). A block (a small HTML `403` from a CDN), a bot check,
+  or throttling that persists stops an `-AI` agent, says what the site did and
+  where, and leaves the still-recording browser to you; press ENTER when done.
+- **Generated clients** carry a `PacingHandler`: one request at a time, about a
+  second apart, `Retry-After` honoured, retries only for `GET`/`HEAD` (never
+  `POST`), a clear exception when retries run out, and a block never retried.
+
 The skill's full instructions are in
-[`skills/web-api-discovery/SKILL.md`](skills/web-api-discovery/SKILL.md).
+[`skills/web-api-discovery/SKILL.md`](skills/web-api-discovery/SKILL.md) --
+see **Pacing, throttling, and where the line is** there for the details.
 
 ## Layout
 
