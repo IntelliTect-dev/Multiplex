@@ -128,20 +128,28 @@ in `run.project.ps1` instead.) To change one, change it
 in IntelliSDLC.ai. To pull the latest shared instructions, run
 `./Pull-SDLC.ai.ps1`; it opens a sync pull request.
 
-**Claude Code users -- optional, once per machine:** `.claude/settings.json`
+**Claude Code users -- optional, once per clone:** `.claude/settings.json`
 enables the IntelliSDLC.ai Claude Code plugin, which makes the shared skills
-invocable here as `/intellisdlc:<skill>` (e.g. `/intellisdlc:behavior-first-testing`).
-The committed setting does not install it; from this repository, run:
+invocable here as `/intellisdlc:<skill>` (e.g. `/intellisdlc:behavior-first-testing`)
+and adds the IntelliSDLC.ai global rules at session start. The committed
+setting alone installs nothing (Claude Code may offer to when you first trust
+the folder). To install it yourself, from this repository:
 
 ```powershell
 claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai
 claude plugin install intellisdlc@intellisdlc-ai --scope project
 ```
 
-Update it with `claude plugin marketplace update intellisdlc-ai`, then
-`claude plugin update intellisdlc@intellisdlc-ai`. If you already have the
-IntelliSDLC.ai global install (`Install-GlobalSkills.ps1`) on that machine,
-skip the plugin -- it would load the same skills twice.
+To update it -- `--scope project`, because that is where it is installed:
+
+```powershell
+claude plugin marketplace update intellisdlc-ai
+claude plugin update intellisdlc@intellisdlc-ai --scope project
+```
+
+If you already have the IntelliSDLC.ai global install (`Install-GlobalSkills.ps1`)
+on that machine, do not install or accept the plugin -- it would load the same
+skills and rules twice.
 
 ## Support
 
