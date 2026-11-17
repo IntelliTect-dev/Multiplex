@@ -244,11 +244,16 @@ public sealed class PacingHandler : DelegatingHandler
                 if (IsBlocked(response))
                 {
                     var status = response.StatusCode;
+                    var preview = await PreviewAsync(response, cancellationToken).ConfigureAwait(false);
                     response.Dispose();
+                    // "Most likely" on purpose: a CDN-fronted site serves its OWN
+                    // HTML error pages through the same edge, so the preview is
+                    // what tells bot protection from, say, an expired session.
                     throw new {{ProjectName}}BlockedException(
-                        $"{request.Method} {request.RequestUri} was refused by the site's edge ({(int)status}, " +
-                        "bot protection or a firewall). It is not retried and nothing works around it: " +
-                        "re-authenticate in a browser, slow down, or stop.",
+                        $"{request.Method} {request.RequestUri} was refused with an HTML {(int)status} from the " +
+                        "site's CDN -- most likely bot protection or a firewall. It is not retried and nothing " +
+                        "works around it: re-authenticate in a browser, slow down, or stop. " +
+                        $"The response began: {preview}",
                         status);
                 }
                 if (!IsThrottled(response))
@@ -358,6 +363,21 @@ public sealed class PacingHandler : DelegatingHandler
             return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
         }
         return null;
+    }
+
+    /// <summary>The first 200 characters of a refusal's body, whitespace collapsed.</summary>
+    private static async Task<string> PreviewAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+            return text.Length > 200 ? text[..200] + "..." : text;
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException)
+        {
+            return "(the body could not be read)";
+        }
     }
 
     private static bool IsThrottled(HttpResponseMessage response)

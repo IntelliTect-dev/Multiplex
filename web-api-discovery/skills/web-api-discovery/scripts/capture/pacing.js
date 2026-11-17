@@ -490,7 +490,9 @@ const WHY = {
  *             hand-over -- it is already their browser
  *
  * `opts.tool` names the speaker (default capture-har); `opts.finish` says how
- * the person ends the recording once they have taken over.
+ * the person ends the recording once they have taken over; `opts.noHuman`,
+ * when there is nobody to hand the browser to (a headless run), replaces the
+ * hand-over with what happens instead.
  *
  * @returns {Array<[level, text]>} in the recorder's renderLines shape
  */
@@ -524,6 +526,9 @@ function throttleLines(decision, who = 'you', opts = {}) {
         agent: 'The agent has been stopped',
         'agent-unstarted': 'The agent was not started, and will not be'
     }[who] || 'Automated browsing has stopped';
+    if (opts.noHuman) {
+        return [['warn', `${head}\n  ${stopped}. ${evade}\n  ${opts.noHuman} What was recorded is kept.`]];
+    }
     return [['warn', `${head}\n` +
         `  ${stopped}. ${evade}\n` +
         '  THE BROWSER IS YOURS: it is still open, and still recording. Take over there --\n' +

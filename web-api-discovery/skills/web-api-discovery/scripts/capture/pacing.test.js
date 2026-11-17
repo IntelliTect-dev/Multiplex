@@ -360,6 +360,13 @@ test('L1: the hand-over hands the browser to the human, and evades nothing', () 
     const unstarted = pacing.throttleLines(decision, 'agent-unstarted').map(([, t]) => t).join('\n');
     assert.match(unstarted, /The agent was not started, and will not be/);
     assert.doesNotMatch(unstarted, /has been stopped/);
+    // Headless: nobody to hand the browser to, so the message must not offer it.
+    const headless = pacing.throttleLines(decision, 'script',
+        { tool: 'capture-cdp', noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' })
+        .map(([, t]) => t).join('\n');
+    assert.match(headless, /^capture-cdp: /);
+    assert.match(headless, /Nobody can take over a headless browser/);
+    assert.doesNotMatch(headless, /THE BROWSER IS YOURS/);
 });
 
 // ---------------------------------------------------------------------------
