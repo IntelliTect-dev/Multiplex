@@ -48,6 +48,7 @@ Describe "tests-templates directory exists" {
             "FixtureLoader.cs.tmpl",
             "ClientTests.cs.tmpl",
             "MockHandler.cs.tmpl",
+            "PacingHandlerTests.cs.tmpl",
             "pester/Mcp.Tests.ps1.tmpl",
             "pester/run-pester.ps1.tmpl"
         ) | Sort-Object
@@ -110,6 +111,35 @@ Describe "Codegen integration: emits test project" {
     It "emits FixtureLoader.cs and MockHandler.cs" {
         Test-Path (Join-Path $script:TestProjDir "FixtureLoader.cs") | Should -BeTrue
         Test-Path (Join-Path $script:TestProjDir "MockHandler.cs") | Should -BeTrue
+    }
+    It "emits PacingHandlerTests.cs, so every wrapper tests its own pacing and throttling" {
+        $file = Join-Path $script:TestProjDir "PacingHandlerTests.cs"
+        Test-Path $file | Should -BeTrue
+        $body = Get-Content $file -Raw
+        $body | Should -Not -Match '\{\{' -Because 'every token is substituted'
+        # The behaviours the handler promises, each pinned by its own fact.
+        foreach ($fact in @(
+            'Requests_are_spaced_by_the_minimum_plus_bounded_jitter',
+            'Only_one_request_is_in_flight_by_default',
+            'A_429_waits_out_Retry_After_in_seconds_then_retries',
+            'A_503_honours_Retry_After_as_an_HTTP_date',
+            'Without_Retry_After_it_backs_off_exponentially_with_jitter',
+            'Retries_that_run_out_surface_a_throttled_exception',
+            'A_Retry_After_longer_than_the_cap_is_surfaced_not_waited_or_cut_short',
+            'POST_is_never_retried_even_when_listed',
+            'PUT_and_DELETE_are_retried_only_when_configured',
+            'A_block_from_the_edge_is_never_retried',
+            'PacingOptions_None_adds_no_wait',
+            'The_client_sends_through_the_pacing_handler')) {
+            $body | Should -Match ([regex]::Escape($fact)) -Because "PacingHandlerTests must keep the fact $fact"
+        }
+        $body | Should -Match 'ExampleExThrottledException' -Because 'the exception carries the project name'
+        $body | Should -Match 'new ExampleExClient\(creds, Unspaced, site\)' -Because 'one fact proves the client is wired through the handler'
+    }
+    It "keeps the pacing facts out of the one-[Fact]-per-endpoint ClientTests.* files" {
+        Get-ChildItem $script:TestProjDir -Filter "ClientTests.*.cs" | ForEach-Object {
+            Get-Content $_.FullName -Raw | Should -Not -Match 'PacingHandler'
+        }
     }
     It "emits at least one ClientTests.<Group>.cs" {
         $files = Get-ChildItem $script:TestProjDir -Filter "ClientTests.*.cs"

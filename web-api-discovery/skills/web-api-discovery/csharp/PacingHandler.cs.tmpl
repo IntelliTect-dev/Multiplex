@@ -1,0 +1,403 @@
+using System.Net;
+using System.Net.Http.Headers;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace {{Namespace}};
+
+// Polite pacing and throttle handling for the {{ProjectName}} client.
+//
+// The boundary this file keeps: it paces requests the way a considerate client
+// should, and it honours what the site says about throttling (429, 503,
+// Retry-After). It does NOT try to look like a browser or get past bot
+// protection: a block or a challenge is surfaced as an exception and is never
+// retried. When a site says no, the caller -- a person -- decides what next.
+
+/// <summary>
+/// How politely the {{ProjectName}} client talks to its site. The defaults are
+/// deliberately conservative: one request at a time, about a second apart,
+/// retries only for GET and HEAD, and a site's Retry-After always honoured.
+/// </summary>
+public sealed class PacingOptions
+{
+    /// <summary>The methods RFC 9110 defines as idempotent -- the only ones ever retried.</summary>
+    public static readonly IReadOnlySet<HttpMethod> IdempotentMethods = new HashSet<HttpMethod>
+    {
+        HttpMethod.Get, HttpMethod.Head, HttpMethod.Options, HttpMethod.Trace, HttpMethod.Put, HttpMethod.Delete,
+    };
+
+    /// <summary>Least time between the starts of two requests.</summary>
+    public TimeSpan MinimumSpacing { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>A random extra of up to this much is added to each spacing, so requests do not tick like a metronome.</summary>
+    public TimeSpan SpacingJitter { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>Requests in flight at once, per client. 1 by default.</summary>
+    public int MaxConcurrentRequests { get; init; } = 1;
+
+    /// <summary>Attempts per request, the first included. Applies only to <see cref="RetryMethods"/>.</summary>
+    public int MaxAttempts { get; init; } = 3;
+
+    /// <summary>
+    /// The longest Retry-After waited out automatically. A site that asks for
+    /// longer gets an exception carrying its value instead: retrying sooner than
+    /// it asked would be ignoring it.
+    /// </summary>
+    public TimeSpan MaxRetryAfter { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>First backoff step when a 429/503 names no Retry-After; doubles per attempt.</summary>
+    public TimeSpan BackoffBase { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Largest backoff step.</summary>
+    public TimeSpan BackoffMax { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Time allowed for one attempt to return its response headers. The waits
+    /// above are not counted against it, which is why the client's own
+    /// HttpClient.Timeout is infinite.
+    /// </summary>
+    public TimeSpan AttemptTimeout { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Which methods are retried after a 429/503. GET and HEAD by default. Only
+    /// idempotent methods (<see cref="IdempotentMethods"/>) are ever retried:
+    /// listing POST or PATCH here has no effect, because repeating one can do
+    /// the thing twice.
+    /// </summary>
+    public IReadOnlySet<HttpMethod> RetryMethods { get; init; } = new HashSet<HttpMethod> { HttpMethod.Get, HttpMethod.Head };
+
+    /// <summary>The defaults.</summary>
+    public static PacingOptions Default => new();
+
+    /// <summary>No spacing, no concurrency limit and no retries -- for tests. A site's Retry-After is still honoured.</summary>
+    public static PacingOptions None => new()
+    {
+        MinimumSpacing = TimeSpan.Zero,
+        SpacingJitter = TimeSpan.Zero,
+        MaxConcurrentRequests = int.MaxValue,
+        MaxAttempts = 1,
+    };
+
+    /// <summary>The prefix of the environment variables <see cref="FromEnvironment"/> reads.</summary>
+    public static readonly string EnvironmentPrefix = "{{ProjectName}}".ToUpperInvariant() + "_PACING_";
+
+    /// <summary>
+    /// The defaults, overridden by whichever of these are set (all optional):
+    /// <c>{PREFIX}MIN_SPACING_MS</c>, <c>{PREFIX}JITTER_MS</c>,
+    /// <c>{PREFIX}MAX_CONCURRENCY</c>, <c>{PREFIX}MAX_ATTEMPTS</c>,
+    /// <c>{PREFIX}MAX_RETRY_AFTER_SECONDS</c>, <c>{PREFIX}RETRY_METHODS</c>
+    /// (comma-separated, e.g. <c>GET,HEAD,PUT</c>), where PREFIX is
+    /// <see cref="EnvironmentPrefix"/>. A value that does not parse is an error,
+    /// not a silent default.
+    /// </summary>
+    public static PacingOptions FromEnvironment(Func<string, string?>? read = null)
+    {
+        read ??= Environment.GetEnvironmentVariable;
+        var d = Default;
+        var options = new PacingOptions
+        {
+            MinimumSpacing = Milliseconds(read, "MIN_SPACING_MS") ?? d.MinimumSpacing,
+            SpacingJitter = Milliseconds(read, "JITTER_MS") ?? d.SpacingJitter,
+            MaxConcurrentRequests = Integer(read, "MAX_CONCURRENCY") ?? d.MaxConcurrentRequests,
+            MaxAttempts = Integer(read, "MAX_ATTEMPTS") ?? d.MaxAttempts,
+            MaxRetryAfter = Integer(read, "MAX_RETRY_AFTER_SECONDS") is { } s ? TimeSpan.FromSeconds(s) : d.MaxRetryAfter,
+            RetryMethods = Methods(read, "RETRY_METHODS") ?? d.RetryMethods,
+        };
+        options.Validate();
+        return options;
+    }
+
+    /// <summary>Throws <see cref="ArgumentOutOfRangeException"/> for a value that cannot work.</summary>
+    public void Validate()
+    {
+        if (MinimumSpacing < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(MinimumSpacing), "must not be negative");
+        if (SpacingJitter < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(SpacingJitter), "must not be negative");
+        if (MaxConcurrentRequests < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrentRequests), "must be at least 1");
+        if (MaxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(MaxAttempts), "must be at least 1");
+        if (MaxRetryAfter < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(MaxRetryAfter), "must not be negative");
+        if (BackoffBase < TimeSpan.Zero || BackoffMax < BackoffBase)
+        {
+            throw new ArgumentOutOfRangeException(nameof(BackoffMax), "backoff must be non-negative and BackoffMax at least BackoffBase");
+        }
+        if (AttemptTimeout <= TimeSpan.Zero && AttemptTimeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(AttemptTimeout), "must be positive or Timeout.InfiniteTimeSpan");
+        }
+        ArgumentNullException.ThrowIfNull(RetryMethods);
+    }
+
+    private static string? Raw(Func<string, string?> read, string name)
+    {
+        var value = read(EnvironmentPrefix + name);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static int? Integer(Func<string, string?> read, string name)
+    {
+        var raw = Raw(read, name);
+        if (raw is null) return null;
+        return int.TryParse(raw, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)
+            ? n
+            : throw new FormatException($"{EnvironmentPrefix}{name} must be a whole number, not '{raw}'.");
+    }
+
+    private static TimeSpan? Milliseconds(Func<string, string?> read, string name)
+        => Integer(read, name) is { } ms ? TimeSpan.FromMilliseconds(ms) : null;
+
+    private static IReadOnlySet<HttpMethod>? Methods(Func<string, string?> read, string name)
+    {
+        var raw = Raw(read, name);
+        if (raw is null) return null;
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(m => new HttpMethod(m.ToUpperInvariant()))
+            .ToHashSet();
+    }
+}
+
+/// <summary>
+/// The site throttled a request (429, or 503) and it was not retried further:
+/// the method is not retried, the attempts ran out, or the site asked for a
+/// longer wait than <see cref="PacingOptions.MaxRetryAfter"/>.
+/// </summary>
+public sealed class {{ProjectName}}ThrottledException : HttpRequestException
+{
+    public {{ProjectName}}ThrottledException(string message, HttpStatusCode statusCode, TimeSpan? retryAfter, int attempts)
+        : base(message, null, statusCode)
+    {
+        RetryAfter = retryAfter;
+        Attempts = attempts;
+    }
+
+    /// <summary>What the site asked for, when it said; otherwise null.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    /// <summary>How many attempts were made.</summary>
+    public int Attempts { get; }
+}
+
+/// <summary>
+/// The site's edge refused the request: an HTML 403 from a CDN, or a bot
+/// challenge. Never retried, and nothing here tries to get past it -- sign in
+/// again in a real browser (the authenticator), slow down, or stop.
+/// </summary>
+public sealed class {{ProjectName}}BlockedException : HttpRequestException
+{
+    public {{ProjectName}}BlockedException(string message, HttpStatusCode statusCode)
+        : base(message, null, statusCode)
+    {
+    }
+}
+
+/// <summary>
+/// A <see cref="DelegatingHandler"/> that spaces requests out, keeps at most
+/// <see cref="PacingOptions.MaxConcurrentRequests"/> in flight, honours 429 and
+/// 503 (Retry-After as seconds or an HTTP-date, otherwise exponential backoff
+/// with jitter), retries only idempotent methods, and never retries a block.
+/// </summary>
+public sealed class PacingHandler : DelegatingHandler
+{
+    private readonly PacingOptions _options;
+    private readonly ILogger _log;
+    private readonly TimeProvider _time;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly Func<double> _random;
+    private readonly SemaphoreSlim _gate;
+    private readonly object _slotLock = new();
+    private DateTimeOffset _nextSlot = DateTimeOffset.MinValue;
+    private DateTimeOffset _siteDeferral = DateTimeOffset.MinValue;
+
+    public PacingHandler(PacingOptions? options = null, ILogger? log = null)
+        : this(options, log, time: null, delay: null, random: null)
+    {
+    }
+
+    /// <summary>The seam tests use: a clock, a delay and a random source that need not wait.</summary>
+    public PacingHandler(
+        PacingOptions? options,
+        ILogger? log,
+        TimeProvider? time,
+        Func<TimeSpan, CancellationToken, Task>? delay,
+        Func<double>? random)
+    {
+        _options = options ?? PacingOptions.Default;
+        _options.Validate();
+        _log = log ?? NullLogger.Instance;
+        _time = time ?? TimeProvider.System;
+        _delay = delay ?? ((wait, ct) => Task.Delay(wait, _time, ct));
+        _random = random ?? Random.Shared.NextDouble;
+        _gate = new SemaphoreSlim(_options.MaxConcurrentRequests);
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var retryable = PacingOptions.IdempotentMethods.Contains(request.Method) && _options.RetryMethods.Contains(request.Method);
+        var maxAttempts = retryable ? _options.MaxAttempts : 1;
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                await WaitForSlotAsync(request, cancellationToken).ConfigureAwait(false);
+                var response = await SendAttemptAsync(request, cancellationToken).ConfigureAwait(false);
+
+                if (IsBlocked(response))
+                {
+                    var status = response.StatusCode;
+                    response.Dispose();
+                    throw new {{ProjectName}}BlockedException(
+                        $"{request.Method} {request.RequestUri} was refused by the site's edge ({(int)status}, " +
+                        "bot protection or a firewall). It is not retried and nothing works around it: " +
+                        "re-authenticate in a browser, slow down, or stop.",
+                        status);
+                }
+                if (!IsThrottled(response))
+                {
+                    return response;
+                }
+
+                var throttledStatus = response.StatusCode;
+                var retryAfter = RetryAfterOf(response);
+                response.Dispose();
+
+                if (retryAfter is { } asked && asked > _options.MaxRetryAfter)
+                {
+                    Defer(asked);
+                    throw Throttled(request, throttledStatus, retryAfter, attempt,
+                        $"the site asked to wait {asked.TotalSeconds:0.#} s, longer than MaxRetryAfter " +
+                        $"({_options.MaxRetryAfter.TotalSeconds:0.#} s)");
+                }
+                var wait = retryAfter ?? Backoff(attempt);
+                Defer(wait);
+                if (attempt >= maxAttempts)
+                {
+                    throw Throttled(request, throttledStatus, retryAfter, attempt, retryable
+                        ? $"gave up after {attempt} attempt(s)"
+                        : $"{request.Method} is not retried");
+                }
+                _log.LogWarning(
+                    "{Method} {Url} was throttled ({Status}); waiting {Wait} before attempt {Attempt} of {Max}",
+                    request.Method, request.RequestUri, (int)throttledStatus, wait, attempt + 1, maxAttempts);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task WaitForSlotAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        TimeSpan wait;
+        lock (_slotLock)
+        {
+            var now = _time.GetUtcNow();
+            var deferral = _siteDeferral - now;
+            if (deferral > _options.MaxRetryAfter)
+            {
+                throw Throttled(request, HttpStatusCode.TooManyRequests, deferral, 0,
+                    $"the site asked for a pause until {_siteDeferral:u}, longer than MaxRetryAfter; not sent");
+            }
+            var start = Max(now, Max(_nextSlot, _siteDeferral));
+            var jitter = TimeSpan.FromTicks((long)(_options.SpacingJitter.Ticks * _random()));
+            _nextSlot = start + _options.MinimumSpacing + jitter;
+            wait = start - now;
+        }
+        if (wait > TimeSpan.Zero)
+        {
+            await _delay(wait, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendAttemptAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        if (_options.AttemptTimeout == Timeout.InfiniteTimeSpan)
+        {
+            return await base.SendAsync(request, ct).ConfigureAwait(false);
+        }
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attempt.CancelAfter(_options.AttemptTimeout);
+        try
+        {
+            return await base.SendAsync(request, attempt.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"{request.Method} {request.RequestUri} did not respond within {_options.AttemptTimeout.TotalSeconds:0.#} s.", e);
+        }
+    }
+
+    /// <summary>Later requests wait this out too: a site's Retry-After is about the client, not one request.</summary>
+    private void Defer(TimeSpan wait)
+    {
+        lock (_slotLock)
+        {
+            var until = _time.GetUtcNow() + wait;
+            if (until > _siteDeferral) _siteDeferral = until;
+        }
+    }
+
+    private TimeSpan Backoff(int attempt)
+    {
+        // Exponential, with "equal" jitter: half the step plus a random part of
+        // the other half -- never zero, never in lockstep with another client.
+        var step = TimeSpan.FromTicks(Math.Min(
+            _options.BackoffMax.Ticks,
+            _options.BackoffBase.Ticks * (1L << Math.Min(attempt - 1, 30))));
+        return step / 2 + TimeSpan.FromTicks((long)(step.Ticks / 2 * _random()));
+    }
+
+    private TimeSpan? RetryAfterOf(HttpResponseMessage response)
+    {
+        var header = response.Headers.RetryAfter;
+        if (header?.Delta is { } delta) return delta < TimeSpan.Zero ? TimeSpan.Zero : delta;
+        if (header?.Date is { } date)
+        {
+            var wait = date - _time.GetUtcNow();
+            return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+        }
+        return null;
+    }
+
+    private static bool IsThrottled(HttpResponseMessage response)
+        => response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable;
+
+    private static readonly string[] s_edgeHeaders =
+    {
+        "cf-ray", "x-iinfo", "x-cdn", "x-datadome", "x-akamai-transformed", "akamai-grn", "x-amz-cf-id", "x-sucuri-id",
+    };
+
+    private static bool IsBlocked(HttpResponseMessage response)
+    {
+        if (response.Headers.TryGetValues("cf-mitigated", out var mitigated) &&
+            mitigated.Any(v => v.Contains("challenge", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+        if (response.StatusCode != HttpStatusCode.Forbidden) return false;
+        var mediaType = response.Content?.Headers.ContentType?.MediaType ?? string.Empty;
+        if (!mediaType.Contains("html", StringComparison.OrdinalIgnoreCase)) return false;
+        var server = string.Join(" ", response.Headers.Server.Select(p => p.ToString()));
+        return s_edgeHeaders.Any(h => response.Headers.Contains(h)) ||
+            System.Text.RegularExpressions.Regex.IsMatch(server,
+                "cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static {{ProjectName}}ThrottledException Throttled(
+        HttpRequestMessage request, HttpStatusCode status, TimeSpan? retryAfter, int attempts, string why)
+        => new(
+            $"{request.Method} {request.RequestUri} was throttled by the site ({(int)status}); {why}." +
+            (retryAfter is { } ra ? $" It asked to wait {ra.TotalSeconds:0.#} s." : string.Empty),
+            status,
+            retryAfter,
+            attempts);
+
+    private static DateTimeOffset Max(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _gate.Dispose();
+        base.Dispose(disposing);
+    }
+}

@@ -906,6 +906,8 @@ function emitReadme(opts, patterns, hasGraphQL) {
     lines.push('');
     lines.push('When re-capturing HAR fixtures, the recommended throttle is **1 request/second** with a descriptive `User-Agent`. Respect `robots.txt`. The bundled `capture-cdp.js` defaults to a ~1000 ms inter-request delay.');
     lines.push('');
+    lines.push(pacingReadmeSection(opts));
+    lines.push('');
     lines.push('## Recipes');
     lines.push('');
     const recipes = buildRecipes(opts, patterns, hasGraphQL);
@@ -925,6 +927,40 @@ function emitReadme(opts, patterns, hasGraphQL) {
         lines.push(antiBotWarningSection(opts.antiBotCookies));
     }
     return lines.join('\n');
+}
+
+/**
+ * The "Pacing and throttling" README section: what the generated client's
+ * PacingHandler (csharp/PacingHandler.cs.tmpl) does, and how to tune it. The
+ * environment-variable prefix is computed the way PacingOptions computes it --
+ * the project name, upper-cased -- so the README names variables that exist.
+ */
+function pacingReadmeSection(opts) {
+    const prefix = String(opts.projectName).toUpperCase() + '_PACING_';
+    return [
+        '### Pacing and throttling in this client',
+        '',
+        'Every request goes through `PacingHandler`: **one request in flight**, at least **1 s** between',
+        'request starts plus up to 250 ms of jitter, and a site\'s throttling honoured -- a `429` or `503`',
+        'waits out `Retry-After` (seconds or an HTTP-date; up to 60 s), or backs off exponentially with',
+        'jitter when the site names no wait. Only idempotent methods are retried, and by default only',
+        '`GET` and `HEAD`; `POST` and `PATCH` are never retried. When retries run out, or the site asks for',
+        'a longer wait than 60 s, the call fails with `' + opts.projectName + 'ThrottledException` carrying what the site asked for.',
+        'A block -- an HTML `403` from the site\'s CDN, or a bot challenge -- is never retried and nothing',
+        'works around it: it fails with `' + opts.projectName + 'BlockedException`.',
+        '',
+        'Tune it with environment variables (read by `PacingOptions.FromEnvironment()`, which the default',
+        'constructor and the MCP server use), or pass a `PacingOptions` to the client\'s constructor:',
+        '',
+        '| Variable | Default |',
+        '|---|---|',
+        '| `' + prefix + 'MIN_SPACING_MS` | `1000` |',
+        '| `' + prefix + 'JITTER_MS` | `250` |',
+        '| `' + prefix + 'MAX_CONCURRENCY` | `1` |',
+        '| `' + prefix + 'MAX_ATTEMPTS` | `3` (the first included) |',
+        '| `' + prefix + 'MAX_RETRY_AFTER_SECONDS` | `60` |',
+        '| `' + prefix + 'RETRY_METHODS` | `GET,HEAD` (idempotent methods only) |',
+    ].join('\n');
 }
 
 /**

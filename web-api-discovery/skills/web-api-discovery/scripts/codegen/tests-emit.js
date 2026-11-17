@@ -8,6 +8,7 @@
 //       <TestProjectName>.csproj
 //       FixtureLoader.cs
 //       MockHandler.cs
+//       PacingHandlerTests.cs     (the client's pacing + throttling handler)
 //       ClientTests.<Group>.cs    (one per resource group; [Fact] per endpoint)
 //       pester/
 //         Mcp.Tests.ps1
@@ -129,6 +130,12 @@ function emitTestScaffold(args) {
     fs.writeFileSync(path.join(testProjDir, 'FixtureLoader.cs'), substitute(flTmpl, baseTokens));
     const mhTmpl = fs.readFileSync(path.join(tmplDir, 'MockHandler.cs.tmpl'), 'utf8');
     fs.writeFileSync(path.join(testProjDir, 'MockHandler.cs'), substitute(mhTmpl, baseTokens));
+
+    // PacingHandlerTests.cs -- the generated client's pacing + throttling handler,
+    // tested in every wrapper's own build. Deliberately NOT named ClientTests.*:
+    // that glob is one [Fact] per endpoint, and these are not endpoints.
+    const phTmpl = fs.readFileSync(path.join(tmplDir, 'PacingHandlerTests.cs.tmpl'), 'utf8');
+    fs.writeFileSync(path.join(testProjDir, 'PacingHandlerTests.cs'), substitute(phTmpl, baseTokens));
 
     // ClientTests.<Group>.cs (per group)
     const clientName = projectName + 'Client';
