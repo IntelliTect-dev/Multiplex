@@ -19,6 +19,10 @@
 //       non-JSON post is refused; the two buttons call back
 //   E1  end to end, against a real browser: a frame of a real page reaches the
 //       phone view, and a tap and typing from it land in that page
+//   E2  the phone page's own script, in a real browser emulating a phone
+//       (touch, mobile viewport): live frames, a touch tap on the picture,
+//       typing through its text box, a press-drag-release that moves a
+//       slider, and "I'm done, continue"
 
 'use strict';
 
@@ -400,6 +404,75 @@ test('E1: a real page reaches the phone view, and a tap and typing from it land 
         } finally {
             stream.close();
         }
+    } finally {
+        if (view) await view.close();
+        await browser.close();
+    }
+});
+
+test('E2: the phone page itself, in a real browser: it shows the live page, and its taps, typing and button work', async () => {
+    // E1 plays the phone over HTTP. This runs the PAGE'S OWN SCRIPT -- the
+    // EventSource, the pointer handling, the text box, "I'm done, continue" --
+    // in a real browser at a phone's size, against a real mirrored page.
+    const found = browserBlocker();
+    if (found.why) {
+        if (integrationRequired(process.env.CI)) throw new Error(`E2 cannot run: ${found.why} -- in CI that is a failure`);
+        skipped.push(`E2 (${found.why})`);
+        return;
+    }
+    const browser = await found.playwright.chromium.launch({ executablePath: found.chrome, headless: true });
+    let view = null;
+    try {
+        const site = await browser.newPage({ viewport: { width: 400, height: 300 } });
+        await site.setContent('<html><body style="margin:0">' +
+            '<button id="b" style="position:absolute;left:0;top:0;width:200px;height:100px" ' +
+            'onclick="document.title=\'tapped\'">tap me</button>' +
+            '<input id="i" style="position:absolute;left:200px;top:150px;width:200px;height:50px">' +
+            '<input id="r" type="range" min="0" max="100" value="0" ' +
+            'style="position:absolute;left:10px;top:240px;width:380px;height:40px;margin:0">' +
+            '</body></html>');
+        let done = 0;
+        view = await mirror.startMirror({ host: '127.0.0.1', cdp: await site.context().newCDPSession(site),
+            status: { state: 'handed-over', text: 'Handed over to you: a check.' }, onDone: () => { done++; } });
+        // The phone: its own context (its own cookies), at a phone's width.
+        const phoneContext = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
+        const phone = await phoneContext.newPage();
+        await phone.goto(view.url);
+        await phone.waitForFunction(() => document.getElementById('status').textContent.includes('Handed over to you'),
+            null, { timeout: 15000 });
+        await phone.waitForFunction(() => (document.getElementById('screen').src || '').startsWith('data:image/jpeg'),
+            null, { timeout: 15000 });
+        const box = await phone.locator('#screen').boundingBox();
+        // A TOUCH tap (a touch screen, a mobile viewport) on the picture of the
+        // button lands on the button.
+        await phone.touchscreen.tap(box.x + box.width * 0.25, box.y + box.height / 6);
+        await site.waitForFunction(() => document.title === 'tapped', null, { timeout: 10000 });
+        // Tap the picture of the field, type in the phone's text box, Send.
+        await phone.touchscreen.tap(box.x + box.width * 0.75, box.y + box.height * (175 / 300));
+        await phone.fill('#txt', 'from the phone page');
+        await phone.click('#send');
+        await site.waitForFunction(() => document.getElementById('i').value === 'from the phone page', null,
+            { timeout: 10000 });
+        // PRESS & DRAG mode: a press, a drag and a release -- what a slider
+        // check needs -- move the page's slider from one end to the other.
+        await phone.click('#mode');
+        assert.strictEqual(await phone.textContent('#mode'), 'Press & drag');
+        const y = box.y + box.height * (260 / 300);
+        await phone.mouse.move(box.x + box.width * (14 / 400), y);
+        await phone.mouse.down();
+        for (let i = 1; i <= 8; i++) {
+            await phone.mouse.move(box.x + box.width * ((14 + i * 47) / 400), y);
+            await new Promise((r) => setTimeout(r, 60));
+        }
+        await phone.mouse.up();
+        await site.waitForFunction(() => Number(document.getElementById('r').value) > 80, null, { timeout: 10000 });
+        await phone.click('#done');
+        const deadline = Date.now() + 10000;
+        while (!done && Date.now() < deadline) await settle();
+        assert.strictEqual(done, 1, '"I\'m done, continue" reached the recorder');
+        await view.close('Handed back.');
+        await phone.waitForFunction(() => !document.getElementById('over').hidden, null, { timeout: 10000 });
+        assert.match(await phone.textContent('#over-msg'), /Handed back/);
     } finally {
         if (view) await view.close();
         await browser.close();
