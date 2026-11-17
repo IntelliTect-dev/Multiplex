@@ -128,13 +128,22 @@ metadata and the 401 challenge).
 
 **Resource server**
 
-- `POST /tripit/mcp` without a valid token → `401` with
-  `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/tripit/mcp"`.
-  This must be a real HTTP 401 (middleware ahead of the MCP endpoint), because only an HTTP
-  401 makes Claude show its inline **Connect** card; a JSON-RPC error does not.
-- Protected resource metadata: `resource` = the exact public MCP URL
-  (`<base>/tripit/mcp`), `authorization_servers` = `[<base>]` (Claude uses only the first),
-  `scopes_supported` = `["tripit"]`, `bearer_methods_supported` = `["header"]`.
+- **Every** request to `/tripit/mcp` without a valid token, `initialize` included, gets
+  `401` with
+  `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/tripit/mcp", scope="tripit"`.
+  Whole-server auth is the one shape both clients handle at connect time: Claude starts
+  sign-in only on a transport-level HTTP 401 (a JSON-RPC error or `isError` result shows no
+  Connect card), while ChatGPT's per-tool linking needs a different shape
+  (`securitySchemes` + `_meta["mcp/www_authenticate"]`). The 401 comes from middleware ahead
+  of the MCP endpoint.
+- Protected resource metadata, served at **both** the path-suffixed
+  `/.well-known/oauth-protected-resource/tripit/mcp` (Claude probes it first; the SDK default)
+  and the root `/.well-known/oauth-protected-resource` (the only one ChatGPT documents; it
+  describes the single authenticated server, or lists the first when there are several):
+  `resource` = the exact public MCP URL (`<base>/tripit/mcp`, one canonical spelling, no
+  trailing slash), `authorization_servers` = `[<base>]` (Claude uses only the first; ChatGPT
+  compares it to `issuer` byte for byte), `scopes_supported` = `["tripit"]` (ChatGPT requests
+  all advertised scopes, so keep it minimal), `bearer_methods_supported` = `["header"]`.
 - Token validation: opaque token, looked up by SHA-256 hash; must be unexpired, unrevoked,
   and its audience must equal this endpoint's resource URL. The validated principal carries
   the TripIt account id used to pick the session.
@@ -149,10 +158,17 @@ metadata and the 401 challenge).
   `code_challenge_methods_supported: ["S256"]` (clients refuse to proceed without it);
   `token_endpoint_auth_methods_supported: ["none"]`;
   `client_id_metadata_document_supported: true`.
-- Client registration: **dynamic client registration** (RFC 7591; what Claude, ChatGPT and
-  `mcp-remote` use today) **and client ID metadata documents** (a URL as `client_id`; the
-  2026-07-28 MCP revision prefers it and deprecates DCR). Redirect URIs must be HTTPS or
-  loopback. Registrations are rate-limited and expire if never used.
+- Client registration: **dynamic client registration** (RFC 7591; what Claude and
+  `mcp-remote` use today) **and client ID metadata documents** (CIMD: an HTTPS URL as
+  `client_id`; ChatGPT prefers it with `https://chatgpt.com/oauth/client.json`, and the
+  2026-07-28 MCP revision deprecates DCR). CIMD documents are fetched with a short timeout,
+  size cap and cache, and their `redirect_uris` are what the request is checked against.
+  Redirect URIs must be HTTPS or loopback. Registrations are rate-limited and **never expire
+  while in use** (ChatGPT reuses its one registration; an expired client strands the user on
+  `invalid_client`).
+- Issuer identification (RFC 9207): `authorization_response_iss_parameter_supported: true`,
+  and every authorization response, success or error, carries `iss` equal to the issuer.
+  This also gives ChatGPT its stable redirect URI.
 - `/oauth/authorize`: requires `response_type=code`, a registered `redirect_uri` (exact
   match), PKCE `S256`, `state`, and the RFC 8707 `resource` parameter naming a known MCP
   endpoint. It then runs the connect flow (5.3). On success it redirects with a single-use
@@ -162,8 +178,11 @@ metadata and the 401 challenge).
   tokens 30 days, but **never longer than the TripIt session they front**: when the TripIt
   session is gone, refresh returns `invalid_grant` so the client must reconnect.
 - Known redirect URIs to expect: `https://claude.ai/api/mcp/auth_callback` (Claude web,
-  mobile and Desktop connectors), ChatGPT's connector callback (see 7.3), and loopback ports
-  (Claude Code, `mcp-remote`, MCP Inspector).
+  mobile and Desktop connectors), `https://chatgpt.com/connector_platform_oauth_redirect`
+  (ChatGPT with issuer identification; `https://chatgpt.com/connector/oauth/{callback_id}`
+  without), and loopback ports (Claude Code, `mcp-remote`, MCP Inspector).
+- Call origins, for any future network allowlist: Anthropic `160.79.104.0/21`; OpenAI
+  publishes its connector ranges at `https://openai.com/chatgpt-connectors.json`.
 - Deadlines that bound the implementation: Claude allows ~10 s for discovery, registration
   and token calls, 30 s for refresh, and caches discovery for ~5 minutes.
 
@@ -279,10 +298,14 @@ the person to get a meaningful second call, and both MCP hosts also prompt on
 
 ### 7.3 ChatGPT
 
-ChatGPT connects to remote MCP servers from OpenAI's cloud through its connector / developer
-mode, using OAuth with dynamic client registration and PKCE; the same `<base>/tripit/mcp`
-URL is used and a connector added on the web is available in the mobile apps. Exact plan
-requirements and callback URL are recorded in section 12 once confirmed.
+ChatGPT (now under "Plugins"): chatgpt.com/plugins → **+** → "Add custom MCP server" → name
+and `<base>/tripit/mcp` → OAuth → create. ChatGPT discovers the server, identifies itself by
+its client ID metadata document (or registers dynamically), and opens the same authorize
+page. ChatGPT asks the person to approve write actions unless a tool carries
+`readOnlyHint`, so every tool declares `readOnlyHint`, `destructiveHint` and
+`openWorldHint` explicitly. Unverified (OpenAI's help center refused automated reads): which
+plans may add servers with write tools (third parties say Business/Enterprise/Edu), and
+whether a server added on the web appears in the mobile apps. See section 12.
 
 ### 7.4 Testing the install without a person
 
@@ -349,8 +372,20 @@ TripIt no longer issues v1 keys, but its docs and live XSDs are the best field r
 
 ## 12. Client specifics (to be confirmed)
 
-ChatGPT: plan availability, callback URL(s), required metadata fields, 401 behaviour —
-filled in from primary sources as they are confirmed.
+| | Claude (web, mobile, Desktop connectors) | ChatGPT (web; mobile unverified) |
+|---|---|---|
+| Reaches localhost | No (Anthropic cloud) | No (OpenAI cloud), or OpenAI's own tunnel client |
+| Client identity | DCR, or CIMD when advertised with `none` auth | CIMD preferred (`https://chatgpt.com/oauth/client.json`), DCR, or static |
+| Redirect URI | `https://claude.ai/api/mcp/auth_callback` | `https://chatgpt.com/connector_platform_oauth_redirect` (with RFC 9207 `iss`) |
+| Resource metadata | path-suffixed first; `resource` must equal the URL entered | root `/.well-known/oauth-protected-resource` or the `WWW-Authenticate` pointer |
+| Sign-in trigger | HTTP 401 with `WWW-Authenticate` (inline Connect card; retries the call) | connect-time OAuth; per-tool needs `securitySchemes` + `_meta["mcp/www_authenticate"]` |
+| Timeouts | ~10 s discovery/registration/token, 30 s refresh, 240 s per tool call | not documented |
+| Write confirmation | prompts on tools per its own policy | prompts unless `readOnlyHint` |
+
+Sources: claude.com/docs/connectors/building (authentication, lazy-authentication,
+testing), modelcontextprotocol.io/specification/2026-07-28, developers.openai.com
+(apps-sdk/build/auth, plugins/build/auth, api/docs/guides/developer-mode), all read
+2026-11-17.
 
 ## 13. Work plan
 
