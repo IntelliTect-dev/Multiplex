@@ -1,7 +1,7 @@
-using Multiplex.Web.Mcp.Tools;
+using Multiplex.Web.Servers.Time;
 using PuppeteerSharp;
 
-namespace Multiplex.Tests;
+namespace Multiplex.Tests.Servers.Time;
 
 /// <summary>Runs <see cref="TimeNowPage"/> against saved, trimmed time.now markup. Needs Chromium; no network.</summary>
 public class TimeNowPageTests(TimeNowPageTests.BrowserFixture fixture) : IClassFixture<TimeNowPageTests.BrowserFixture>
@@ -24,7 +24,7 @@ public class TimeNowPageTests(TimeNowPageTests.BrowserFixture fixture) : IClassF
         public async Task<IPage> OpenAsync(string fixtureName)
         {
             var page = await _browser!.NewPageAsync();
-            await page.SetContentAsync(await File.ReadAllTextAsync(Path.Combine("Fixtures", fixtureName)));
+            await page.SetContentAsync(await File.ReadAllTextAsync(Path.Combine("Servers", "Time", "Fixtures", fixtureName)));
             return page;
         }
 
