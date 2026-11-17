@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace Multiplex.Web.Servers.Time;
+namespace Multiplex.Web.Services.Time;
 
 internal static class UtcOffset
 {
