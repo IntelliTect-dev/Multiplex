@@ -21,6 +21,10 @@ skills/web-api-discovery/
 │   │   ├── capture-store.js         # the ONE walk over a capture store; classifies
 │   │   │                            #   current / legacy / imported / not-recorder-output
 │   │   ├── capture-store.test.js    # zero-dep behavior suite for the walk
+│   │   ├── pacing.js                # human-scale pacing; reads throttling / blocks
+│   │   │                            #   in responses and decides pause or hand-over
+│   │   ├── pacing.test.js           # zero-dep behavior suite for the above
+│   │   ├── sign-in.js               # the recorder signs in (Bitwarden / prompt), paced
 │   │   ├── Invoke-HarCatalogue.ps1  # digest + catalogue; a folder means all of them
 │   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
 │   │   ├── Get-HarCapture.ps1       # list the recordings in the store, as objects
@@ -53,6 +57,7 @@ skills/web-api-discovery/
 │       └── sdlc-integration.js      # optional IntelliSDLC.ai seed
 ├── csharp/              # C# code templates -- token-substituted at scaffold time
 │   ├── Client.cs.tmpl
+│   ├── PacingHandler.cs.tmpl    # pacing + throttling DelegatingHandler (tests/PacingHandlerTests.cs.tmpl)
 │   ├── Authenticator.cs.tmpl
 │   ├── OAuthAuthenticator.cs.tmpl
 │   ├── ISessionStore.cs.tmpl
