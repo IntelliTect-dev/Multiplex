@@ -2360,8 +2360,8 @@ the broken stage.
 
 ### End-to-end smoke test
 
-The executable spec for this skill is `tests/agent-e2e.Tests.ps1` in the
-[web-api-discovery repository](https://github.com/IntelliTect-Samples/web-api-discovery).
+The executable spec for this skill is `web-api-discovery/tests/agent-e2e.Tests.ps1` in the
+[Multiplex repository](https://github.com/IntelliTect-dev/Multiplex).
 It runs `run-agent.js` against the synthetic HAR fixtures
 `tests/fixtures/har/e2e-rest.har` and `tests/fixtures/har/e2e-graphql.har`,
 then asserts the emitted project:

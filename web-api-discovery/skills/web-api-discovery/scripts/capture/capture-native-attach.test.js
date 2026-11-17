@@ -40,7 +40,7 @@
 // to a real browser, so a runner that skips them has proved nothing about the
 // mode they cover -- which is precisely the position three gitleaks-backed tests
 // were in when tests/GitleaksGuard.ps1 was written. CI installs the driver and
-// provides a display (see .github/workflows/ci.yml); if either is missing, these
+// provides a display (see .github/workflows/web-api-discovery.yml at the repository root); if either is missing, these
 // fail there and skip on a laptop, where requiring both would be a poor trade.
 //
 // FALSIFIERS (fail before #73, pass after):
@@ -816,7 +816,7 @@ function blockedOrSkipped(name, blocker) {
             `${name} cannot run: ${blocker}\n  In CI this is a FAILURE and not a skip -- ` +
             'these are the only cases that attach to a real browser, so a run that skips\n  ' +
             'them is a run that proved nothing about the mode they cover. Install the driver ' +
-            'and a browser on the runner (see .github/workflows/ci.yml), or set CI=false.');
+            'and a browser on the runner (see .github/workflows/web-api-discovery.yml at the repository root), or set CI=false.');
     }
     process.stderr.write(`  SKIP ${name} -- ${blocker}\n`);
     skipped.push(`${name} (${blocker.split('\n')[0]})`);

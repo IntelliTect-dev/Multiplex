@@ -16,8 +16,8 @@ Requirements: PowerShell 7, git, Node.js 20+, Playwright
 (`npm install -g playwright`), and Google Chrome.
 
 ```powershell
-git clone https://github.com/IntelliTect-Samples/web-api-discovery C:\Git\web-api-discovery
-C:\Git\web-api-discovery\Install.ps1
+git clone https://github.com/IntelliTect-dev/Multiplex C:\Git\Multiplex
+C:\Git\Multiplex\web-api-discovery\Install.ps1
 ```
 
 The installer links, and never copies, from your clone:
@@ -36,13 +36,13 @@ prerequisites. It is safe to run again.
 (through OneDrive, say) and your clones do not — they sit at `C:\Git` on one
 machine and `D:\Git` on another — so the block names no paths at all. It finds
 the clone at load time from `$env:WEBAPIDISCOVERY_CLONE`, then this machine's
-`clone.path`, then `web-api-discovery` under `Git`, `source\repos`, `repos` or
+`clone.path`, then `web-api-discovery` or `Multiplex/web-api-discovery` under `Git`, `source\repos`, `repos` or
 `src` off your home folder or any fixed drive. A clone in a conventional place
 therefore works even on a machine where you have never run the installer. To
 **update**, pull:
 
 ```powershell
-git -C C:\Git\web-api-discovery pull
+git -C C:\Git\Multiplex pull
 ```
 
 ## Use
@@ -95,6 +95,10 @@ docs/designs/               design notes from the skill's history
 
 ## Development
 
+Run from this folder (`web-api-discovery/` in Multiplex). CI is
+[`.github/workflows/web-api-discovery.yml`](../.github/workflows/web-api-discovery.yml)
+at the repository root, and runs only when this folder or that workflow changes.
+
 ```powershell
 ./.github/ci/Invoke-PesterSuite.ps1 -Path ./tests, ./.github/ci/tests, ./Install.Tests.ps1
 ```
@@ -103,6 +107,13 @@ CI also installs .NET 10 and gitleaks, so the generated-project build and the
 secret-detection tests run there. Locally they skip when those tools are missing.
 
 ## History
+
+This skill moved into [Multiplex](https://github.com/IntelliTect-dev/Multiplex),
+the MCP server whose endpoints it feeds, from
+[IntelliTect-Samples/web-api-discovery](https://github.com/IntelliTect-Samples/web-api-discovery).
+The move carries a condensed history: 13 feature increments, each recording
+the range of source commits it stands for. The full commit-by-commit history
+stays in that repository.
 
 This project was split out of
 [IntelliSDLC.ai](https://github.com/IntelliTect-Samples/IntelliSDLC.ai) with its
