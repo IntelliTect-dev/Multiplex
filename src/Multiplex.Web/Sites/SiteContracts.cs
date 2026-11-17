@@ -40,7 +40,9 @@ public interface IAuthorizationCompleter
 /// <param name="Site">The slug whose endpoint the client asked for (from the <c>resource</c> parameter).</param>
 /// <param name="ClientName">The client's self-declared name, e.g. "Claude" or "ChatGPT"; display only.</param>
 /// <param name="ExpiresAt">When the pending authorization lapses.</param>
-public sealed record PendingAuthorization(string Id, string Site, string ClientName, DateTimeOffset ExpiresAt);
+/// <param name="ReturnsTo">The host (and port) the browser is sent back to with the code, taken from the
+/// validated redirect URI. Shown on the consent page so a client claiming someone else's name is visible.</param>
+public sealed record PendingAuthorization(string Id, string Site, string ClientName, DateTimeOffset ExpiresAt, string? ReturnsTo = null);
 
 /// <summary>Implemented by Auth/. Called when a site session is gone for good (signed out).</summary>
 public interface IGrantRevoker
