@@ -657,7 +657,7 @@ Describe 'Invoke-HarCapture.ps1' {
         }
     }
 
-    It 'exposes exactly the ten documented parameters' {
+    It 'exposes exactly the eleven documented parameters' {
         # Was six, down from eight: -StorageState is auto-discovered and
         # -ValidateOnly stays on capture-har.js where it is the test seam.
         #
@@ -689,6 +689,14 @@ Describe 'Invoke-HarCapture.ps1' {
         # site signed into something sensitive. It only means something with
         # -AI, and is refused without it.
         #
+        # ELEVEN with the pacing and throttling change, at the owner's request
+        # ("configurable, with a flag to set them to 0 for tests"): -Pace says
+        # HOW FAST the recorder acts on a page and an agent is told to -- a range
+        # per kind of action plus a per-minute ceiling, which no existing
+        # parameter can express. `-Pace off` is the test switch the request
+        # names. Forwarded only when typed; the recorder owns the default and
+        # refuses what it cannot read.
+        #
         # This assertion is the gate the "Adding Command-Line Options" rule
         # relies on, so it is DELIBERATELY still an equality over the whole list:
         # the next parameter has to arrive through this test and the argument for
@@ -699,8 +707,24 @@ Describe 'Invoke-HarCapture.ps1' {
             ForEach-Object { $_.Name.VariablePath.UserPath } |
             Sort-Object
         $names | Should -Be @(
-            'AI', 'AITools', 'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Port',
+            'AI', 'AITools', 'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Pace', 'Port',
             'Profile', 'Uri')
+    }
+
+    It 'forwards -Pace to the recorder only when it was typed' {
+        # The recorder owns the default pace and refuses a value it cannot
+        # read, so the front door forwards exactly what was typed -- and nothing
+        # when it was not, which is how the default stays the recorder's.
+        $plain = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture' }).Args
+        $plain | Should -Match 'start --uri' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
+        $plain | Should -Not -Match '--pace'
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; Pace = 'off' }).Args |
+            Should -Match '--pace off'
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; Pace = 'nav=2000-6000,per-minute=6' }).Args |
+            Should -Match '--pace nav=2000-6000,per-minute=6'
     }
 
     It 'forwards -AI to the recorder, and nothing when it is absent' {
