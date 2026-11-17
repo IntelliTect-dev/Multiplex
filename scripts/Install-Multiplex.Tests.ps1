@@ -70,6 +70,20 @@ Describe 'configuration' {
     }
 }
 
+Describe 'allowed accounts' {
+    It 'splits one comma- or semicolon-separated value, as pwsh -File passes it' {
+        ConvertTo-MultiplexAccountList -Account 'tripit-test@example.com,Owner@Example.com' |
+            Should -Be @('owner@example.com', 'tripit-test@example.com')
+        ConvertTo-MultiplexAccountList -Account 'a@example.com; b@example.com' |
+            Should -Be @('a@example.com', 'b@example.com')
+    }
+
+    It 'accepts separate values, trims, lower-cases and removes duplicates and blanks' {
+        ConvertTo-MultiplexAccountList -Account ' B@example.com ', 'a@example.com,', 'b@example.com' |
+            Should -Be @('a@example.com', 'b@example.com')
+    }
+}
+
 Describe 'Claude Desktop bridge' {
     It 'adds an entry while keeping other servers and settings, and backs up the file' {
         $path = Join-Path $TestDrive 'claude_desktop_config.json'
