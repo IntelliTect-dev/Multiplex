@@ -42,7 +42,7 @@ public sealed class PlanPayloadTests
         {
             ["is_purchased"] = true,
             ["number_guests"] = 2,
-            ["StartDateTime"] = new JsonObject { ["date"] = "2027-1-18", ["time"] = "3:00 pm" },
+            ["StartDateTime"] = new JsonObject { ["date"] = "2027-01-18", ["time"] = "3:00 pm" },
             ["EndDateTime"] = new JsonObject { ["date"] = "2027-01-21", ["time"] = "11:00", ["timezone"] = "Atlantic/Reykjavik" },
         });
 
@@ -377,7 +377,7 @@ public sealed class McpWriteToolsTests
     [Fact]
     public void DescribePlanFields_lists_segment_fields_for_rail()
     {
-        var json = new TripItWriteTools(FakeTripIt.Create().Client).DescribePlanFields("rail");
+        var json = new TripItTools(FakeTripIt.Create().Client).DescribePlanFields("rail");
         Assert.Contains("train_number", json, StringComparison.Ordinal);
         Assert.Contains("Traveler", json, StringComparison.Ordinal);
     }
