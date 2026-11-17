@@ -503,3 +503,52 @@ out/
 
 # Local-only
 .claude/settings.local.json
+
+# Ephemeral evidence-capture working directory (see .github/skills/evidence-capture/SKILL.md).
+.evidence/
+
+# Playwright MCP server output directory (per repo conventions).
+.playwright-mcp/
+
+# Git worktrees managed by Cleanup-Worktree.ps1.
+.worktrees/
+
+# Raw HAR captures (see Invoke-HarCapture). A raw capture runs to hundreds of
+# megabytes and carries live session cookies -- only trimmed, scrubbed extracts
+# under docs/har-reference/ are ever committed.
+#
+# The recorder confines raw captures to .har-captures/ by construction: there
+# is no option that moves them, so the directory rule below is the real guard
+# rather than a hope about how the tool is invoked.
+#
+# Since #377 the store holds the SCRUBBED artifacts too -- scrubbed.har,
+# digest.json, catalogue.json and the findings report all default into the
+# run's own stamped session directory. That is why the directory rule matters
+# more than the by-name ones: it is now the single rule that keeps a whole
+# capture, raw and processed, out of `git status`. The recorder refuses to
+# record when git does not report the store as ignored.
+#
+# The by-name rules remain anyway, as defence in depth for a capture copied out
+# of the tree by hand. `raw.har` is listed literally as well as by suffix: the
+# recorder names the file exactly `raw.har`, which `*.raw.har` does NOT match
+# (that pattern needs a `.raw.har` suffix).
+.har-captures/
+raw.har
+*.raw.har
+raw.ndjson
+*.raw.ndjson
+raw.snapshot.har
+raw.snapshot.ndjson
+*.snapshot.har
+*.snapshot.ndjson
+
+# The operator's HAR profile: real account identifiers and the scrub salt.
+.har-profile.json
+
+# Playwright storage state -- a serialized signed-in session. The recorder
+# discovers .har-storage-state.json by walking upward, so that exact name has
+# to be ignored by name as well as by suffix.
+.har-storage-state.json
+*.storage-state.json
+
+testResults.xml
