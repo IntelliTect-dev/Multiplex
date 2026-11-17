@@ -9,7 +9,8 @@ public sealed record OAuthClient(string ClientId, string ClientName, IReadOnlyLi
     public const int MaxNameLength = 100;
 
     /// <summary>True when <paramref name="redirectUri"/> is one of the client's redirect URIs, compared exactly.</summary>
-    public bool AllowsRedirect(string redirectUri) => RedirectUris.Contains(redirectUri, StringComparer.Ordinal);
+    public bool AllowsRedirect(string redirectUri) =>
+        RedirectUris.Any(registered => Clients.RedirectUris.Matches(registered, redirectUri));
 
     internal static string DisplayNameOr(string? name, string fallback)
     {
