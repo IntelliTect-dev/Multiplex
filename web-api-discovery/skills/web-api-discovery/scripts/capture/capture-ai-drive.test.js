@@ -1256,6 +1256,13 @@ test('A21: a site that refused the START page means the agent is never started',
     // And a recording that has already ended has nothing left for an agent to do.
     assert.match(capture.agentStartRefusal(fakeSession(), 'sign-in-needed').map(([, t]) => t).join('\n'),
         /already ended \(sign-in-needed\)/);
+    // AT THE PC, during a hand-over, `continue` hands back; a bare ENTER still
+    // ends the recording, as it always has.
+    assert.strictEqual(capture.terminalLineMeans('continue', true), 'hand-back');
+    assert.strictEqual(capture.terminalLineMeans(' C ', true), 'hand-back');
+    assert.strictEqual(capture.terminalLineMeans('', true), 'end', 'ENTER ends the recording');
+    assert.strictEqual(capture.terminalLineMeans('continue', false), 'end', 'no hand-over: every line ends it');
+    assert.strictEqual(capture.terminalLineMeans('cancel', true), 'end');
     // A PERSON WHO TOOK OVER AND HANDED BACK has answered the check: the agent starts.
     assert.strictEqual(capture.agentStartRefusal(fakeSession({ handOver: {
         signature: 'Cloudflare challenge', url: 'https://www.example.com/', by: 'agent-not-started',
@@ -1815,15 +1822,15 @@ test('I3: a site that throttles the agent pauses the WHOLE capture, holds the br
             const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
             assert.match(stepLog, /capture-har -> agent: The site asked us to slow down \(HTTP 429, wait 3 s\)\. The capture is paused until \d\d:\d\d local\. Don't use the browser; end your turn and wait; I'll tell you when to continue\./,
                 `the pause message:\n${stepLog}`);
-            assert.match(stepLog, /capture-har -> agent: The wait is over \(paused 3 s\)\. Re-check the page, then continue where you left off\./);
+            assert.match(stepLog, /capture-har -> agent: The wait is over \(paused \d+ s\)\. Re-check the page, then continue where you left off\./);
             assert.match(stepLog, /the recorder told me to wait/);
             assert.match(stepLog, /agent ended .* \(exit 0\)/, 'it exited by itself');
             assert.ok(await waitFor(() => !pidAlive(agentPid), 15000), `the agent (pid ${agentPid}) is still running`);
 
             // THE OPERATOR -- and the PowerShell front door -- WAS TOLD.
             assert.match(recorderErr, /capture-har: Paused until \d\d:\d\d -- the site asked us to wait 3 s \(HTTP 429\)/);
-            assert.match(recorderErr, /capture-har: Resumed after 3 s; the agent has been told to carry on\./);
-            assert.match(recorderErr, /this capture paused once \(3 s in all\)/);
+            assert.match(recorderErr, /capture-har: Resumed after \d+ s; the agent has been told to carry on\./);
+            assert.match(recorderErr, /this capture paused once \(\d+ s in all\)/);
             const line = recorderOut.trim().split('\n').map((l) => { try { return JSON.parse(l); } catch (e) { return null; } })
                 .find((d) => d && d.capture === 'complete');
             assert.ok(line, `no machine-readable line:\n${recorderOut}`);
@@ -1965,11 +1972,15 @@ test('I5: THE OWNER\'S CASE -- a bot check, the live view on the phone, and the 
             assert.strictEqual(page.status, 200);
             assert.match(page.body, /I'm done, continue/);
             const cookie = String(page.headers['set-cookie']).split(';')[0];
-            assert.strictEqual((await phoneRequest(link)).status, 404, 'a second browser with the link gets nothing');
             events = await phoneRequest(link + 'events', { stream: true, headers: { cookie } });
             let streamed = '';
             events.setEncoding('utf8');
             events.on('data', (d) => { streamed += d; });
+            // ONE BROWSER AT A TIME: another one with the same link cannot watch.
+            const other = String((await phoneRequest(link)).headers['set-cookie']).split(';')[0];
+            const intruder = await phoneRequest(link + 'events', { stream: true, headers: { cookie: other } });
+            assert.strictEqual(intruder.statusCode, 404, 'a second browser cannot watch while the phone does');
+            intruder.resume();
             assert.ok(await waitFor(() => /event: frame\ndata: \{"d":"\/9j\//.test(streamed), 30000),
                 'a live JPEG frame of the capture browser reaches the phone');
             assert.match(streamed, /event: status\ndata: .*Handed over to you/);

@@ -15,6 +15,7 @@
 //   H3  a request that is not the site's (a tracker) goes straight through
 //   H4  a hand-over or an ending DROPS what is held: aborted, never sent
 //   H5  a predicate that throws holds: when in doubt, the site is not sent it
+//   H6  a hold that cannot be installed is said, not swallowed
 //   P1  a pause ends by itself when its time is up -- the timer resumes it,
 //       releases the hold and the pacer, and records how long it lasted
 //   P2  a longer wait named during a pause extends it, and the timer moves
@@ -156,6 +157,24 @@ test('H5: a predicate that throws holds the request', async () => {
     await hold.release();
     await p;
     assert.deepStrictEqual(log, ['continue https://www.example.com/x']);
+});
+
+test('H6: a hold that cannot be installed is SAID, not swallowed', async () => {
+    const said = [];
+    const hold = createSiteHold({
+        install: async () => { throw new Error('Target page, context or browser has been closed'); },
+        uninstall: async () => {},
+        onError: (e, installing) => said.push([installing, e.message])
+    });
+    await hold.start();
+    await hold.settled();
+    assert.deepStrictEqual(said, [[true, 'Target page, context or browser has been closed']]);
+    assert.strictEqual(hold.failures(), 1);
+    // And the next pause tries again rather than believing it is installed.
+    await hold.release();
+    await hold.start();
+    await hold.settled();
+    assert.strictEqual(said.length, 2, 'a later pause tries to install it again');
 });
 
 // ---------------------------------------------------------------------------
