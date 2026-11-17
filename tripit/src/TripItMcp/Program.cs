@@ -9,17 +9,19 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
-builder.Services.AddSingleton<TripItSession>();
-
 // The session's Akamai bot cookies last ~2 hours. When TripIt rejects the session the
-// client first re-reads ~/.tripit-mcp/session.json, then runs the refresher (by default
+// provider first re-reads ~/.tripit-mcp/session.json, then runs the refresher (by default
 // `node tools/extract-session.js`, found beside/above this assembly; override with
-// TRIPIT_SESSION_REFRESH_COMMAND, or set it to "none" to disable).
+// TRIPIT_SESSION_REFRESH_COMMAND, or set it to "none" to disable), at most once per
+// cool-down. The client retries only when the cookie actually changed.
+builder.Services.AddSingleton<ITripItSessionProvider>(sp =>
+{
+    var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger("TripIt.Session");
+    return new LocalSessionProvider(store: null, CommandSessionRefresher.FromEnvironment(log), log);
+});
 builder.Services.AddSingleton(sp => new TripItClient(
-    sp.GetRequiredService<TripItSession>(),
-    sp.GetRequiredService<ILogger<TripItClient>>(),
-    CommandSessionRefresher.FromEnvironment(
-        sp.GetRequiredService<ILoggerFactory>().CreateLogger("TripIt.SessionRefresh"))));
+    sp.GetRequiredService<ITripItSessionProvider>(),
+    sp.GetRequiredService<ILogger<TripItClient>>()));
 
 var mcp = builder.Services
     .AddMcpServer(o => o.ServerInfo = new() { Name = "tripit", Version = "0.3.0" })
