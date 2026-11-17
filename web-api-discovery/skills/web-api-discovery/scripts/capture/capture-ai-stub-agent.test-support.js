@@ -13,8 +13,9 @@
  *   `child_process.spawn` AND `child_process.spawnSync` -- before capture-har.js
  *   takes its references to them -- so that:
  *
- *     * the one spawn of `claude -p <prompt>` becomes a spawn of THIS FILE with
- *       that same prompt, and
+ *     * the one spawn of `claude -p --input-format stream-json ...` becomes a
+ *       spawn of THIS FILE, with the same piped stdin the prompt and the
+ *       recorder's messages arrive on, and
  *     * the recorder's `claudeOnPath()` probe (`claude --version`, spawned
  *       without a shell) answers YES, because the agent it would run is this
  *       file.
@@ -28,10 +29,15 @@
  *   the existence and the identity of the agent are stubbed together: there is no
  *   state in which this file is the agent and the recorder cannot see it.
  *
- *   RUN AS A COMMAND with the prompt as its only argument, it behaves as the
- *   agent: it reads the prompt the way an agent would, finds the session file
- *   named in it, reads the CDP endpoint out of that file, attaches to the
- *   browser, drives the page, narrates what it did, and exits 0.
+ *   RUN AS A COMMAND, it behaves as the agent, and SPEAKS THE CLI'S STREAM-JSON
+ *   the way `claude -p --input-format stream-json --output-format stream-json
+ *   --replay-user-messages` does (measured, see agent-stream.js): it reads the
+ *   prompt as the first user message on stdin, echoes every message it takes
+ *   in (`isReplay`), narrates as assistant text, ends each turn with a
+ *   `result`, starts a new turn for a message that arrives while it is idle,
+ *   and exits 0 when its stdin closes. In between it finds the session file
+ *   named in the prompt, reads the CDP endpoint out of that file, attaches to
+ *   the browser and drives the page.
  *
  * WHY IT READS THE PROMPT rather than being handed the endpoint: that is the
  * hand-off under test. If the generated prompt ever stops naming the session
@@ -86,7 +92,7 @@ function agentProbeResult() {
 
 childProcess.spawn = function spawn(command, args, options) {
     if (isAgentSpawn(command, args)) {
-        return realSpawn.call(this, process.execPath, [__filename, args[1]], options);
+        return realSpawn.call(this, process.execPath, [__filename], options);
     }
     return realSpawn.call(this, command, args, options);
 };
@@ -106,8 +112,68 @@ function sessionFileFrom(prompt) {
     return match ? match[1].trim() : null;
 }
 
+// ---- the stream-json half: what the CLI does on stdout, and reads on stdin ----
+
+/** One stream-json event on stdout. A recorder that has gone away is no crash. */
+function emit(ev) {
+    try { process.stdout.write(JSON.stringify(ev) + '\n'); } catch (e) { void e; }
+}
+const say = (text) => emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+const step = (text) => say(`STEP: ${text}`);
+const endTurn = () => emit({ type: 'result', subtype: 'success', is_error: false });
+
+/**
+ * The messages the recorder sends, as they arrive. `turnActive` is the CLI's
+ * own distinction: a message that arrives mid-turn is taken into that turn;
+ * one that arrives while idle starts a turn of its own (and ends it).
+ */
+const inbox = [];
+let turnActive = false;
+let promptResolve;
+const promptArrived = new Promise((r) => { promptResolve = r; });
+const waiters = [];
+function onMessage(text) {
+    inbox.push({ text, at: Date.now() });
+    for (const w of waiters.splice(0)) w();
+    if (inbox.length === 1) { promptResolve(text); return; }
+    if (turnActive) return;
+    // Idle: a turn of its own. "The capture has ended" gets the stop it asks for.
+    if (/The capture has ended/.test(text)) step('told the capture ended; stopping');
+    else step(`received: ${text.slice(0, 60)}`);
+    endTurn();
+}
+function readStdin() {
+    let buf = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+        buf += chunk;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, i);
+            buf = buf.slice(i + 1);
+            let ev = null;
+            try { ev = JSON.parse(line); } catch (e) { void e; }
+            if (!ev || ev.type !== 'user') continue;
+            emit(Object.assign({}, ev, { isReplay: true }));
+            const content = ev.message && ev.message.content;
+            const text = Array.isArray(content) ? (content.find((c) => c.type === 'text') || {}).text : content;
+            onMessage(String(text || ''));
+        }
+    });
+    // STDIN CLOSING IS THE END OF THE SESSION, as it is for the CLI.
+    process.stdin.on('end', () => setTimeout(() => process.exit(0), 100));
+}
+/** Resolves when a message matching `re` has arrived, or after `ms`. */
+async function messageMatching(re, ms) {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+        if (inbox.some((m) => re.test(m.text))) return true;
+        await new Promise((r) => { waiters.push(r); setTimeout(r, 200); });
+    }
+    return false;
+}
+
 async function driveTheRecording(prompt) {
-    const step = (text) => process.stdout.write(`STEP: ${text}\n`);
     const sessionFile = sessionFileFrom(prompt);
     if (!sessionFile) {
         process.stderr.write('stub-agent: the prompt does not name a session file\n');
@@ -140,22 +206,41 @@ async function driveTheRecording(prompt) {
         }
         step(`attached to ${target.url()}`);
 
-        // THE AGENT THAT DOES NOT NOTICE IT IS BEING THROTTLED, on request: it
-        // clicks a button the fixture answers with 429 every few seconds, the
-        // way an agent the recorder cannot slow down would keep on going. The
-        // recorder must see the site refusing and stop it -- so this loop
-        // ending on its own is the failure, and the case asserts it did not.
+        // THE AGENT THAT DOES NOT WAIT WHEN TOLD TO, on request: the site
+        // answers its first click with 429 and Retry-After, and it clicks
+        // again at once. The recorder must hold that second click IN THE
+        // BROWSER until the pause is over -- so this measures how long the
+        // site took to see it, and says whether it was told to wait.
         if (process.env.HAR_STUB_AGENT_MODE === 'throttled') {
             await target.waitForSelector('#limited', { timeout: 30000 });
-            for (let i = 1; i <= 10; i++) {
-                const res = await Promise.all([
-                    target.waitForResponse((r) => r.url().includes('/api/limited'), { timeout: 30000 }),
-                    target.click('#limited')
-                ]).then(([r]) => r);
-                step(`clicked #limited (${i}); the site answered ${res.status()}`);
-                await new Promise((r) => setTimeout(r, 3000));
-            }
-            process.stdout.write('SUMMARY: clicked #limited ten times and was never stopped.\n');
+            const first = await Promise.all([
+                target.waitForResponse((r) => r.url().includes('/api/limited'), { timeout: 30000 }),
+                target.click('#limited')
+            ]).then(([r]) => r);
+            step(`clicked #limited; the site answered ${first.status()}`);
+            await new Promise((r) => setTimeout(r, 500));
+            const clicked = Date.now();
+            const second = await Promise.all([
+                target.waitForResponse((r) => r.url().includes('/api/limited'), { timeout: 60000 }),
+                target.click('#limited')
+            ]).then(([r]) => r);
+            step(`clicked #limited again at once; the site answered ${second.status()} after ` +
+                `${Date.now() - clicked} ms`);
+            step(inbox.some((m) => /asked us to slow down/.test(m.text))
+                ? 'the recorder told me to wait' : 'nobody told me to wait');
+            say('SUMMARY: clicked #limited twice; the second click waited out the pause.');
+            return 0;
+        }
+
+        // THE AGENT THAT MEETS A BOT CHECK, on request: it opens a page the
+        // fixture serves as a "Just a moment..." interstitial, and then does
+        // what it was told -- waits for the recorder.
+        if (process.env.HAR_STUB_AGENT_MODE === 'challenge') {
+            await target.goto(new URL('/challenge', session.uri).href, { waitUntil: 'domcontentloaded' });
+            step('opened /challenge');
+            const told = await messageMatching(/A person is taking over/, 30000);
+            step(told ? 'the recorder said a person is taking over; waiting' : 'nobody said anything');
+            say('SUMMARY: met a bot check and waited for the person.');
             return 0;
         }
 
@@ -175,33 +260,50 @@ async function driveTheRecording(prompt) {
         // STILL DRIVING, on request: the case where the recording is ended by
         // somebody else (the stop command, ENTER) while the agent is mid-drive.
         // Read from the environment because the recorder spawns this file and
-        // passes it nothing but the prompt.
+        // passes it nothing but its messages. It lingers until it is told the
+        // capture ended -- the recorder's message -- or the time runs out.
         const linger = Number(process.env.HAR_STUB_AGENT_LINGER_MS || 0);
         if (linger > 0) {
             step('lingering');
-            await new Promise((r) => setTimeout(r, linger));
+            const told = await messageMatching(/The capture has ended/, linger);
+            if (told) step('told the capture ended; stopping');
         }
-        // AND IT EXITS AT ONCE, which is the point. An agent stops the moment its
-        // last action returns -- it does not wait, the way a human walking back to
-        // the keyboard to press ENTER does. Sleeping here would hide the race the
-        // recorder has to handle, and the final response is routinely the most
-        // valuable entry in a capture.
+        // AND IT ENDS ITS TURN AT ONCE, which is the point. An agent stops the
+        // moment its last action returns -- it does not wait, the way a human
+        // walking back to the keyboard to press ENTER does. Sleeping here would
+        // hide the race the recorder has to handle, and the final response is
+        // routinely the most valuable entry in a capture.
     } finally {
         // DETACH. The stub is a driver, not an owner: closing the browser is
         // precisely what neither an agent nor the recorder may do.
         await browser.close().catch(() => {});
     }
-    process.stdout.write('SUMMARY: searched once, stopped before any details page.\n');
+    say('SUMMARY: searched once, stopped before any details page.');
     return 0;
 }
 
 module.exports = { isAgentSpawn, isAgentProbe, agentProbeResult, sessionFileFrom };
 
 if (require.main === module) {
-    driveTheRecording(process.argv[2]).then(
-        (code) => process.exit(code),
-        (e) => {
+    // A recorder that has gone away closes the pipe: that is the end, not a crash.
+    process.stdout.on('error', () => process.exit(0));
+    readStdin();
+    emit({ type: 'system', subtype: 'init', model: 'stub-agent' });
+    promptArrived.then(async (prompt) => {
+        turnActive = true;
+        let code;
+        try {
+            code = await driveTheRecording(prompt);
+        } catch (e) {
             process.stderr.write(`stub-agent: ${e && e.stack ? e.stack : e}\n`);
-            process.exit(1);
-        });
+            code = 1;
+        }
+        turnActive = false;
+        if (code !== 0) {
+            emit({ type: 'result', subtype: 'error_during_execution', is_error: true });
+            process.exit(code);
+        }
+        // The turn ends; the session stays open until stdin closes.
+        endTurn();
+    });
 }
