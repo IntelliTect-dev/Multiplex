@@ -414,10 +414,17 @@ passed, 1 skipped), including every write test.
 
 **Session renewal verified past TripIt's two-hour cookie lifetime.** After a connect, the
 server sat idle for 135 minutes with no TripIt traffic. The next tool call got 403 from
-TripIt (its bot-manager cookies had expired); the server renewed the session from its own
-visible browser profile without the owner, retried, and `tripit_get_profile` returned the
-test account (about 14 s including the renewal). `tripit_list_trips` followed in under 3 s.
-The Claude-side grant was renewed with its refresh token in the same run.
+TripIt, consistent with its two-hour bot-manager cookies expiring; the server renewed the
+session from its own visible browser profile without the owner, retried, and
+`tripit_get_profile` returned the test account (about 14 s including the renewal).
+`tripit_list_trips` followed in under 3 s. The Claude-side grant was renewed with its refresh
+token in the same run. This was a published build started from a shell on the owner's
+desktop, not by the logon task; it used the same browser as an installed server (the
+Chromium the server downloads when `Browser:ExecutablePath` is unset).
+
+The repository's browser-driven tests find a browser only through `MULTIPLEX_CHROMIUM` (or
+`/usr/bin/chromium`), so a plain `dotnet test` on Windows skips them: 216 pass and 22 skip;
+with the variable pointing at Chrome, 233 pass and only the 5 opt-in live tests skip.
 
 **Installer verified** on this PC into a scratch folder: publish, configuration and passcode,
 per-user logon task (no administrator rights needed), start, health check, then a connect
