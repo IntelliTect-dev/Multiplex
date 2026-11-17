@@ -49,6 +49,13 @@ public sealed class AuthState
         RemoveWhere(Clients, c => c.LastUsedAt + AuthLifetimes.UnusedClient <= now && !clientsInUse.Contains(c.ClientId));
     }
 
+    /// <summary>The registered client, unless it has gone unused long enough to be pruned.</summary>
+    public RegisteredClient? FindClient(string clientId, DateTimeOffset now) =>
+        Clients.TryGetValue(clientId, out var client)
+        && (client.LastUsedAt + AuthLifetimes.UnusedClient > now || Grants.Values.Any(g => g.ClientId == clientId))
+            ? client
+            : null;
+
     private static void RemoveWhere<T>(Dictionary<string, T> items, Func<T, bool> predicate)
     {
         foreach (var key in items.Where(kv => predicate(kv.Value)).Select(kv => kv.Key).ToList())
