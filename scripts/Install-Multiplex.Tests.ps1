@@ -70,6 +70,32 @@ Describe 'configuration' {
     }
 }
 
+Describe 'install folder' {
+    It 'defaults to a folder in the user profile, outside AppData' {
+        $root = Get-MultiplexRoot
+        $root | Should -Be (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.multiplex')
+    }
+
+    It 'refuses an AppData folder when AppData is redirected, as it is from the Claude desktop app' {
+        $local = [Environment]::GetFolderPath('LocalApplicationData')
+        Get-MultiplexRootProblem -Root (Join-Path $local 'Multiplex') -AppDataRedirected $true | Should -Match 'private copy'
+        Get-MultiplexRootProblem -Root (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Multiplex') -AppDataRedirected $true | Should -Not -BeNullOrEmpty
+    }
+
+    It 'allows AppData when it is not redirected, and Temp or the user profile always' {
+        $local = [Environment]::GetFolderPath('LocalApplicationData')
+        Get-MultiplexRootProblem -Root (Join-Path $local 'Multiplex') -AppDataRedirected $false | Should -BeNullOrEmpty
+        Get-MultiplexRootProblem -Root (Join-Path $local 'Temp\x') -AppDataRedirected $true | Should -BeNullOrEmpty
+        Get-MultiplexRootProblem -Root (Get-MultiplexRoot) -AppDataRedirected $true | Should -BeNullOrEmpty
+    }
+
+    It 'probes AppData redirection without leaving anything behind' -Skip:(-not $IsWindows) {
+        $before = @(Get-ChildItem ([Environment]::GetFolderPath('LocalApplicationData')) -Filter 'multiplex-probe-*' -Directory).Count
+        (Test-MultiplexAppDataRedirected) | Should -BeOfType [bool]
+        @(Get-ChildItem ([Environment]::GetFolderPath('LocalApplicationData')) -Filter 'multiplex-probe-*' -Directory).Count | Should -Be $before
+    }
+}
+
 Describe 'allowed accounts' {
     It 'splits one comma- or semicolon-separated value, as pwsh -File passes it' {
         ConvertTo-MultiplexAccountList -Account 'tripit-test@example.com,Owner@Example.com' |

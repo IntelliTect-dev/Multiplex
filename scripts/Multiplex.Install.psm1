@@ -7,9 +7,51 @@ Set-StrictMode -Version Latest
 $script:Pbkdf2Iterations = 210000
 
 function Get-MultiplexRoot {
+    <#
+    The install folder: -Root, else %USERPROFILE%\.multiplex. Not AppData: a packaged app (the
+    Claude desktop app is one) gets a private copy of AppData, so an install run from its
+    terminal would land where the logon task, a separate process, cannot see it.
+    #>
     [CmdletBinding()] param([string] $Root)
     if ($Root) { return $Root }
-    return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Multiplex'
+    return Join-Path ([Environment]::GetFolderPath('UserProfile')) '.multiplex'
+}
+
+function Test-MultiplexAppDataRedirected {
+    <#
+    Whether this process's AppData writes are redirected to a packaged app's private copy, as
+    they are for anything started from the Claude desktop app (its terminal, its Run button,
+    its agents). Probed directly: create a folder in %LOCALAPPDATA% and look for it in a
+    package's LocalCache. Windows does not report such a process as packaged, so asking is not
+    enough.
+    #>
+    [CmdletBinding()] [OutputType([bool])] param()
+    if (-not $IsWindows) { return $false }
+    $local = [Environment]::GetFolderPath('LocalApplicationData')
+    $name = "multiplex-probe-$([guid]::NewGuid().ToString('N'))"
+    $probe = Join-Path $local $name
+    try {
+        New-Item -ItemType Directory -Path $probe -WhatIf:$false -Confirm:$false | Out-Null
+        # The wildcard must be in -Path itself: -Filter under a wildcard path matches nothing.
+        return [bool](Get-ChildItem -Path (Join-Path $local "Packages\*\LocalCache\Local\$name") -Directory -ErrorAction SilentlyContinue)
+    }
+    finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
+}
+function Get-MultiplexRootProblem {
+    <# Why -Root cannot be used from this process, or nothing when it can. #>
+    [CmdletBinding()] [OutputType([string])]
+    param([Parameter(Mandatory)] [string] $Root, [bool] $AppDataRedirected = (Test-MultiplexAppDataRedirected))
+    if (-not $AppDataRedirected) { return $null }
+    $full = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ($full.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or
+        $full.StartsWith((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp\'), [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    foreach ($appData in [Environment]::GetFolderPath('LocalApplicationData'), [Environment]::GetFolderPath('ApplicationData')) {
+        if ($full.StartsWith($appData.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            return "This PowerShell was started from a packaged app (for example the Claude desktop app), which keeps a private copy of AppData: an install to $Root would land where the Multiplex logon task cannot see it. Use the default folder, another folder outside AppData, or run the installer from an ordinary PowerShell window."
+        }
+    }
+    return $null
 }
 
 function ConvertTo-MultiplexAccountList {
