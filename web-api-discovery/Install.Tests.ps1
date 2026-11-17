@@ -42,6 +42,31 @@ Describe 'Get-MainCheckout' {
         Get-MainCheckout (Join-Path $main '.worktrees/wt') | Should -Be ([System.IO.Path]::GetFullPath($main))
     }
 
+    It 'keeps a tool that lives in a subfolder of its repository in that subfolder' {
+        # The skill ships inside a larger repository (Multiplex), not at its root.
+        # Resolving to the repository root would link <root>/skills/..., which
+        # does not exist there.
+        $main = Join-Path $tmp 'main'
+        New-Item -ItemType Directory -Path (Join-Path $main 'tool') -Force | Out-Null
+        git init -q $main
+
+        Get-MainCheckout (Join-Path $main 'tool') |
+            Should -Be ([System.IO.Path]::GetFullPath((Join-Path $main 'tool')))
+    }
+
+    It 'resolves a subfolder of a linked worktree to the same subfolder of the main checkout' {
+        $main = Join-Path $tmp 'main'
+        New-Item -ItemType Directory -Path (Join-Path $main 'tool') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $main 'tool' 'marker') -Value x
+        git init -q $main
+        git -C $main add -A
+        git -C $main -c user.email=t@e -c user.name=t -c commit.gpgsign=false commit -q -m init
+        git -C $main worktree add -q (Join-Path $main '.worktrees/wt') -b wt 2>$null
+
+        Get-MainCheckout (Join-Path $main '.worktrees/wt/tool') |
+            Should -Be ([System.IO.Path]::GetFullPath((Join-Path $main 'tool')))
+    }
+
     It 'refuses a folder that is not a clone' {
         { Get-MainCheckout $tmp } | Should -Throw '*not inside a git clone*'
     }
@@ -133,6 +158,41 @@ Describe 'Update-ProfileBlock' {
             }
 
             $script:imported | Should -Be @((Join-Path $clone 'WebApiDiscovery.psd1'))
+        }
+        finally { Remove-TempDir $tmp }
+    }
+
+    It 'finds the skill inside a Multiplex clone under a conventional root, with no pointer file' {
+        # A machine that has never run Install.ps1 still gets the commands when
+        # Multiplex is cloned somewhere conventional. $HOME is read-only inside a
+        # session, so the block runs in a child pwsh whose HOME is a temp folder.
+        $tmp = New-TempDir
+        try {
+            $clone = Join-Path $tmp 'Git' 'Multiplex' 'web-api-discovery'
+            New-Item -ItemType Directory -Path $clone -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $clone 'WebApiDiscovery.psd1') -Value "@{ ModuleVersion = '0.0.1' }"
+            $out = Join-Path $tmp 'imported.txt'
+            $script = Join-Path $tmp 'run.ps1'
+            Set-Content -LiteralPath $script -Value (
+                "function Import-Module { param(`$Name, [switch]`$Global) `$null = `$Global; Add-Content -LiteralPath '$out' -Value `$Name }`n" +
+                (Update-ProfileBlock -Content ''))
+
+            $pwsh = (Get-Process -Id $PID).Path
+            $saved = @{ HOME = $env:HOME; USERPROFILE = $env:USERPROFILE; LOCALAPPDATA = $env:LOCALAPPDATA; XDG = $env:XDG_DATA_HOME; CLONE = $env:WEBAPIDISCOVERY_CLONE }
+            try {
+                $env:HOME = $tmp
+                $env:USERPROFILE = $tmp
+                $env:LOCALAPPDATA = Join-Path $tmp 'no-state'
+                $env:XDG_DATA_HOME = $null
+                $env:WEBAPIDISCOVERY_CLONE = ''
+                & $pwsh -NoProfile -NonInteractive -File $script
+            }
+            finally {
+                $env:HOME = $saved.HOME; $env:USERPROFILE = $saved.USERPROFILE; $env:LOCALAPPDATA = $saved.LOCALAPPDATA
+                $env:XDG_DATA_HOME = $saved.XDG; $env:WEBAPIDISCOVERY_CLONE = $saved.CLONE
+            }
+
+            Get-Content -LiteralPath $out | Should -Be @((Join-Path $clone 'WebApiDiscovery.psd1'))
         }
         finally { Remove-TempDir $tmp }
     }

@@ -46,8 +46,8 @@
       1. $env:WEBAPIDISCOVERY_CLONE, for a clone somewhere unguessable
       2. the pointer file above, written by THIS script -- the deterministic
          answer on a machine that has run it
-      3. web-api-discovery under Git, source\repos, repos or src, off the home
-         folder or any fixed drive root -- so a machine that has NOT run this
+      3. web-api-discovery, or Multiplex\web-api-discovery, under Git,
+         source\repos, repos or src, off the home folder or any fixed drive root -- so a machine that has NOT run this
          script still works when the clone is somewhere conventional
 
     Nothing in it is specific to a machine, so the same profile serves all of
@@ -61,8 +61,8 @@
     repointed without touching what it pointed at.
 
 .EXAMPLE
-    git clone https://github.com/IntelliTect-Samples/web-api-discovery C:\Git\web-api-discovery
-    C:\Git\web-api-discovery\Install.ps1
+    git clone https://github.com/IntelliTect-dev/Multiplex C:\Git\Multiplex
+    C:\Git\Multiplex\web-api-discovery\Install.ps1
 #>
 [CmdletBinding()]
 param()
@@ -81,9 +81,12 @@ $script:SkillTargets = @(
 
 function Get-MainCheckout {
     <#
-        The main working tree of the clone containing $Path. In a linked
-        worktree the git dir differs from the common dir, whose parent is the
-        main tree; otherwise (a plain clone, or a submodule) --show-toplevel is.
+        $Path's own folder in the main working tree of the clone containing it.
+        In a linked worktree the git dir differs from the common dir, whose
+        parent is the main tree; otherwise (a plain clone, or a submodule)
+        --show-toplevel is. The skill can sit in a subfolder of a larger
+        repository (Multiplex), so $Path's place within the tree is kept rather
+        than collapsed to the repository root.
     #>
     param([Parameter(Mandatory)][string]$Path)
 
@@ -91,8 +94,11 @@ function Get-MainCheckout {
     if ($LASTEXITCODE -ne 0 -or $dirs.Count -ne 3) {
         throw "'$Path' is not inside a git clone of web-api-discovery. Clone it, then run this from the clone."
     }
+    # Relative to the top of the tree $Path is in, as git spells it -- immune to
+    # a symlinked temp or home folder making the two absolute paths disagree.
+    $prefix = (& git -C $Path rev-parse --show-prefix 2>$null) -join ''
     $main = if ($dirs[0] -ne $dirs[1]) { Split-Path $dirs[1] -Parent } else { $dirs[2] }
-    return [System.IO.Path]::GetFullPath($main)
+    return [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Join-Path $main $prefix)))
 }
 
 function Get-SkillFolders {
@@ -183,6 +189,7 @@ function Update-ProfileBlock {
         '        foreach ($root in $roots) {'
         "            foreach (`$dir in 'Git', 'source/repos', 'repos', 'src') {"
         "                Join-Path `$root `$dir '$($script:SkillName)'"
+        "                Join-Path `$root `$dir 'Multiplex' '$($script:SkillName)'"
         '            }'
         '        }'
         '    )'
