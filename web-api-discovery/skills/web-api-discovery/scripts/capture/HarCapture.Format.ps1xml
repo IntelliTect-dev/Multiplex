@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Console rendering for capture catalogue entries.
+
+    The catalogue is emitted as objects, never as text, so the pipeline stays
+    pure data and ConvertTo-Json / ConvertTo-Csv work on the same result. What
+    a human sees at the console is PowerShell's own formatting engine applied
+    to those objects, which is why this file exists instead of a Write-Host
+    table hand-rolled in the script.
+
+    Endpoints and Methods are joined for display only. The underlying
+    properties stay arrays.
+
+    The StoreEntry views render a capture STORE rather than one capture's
+    catalogue. Columns are the list issue #102 asked for: site, stamp, size,
+    whether the recording ended cleanly, how far down the pipeline it got, and
+    the description. A capture nobody described prints so out loud, because an
+    empty cell reads as "the column did not render" just as readily as "nobody
+    described this capture", and only one of those is the operator's problem.
+    The booleans the Stage column summarises are all still on the object, and
+    the list view below shows every one of them.
+-->
+<Configuration>
+  <ViewDefinitions>
+    <View>
+      <Name>WebApiDiscovery.HarCapture.CatalogueEntry</Name>
+      <ViewSelectedBy>
+        <TypeName>WebApiDiscovery.HarCapture.CatalogueEntry</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader>
+            <Label>Status</Label>
+            <Width>10</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Action</Label>
+            <Width>32</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Methods</Label>
+            <Width>12</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Entries</Label>
+            <Alignment>Right</Alignment>
+            <Width>7</Width>
+          </TableColumnHeader>
+          <!--
+              Request bodies sits beside the entry count on purpose. It is the
+              column that makes a hollow reference visible at a glance: a row
+              describing what a client SENT, against a file whose entries carry
+              no request body, reads as `1  0` instead of looking like every
+              other row. Four such references shipped because nothing put that
+              number in front of a human (issue #379).
+          -->
+          <TableColumnHeader>
+            <Label>ReqBodies</Label>
+            <Alignment>Right</Alignment>
+            <Width>9</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Endpoints</Label>
+          </TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <PropertyName>Status</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>Action</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>$_.Methods -join ','</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>EntryCount</PropertyName>
+              </TableColumnItem>
+              <!--
+                  A dash for null, never 0. A scaffold row has measured nothing
+                  yet, and rendering that as `0` would say "this reference has
+                  no request bodies" about a reference that does not exist.
+                  (A literal double hyphen cannot appear in an XML comment, so
+                  the placeholder is described rather than written here.)
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.RequestBodies) { '--' } else { $_.RequestBodies }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>$_.Endpoints -join ', '</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>WebApiDiscovery.HarCapture.CatalogueEntry.List</Name>
+      <ViewSelectedBy>
+        <TypeName>WebApiDiscovery.HarCapture.CatalogueEntry</TypeName>
+      </ViewSelectedBy>
+      <ListControl>
+        <ListEntries>
+          <ListEntry>
+            <ListItems>
+              <ListItem>
+                <PropertyName>Action</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Description</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Status</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Methods</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Endpoints</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>EntryCount</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RequestBodies</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RequestBytes</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>ResponseBytes</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RequestBodiesAbsent</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Provider</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>HarFile</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Related</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>CapturedUtc</PropertyName>
+              </ListItem>
+            </ListItems>
+          </ListEntry>
+        </ListEntries>
+      </ListControl>
+    </View>
+    <View>
+      <Name>WebApiDiscovery.HarCapture.StoreEntry</Name>
+      <ViewSelectedBy>
+        <TypeName>WebApiDiscovery.HarCapture.StoreEntry</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader>
+            <Label>Site</Label>
+            <Width>24</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Stamp</Label>
+            <Width>19</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Size</Label>
+            <Alignment>Right</Alignment>
+            <Width>9</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Ended</Label>
+            <Width>7</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Stage</Label>
+            <Width>11</Width>
+          </TableColumnHeader>
+          <!--
+              The errors the recorder wrote into session.json and nothing read
+              (issue #450). A capture whose post-processing failed looked
+              exactly like one nobody had scrubbed yet, which is how a 1.7 GB
+              unprocessable capture was recommended for keeping eight days
+              later. A count is enough to make it visible; the list view
+              carries the text.
+          -->
+          <TableColumnHeader>
+            <Label>Errors</Label>
+            <Alignment>Right</Alignment>
+            <Width>6</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Description</Label>
+          </TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <!--
+                  A dash for a capture with no host layer, never the store's own
+                  directory name: printing that would name the store as though
+                  it were a site. (A literal double hyphen cannot appear in an
+                  XML comment, so the placeholder is described rather than
+                  written here.)
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if ([string]::IsNullOrEmpty($_.Site)) { '--' } else { $_.Site }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>Stamp</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.Bytes) { '--' } elseif ($_.Bytes -ge 1GB) { '{0:N1} GB' -f ($_.Bytes / 1GB) } elseif ($_.Bytes -ge 1MB) { '{0:N1} MB' -f ($_.Bytes / 1MB) } elseif ($_.Bytes -ge 1KB) { '{0:N0} KB' -f ($_.Bytes / 1KB) } else { "$($_.Bytes) B" }</ScriptBlock>
+              </TableColumnItem>
+              <!--
+                  "cut off" is said only about a recording this recorder made.
+                  A capture somebody imported never had an endedUtc to be
+                  missing, and reporting it as cut off would invent a failure.
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if (-not $_.RecorderOutput) { '--' } elseif ($_.Ended) { 'yes' } else { 'cut off' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>Stage</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.Errors -and $_.Errors.Count) { $_.Errors.Count } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <!--
+                  THE FLAG. A blank cell is ambiguous between "nobody described
+                  this" and "this column did not render", and an operator
+                  deciding what to keep needs to know which. The object keeps
+                  $null, so a script still tests the honest datum.
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if ([string]::IsNullOrWhiteSpace($_.Description)) { '(no description)' } else { $_.Description }</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>WebApiDiscovery.HarCapture.StoreEntry.List</Name>
+      <ViewSelectedBy>
+        <TypeName>WebApiDiscovery.HarCapture.StoreEntry</TypeName>
+      </ViewSelectedBy>
+      <ListControl>
+        <ListEntries>
+          <ListEntry>
+            <ListItems>
+              <ListItem>
+                <PropertyName>Site</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Stamp</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>StartedUtc</PropertyName>
+              </ListItem>
+              <ListItem>
+                <Label>Description</Label>
+                <ScriptBlock>if ([string]::IsNullOrWhiteSpace($_.Description)) { '(no description)' } else { $_.Description }</ScriptBlock>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Bytes</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Ended</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Stage</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Scrubbed</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Rejected</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Digest</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Catalogue</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Substitutions</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Class</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RecorderOutput</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Reason</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Errors</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Path</PropertyName>
+              </ListItem>
+            </ListItems>
+          </ListEntry>
+        </ListEntries>
+      </ListControl>
+    </View>
+  </ViewDefinitions>
+</Configuration>
