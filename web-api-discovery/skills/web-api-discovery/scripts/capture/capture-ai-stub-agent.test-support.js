@@ -232,7 +232,10 @@ async function driveTheRecording(prompt) {
                 target.click('#limited')
             ]).then(([r]) => r);
             step(`clicked #limited; the site answered ${first.status()}`);
-            await new Promise((r) => setTimeout(r, 500));
+            // Clicks again the moment it is told to wait -- the agent that does
+            // not -- plus a beat, so the click races the pause, not its start.
+            await messageMatching(/asked us to slow down/, 15000);
+            await new Promise((r) => setTimeout(r, 300));
             const clicked = Date.now();
             const second = await Promise.all([
                 target.waitForResponse((r) => r.url().includes('/api/limited'), { timeout: 60000 }),

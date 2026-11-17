@@ -19,9 +19,14 @@
  *     open a connection. Without Tailscale there is no phone view, and the
  *     hand-over is the PC-only one it always was.
  *   - The link carries a long random token, and is good for this hand-over
- *     only. The FIRST browser to open it claims it (an HttpOnly, SameSite
- *     cookie); any other request -- another device with the same link, any
- *     other path -- gets a bare 404.
+ *     only. ONE BROWSER AT A TIME: each browser that opens the page gets its
+ *     own HttpOnly, SameSite cookie, and the first to start watching the live
+ *     view holds it; any other browser's stream or input is a bare 404 while
+ *     that one is connected, and so is every other path. Claimed on the live
+ *     stream rather than on the first page load, so a link fetched by
+ *     something that is not a browser (an AI session reading it, a link
+ *     preview) does not lock the person out -- and a person whose in-app
+ *     browser opened it first can switch to Chrome once that one is closed.
  *   - `tailscale serve` is deliberately not used: it writes persistent
  *     configuration to the tailnet node. The tailnet is already encrypted end
  *     to end (WireGuard), so the page is plain HTTP on the tailnet address.
@@ -290,6 +295,8 @@ async function startMirror(opts) {
         }
     };
 
+    // The tab on top, so the browser renders it and the screencast has frames.
+    await Promise.resolve(cdp.send('Page.bringToFront')).catch(() => {});
     const onFrame = (params) => {
         if (!params) return;
         void Promise.resolve(cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId })).catch(() => {});
@@ -305,6 +312,12 @@ async function startMirror(opts) {
     });
 
     const claimed = (req) => !!claim && sameSecret(cookieValue(req, 'hm'), claim);
+    const browserOf = (req) => {
+        const id = cookieValue(req, 'hm');
+        return id && /^[A-Za-z0-9_-]{43}$/.test(id) ? id : null;
+    };
+    // Whether the browser holding the view still has it open.
+    const claimantConnected = () => [...clients].some((c) => sameSecret(c.id, claim));
 
     const server = http.createServer((req, res) => {
         let url;
@@ -317,14 +330,10 @@ async function startMirror(opts) {
         }
         const rest = p.slice(prefix.length);
         if (req.method === 'GET' && rest === '') {
-            // THE FIRST BROWSER TO OPEN THE LINK HAS IT. A reload in that
-            // browser carries the cookie; anyone else holding the link does not.
-            if (!claim) {
-                claim = newSecret();
-                res.setHeader('set-cookie', `hm=${claim}; Path=${prefix}; HttpOnly; SameSite=Strict`);
-            } else if (!claimed(req)) {
-                notFound(res);
-                return;
+            // Every browser that opens the page gets its own identity; which
+            // one holds the view is decided when it starts watching (below).
+            if (!browserOf(req)) {
+                res.setHeader('set-cookie', `hm=${newSecret()}; Path=${prefix}; HttpOnly; SameSite=Strict`);
             }
             const nonce = crypto.randomBytes(16).toString('base64');
             res.writeHead(200, {
@@ -340,6 +349,14 @@ async function startMirror(opts) {
             res.end(phonePage(nonce));
             return;
         }
+        if (req.method === 'GET' && rest === 'events') {
+            // ONE BROWSER AT A TIME. The first to watch holds the view; another
+            // may take it only once that one has gone.
+            const id = browserOf(req);
+            if (!id) { notFound(res); return; }
+            if (claim && !sameSecret(id, claim) && claimantConnected()) { notFound(res); return; }
+            claim = id;
+        }
         if (!claimed(req)) { notFound(res); return; }
         if (req.method === 'GET' && rest === 'events') {
             res.writeHead(200, {
@@ -348,7 +365,7 @@ async function startMirror(opts) {
                 'x-content-type-options': 'nosniff',
                 connection: 'keep-alive'
             });
-            const client = { res, busy: false, stale: false };
+            const client = { res, busy: false, stale: false, id: claim };
             clients.add(client);
             const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, KEEPALIVE_MS);
             if (typeof ping.unref === 'function') ping.unref();
