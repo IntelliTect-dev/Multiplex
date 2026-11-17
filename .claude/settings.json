@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "intellisdlc@intellisdlc-ai": true
+  },
+  "extraKnownMarketplaces": {
+    "intellisdlc-ai": {
+      "source": {
+        "source": "github",
+        "repo": "IntelliTect-Samples/IntelliSDLC.ai"
+      }
+    }
+  }
+}
