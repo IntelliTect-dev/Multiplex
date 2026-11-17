@@ -412,6 +412,18 @@ token refused for other arguments, the confirmed delete; refresh-token rotation 
 of the spent token. The imported library's own live suite also passed on that account (25
 passed, 1 skipped), including every write test.
 
+**Session renewal verified past TripIt's two-hour cookie lifetime.** After a connect, the
+server sat idle for 135 minutes with no TripIt traffic. The next tool call got 403 from
+TripIt (its bot-manager cookies had expired); the server renewed the session from its own
+visible browser profile without the owner, retried, and `tripit_get_profile` returned the
+test account (about 14 s including the renewal). `tripit_list_trips` followed in under 3 s.
+The Claude-side grant was renewed with its refresh token in the same run.
+
+**Installer verified** on this PC into a scratch folder: publish, configuration and passcode,
+per-user logon task (no administrator rights needed), start, health check, then a connect
+through the installed server both by `Test-MultiplexConnect.ps1` and by an independent client
+built on the official MCP C# SDK (`scripts/McpSdkConnect.cs`, its own OAuth handling).
+
 **Verified with a stub sign-in site** (automated tests, real Chrome): the live mirrored
 sign-in end to end from a simulated touch phone (passcode, taps, typing, redirect back with a
 code), allowlist rejection, gate lockout, the navigation lock, timeouts and the refresher's
@@ -435,6 +447,12 @@ signed-out path.
 - Loopback redirect URIs match on any port (RFC 8252): Claude Code and `mcp-remote` register
   once and pick a free port each sign-in.
 - One app-wide Data Protection key ring, keys encrypted with DPAPI.
+- Behind a local tunnel every request arrives from loopback, so lockouts and rate limits key
+  on the tunnel's last `X-Forwarded-For` entry, and MCP endpoints without sign-in (e.g.
+  `/time/mcp`, which drives a browser on this PC) answer 404 to any request from outside the
+  PC unless listed in `Multiplex:PublicOpenEndpoints`.
+- The passcode page names where the browser goes afterwards (the client's redirect host), so
+  the owner can spot a connect request that did not come from their own Claude or ChatGPT.
 
 **Not verified yet (needs the owner):** the internet-facing address (Tailscale Funnel not yet
 enabled; the Cloudflare tool's install is waiting on an administrator prompt); adding the
