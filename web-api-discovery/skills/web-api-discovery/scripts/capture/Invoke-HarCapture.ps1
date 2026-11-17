@@ -244,7 +244,8 @@
     `agent-prompt.md`; and run as `claude -p`. Most of that text is SAFETY text
     -- human pace, keep the site's tab in front, no stealth measures, never a
     password or personal or payment detail, stop before any driver-details or
-    payment page, and stop and hand back on any bot check or sign-in prompt -- and
+    payment page, and stop and hand back on any bot check, sign-in prompt, or
+    page saying the site is throttling or blocking it (see -Pace) -- and
     a prompt somebody retypes per run is a prompt that eventually drops one of
     them.
 
@@ -332,6 +333,24 @@
 
     Forwarded only when typed. Without -AI it is refused, at exit 2: there is no
     agent whose tools it could choose. See -AI for when to use BrowserOnly.
+
+.PARAMETER Pace
+    How fast the recorder acts on a page itself (its first navigation, the
+    sign-in fills), and how fast an -AI agent is told to. Forwarded as --pace
+    only when typed.
+
+      (absent) | human   1.5-4 s between navigations, 0.3-1.2 s between clicks
+                         or typing steps, at most 12 navigations a minute, each
+                         wait drawn at random -- the default
+      nav=MIN-MAX,action=MIN-MAX,per-minute=N
+                         milliseconds; any subset, the rest keep their defaults
+      off                every wait zero -- for tests, never for a real site
+
+    Whatever the pace, the recorder reads every response from the site: a 429
+    or a 503 with Retry-After pauses; a block, a bot check or throttling that
+    persists stops an -AI agent and hands the browser to you. Nothing retries a
+    block or works around a bot check. See "Pacing, throttling, and where the
+    line is" in SKILL.md.
 
 .OUTPUTS
     WebApiDiscovery.HarCapture.CatalogueEntry
@@ -423,7 +442,12 @@ param(
     # TYPED, like -Browser, so the recorder -- which owns the rule, as it owns
     # -AI's -- refuses it without --ai.
     [ValidateSet('Auto', 'BrowserOnly')]
-    [string]$AITools = 'Auto'
+    [string]$AITools = 'Auto',
+
+    # HOW FAST. Forwarded as --pace only when typed; the recorder owns the
+    # default (human pace) and refuses a value it cannot read, so this file
+    # validates nothing about it -- one owner, as for -Browser and -AI.
+    [string]$Pace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -625,6 +649,7 @@ if ($AI) { $captureArgs += '--ai' }
 if ($PSBoundParameters.ContainsKey('AITools')) {
     $captureArgs += @('--ai-tools', $(if ($AITools -eq 'BrowserOnly') { 'browser-only' } else { 'auto' }))
 }
+if ($PSBoundParameters.ContainsKey('Pace')) { $captureArgs += @('--pace', $Pace) }
 # -Verbose is the only verbosity switch. capture-har.js prints its own console
 # output directly -- re-streaming it through PowerShell would buffer the ENTER
 # prompt and the Ctrl+C question in the very terminal the operator answers --

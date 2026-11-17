@@ -115,6 +115,33 @@
  * like any other native or attached run (#85), and nothing about `--ai` closes a
  * browser -- the agent is told not to, and `stop` still detaches.
  *
+ * ## Pacing, throttling, and where the line is
+ *
+ * Polite pacing and honouring a site's throttling are in; anything whose
+ * purpose is hiding automation from bot detection is out (see NO STEALTH
+ * MEASURES, above, and pacing.js). So:
+ *
+ * WHAT THIS PROCESS DOES TO A PAGE IS PACED -- its first navigation and the
+ * sign-in fills -- by pacing.js: a randomized, human-scale wait between
+ * navigations and between typing steps, one navigation in flight, and a
+ * per-minute ceiling. `--pace` sets it; `--pace off` (tests) makes every wait
+ * zero. An agent's actions are the agent's, so the same numbers go into its
+ * prompt, and the recorder only WATCHES its rate.
+ *
+ * EVERY RECORDED RESPONSE IS READ FOR THROTTLING -- only the site's own (a
+ * main-frame document, or the capture's host), because trackers answer 429 all
+ * day. A 429 or a 503 with Retry-After PAUSES (Retry-After, or a backoff with
+ * jitter); throttling that persists, throttling through a pause, a small HTML
+ * 403 from a CDN, or a challenge page HANDS OVER.
+ *
+ * A HAND-OVER UNDER --ai STOPS THE AGENT -- the one process this file ever
+ * signals, and only for this. Nothing about it ends the browser or the
+ * recording: the operator is told what the site did and where, the window is
+ * theirs, and the recording goes on until they end it. With nobody at the
+ * terminal, nobody can take over, so the recording ends as `handed-over` and is
+ * post-processed like any other. By hand, a hand-over is advice -- the browser
+ * is already the operator's.
+ *
  * WHAT IS NOT HERE YET, deliberately: `-SignInFirst` (#75) and multi-site (#74).
  * Without #75 the agent stops at the first sign-in prompt and hands back, which
  * is what the issue says the behaviour is until then; without #74 one run drives
@@ -188,7 +215,7 @@
  *   node capture-har.js start --uri <url> --describe <text>
  *                             [--profile <name|path>] [--isolated]
  *                             [--browser playwright|native] [--attach <cdp>]
- *                             [--ai]
+ *                             [--ai] [--pace off|human|<spec>]
  *                             [--port <n>] [--output-path <dir>]
  *                             [--snapshot-seconds <n>] [--no-wait]
  *                             [--validate-only]
@@ -236,6 +263,13 @@
  *                    ENTER, `stop` and closing the window still end it sooner.
  *                    Needs the `claude` CLI on PATH, which is checked before a
  *                    browser is started.
+ *   --pace           how fast this process acts on a page, and how fast an
+ *                    --ai agent is told to. Absent or `human`: 1.5-4 s between
+ *                    navigations, 0.3-1.2 s between clicks or typing steps, at
+ *                    most 12 navigations a minute, each wait drawn at random.
+ *                    `nav=MIN-MAX,action=MIN-MAX,per-minute=N` (milliseconds;
+ *                    any subset) changes it; `off` makes every wait zero, for
+ *                    tests. A site's Retry-After is honoured either way.
  *   --port           default 9333, and it never has to be specified: a busy
  *                    port falls forward to the next free one.
  *   --describe       REQUIRED (#366). What this recording is for, in the
@@ -317,6 +351,9 @@ const { ensureRepoRootGitignoreHasScaffoldEntries } =
 const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
 // The recorder signs in, from Bitwarden or a masked prompt (#115).
 const signIn = require(path.join(__dirname, 'sign-in.js'));
+// Human-scale pacing for what this process does to a page, and the reading of
+// a site's throttling and blocking in what it records. See "## Pacing" above.
+const pacing = require(path.join(__dirname, 'pacing.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -568,7 +605,7 @@ const log = {
 const START_OPTIONS = [
     'uri', 'profile', 'isolated', 'port', 'output-path', 'describe',
     'snapshot-seconds', 'no-wait', 'validate-only', 'log-level',
-    'browser', 'attach', 'ai', 'ai-tools'
+    'browser', 'attach', 'ai', 'ai-tools', 'pace'
 ];
 
 /**
@@ -695,6 +732,7 @@ function usage(msg) {
         'usage: node capture-har.js start --uri <url> --describe <text>\n' +
         '                                 [--isolated] [--port <n>] [--output-path <dir>]\n' +
         '                                 [--browser playwright|native] [--attach <cdp>] [--ai]\n' +
+        '                                 [--pace off|human|nav=MIN-MAX,action=MIN-MAX,per-minute=N]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
         '       node capture-har.js status\n' +
         '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
@@ -2188,6 +2226,21 @@ function captureSite(uri) {
     return host.startsWith('www.') ? host.slice(4) : host;
 }
 
+/**
+ * A URL as session.json records a throttle signal: origin and path only. The
+ * query string is where sites put search terms, emails and tokens, and the
+ * record only has to say WHERE the site refused.
+ */
+function urlForRecord(url) {
+    try {
+        const u = new URL(url);
+        return u.origin + u.pathname;
+    } catch (e) {
+        void e;
+        return null;
+    }
+}
+
 function onCaptureSite(site, url) {
     if (!site || !url) return false;
     let host;
@@ -2298,6 +2351,23 @@ function createCaptureScope(targetUri) {
 }
 
 /**
+ * Is this request a tab's own page load -- a navigation of its MAIN frame?
+ * The one kind of request whose refusal is the site refusing the visitor
+ * wherever it is hosted (pacing.classifyResponse), and the unit an agent's
+ * navigation rate is counted in. Anything that cannot be asked is "no".
+ */
+function isMainFrameDocument(request) {
+    try {
+        if (!request.isNavigationRequest()) return false;
+        const frame = request.frame();
+        return !!frame && typeof frame.parentFrame === 'function' && frame.parentFrame() === null;
+    } catch (e) {
+        void e;
+        return false;
+    }
+}
+
+/**
  * Adapt Playwright events onto buildEntry.
  *
  * `requestfinished` and `requestfailed` rather than `response`, for two
@@ -2309,8 +2379,14 @@ function createCaptureScope(targetUri) {
  * run's own -- attached or natively launched -- and a request it does not admit
  * is never read, let alone written. Null records everything in the context,
  * which in a browser this run launched is the same set as "this capture".
+ *
+ * `opts.onResponse(info)`, when given, is shown every RECORDED response once
+ * its entry is written -- url, status, headers, mime type, body and whether it
+ * was a main-frame document -- so throttling and blocks are read from exactly
+ * what the capture holds (pacing.js). It is told after the entry is added, and
+ * guarded, so an observer that throws can never cost the capture an entry.
  */
-function attachRecorder(context, recorder, scope) {
+function attachRecorder(context, recorder, scope, opts = {}) {
     const record = async (request, failure) => {
         // COUNTED FROM THE FIRST LINE TO THE LAST (#98). Everything below is
         // awaits, so an ending that arrives mid-handler -- which is what an agent
@@ -2341,6 +2417,7 @@ function attachRecorder(context, recorder, scope) {
                     () => null);
             }
             const reqHeaders = await request.allHeaders().catch(() => ({}));
+            const respHeaders = response ? await response.allHeaders().catch(() => ({})) : null;
             recorder.add(buildEntry({
                 request: {
                     method: request.method(),
@@ -2353,7 +2430,7 @@ function attachRecorder(context, recorder, scope) {
                 response: response ? {
                     status: response.status(),
                     statusText: response.statusText(),
-                    headers: await response.allHeaders().catch(() => ({})),
+                    headers: respHeaders,
                     httpVersion: 'HTTP/1.1'
                 } : null,
                 failure,
@@ -2361,6 +2438,21 @@ function attachRecorder(context, recorder, scope) {
                 body,
                 bodyAvailable
             }));
+            if (opts.onResponse && response) {
+                try {
+                    opts.onResponse({
+                        url: request.url(),
+                        method: request.method(),
+                        status: response.status(),
+                        headers: respHeaders || {},
+                        mimeType: (respHeaders && respHeaders['content-type']) || '',
+                        body,
+                        isDocument: isMainFrameDocument(request)
+                    });
+                } catch (e) {
+                    log.verbose(`capture-har: the throttle check skipped a response: ${e.message}`);
+                }
+            }
         } catch (e) {
             log.verbose(`capture-har: entry skipped: ${e.message}`);
         } finally {
@@ -2794,6 +2886,9 @@ function buildAgentPrompt(session, opts = {}) {
                 `- **Capture browser name (Claude in Chrome):** \`${captureBrowserName(session)}\``,
                 '  (select the connected browser with exactly this name; see "Select the capture browser")'
             ]),
+        // THE SAME NUMBERS the recorder paces its own steps by (pacing.js), so
+        // "human pace" in the rules means one thing for the agent and the code.
+        `- **Pace:** ${pacing.describePace(session.pace || pacing.DEFAULT_PACE)}`,
         `- **Session file:** ${sessionFile}`,
         '  (everything the recorder resolved for this run, including the endpoint above)',
         `- **Your step log is saved to:** ${session.agentLogPath}`,
@@ -3026,6 +3121,13 @@ function agentChildCommand(prompt, opts = {}) {
  * hold the pipe open after the agent is gone, and an unconditional wait for
  * 'close' would turn that into a recording that never ends. After 'exit' the
  * drain is given `opts.drainMs`, then the drive ends with what arrived.
+ *
+ * `opts.control`, when given, receives `stop(why)`: the recorder's way to end
+ * the DRIVE -- never the recording -- when the site throttles or blocks it
+ * (see "## Pacing" at the top). It ends the child this call spawned, through
+ * the handle it holds: never a pid looked up, never a process tree, never the
+ * browser. The result then carries `stoppedFor`, which agentExitEnding reads
+ * as "not an ending".
  */
 function driveWithAgent(session, prompt, opts = {}) {
     const spawnFn = opts.spawn || spawn;
@@ -3035,6 +3137,7 @@ function driveWithAgent(session, prompt, opts = {}) {
     });
     return new Promise((resolve) => {
         let settled = false;
+        let stoppedFor = null;
         let stream = null;
         // The log is closed exactly once, and nothing is written after that:
         // `say` checks this rather than trusting the order events arrive in.
@@ -3084,10 +3187,29 @@ function driveWithAgent(session, prompt, opts = {}) {
             finish({ status: 127 });
             return;
         }
-        // RECORDED, NEVER SIGNALLED -- the same contract the browser's pid is
-        // under. It is here so the warning about an agent that outlived the
-        // recording can name a process the operator can actually find.
+        // RECORDED, and signalled in exactly ONE case -- never as an ending.
+        // The pid is here so the warning about an agent that outlived the
+        // recording can name a process the operator can actually find; the
+        // recorder does not end an agent because the RECORDING ended (see
+        // agentStillDrivingLines). The one exception is below: the site is
+        // throttling or blocking the drive, and continuing would be hammering
+        // or evading it.
         session.agentPid = proc.pid === undefined ? null : proc.pid;
+        if (opts.control) {
+            opts.control.stop = (why) => {
+                if (settled || exited || stoppedFor) return false;
+                stoppedFor = why || 'stopped';
+                say(`capture-har: the recorder stopped the agent ${new Date().toISOString()} ` +
+                    `(${stoppedFor}): the site is throttling or blocking this session.\n`);
+                try {
+                    proc.kill();
+                } catch (e) {
+                    say(`capture-har: the agent could not be stopped: ${e.message}\n`);
+                    return false;
+                }
+                return true;
+            };
+        }
         if (proc.stdout) proc.stdout.on('data', say);
         if (proc.stderr) proc.stderr.on('data', say);
         proc.once('error', (e) => {
@@ -3102,7 +3224,8 @@ function driveWithAgent(session, prompt, opts = {}) {
             const { code, signal } = exited || {};
             say(`capture-har: agent ended ${new Date().toISOString()}` +
                 (signal ? ` (${signal})` : ` (exit ${code})`) + '\n');
-            finish({ status: code === null || code === undefined ? 1 : code, signal: signal });
+            finish(Object.assign({ status: code === null || code === undefined ? 1 : code, signal: signal },
+                stoppedFor ? { stoppedFor } : {}));
         };
         proc.once('exit', (code, signal) => {
             exited = { code, signal };
@@ -3126,10 +3249,15 @@ function driveWithAgent(session, prompt, opts = {}) {
  * that it is "ending the recording", and it does not get to write its exit code
  * onto a session already recorded as ended by something else. So null.
  *
+ * And an agent the RECORDER STOPPED (`result.stoppedFor`, a hand-over: the site
+ * was throttling or blocking it) ended nothing either. Its exit is the
+ * recorder's own doing, and the recording goes on for the human now driving.
+ *
  * @returns {null | {reason: string, warning: string|null}}
  */
 function agentExitEnding(result, recordingEndedBy) {
     if (recordingEndedBy) return null;
+    if (result.stoppedFor) return null;
     if (result.status === 0) return { reason: 'agent-finished', warning: null };
     return {
         reason: 'agent-failed',
@@ -3182,7 +3310,10 @@ async function settleRecorder(recorder, opts = {}) {
  * NOT KILLED. "Nothing in this file kills a process" is older and wider than this
  * feature, and an agent mid-action is a process whose work is somebody's live
  * account. So the operator is told, with the pid, because a warning about a
- * process nobody can find is not actionable.
+ * process nobody can find is not actionable. (The recording ending is never a
+ * reason to stop an agent. The one thing that is -- the site throttling or
+ * blocking the drive while the recording goes on -- is driveWithAgent's
+ * `control.stop`, and an agent stopped that way is not "still running".)
  */
 function agentStillDrivingLines(session) {
     return [
@@ -3214,7 +3345,10 @@ function agentBannerLines(session) {
         ['info', `  Its instructions: ${session.agentPromptPath}\n` +
             `  Its step log:     ${session.agentLogPath}`],
         ['info', '  The recording ends when the agent finishes or hands back. Press ENTER here ' +
-            'to\n  end it sooner.']
+            'to\n  end it sooner.'],
+        ['info', `  Pace: ${pacing.describePace(session.pace || pacing.DEFAULT_PACE)}.\n` +
+            '  If the site throttles or blocks the drive, the agent is stopped and the browser is\n' +
+            '  handed to you -- nothing retries a block or works around a bot check.']
     ];
 }
 
@@ -4320,6 +4454,16 @@ async function start(args) {
         }
     }
     if (browserMode.error) return usage(browserMode.error);
+    // HOW FAST (pacing.js). Presence, not the value, for the same reason as
+    // --ai-tools: a trailing `--pace` is undefined, which must not quietly mean
+    // the default. A value it cannot read is refused rather than guessed -- a
+    // typo must never become "no pacing".
+    if (Object.hasOwn(args, 'pace') && args.pace === undefined) {
+        return usage('--pace needs a value: off, human, or nav=MIN-MAX,action=MIN-MAX,per-minute=N');
+    }
+    const paced = pacing.parsePace(args.pace);
+    if (paced.error) return usage(paced.error);
+    const pace = paced.pace;
     const attached = !!browserMode.attached;
     const nativeBrowser = browserMode.browser === BROWSER_NATIVE;
     // WHO DRIVES (#98). Resolved here, beside WHICH BROWSER, because the two
@@ -4505,7 +4649,10 @@ async function start(args) {
             : nativeBrowser ? `http://127.0.0.1:${port}` : `http://localhost:${port}`,
         port,
         requestedPort,
-        snapshotSeconds: snapshotMs / 1000
+        snapshotSeconds: snapshotMs / 1000,
+        // The pace this run's own steps were taken at, and an agent was told
+        // to keep -- on every session, because every run signs in at it.
+        pace
     };
 
     // ONLY WHEN ONE WAS ASKED FOR (#98). A hand-driven capture's session.json
@@ -4789,8 +4936,6 @@ async function start(args) {
     const recorder = new IncrementalRecorder(paths.recordLog, snapshotMs);
     // Only where the browser is not this run's own: see createCaptureScope.
     const scope = cdpBrowser ? createCaptureScope(args.uri) : null;
-    attachRecorder(context, recorder, scope);
-    recorder.start();
 
     // Armed BEFORE the first navigation. A window closed while `goto` is still
     // in flight emits `close` on an emitter with no listeners, and Node drops
@@ -4798,6 +4943,66 @@ async function start(args) {
     // holding the port and reporting `recording: true`.
     let reason = null;
     const settle = (r) => { if (!reason) reason = r; };
+    // Set once the terminal is known (below): whether a hand-over has a human
+    // to hand to, or has to end the recording instead.
+    let humanAtTerminal = false;
+
+    // PACING AND THROTTLING (pacing.js; "## Pacing" at the top). The pacer
+    // times what THIS process does to a page; the monitor reads every recorded
+    // response from the site; the rate watch only WATCHES an agent, whose
+    // actions are its own.
+    const pacer = pacing.createPacer(pace);
+    const throttleMonitor = pacing.createThrottleMonitor();
+    const agentRate = ai ? pacing.createRateWatch(pace.perMinute) : null;
+    const agentControl = {};
+    const site = captureSite(args.uri);
+    const writeSession = () => writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+    const onThrottle = (decision) => {
+        if (!decision || decision.action === 'none' || reason) return;
+        const s = decision.signal;
+        const record = {
+            at: new Date().toISOString(), kind: s.kind, status: s.status, url: urlForRecord(s.url),
+            signature: s.signature, retryAfterMs: s.retryAfterMs, action: decision.action
+        };
+        if (decision.action === 'pause') record.waitMs = decision.waitMs;
+        if (decision.why) record.why = decision.why;
+        (session.throttle = session.throttle || []).push(record);
+        // Who is driving decides what a signal MEANS. An agent still running
+        // is stopped on a hand-over; anything else is a person's browser.
+        const agentDriving = ai && session.agentExitCode === undefined && !session.agentStopped;
+        if (decision.action === 'pause') {
+            pacer.pauseFor(decision.waitMs);
+            log.lines(pacing.throttleLines(decision, agentDriving ? 'agent' : 'you'));
+        } else {
+            session.handOver = Object.assign({}, record, { by: agentDriving ? 'agent-stopped' : 'advice' });
+            if (agentDriving) {
+                session.agentStopped = 'hand-over';
+                if (agentControl.stop) agentControl.stop('hand-over');
+                log.lines(pacing.throttleLines(decision, 'agent'));
+                if (!humanAtTerminal) {
+                    log.warn('capture-har: nobody is at this terminal to take over, so the recording ' +
+                        'ends here and what it holds is post-processed.');
+                    settle('handed-over');
+                }
+            } else {
+                log.lines(pacing.throttleLines(decision, 'you'));
+            }
+        }
+        writeSession();
+    };
+    attachRecorder(context, recorder, scope, {
+        onResponse: (info) => {
+            if (agentRate && info.isDocument && session.agentExitCode === undefined &&
+                !session.agentStopped && agentRate.note()) {
+                log.warn(`capture-har: the agent is navigating faster than the pace allows (more than ` +
+                    `${pace.perMinute} pages in a minute).\n  It is told to keep to the pace; the ` +
+                    'recorder can watch it, not slow it down.');
+            }
+            onThrottle(throttleMonitor.observe(pacing.classifyResponse(
+                Object.assign({}, info, { onSite: onCaptureSite(site, info.url) }))));
+        }
+    });
+    recorder.start();
     context.on('close', () => settle(nativeBrowser ? 'browser-closed' : 'window-closed'));
     // THE DISCONNECT IS AN ENDING (#73). Over CDP, a browser the operator quits
     // reaches us as a dropped connection rather than as a context close, and a
@@ -4829,6 +5034,7 @@ async function start(args) {
         });
     }
     const terminal = createTerminal(rl, isTty);
+    humanAtTerminal = !!rl;
     if (rl) {
         enterPressed = new Promise((resolve) => rl.on('line', (line) => {
             if (terminal.take(line)) return;
@@ -4839,6 +5045,9 @@ async function start(args) {
     const signInWatcher = signIn.createSignInWatcher(context, {
         uri: args.uri,
         inScope: scope ? (p) => scope.owns(p) : null,
+        // One step at a time, at the action pace -- and after a throttle,
+        // not before the site's Retry-After has passed.
+        pace: pacer,
         resolve: (host) => signIn.resolveCredentials(host, signIn.createBitwarden(), terminal),
         say: (lines) => log.lines(lines.map((l) => ['info', l])),
         onUnattended: (host) => {
@@ -4885,7 +5094,9 @@ async function start(args) {
     // Rule 1 of the scope, claimed BEFORE the first navigation so the target's
     // own document is recorded.
     if (scope) scope.claim(page);
-    await page.goto(args.uri, { waitUntil: 'domcontentloaded' }).catch((e) => {
+    // Through the pacer like every navigation this process makes. It is the
+    // first, so it does not wait -- the pacer exists for the ones after it.
+    await pacer.navigate(() => page.goto(args.uri, { waitUntil: 'domcontentloaded' })).catch((e) => {
         log.warn(`capture-har: initial navigation failed (${e.message}); recording anyway`);
     });
     // Not awaited: a prompt here must not hold back the banner or the endings.
@@ -4924,7 +5135,15 @@ async function start(args) {
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
         log.lines(agentBannerLines(session));
-        endings.push(driveWithAgent(session, prompt).then((result) => {
+        endings.push(driveWithAgent(session, prompt, { control: agentControl }).then((result) => {
+            // AN AGENT THE RECORDER STOPPED ENDED NOTHING EITHER (a hand-over:
+            // the site was throttling or blocking it). The recording is the
+            // human's now, and goes on until THEY end it -- so this promise must
+            // not resolve the race. It waits for whatever ending does.
+            if (result.stoppedFor) {
+                session.agentExitCode = result.status;
+                return (async () => { while (!reason) await sleep(POLL_MS); })();
+            }
             // AN AGENT THAT OUTLIVED THE RECORDING ENDED NOTHING. When ENTER, the
             // stop command or a closed window got there first, the operator was
             // already told the agent is still running (agentStillDrivingLines),
@@ -4971,11 +5190,13 @@ async function start(args) {
     // AND THE OTHER DIRECTION: this run ended first, and the agent did not. Said
     // before the recorder is torn down, because from here on what the agent does
     // is not being recorded -- and nothing killed it (see agentStillDrivingLines).
-    if (ai && session.agentExitCode === undefined) {
+    if (ai && session.agentExitCode === undefined && !session.agentStopped) {
         log.lines(agentStillDrivingLines(session));
     }
 
-    if (reason === 'agent-finished' || reason === 'agent-failed') {
+    // A hand-over with nobody at the terminal ends the recording the instant
+    // the site refused -- so the refusal itself may still be in flight.
+    if (reason === 'agent-finished' || reason === 'agent-failed' || reason === 'handed-over') {
         const settled = await settleRecorder(recorder);
         if (!settled.drained) {
             log.warn('capture-har: some requests were still being recorded when the agent ' +
