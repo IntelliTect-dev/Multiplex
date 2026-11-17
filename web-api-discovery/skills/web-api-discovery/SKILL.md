@@ -764,14 +764,10 @@ the recorder says nothing more about the site for the rest of that recording.
 **Generated clients** carry the same rules in their own pipeline -- see
 **Pacing and throttling in the generated client** in Phase 6.
 
-**Known exceptions, awaiting an owner decision.** Three older parts of the
-generated wrapper sit on the wrong side of this line and were deliberately not
-changed with it: `Client.cs.tmpl` sends a fixed Chrome `User-Agent` string;
-Phase 6 below says to emit the full browser header set (`sec-ch-ua*`,
-`sec-fetch-*`) because anti-bot stacks gate on it; and the generated README's
-**Anti-bot challenge warning** suggests a warm-up `GET` and "retry once" on a
-challenge (the generated client itself never retries one -- it raises
-`<Name>BlockedException`).
+The generated wrapper keeps the same line: its client names itself in its
+`User-Agent` and sends no browser fingerprint headers, and its README answers
+bot management with `<Name>BlockedException` and a fresh signed-in session,
+never a warm-up request or a retry.
 
 ### Signing in
 
@@ -2185,15 +2181,19 @@ Generated rules:
   user marks them stable.
 - MCP tool descriptions are first-drafted from `(method, path-template,
   response keys, query params)` with `// TODO: refine`.
-- **Emit the full browser header set on every generated request by
-  default**, not just cookies. Modern anti-bot stacks gate authenticated
-  GETs on Sec-Fetch / client-hint headers (`sec-ch-ua*`, `sec-fetch-dest`,
-  `sec-fetch-mode`, `sec-fetch-site`, `sec-fetch-user`,
-  `upgrade-insecure-requests`) as well as the session cookie. A bare `400`
-  with a small, generic body when replaying a captured request is the
-  signature of a missing-header problem, not a stale-credential problem --
-  document this explicitly in the generated troubleshooting notes so it
-  isn't misdiagnosed as a re-auth bug.
+- **Send only the headers the API needs, under the client's own name.** A
+  generated request carries the session (cookie or bearer), the CSRF token
+  when there is one, `Accept` / `Content-Type`, the `Origin` /
+  `X-Requested-With` a site's CSRF checks look for, and any header the API
+  itself requires on every captured call (an app-version or app-info header,
+  say). Its `User-Agent` is `<Name>/<version>`, changeable through
+  `PacingOptions.UserAgent`. It **never** sends a browser `User-Agent` or
+  browser fingerprint headers (`sec-ch-ua*`, `sec-fetch-*`,
+  `upgrade-insecure-requests`). A bare `400` on replay can be a missing
+  app-specific header -- compare with the capture -- but a call that works
+  only with the fingerprint headers means the site is checking for a
+  browser: treat that as a block and say so in the generated notes. Do not
+  add them.
 - **Detect and model multi-step resumable upload protocols** rather than
   assuming a single-request wrapper. Media upload endpoints commonly follow
   a five-phase shape: (1) start session -> returns an upload/video id plus
@@ -2277,8 +2277,8 @@ the site said:
 
 The defaults come from `PacingOptions.FromEnvironment()`, which reads
 `<NAME>_PACING_MIN_SPACING_MS`, `_JITTER_MS`, `_MAX_CONCURRENCY`,
-`_MAX_ATTEMPTS`, `_MAX_RETRY_AFTER_SECONDS` and `_RETRY_METHODS`
-(`GET,HEAD,PUT`), refusing a value it cannot parse. The MCP server registers
+`_MAX_ATTEMPTS`, `_MAX_RETRY_AFTER_SECONDS`, `_RETRY_METHODS`
+(`GET,HEAD,PUT`) and `_USER_AGENT`, refusing a value it cannot parse. The MCP server registers
 those options and builds the client with them. Code passes a `PacingOptions` to
 the `(session, pacing, innerHandler, log)` constructor; the
 `(session, HttpClient)` overload stays a bring-your-own pipeline, which is what
@@ -2620,9 +2620,7 @@ The skill's final user-visible output is:
   `navigator.webdriver` or stealth patches, no CAPTCHA solving, no retrying a
   403 or a challenge until it clears -- in the capture tooling or the agent's
   prompt; and a generated client never retries a block. Pace politely, honour
-  `Retry-After`, and when the site says no, stop and hand it to a person. (The
-  generated client's older browser-shaped headers are a known exception
-  awaiting a decision -- see **Pacing, throttling, and where the line is**.)
+  `Retry-After`, and when the site says no, stop and hand it to a person.
 
 ## Reference projects
 
