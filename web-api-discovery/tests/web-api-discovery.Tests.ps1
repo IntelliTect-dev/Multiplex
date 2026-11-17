@@ -82,6 +82,7 @@ Describe 'web-api-discovery SKILL.md' {
         # unconditional then and not a moment sooner.
         $workflows = @(
             Get-ChildItem -Path (Join-Path $script:RepoRoot '.github/workflows') -Filter '*.yml' -ErrorAction SilentlyContinue
+            Get-ChildItem -Path (Join-Path $script:RepoRoot '..' '.github/workflows') -Filter '*.yml' -ErrorAction SilentlyContinue
             Get-ChildItem -Path (Join-Path $script:RepoRoot 'templates') -Recurse -Filter '*.yml.tmpl' -ErrorAction SilentlyContinue
         )
         $wired = @($workflows | Where-Object {
