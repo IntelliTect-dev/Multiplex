@@ -19,7 +19,10 @@ param(
     [string] $ExpectEmail,
     [string] $ToolName = 'tripit_get_profile',
     [hashtable] $ToolArguments = @{},
-    [string] $ClientMetadataUrl)
+    [string] $ClientMetadataUrl,
+    # Also create a private, dated throwaway trip and delete it through the confirm step.
+    # Use only with a test account.
+    [switch] $WriteCheck)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $BaseUrl = $BaseUrl.TrimEnd('/')
@@ -169,6 +172,49 @@ Step "tools/call $ToolName" {
     $text = (@($res.content) | Where-Object type -eq 'text' | ForEach-Object text) -join "`n"
     if ($ExpectEmail -and $text -notmatch [regex]::Escape($ExpectEmail)) { throw 'the expected account email is not in the result' }
 } | Out-Null
+
+if ($WriteCheck) {
+    # Writes to the signed-in account: one private, dated throwaway trip, deleted again.
+    function Invoke-Tool([string] $name, [hashtable] $arguments) {
+        $res = Invoke-Mcp 'tools/call' @{ name = $name; arguments = $arguments } (Get-Random -Minimum 100 -Maximum 100000)
+        $text = (@($res.content) | Where-Object type -eq 'text' | ForEach-Object text) -join "`n"
+        [pscustomobject]@{ IsError = [bool]($res.PSObject.Properties['isError'] -and $res.isError); Text = $text }
+    }
+    $start = (Get-Date).AddDays(400).ToString('yyyy-MM-dd')
+    $tripName = "ZZ Multiplex connect test $(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    $tripUuid = $null
+    try {
+        $tripUuid = Step 'write: create a private throwaway trip' {
+            $r = Invoke-Tool 'tripit_create_trip' @{ destination = 'Reykjavik, Iceland'; startDate = $start; endDate = (Get-Date).AddDays(402).ToString('yyyy-MM-dd'); name = $tripName }
+            if ($r.IsError) { throw $r.Text }
+            if ($r.Text -notmatch '"uuid"\s*:\s*"(?<u>[0-9a-fA-F-]{36})"') { throw "no trip uuid in: $($r.Text.Substring(0, [Math]::Min(200, $r.Text.Length)))" }
+            $Matches['u']
+        }
+        $confirm = Step 'write: delete without confirmation only previews' {
+            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = $tripName }
+            if ($r.Text -notmatch '"?confirm_token"?\s*[:=]\s*"?(?<t>[A-Za-z0-9_\-]{20,})') { throw "no confirm_token in: $($r.Text.Substring(0, [Math]::Min(300, $r.Text.Length)))" }
+            $token = $Matches['t']
+            $still = Invoke-Tool 'tripit_get_trip' @{ tripUuid = $tripUuid }
+            if ($still.IsError) { throw 'the trip is gone after a preview' }
+            $token
+        }
+        Step 'write: a token for other arguments is refused' {
+            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = "$tripName (changed)"; confirm_token = $confirm }
+            if (-not $r.IsError) { throw 'a confirm token was accepted for different arguments' }
+        } | Out-Null
+        Step 'write: delete with the confirm token' {
+            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = $tripName; confirm_token = $confirm }
+            if ($r.IsError) { throw $r.Text }
+            $gone = Invoke-Tool 'tripit_get_trip' @{ tripUuid = $tripUuid }
+            if (-not $gone.IsError) { throw 'the trip still exists after a confirmed delete' }
+            $script:tripUuid = $null
+        } | Out-Null
+    }
+    finally {
+        if ($tripUuid) { Write-Host "NOTE  throwaway trip '$tripName' ($tripUuid) may still exist on the account; delete it by hand." }
+    }
+}
+
 Step 'refresh token rotation' {
     $new = Invoke-RestMethod $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
         grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
