@@ -103,6 +103,8 @@ working around it.
 - **Generated clients** carry a `PacingHandler`: one request at a time, about a
   second apart, `Retry-After` honoured, retries only for `GET`/`HEAD` (never
   `POST`), a clear exception when retries run out, and a block never retried.
+  They name themselves in their `User-Agent` (`<Name>/<version>`, which you can
+  change) and send no browser fingerprint headers.
 
 The skill's full instructions are in
 [`skills/web-api-discovery/SKILL.md`](skills/web-api-discovery/SKILL.md) --

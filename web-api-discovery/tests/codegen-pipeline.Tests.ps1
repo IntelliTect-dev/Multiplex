@@ -136,6 +136,43 @@ Describe 'pacing + throttling handler in the generated client' {
     }
 }
 
+Describe 'the generated client says what it is' {
+    # The boundary in SKILL.md ("Pacing, throttling, and where the line is"):
+    # a generated client names itself and sends only the headers the API needs.
+    # Nothing it sends is there to pass for a browser. The generated project's
+    # own PacingHandlerTests check the headers on a real request; these check
+    # the emitted source and README. Only src/ is scanned: the generated tests
+    # name the forbidden strings in order to assert they are absent.
+    BeforeAll {
+        $script:IdOut = New-OutDir
+        $script:IdRes = Invoke-Gen -Har @($script:RestHar) -Out $script:IdOut
+        $script:IdSources = @(Get-ChildItem (Join-Path $script:IdOut 'src') -Recurse -File -Filter '*.cs' |
+            ForEach-Object { [pscustomobject]@{ Name = $_.Name; Body = (Get-Content $_.FullName -Raw) } })
+    }
+    AfterAll {
+        if (Test-Path $script:IdOut) { Remove-Item -Recurse -Force $script:IdOut }
+    }
+    It 'emits client source to check' {
+        $script:IdRes.ExitCode | Should -Be 0 -Because $script:IdRes.Output
+        $script:IdSources.Name | Should -Contain 'Client.cs'
+    }
+    It 'sends no browser User-Agent' {
+        foreach ($f in $script:IdSources) {
+            $f.Body | Should -Not -Match 'Mozilla/\d|AppleWebKit|Chrome/\d|Safari/\d|Gecko\)' -Because "$($f.Name) must not carry a browser's User-Agent"
+        }
+    }
+    It 'sends no browser fingerprint headers' {
+        foreach ($f in $script:IdSources) {
+            $f.Body | Should -Not -Match '(?i)sec-ch-ua|sec-fetch-|upgrade-insecure-requests' -Because "$($f.Name) must not send browser fingerprint headers"
+        }
+    }
+    It 'the README says what the client calls itself and how to name your own deployment' {
+        $readme = Get-Content (Join-Path $script:IdOut 'README.md') -Raw
+        $readme | Should -Match 'ExampleEx/<version>'
+        $readme | Should -Match 'EXAMPLEEX_PACING_USER_AGENT'
+    }
+}
+
 Describe 'endpoint-dedup' {
     It 'collapses /users/{int} into a single method with id param' {
         $out = New-OutDir

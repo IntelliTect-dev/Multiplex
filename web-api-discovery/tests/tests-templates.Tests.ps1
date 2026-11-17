@@ -130,7 +130,10 @@ Describe "Codegen integration: emits test project" {
             'PUT_and_DELETE_are_retried_only_when_configured',
             'A_block_from_the_edge_is_never_retried',
             'PacingOptions_None_adds_no_wait',
-            'The_client_sends_through_the_pacing_handler')) {
+            'The_client_sends_through_the_pacing_handler',
+            'The_client_names_itself_and_sends_no_browser_fingerprint',
+            'The_User_Agent_is_whatever_the_options_say',
+            'A_User_Agent_that_is_not_one_is_refused')) {
             $body | Should -Match ([regex]::Escape($fact)) -Because "PacingHandlerTests must keep the fact $fact"
         }
         $body | Should -Match 'ExampleExThrottledException' -Because 'the exception carries the project name'
