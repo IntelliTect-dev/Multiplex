@@ -80,6 +80,6 @@ public sealed class McpToolsTests
     public async Task RawGet_only_allows_api_v2_paths()
     {
         var (client, _, _) = FakeTripIt.Create();
-        await Assert.ThrowsAsync<ArgumentException>(() => new TripItTools(client).RawGet("/account/edit"));
+        await Assert.ThrowsAsync<ArgumentException>(() => new TripItRawTools(client).RawGet("/account/edit"));
     }
 }
