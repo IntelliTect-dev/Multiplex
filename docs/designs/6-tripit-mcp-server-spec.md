@@ -189,7 +189,7 @@ metadata and the 401 challenge).
 ### 5.2 Layer 2: Multiplex → TripIt (browser session, server-held)
 
 - One persistent Chrome profile per TripIt account under
-  `%LOCALAPPDATA%\Multiplex\sites\tripit\profiles\<account-id>`, owned by the server (Chrome
+  `%LOCALAPPDATA%\Multiplex\data\sites\tripit\profiles\<account-id>`, owned by the server (Chrome
   locks a profile to one process).
 - After sign-in the server reads the cookie jar over CDP (never intercepted request headers,
   which lack the `httpOnly` session cookies), plus the CSRF token and the SPA's request
@@ -397,3 +397,47 @@ testing), modelcontextprotocol.io/specification/2026-07-28, developers.openai.co
 6. Install script, integration tests, live end-to-end test on the test account, public-URL
    check.
 7. Throttling handling in the web-api-discovery skill (separate change).
+
+## 14. As built and verified (2026-11-17)
+
+Everything in section 13 except the public-URL check is built on this branch.
+
+**Verified against real TripIt with the dedicated test account**, through the real server
+(published build, Production settings) and `scripts/Test-MultiplexConnect.ps1 -WriteCheck`:
+the 401 challenge and both discovery documents; dynamic registration; authorize through the
+owner passcode and **Continue as** the held account (which re-checks the live TripIt session);
+token exchange with PKCE; `initialize`; `tools/list` (29 tools); `tripit_get_profile`
+returning the test account; creating a throwaway trip, a delete that only previews, a confirm
+token refused for other arguments, the confirmed delete; refresh-token rotation and refusal
+of the spent token. The imported library's own live suite also passed on that account (25
+passed, 1 skipped), including every write test.
+
+**Verified with a stub sign-in site** (automated tests, real Chrome): the live mirrored
+sign-in end to end from a simulated touch phone (passcode, taps, typing, redirect back with a
+code), allowlist rejection, gate lockout, the navigation lock, timeouts and the refresher's
+signed-out path.
+
+**Found while building, now part of the design:**
+
+- TripIt answers headless Chrome with "Access Denied" on its app pages. TripIt's server
+  browser therefore runs as a normal visible window by default
+  (`Multiplex:Sites:tripit:Headless=false`); nothing disguises it. A session refresh briefly
+  opens that window on the PC.
+- TripIt's only third-party sign-in is Google; allowed navigation hosts default to
+  `www.tripit.com`, `tripit.com`, `accounts.google.com`.
+- Allowlist matching uses only email addresses TripIt marks confirmed.
+- "Keep me signed in" must be ticked during the mirrored sign-in, or the session ends when
+  the browser closes; the page says so.
+- **Continue as** lets a reconnect (an expired Claude/ChatGPT grant) skip retyping the TripIt
+  password while the server's TripIt session is still valid; it is behind the passcode.
+- The server listens on `localhost` (both 127.0.0.1 and ::1); listening only on 127.0.0.1
+  cost every `localhost` request about 2 s, against Claude's ~10 s discovery limit.
+- Loopback redirect URIs match on any port (RFC 8252): Claude Code and `mcp-remote` register
+  once and pick a free port each sign-in.
+- One app-wide Data Protection key ring, keys encrypted with DPAPI.
+
+**Not verified yet (needs the owner):** the internet-facing address (Tailscale Funnel not yet
+enabled; the Cloudflare tool's install is waiting on an administrator prompt); adding the
+connector in Claude and ChatGPT, on the web and on a phone; a real TripIt password sign-in
+through the mirrored page on a phone (including Google sign-in and CAPTCHAs); ChatGPT plan
+limits for write tools.
