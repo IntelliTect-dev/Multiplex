@@ -59,8 +59,9 @@ internal static class FakeTripIt
     {
         var handler = new FakeHandler();
         var store = FileSessionStore.CreateTemp(cookie);
-        var session = new TripItSession(store);
-        var client = new TripItClient(session, new HttpClient(handler), null, refresher?.Invoke(store));
+        // Only the temp store: never the developer's environment variables or ~/.tripit-mcp/session.json.
+        var sessions = new LocalSessionProvider(store, refresher?.Invoke(store), useEnvironmentAndFile: false);
+        var client = new TripItClient(sessions, new HttpClient(handler));
         return (client, handler, store);
     }
 }

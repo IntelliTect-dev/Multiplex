@@ -265,12 +265,20 @@ tools/
 
 ## Functional tests
 
-`dotnet test` skips backend tests by default. To run them locally, set
-`TRIPIT_COOKIE` (and optionally `TRIPIT_CSRF`) or run `Connect-TripIt -StoreLocation UserSecrets`
-first; the test fixture auto-loads from user-secrets.
+`dotnet test` skips backend tests by default. They run only against a dedicated **test**
+account, never whatever session happens to be on the machine:
 
-In CI, push the secrets via `Sync-TripItSecretToGitHub` and trigger the
-`Functional tests (live API)` workflow manually.
+```powershell
+$env:TRIPIT_TEST_SESSION_FILE = 'C:\path\to\test-session.json'   # snapshot of the TEST account
+$env:TRIPIT_TEST_ACCOUNT      = '<the test account email>'        # required when the file is set
+$env:TRIPIT_ALLOW_WRITES      = '1'                               # only for the write tests
+dotnet test tests/TripIt.FunctionalTests
+```
+
+The fixture loads only that file (no user secrets, no `TRIPIT_COOKIE`, no
+`~/.tripit-mcp/session.json`, no refresher), then reads the profile and requires one of its
+email addresses to equal `TRIPIT_TEST_ACCOUNT`. A mismatch or a missing variable fails every
+test loudly instead of running against another account.
 
 ## Notes & limitations
 
