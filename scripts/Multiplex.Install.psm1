@@ -12,6 +12,17 @@ function Get-MultiplexRoot {
     return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Multiplex'
 }
 
+function ConvertTo-MultiplexAccountList {
+    <#
+    Account emails for the allowlist: trimmed, lower-cased, de-duplicated and sorted. Accepts
+    separate values or one comma/semicolon separated value, because `pwsh -File script.ps1
+    -AllowedAccount a,b` passes "a,b" as a single string rather than an array.
+    #>
+    [CmdletBinding()] [OutputType([string[]])] param([string[]] $Account)
+    @($Account | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim().ToLowerInvariant() } |
+        Where-Object { $_ } | Sort-Object -Unique)
+}
+
 function New-MultiplexPasscode {
     <# A random passcode that is easy to type on a phone: 4 groups of 4 lowercase letters/digits. #>
     [CmdletBinding()] [OutputType([string])] param()
