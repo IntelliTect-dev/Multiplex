@@ -3,7 +3,7 @@ using ModelContextProtocol.Server;
 using Multiplex.Web.Mcp;
 using TripIt.Tools;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
 /// <summary>
 /// Read-only TripIt tools at <c>/tripit/mcp</c>, acting for the request's signed-in TripIt

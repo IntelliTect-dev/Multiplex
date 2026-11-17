@@ -1,16 +1,16 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using Multiplex.Web.Servers.TripIt;
+using Multiplex.Web.Services.TripIt;
 
-namespace Multiplex.Tests.Servers.TripIt;
+namespace Multiplex.Tests.Services.TripIt;
 
 /// <summary>
-/// The TripIt server at <c>/tripit/mcp</c>, driven with real MCP JSON-RPC over HTTP against
+/// The TripIt service at <c>/tripit/mcp</c>, driven with real MCP JSON-RPC over HTTP against
 /// a fake TripIt: tool list and annotations, per-account sessions, refresh on rejection,
 /// sign-out, the confirm step, and short error messages.
 /// </summary>
-public sealed class TripItServerTests : IDisposable
+public sealed class TripItServiceTests : IDisposable
 {
     private const string TripUuid = "11111111-aaaa-9000-0001-000000000001";
     private const string OtherTripUuid = "11111111-aaaa-9000-0001-000000000009";
@@ -293,7 +293,7 @@ public sealed class TripItServerTests : IDisposable
         // 302 would hide a rotated session.
         using var host = new TripItTestHost(fakeTripIt: false);
         var handler = host.Services.GetRequiredService<IHttpMessageHandlerFactory>()
-            .CreateHandler(TripItServerRegistration.HttpClientName);
+            .CreateHandler(TripItServiceRegistration.HttpClientName);
 
         var chain = new List<HttpMessageHandler>();
         for (HttpMessageHandler? h = handler; h is not null; h = (h as DelegatingHandler)?.InnerHandler) chain.Add(h);

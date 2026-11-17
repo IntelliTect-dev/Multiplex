@@ -2,7 +2,7 @@ using System.ComponentModel;
 using ModelContextProtocol.Server;
 using Multiplex.Web.Mcp;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
 /// <summary>
 /// TripIt tools that change data, at <c>/tripit/mcp</c>, for the request's signed-in account.

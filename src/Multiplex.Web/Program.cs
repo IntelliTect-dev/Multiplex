@@ -1,7 +1,7 @@
 using Multiplex.Web.Auth;
 using Multiplex.Web.Mcp;
-using Multiplex.Web.Servers.TripIt;
-using Multiplex.Web.Servers.TripIt.SignIn;
+using Multiplex.Web.Services.TripIt;
+using Multiplex.Web.Services.TripIt.SignIn;
 using Multiplex.Web.SignIn;
 
 // `hash-passcode` prints a connect-passcode hash for the installer and exits; no web server.
@@ -18,7 +18,7 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 builder.Services.AddMultiplexAuth(builder.Configuration).RequireAuthFor("tripit", "TripIt");
-builder.Services.AddTripItServer(builder.Configuration);
+builder.Services.AddTripItService(builder.Configuration);
 builder.Services.AddSiteSignIn(builder.Configuration).AddSite<TripItSignInDefinition>();
 
 // Stateless Streamable HTTP: no Mcp-Session-Id, safe behind a load balancer without sticky sessions.

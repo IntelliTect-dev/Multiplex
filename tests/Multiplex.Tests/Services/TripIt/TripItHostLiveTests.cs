@@ -1,10 +1,10 @@
 using System.Text.Json;
 using Xunit.Abstractions;
 
-namespace Multiplex.Tests.Servers.TripIt;
+namespace Multiplex.Tests.Services.TripIt;
 
 /// <summary>
-/// The hosted TripIt server against the real TripIt, signed in as the dedicated TEST account.
+/// The hosted TripIt service against the real TripIt, signed in as the dedicated TEST account.
 /// Opt-in, same guard as the library's live tests: <c>TRIPIT_TEST_SESSION_FILE</c> (a session
 /// snapshot of the test account) and <c>TRIPIT_TEST_ACCOUNT</c> (its email; required with the
 /// file). The first call checks the profile's email addresses and fails before anything else

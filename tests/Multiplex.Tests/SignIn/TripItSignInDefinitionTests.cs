@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Configuration;
-using Multiplex.Web.Servers.TripIt.SignIn;
+using Multiplex.Web.Services.TripIt.SignIn;
 
 namespace Multiplex.Tests.SignIn;
 

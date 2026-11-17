@@ -6,7 +6,7 @@ using Multiplex.Web.Sites;
 using PuppeteerSharp;
 using TripIt.Json;
 
-namespace Multiplex.Web.Servers.TripIt.SignIn;
+namespace Multiplex.Web.Services.TripIt.SignIn;
 
 /// <summary>
 /// How TripIt's sign-in looks to the generic connect machinery. Observed 2026-11-17 with a

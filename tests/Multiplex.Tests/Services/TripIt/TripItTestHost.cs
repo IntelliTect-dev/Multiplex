@@ -1,27 +1,27 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Multiplex.Web.Servers.TripIt;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Web.Auth.Store;
+using Multiplex.Web.Services.TripIt;
 using Multiplex.Web.Sites;
 
-namespace Multiplex.Tests.Servers.TripIt;
+namespace Multiplex.Tests.Services.TripIt;
 
 /// <summary>
-/// Multiplex with its real MCP pipeline at <c>/tripit/mcp</c>, but with a test authentication
-/// scheme (the account comes from an <c>X-Test-Account</c> header), in-memory session store
-/// and refresher, and a fake TripIt behind the real pacing handler. It does not depend on the
-/// Auth/ or SignIn/ parts.
+/// Multiplex with its real MCP pipeline and its real OAuth protection at <c>/tripit/mcp</c>:
+/// each test account gets a bearer token through the actual register, authorize and token
+/// endpoints (the connect pages' part is played by <see cref="IAuthorizationCompleter"/>),
+/// with an in-memory auth store, in-memory session store and refresher, and a fake TripIt
+/// behind the real pacing handler.
 /// </summary>
 public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFactory<Program>
 {
@@ -35,21 +35,25 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("Multiplex:DataPath", _dataPath);
+        builder.UseSetting("Multiplex:PublicBaseUrl", BaseUrl);
+        builder.UseSetting("Multiplex:Auth:RegisterPermitLimit", "10000");
+        builder.UseSetting("Multiplex:Auth:TokenPermitLimit", "10000");
+        builder.UseSetting("Multiplex:Auth:AuthorizePermitLimit", "10000");
         if (fakeTripIt)
         {
-            builder.UseSetting($"{TripItServerOptions.Section}:MinRequestSpacingMs", "0");
-            builder.UseSetting($"{TripItServerOptions.Section}:RequestJitterMs", "0");
+            builder.UseSetting($"{TripItServiceOptions.Section}:MinRequestSpacingMs", "0");
+            builder.UseSetting($"{TripItServiceOptions.Section}:RequestJitterMs", "0");
         }
         builder.ConfigureTestServices(services =>
         {
-            services.AddAuthentication(TestAuth.SchemeName)
-                .AddScheme<AuthenticationSchemeOptions, TestAuth>(TestAuth.SchemeName, _ => { });
+            services.RemoveAll<IAuthStore>();
+            services.AddSingleton<IAuthStore, InMemoryAuthStore>();
             services.AddSingleton<ISiteSessionStore>(Store);
             // Live runs have no browser to refresh from: a rejected session must not look like a sign-out.
             if (fakeTripIt) services.AddSingleton<ISiteSessionRefresher>(Refresher);
             if (fakeTripIt)
             {
-                services.AddHttpClient(TripItServerRegistration.HttpClientName)
+                services.AddHttpClient(TripItServiceRegistration.HttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => TripIt);
             }
             if (Clock is { } clock) services.AddSingleton(clock);
@@ -63,34 +67,55 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
     public static string Snapshot(string cookie)
         => JsonSerializer.Serialize(new { cookie, csrf_token = "csrf-" + cookie, spa_headers = new Dictionary<string, string> { ["user-agent"] = "Test" }, captured_at = "2026-11-17T08:00:00Z" });
 
-    /// <summary>An MCP JSON-RPC client for one account (null: unauthenticated).</summary>
-    public McpTestClient McpFor(string? account) => new(CreateClient(), account);
+    public const string BaseUrl = "https://mcp.example.test";
+    private readonly ConcurrentDictionary<string, Task<string>> _tokens = new();
+
+    /// <summary>An MCP JSON-RPC client for one account (null: no token at all).</summary>
+    public McpTestClient McpFor(string? account) =>
+        new(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }),
+            account is null ? null : () => _tokens.GetOrAdd(account, TokenForAsync));
+
+    /// <summary>Connects as <paramref name="account"/> the way Claude does and returns the access token.</summary>
+    private async Task<string> TokenForAsync(string account)
+    {
+        using var http = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        const string redirect = "https://claude.ai/api/mcp/auth_callback";
+        var registration = await http.PostAsync("/oauth/register", new StringContent(
+            JsonSerializer.Serialize(new { client_name = "Claude", redirect_uris = new[] { redirect }, token_endpoint_auth_method = "none" }),
+            Encoding.UTF8, "application/json"));
+        registration.EnsureSuccessStatusCode();
+        var clientId = JsonDocument.Parse(await registration.Content.ReadAsStringAsync()).RootElement.GetProperty("client_id").GetString()!;
+
+        var verifier = Base64Url(RandomNumberGenerator.GetBytes(32));
+        var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+        var authorize = QueryHelpers.AddQueryString("/oauth/authorize", new Dictionary<string, string?>
+        {
+            ["response_type"] = "code", ["client_id"] = clientId, ["redirect_uri"] = redirect, ["state"] = "s",
+            ["code_challenge"] = challenge, ["code_challenge_method"] = "S256", ["resource"] = BaseUrl + "/tripit/mcp",
+        });
+        var connect = await http.GetAsync(authorize);
+        Assert.Equal(HttpStatusCode.Redirect, connect.StatusCode);
+        var pendingId = QueryHelpers.ParseQuery(new Uri(new Uri(BaseUrl), connect.Headers.Location!).Query)["p"].ToString();
+
+        var completer = Services.GetRequiredService<IAuthorizationCompleter>();
+        var back = await completer.CompleteAsync(pendingId, new SiteAccount("tripit", account, [], account), CancellationToken.None);
+        var code = QueryHelpers.ParseQuery(back.Query)["code"].ToString();
+
+        var token = await http.PostAsync("/oauth/token", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = redirect,
+            ["client_id"] = clientId, ["code_verifier"] = verifier, ["resource"] = BaseUrl + "/tripit/mcp",
+        }));
+        token.EnsureSuccessStatusCode();
+        return JsonDocument.Parse(await token.Content.ReadAsStringAsync()).RootElement.GetProperty("access_token").GetString()!;
+    }
+
+    private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
         try { Directory.Delete(_dataPath, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-    }
-}
-
-/// <summary>Authenticates from <c>X-Test-Account</c>, putting the SiteClaims Auth/ would set.</summary>
-public sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
-    : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
-{
-    public const string SchemeName = "Test";
-
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
-    {
-        if (!Request.Headers.TryGetValue("X-Test-Account", out var account) || string.IsNullOrEmpty(account))
-            return Task.FromResult(AuthenticateResult.NoResult());
-        var site = Request.Headers.TryGetValue("X-Test-Site", out var s) ? s.ToString() : "tripit";
-        var identity = new ClaimsIdentity(
-        [
-            new Claim(SiteClaims.Site, site),
-            new Claim(SiteClaims.AccountId, account.ToString()),
-            new Claim(SiteClaims.ClientId, "test-client"),
-        ], SchemeName);
-        return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
     }
 }
 
@@ -174,7 +199,7 @@ public sealed class FakeTripIt : HttpMessageHandler
 }
 
 /// <summary>Speaks MCP JSON-RPC over Streamable HTTP (stateless) to <c>/tripit/mcp</c>.</summary>
-public sealed class McpTestClient(HttpClient http, string? account)
+public sealed class McpTestClient(HttpClient http, Func<Task<string>>? token)
 {
     private int _id;
 
@@ -187,7 +212,7 @@ public sealed class McpTestClient(HttpClient http, string? account)
         };
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        if (account is not null) request.Headers.Add("X-Test-Account", account);
+        if (token is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await token());
 
         using var response = await http.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
