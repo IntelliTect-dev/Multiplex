@@ -727,6 +727,38 @@ Describe 'Invoke-HarCapture.ps1' {
             Should -Match '--pace nav=2000-6000,per-minute=6'
     }
 
+    It 'says how often the capture paused, from the recorder''s machine-readable line' {
+        # Owner request: a pause is "communicated back" to the PowerShell side.
+        # Each one is said live on stderr by the recorder; this pins the closing
+        # summary the front door adds from the `pauses` field of the one JSON
+        # line -- for a caller (an AI session) that reads only the end.
+        $stubDir = Join-Path $script:Tmp ('pause-stub-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+        $json = '{"capture":"complete","sessionDir":"x","outputPath":"x","cataloguePath":null,' +
+            '"pauses":{"count":2,"handOvers":1,"totalMs":420000}}'
+        if ($IsWindows) {
+            Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
+                '@echo off', "echo $json", 'exit /b 0')
+        }
+        else {
+            $stub = Join-Path $stubDir 'node'
+            [System.IO.File]::WriteAllText($stub, "#!/bin/sh`necho '$json'`nexit 0`n", [System.Text.UTF8Encoding]::new($false))
+            & chmod +x $stub
+        }
+        $infoFile = Join-Path $stubDir 'info.txt'
+        $savedPath = $env:PATH
+        $env:PATH = $stubDir + [System.IO.Path]::PathSeparator + $savedPath
+        try {
+            & $script:InvokePs1 -Uri 'https://example.com' -Describe 'pester fixture' 6> $infoFile 3> $null 2> $null | Out-Null
+        }
+        finally {
+            $env:PATH = $savedPath
+        }
+        $info = Get-Content -LiteralPath $infoFile -Raw
+        $info | Should -Match 'The capture paused 2 time\(s\) and was handed over 1 time\(s\), 7 min in all'
+        $info | Should -Match 'pauses. in session\.json'
+    }
+
     It 'forwards -AI to the recorder, and nothing when it is absent' {
         # The front door forwards and the recorder decides -- the rule this file
         # already holds for -Attach and -Browser. So what is pinned here is only
