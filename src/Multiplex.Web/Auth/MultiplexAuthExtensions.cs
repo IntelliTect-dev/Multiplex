@@ -1,10 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.DataProtection;
-using Microsoft.AspNetCore.DataProtection.KeyManagement;
-using Microsoft.AspNetCore.DataProtection.Repositories;
-using Microsoft.AspNetCore.DataProtection.XmlEncryption;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -41,9 +37,9 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
 public static class MultiplexAuthExtensions
 {
     /// <summary>
-    /// Registers the OAuth 2.1 authorization server, MCP bearer protection, the encrypted auth store
-    /// (under <c>Multiplex:DataPath</c>) and the app's Data Protection key ring (<c>&lt;DataPath&gt;/keys</c>).
-    /// Configuration is read lazily, so later configuration sources (tests, user secrets) apply.
+    /// Registers the OAuth 2.1 authorization server, MCP bearer protection and the encrypted auth store
+    /// (under <c>Multiplex:DataPath</c>, key ring in its <c>keys</c> folder). Configuration is read lazily,
+    /// so later configuration sources (tests, user secrets) apply.
     /// </summary>
     public static MultiplexAuthBuilder AddMultiplexAuth(this IServiceCollection services, IConfiguration configuration)
     {
@@ -74,7 +70,6 @@ public static class MultiplexAuthExtensions
                 ConnectCallback = ClientMetadataDocuments.ConnectToPublicAddressAsync,
             });
 
-        AddDataProtection(services);
         AddRateLimits(services);
         return builder;
     }
@@ -90,23 +85,6 @@ public static class MultiplexAuthExtensions
         app.UseRateLimiter();
         app.UseMiddleware<McpBearerMiddleware>();
         return app;
-    }
-
-    private static void AddDataProtection(IServiceCollection services)
-    {
-        services.AddDataProtection().SetApplicationName("Multiplex");
-
-        // Applied after the framework's defaults; nothing touches the disk until a key is first needed.
-        services.AddSingleton<IConfigureOptions<KeyManagementOptions>>(sp => new ConfigureOptions<KeyManagementOptions>(options =>
-        {
-            var loggers = sp.GetRequiredService<ILoggerFactory>();
-            var keys = new DirectoryInfo(Path.Combine(sp.GetRequiredService<IOptions<MultiplexAuthOptions>>().Value.ResolveDataPath(), "keys"));
-            options.XmlRepository = new FileSystemXmlRepository(keys, loggers);
-            if (OperatingSystem.IsWindows())
-            {
-                options.XmlEncryptor = new DpapiXmlEncryptor(protectToLocalMachine: false, loggers);
-            }
-        }));
     }
 
     private static void AddRateLimits(IServiceCollection services)

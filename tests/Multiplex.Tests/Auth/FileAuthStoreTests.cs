@@ -1,5 +1,4 @@
 using System.Text;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Multiplex.Web.Auth;
@@ -15,7 +14,6 @@ public sealed class FileAuthStoreTests : IDisposable
 
     private FileAuthStore NewStore() => new(
         Options.Create(new MultiplexAuthOptions { DataPath = DataPath }),
-        DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(_root, "keys"))),
         TimeProvider.System,
         NullLogger<FileAuthStore>.Instance);
 
@@ -34,6 +32,7 @@ public sealed class FileAuthStoreTests : IDisposable
         Assert.DoesNotContain("client-round-trip", Encoding.UTF8.GetString(raw));
         Assert.DoesNotContain("Visible Client Name", Encoding.UTF8.GetString(raw));
         Assert.Equal(["auth.dat"], Directory.GetFiles(DataPath).Select(Path.GetFileName));
+        Assert.NotEmpty(Directory.GetFiles(Path.Combine(DataPath, "keys"), "key-*.xml"));
 
         using var reopened = NewStore();
         var client = await reopened.ReadAsync(s => s.Clients.GetValueOrDefault("client-round-trip"), CancellationToken.None);

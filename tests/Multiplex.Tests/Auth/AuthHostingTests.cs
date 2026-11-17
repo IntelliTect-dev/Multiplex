@@ -24,6 +24,72 @@ public class AuthHostingTests
         }
     }
 
+    /// <summary>The app as deployed: encrypted file store and key ring under one data folder.</summary>
+    private sealed class FileStoreApp(string dataPath) : AuthTestApp
+    {
+        protected override bool InMemoryStore => false;
+
+        protected override IDictionary<string, string?> Settings
+        {
+            get
+            {
+                var settings = base.Settings;
+                settings["Multiplex:DataPath"] = dataPath;
+                return settings;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task FileStore_KeepsRegistrationsAcrossRestarts_InsideTheDataFolder()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "multiplex-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            string clientId;
+            using (var first = new FileStoreApp(dataPath))
+            {
+                var metadata = await first.Client().GetAsync("/.well-known/oauth-authorization-server");
+                Assert.Equal(HttpStatusCode.OK, metadata.StatusCode);
+                Assert.False(Directory.Exists(dataPath), "Starting the host must not touch the data folder.");
+
+                clientId = await new OAuthDriver(first).RegisterAsync();
+            }
+
+            Assert.True(File.Exists(Path.Combine(dataPath, "auth.dat")));
+            Assert.NotEmpty(Directory.GetFiles(Path.Combine(dataPath, "keys"), "key-*.xml"));
+
+            using var second = new FileStoreApp(dataPath);
+            await new OAuthDriver(second).StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
+        }
+        finally
+        {
+            if (Directory.Exists(dataPath)) Directory.Delete(dataPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Tokens_ExpireAfterAnHour_AndRefreshAfter30Days()
+    {
+        using var app = new AuthTestApp();
+        var driver = new OAuthDriver(app);
+        var tokens = await driver.ConnectAsync();
+
+        app.Clock.Advance(TimeSpan.FromMinutes(59));
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await driver.InitializeAsync("/tripit/mcp", tokens.AccessToken)).StatusCode);
+        app.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await driver.InitializeAsync("/tripit/mcp", tokens.AccessToken)).StatusCode);
+
+        var (status, refreshed, _) = await driver.TokenAsync(OAuthDriver.Refresh(tokens.ClientId, tokens.RefreshToken));
+        Assert.Equal(HttpStatusCode.OK, status);
+
+        app.Clock.Advance(TimeSpan.FromDays(30));
+        var (expiredStatus, expired, _) = await driver.TokenAsync(
+            OAuthDriver.Refresh(tokens.ClientId, refreshed.GetProperty("refresh_token").GetString()!));
+        Assert.Equal(HttpStatusCode.BadRequest, expiredStatus);
+        Assert.Equal("invalid_grant", expired.GetProperty("error").GetString());
+    }
+
     [Fact]
     public async Task Register_IsRateLimitedPerAddress()
     {

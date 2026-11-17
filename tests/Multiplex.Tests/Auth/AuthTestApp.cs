@@ -35,6 +35,9 @@ public class AuthTestApp : WebApplicationFactory<Program>
         ["Multiplex:Auth:AuthorizePermitLimit"] = "10000",
     };
 
+    /// <summary>False keeps the app's own encrypted file store under <c>Multiplex:DataPath</c>.</summary>
+    protected virtual bool InMemoryStore => true;
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         foreach (var (key, value) in Settings) builder.UseSetting(key, value);
@@ -43,8 +46,11 @@ public class AuthTestApp : WebApplicationFactory<Program>
         {
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(Clock);
-            services.RemoveAll<IAuthStore>();
-            services.AddSingleton<IAuthStore, InMemoryAuthStore>();
+            if (InMemoryStore)
+            {
+                services.RemoveAll<IAuthStore>();
+                services.AddSingleton<IAuthStore, InMemoryAuthStore>();
+            }
             services.AddHttpClient(ClientMetadataDocuments.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => Documents);
             services.AddMultiplexAuth(new ConfigurationBuilder().Build()).RequireAuthFor("other");
         });
