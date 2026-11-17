@@ -3507,6 +3507,19 @@ function agentStillDrivingLines(session) {
 }
 
 /**
+ * What a line typed at the recorder's terminal means (the sign-in prompts
+ * have already taken theirs). DURING A HAND-OVER, `continue` (or `c`) hands
+ * the browser back; anything else -- a bare ENTER above all -- ends the
+ * recording, as ENTER always has. Outside a hand-over, every line ends it.
+ *
+ * @returns {'hand-back' | 'end'}
+ */
+function terminalLineMeans(line, handOverActive) {
+    if (handOverActive && /^\s*c(ontinue)?\s*$/i.test(String(line || ''))) return 'hand-back';
+    return 'end';
+}
+
+/**
  * What the operator is told when an agent takes the wheel.
  *
  * Said at info level and before the first action, because a browser that starts
@@ -5163,6 +5176,17 @@ async function start(args) {
     const hold = capturePause.createSiteHold({
         install: (handler) => context.route('**/*', handler),
         uninstall: (handler) => context.unroute('**/*', handler),
+        // NOT SILENT: a pause announced as held that is not held is the one
+        // outcome worse than either.
+        onError: (e, installing) => {
+            if (!installing) {
+                log.verbose(`capture-har: removing the pause's request hold reported ${e.message}`);
+                return;
+            }
+            log.warn(`capture-har: the browser could NOT hold the site's requests for this pause (${e.message}).\n` +
+                '  Only the recorder\'s own steps wait' +
+                (agentRunning && agentControl.messaging ? ', and the agent has been told to wait' : '') + '.');
+        },
         holds: async (request) => {
             if (scope && !(await scope.admits(request))) return false;
             return onCaptureSite(site, request.url()) || isMainFrameDocument(request);
@@ -5173,11 +5197,15 @@ async function start(args) {
         writeSession();
     };
     // Who is driving decides what a signal MEANS: an agent is told and the
-    // browser holds; an agent not launched yet waits to be; anything else is
-    // a person's browser, and gets advice.
+    // browser holds; an agent not launched yet waits to be. Without --ai and
+    // with NOBODY AT THE TERMINAL, whatever drives is automation reaching the
+    // browser over CDP (the header's "an AI drives it over CDP"): the browser
+    // holds for it too, though it cannot be told. Anything else is a person
+    // browsing by hand, who gets advice -- it is their browser.
     const driverNow = () => {
         if (ai && !agentLaunched) return 'agent-unstarted';
         if (ai && agentRunning) return agentControl.messaging ? 'agent' : 'agent-unmessaged';
+        if (!ai && !humanAtTerminal) return 'external';
         return 'you';
     };
     const pauses = capturePause.createCapturePause({
@@ -5288,6 +5316,9 @@ async function start(args) {
         const who = driverNow();
         if (who === 'you') {
             if (decision.action === 'hand-over') session.handOver = Object.assign({}, record, { by: 'advice' });
+            // The recorder's OWN steps -- the sign-in fills -- still wait out
+            // what the site asked, in a hand-driven run as in any other.
+            if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
             log.lines(pacing.throttleLines(decision, 'you'));
             writeSession();
             return;
@@ -5363,9 +5394,7 @@ async function start(args) {
     if (rl) {
         enterPressed = new Promise((resolve) => rl.on('line', (line) => {
             if (terminal.take(line)) return;
-            // DURING A HAND-OVER, `continue` hands the browser back; a bare
-            // ENTER still ends the recording, as it always has.
-            if (handOver && /^\s*c(ontinue)?\s*$/i.test(line)) {
+            if (terminalLineMeans(line, !!handOver) === 'hand-back') {
                 handBack('terminal');
                 return;
             }
@@ -6287,6 +6316,7 @@ module.exports = {
     agentExitEnding,
     agentStartRefusal,
     agentDriving,
+    terminalLineMeans,
     claudeOnPath,
     driveWithAgent,
     settleRecorder,

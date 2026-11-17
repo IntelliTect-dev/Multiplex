@@ -8,8 +8,9 @@
 //       there is no address and the reason says which
 //   T2  it never listens on a wildcard or a name
 //   T3  it listens ONLY on the address it was given
-//   T4  without the token -- or from a second browser once the first has
-//       claimed the link -- every request is a bare 404
+//   T4  without the token every request is a bare 404; fetching the page
+//       claims nothing; the first browser to WATCH holds the view, a second
+//       gets 404 while it does, and may take over once it has gone
 //   T5  frames: the screencast starts, each frame is acknowledged and reaches
 //       the phone; closing stops the screencast, ends the page and stops
 //       listening
@@ -69,11 +70,19 @@ function request(url, opts = {}) {
     });
 }
 
-/** Open the page (claiming the link) and return the cookie to use after. */
-async function claim(view) {
+/** Open the page as a browser would: its own cookie. */
+async function openPage(view) {
     const r = await request(view.url);
-    assert.strictEqual(r.status, 200, 'the first open of the link is the page');
+    assert.strictEqual(r.status, 200, 'the link is the page');
     return String(r.headers['set-cookie']).split(';')[0];
+}
+
+/** Open the page and start watching -- which is what claims the view. */
+async function claim(view) {
+    const cookie = await openPage(view);
+    const stream = events(view.url + 'events', cookie);
+    await stream.next('status');
+    return { cookie, stream };
 }
 
 /** An SSE reader: resolves events as they arrive. */
@@ -197,20 +206,40 @@ test('T4: without the token, or from a second browser, every request is a bare 4
             assert.strictEqual(r.status, 404, `${p.replace(view.token, '<token>')} must be 404, got ${r.status}`);
             assert.strictEqual(r.body, 'Not found', 'and say nothing more');
         }
-        // The first open claims it...
+        // Opening the page gives each browser its own identity...
         const first = await request(view.url);
         assert.strictEqual(first.status, 200);
-        const cookie = String(first.headers['set-cookie']);
-        assert.match(cookie, /HttpOnly/);
-        assert.match(cookie, /SameSite=Strict/);
+        const setCookie = String(first.headers['set-cookie']);
+        assert.match(setCookie, /HttpOnly/);
+        assert.match(setCookie, /SameSite=Strict/);
         assert.match(first.headers['content-security-policy'], /default-src 'none'/);
         assert.match(first.body, /I'm done, continue/);
         assert.match(first.body, /End the capture/);
-        // ...and a second browser with the same link gets nothing.
-        assert.strictEqual((await request(view.url)).status, 404, 'the link is spent once a browser has it');
-        assert.strictEqual((await request(view.url, { headers: { cookie: cookie.split(';')[0] } })).status, 200,
-            'the browser that has it can reload');
-        assert.strictEqual((await request(view.url, { headers: { cookie: 'hm=guess' } })).status, 404);
+        const a = setCookie.split(';')[0];
+        const b = await openPage(view);
+        assert.notStrictEqual(a, b, 'a second browser is a different browser');
+        // ...and the FIRST TO WATCH holds the view. Fetching the page (an AI
+        // session reading the link, a link preview) claims nothing.
+        const watchA = events(view.url + 'events', a);
+        await watchA.next('status');
+        const watchB = events(view.url + 'events', b);
+        await settle();
+        assert.strictEqual(watchB.status(), 404, 'a second browser cannot watch while the first does');
+        watchB.close();
+        assert.strictEqual((await post(view, b, { t: 'text', v: 'x' })).status, 404, 'nor type into it');
+        assert.strictEqual((await post(view, a, { t: 'done' })).status, 204, 'the one watching can');
+        const guess = events(view.url + 'events', 'hm=guess');
+        await settle();
+        assert.strictEqual(guess.status(), 404, 'an identity this server never gave is nobody');
+        guess.close();
+        // The first browser goes away (an in-app browser closed): the person
+        // can carry on in another.
+        watchA.close();
+        await settle();
+        const watchB2 = events(view.url + 'events', b);
+        await watchB2.next('status');
+        assert.strictEqual((await post(view, a, { t: 'done' })).status, 404, 'the view moved: the old browser has nothing');
+        watchB2.close();
     } finally {
         await view.close();
     }
@@ -223,10 +252,9 @@ test('T5: frames reach the phone; closing stops the screencast, ends the page an
     const start = cdp.calls.find((c) => c.method === 'Page.startScreencast');
     assert.ok(start, 'the screencast starts with the view');
     assert.strictEqual(start.params.format, 'jpeg');
-    const cookie = await claim(view);
-    const stream = events(view.url + 'events', cookie);
+    const { cookie, stream } = await claim(view);
     try {
-        assert.deepStrictEqual(await stream.next('status'), { state: 'handed-over', text: 'Handed over to you: a check.' });
+        assert.deepStrictEqual(stream.got[0].data, { state: 'handed-over', text: 'Handed over to you: a check.' });
         cdp.frame(800, 600, '/9j/AAAA', 41);
         assert.deepStrictEqual(await stream.next('frame'), { d: '/9j/AAAA', w: 800, h: 600 });
         await settle();
@@ -234,10 +262,12 @@ test('T5: frames reach the phone; closing stops the screencast, ends the page an
             'every frame is acknowledged, or Chrome stops sending them');
         view.setStatus({ text: 'still yours' });
         assert.strictEqual((await stream.next('status')).text, 'still yours');
-        // A phone that connects late is sent the last frame at once.
+        // The same browser reconnecting (a phone back from another app) is
+        // sent the last frame at once.
         const late = events(view.url + 'events', cookie);
         assert.strictEqual((await late.next('frame')).d, '/9j/AAAA');
         late.close();
+        assert.ok(cdp.calls.some((c) => c.method === 'Page.bringToFront'), 'the tab is brought on top, so it renders');
 
         await view.close('The capture carries on. You can close this page.');
         assert.strictEqual((await stream.next('end')).text, 'The capture carries on. You can close this page.');
@@ -257,8 +287,11 @@ test('T6: taps, drags, scrolls, typing, keys and Back reach the page in order; t
     const calls = { done: 0, end: 0 };
     const view = await mirror.startMirror({ host: '127.0.0.1', cdp,
         onDone: () => { calls.done++; }, onEnd: () => { calls.end++; } });
+    let watching = null;
     try {
-        const cookie = await claim(view);
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
         // Before any frame there is no size to scale a tap by: ignored.
         assert.strictEqual((await post(view, cookie, { t: 'tap', x: 0.5, y: 0.5 })).status, 204);
         await settle();
@@ -306,6 +339,7 @@ test('T6: taps, drags, scrolls, typing, keys and Back reach the page in order; t
         assert.strictEqual((await post(view, cookie, { t: 'end' })).status, 204);
         assert.deepStrictEqual(calls, { done: 1, end: 1 });
     } finally {
+        if (watching) watching.close();
         await view.close();
     }
 });
@@ -350,8 +384,7 @@ test('E1: a real page reaches the phone view, and a tap and typing from it land 
             '</body></html>');
         const cdp = await page.context().newCDPSession(page);
         view = await mirror.startMirror({ host: '127.0.0.1', cdp });
-        const cookie = await claim(view);
-        const stream = events(view.url + 'events', cookie);
+        const { cookie, stream } = await claim(view);
         try {
             const frame = await stream.next('frame', 15000);
             assert.ok(frame.d.startsWith('/9j/'), 'a JPEG of the live page');
