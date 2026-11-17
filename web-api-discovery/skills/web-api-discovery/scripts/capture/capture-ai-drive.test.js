@@ -62,6 +62,16 @@
 //       `agent-finished`, post-processing runs, and the browser is STILL
 //       RUNNING afterwards
 //
+//   A18 the prompt and the banner carry this run's pace -- the numbers the
+//       recorder paces its own steps by
+//   A19 --pace is recorded on every session, and an unreadable one is refused
+//   A20 a hand-over stops the agent once, through the handle the drive holds,
+//       and the agent's exit is then not an ending
+//   I3  a site that keeps throttling the agent: the first 429 pauses, the next
+//       one inside the pause stops the agent and hands over; with nobody at
+//       the terminal the recording ends `handed-over`, is post-processed, and
+//       the browser is left running
+//
 // GUARDS (passed before this change; they must keep passing):
 //   G1  a run with no --ai is untouched: no agent, no prompt, no step log
 //   G2  `-AI` does not widen what is recorded -- an attached or native capture
@@ -350,7 +360,17 @@ test('A4: the generated prompt carries every safety rule the issue lists', () =>
     const flat = prompt.replace(/[*`]/g, '').replace(/\s+/g, ' ').toLowerCase();
     const rules = [
         { name: 'human pace, one action at a time', phrase: 'human pace. one action at a time' },
-        { name: 'the 2-5 second wait', phrase: 'wait 2-5 seconds between actions' },
+        // The numbers are this run's own (A18): the rule points at them.
+        { name: 'the wait between actions is this run\'s pace',
+            phrase: 'wait between actions for the time given under pace in this capture' },
+        { name: 'pacing is politeness, not disguise', phrase: 'the pace above is politeness, not disguise' },
+        { name: 'no CAPTCHA solving', phrase: 'solve or get around a captcha' },
+        // THROTTLING (this change): a refusal is the person's to answer, like a
+        // bot check -- never retried, never waited out and resumed by the agent.
+        { name: 'stop and hand back on throttling or a block',
+            phrase: 'stop and hand back when the site throttles or blocks you.' },
+        { name: 'do not wait out a throttle and carry on',
+            phrase: 'do not retry, do not reload, and do not wait it out and carry on' },
         { name: 'keep the site\'s tab in front', phrase: 'keep the site\'s tab in front' },
         // An extension-driven tab that is not its window's active tab is
         // "hidden": typing and screenshots fail (#76's lessons).
@@ -1138,6 +1158,115 @@ test('A12: an agent exiting after the recording ended neither warns nor rewrites
     const failed = capture.agentExitEnding({ status: 3 }, null);
     assert.strictEqual(failed.reason, 'agent-failed');
     assert.match(failed.warning, /exited 3/, 'a failed driver is said, with its status');
+
+    // AN AGENT THE RECORDER STOPPED (a hand-over) ended nothing either: the
+    // recording carries on for the human the browser was handed to.
+    assert.strictEqual(capture.agentExitEnding({ status: 1, signal: 'SIGTERM', stoppedFor: 'hand-over' }, null),
+        null, 'the recorder stopped it to hand over; its exit must not end the human\'s recording');
+});
+
+// ---------------------------------------------------------------------------
+// A18-A20 -- pacing and the throttle hand-over
+// ---------------------------------------------------------------------------
+
+test('A18: the prompt carries this run\'s pace -- the numbers the recorder paces itself by', () => {
+    const flat = (p) => p.replace(/[*`]/g, '').replace(/\s+/g, ' ');
+    const byDefault = flat(capture.buildAgentPrompt(fakeSession()));
+    assert.ok(byDefault.includes('Pace: 1.5-4 s between navigations, 0.3-1.2 s between clicks or typing steps, ' +
+        'at most 12 navigations a minute'), `the default pace is not in the prompt:\n${byDefault}`);
+    const custom = flat(capture.buildAgentPrompt(fakeSession({
+        pace: { navigation: [2000, 6000], action: [500, 1500], perMinute: 6 }
+    })));
+    assert.ok(custom.includes('Pace: 2-6 s between navigations, 0.5-1.5 s between clicks or typing steps, ' +
+        'at most 6 navigations a minute'), 'a second pace must produce a second prompt');
+    // And the banner tells the operator the same thing, with what happens on a block.
+    const banner = capture.agentBannerLines(fakeSession()).map(([, l]) => l).join('\n');
+    assert.match(banner, /1\.5-4 s between navigations/);
+    assert.match(banner, /throttles or blocks the drive, the agent is stopped and the browser is\s+handed to you/);
+});
+
+test('A19: --pace is recorded on the session, and refused when it cannot be read', () => {
+    const repo = makeRepo('ai-pace');
+    plantOperatorProfile(repo);
+    const byDefault = resolveViaRecorder(repo, ['--ai']);
+    assert.strictEqual(byDefault.status, 0, byDefault.stderr);
+    assert.deepStrictEqual(byDefault.session.pace,
+        { navigation: [1500, 4000], action: [300, 1200], perMinute: 12 },
+        'human pace is the default, on every session');
+    const off = resolveViaRecorder(repo, ['--pace', 'off']);
+    assert.strictEqual(off.status, 0, off.stderr);
+    assert.strictEqual(off.session.pace.off, true);
+    assert.deepStrictEqual(off.session.pace.navigation, [0, 0]);
+    const custom = resolveViaRecorder(repo, ['--pace', 'nav=2000-6000,per-minute=6']);
+    assert.strictEqual(custom.status, 0, custom.stderr);
+    assert.deepStrictEqual(custom.session.pace.navigation, [2000, 6000]);
+    assert.strictEqual(custom.session.pace.perMinute, 6);
+    for (const bad of [['--pace', 'fast'], ['--pace', 'nav=4000-1500'], ['--pace']]) {
+        const r = runCapture(repo, ['start', '--uri', 'https://example.com', '--describe', 'x', ...bad]);
+        assert.strictEqual(r.status, 2, `${bad.join(' ')} should be a usage error, got ${r.status}\n${r.stderr}`);
+        assert.match(r.stderr, /--pace/, `the refusal must name the option: ${r.stderr}`);
+    }
+});
+
+/**
+ * driveWithAgent against a fake child that stays running until it is KILLED --
+ * the hand-over case -- in a process of its own, like driveFakeAgent.
+ */
+function driveAndStopFakeAgent() {
+    const dir = scratch('fake-agent-stopped');
+    const logPath = path.join(dir, 'agent-log.txt');
+    const script = `
+        const { EventEmitter } = require('events');
+        const capture = require(${JSON.stringify(captureJs)});
+        const [logPath, dir] = process.argv.slice(1);
+        const proc = new EventEmitter();
+        proc.pid = 4343;
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        let kills = 0;
+        proc.kill = () => {
+            kills++;
+            setTimeout(() => { proc.emit('exit', null, 'SIGTERM'); proc.emit('close', null, 'SIGTERM'); }, 20);
+            return true;
+        };
+        const control = {};
+        const session = { agent: 'claude', agentLogPath: logPath, sessionDir: dir };
+        capture.driveWithAgent(session, 'PROMPT', { spawn: () => proc, drainMs: 300, control })
+            .then((result) => {
+                const again = control.stop('hand-over');
+                setTimeout(() => process.stdout.write(JSON.stringify({ result, kills, again,
+                    ending: capture.agentExitEnding(result, null) })), 100);
+            });
+        setTimeout(() => {
+            proc.stdout.emit('data', 'STEP: searched; the page says Too Many Requests\\n');
+            const first = control.stop('hand-over');
+            if (!first) process.exit(9);
+        }, 50);
+    `;
+    const r = spawnSync(process.execPath, ['-e', script, logPath, dir], {
+        encoding: 'utf8', windowsHide: true, timeout: 30000
+    });
+    return {
+        status: r.status,
+        stderr: r.stderr || '',
+        out: r.status === 0 && r.stdout ? JSON.parse(r.stdout) : null,
+        log: fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+    };
+}
+
+test('A20: a hand-over stops the agent through its own handle, once, and that is not an ending', () => {
+    // THE ONE PROCESS THE RECORDER EVER ENDS, and only for this: the site is
+    // throttling or blocking the drive, and continuing would be hammering it or
+    // evading it. Through the handle driveWithAgent holds -- never a pid lookup.
+    const r = driveAndStopFakeAgent();
+    assert.strictEqual(r.status, 0, `the drive could not be stopped (status ${r.status}):\n${r.stderr}`);
+    assert.strictEqual(r.out.kills, 1, 'stopped exactly once, through the child\'s own handle');
+    assert.strictEqual(r.out.again, false, 'a second stop after the agent has gone does nothing');
+    assert.strictEqual(r.out.result.stoppedFor, 'hand-over', 'the result says the recorder stopped it, and why');
+    assert.strictEqual(r.out.ending, null, 'and so its exit ends nothing -- the human has the recording now');
+    assert.match(r.log, /the recorder stopped the agent .*\(hand-over\): the site is throttling or blocking/,
+        `the step log must say the drive was stopped and why:\n${r.log}`);
+    assert.match(r.log, /Too Many Requests/, 'what the agent said before it was stopped is kept');
 });
 
 // ---------------------------------------------------------------------------
@@ -1352,9 +1481,17 @@ async function fixtureServer() {
             res.end(JSON.stringify({ results: [{ id: 1, name: 'fixture rate' }] }));
             return;
         }
+        // The site metering a visitor (I3): always throttled, and it says for
+        // how long.
+        if (req.url.startsWith('/api/limited')) {
+            res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '30' });
+            res.end(JSON.stringify({ error: 'too many requests' }));
+            return;
+        }
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end('<html><body><h1>ai drive fixture</h1>' +
             '<button id="search" onclick="fetch(\'/api/search?q=one-way\')">search</button>' +
+            '<button id="limited" onclick="fetch(\'/api/limited?q=again\')">limited</button>' +
             '</body></html>');
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -1576,6 +1713,86 @@ test('I2: the stop command ends the recording while the agent is still driving',
         } finally {
             server.close();
             if (agentPid) killTree(agentPid);
+            if (browserPid) killTree(browserPid);
+            if (recorder && recorder.exitCode === null) recorder.kill();
+        }
+    });
+
+test('I3: a site that keeps throttling the agent ends the drive and hands the browser over',
+    async () => {
+        // THE HAND-OVER, end to end. The fixture answers /api/limited with 429
+        // and Retry-After: 30, and the stub agent -- standing in for an agent the
+        // recorder cannot slow down -- clicks it again every few seconds. The
+        // first 429 is a pause; the next one, arriving inside that pause, is the
+        // driver not waiting, and the recorder stops it. Nobody is at this
+        // terminal, so the recording then ends as `handed-over` and is
+        // post-processed; the browser is left running, as every ending leaves it.
+        const repo = makeRepo('ai-throttled');
+        plantOperatorProfile(repo);
+        if (blockedOrSkipped('I3', integrationBlocker(repo))) return;
+
+        const { server, uri } = await fixtureServer();
+        const pruned = pathWithoutAgent();
+        assert.ok(!agentOnPath(pruned), 'the agent must be reachable only through the stub');
+        const childEnv = driverEnv({ PATH: pruned, HAR_STUB_AGENT_MODE: 'throttled' });
+
+        let recorder = null;
+        let browserPid = null;
+        let agentPid = null;
+        try {
+            recorder = startStubDrivenCapture(repo, uri, childEnv);
+            let recorderErr = '';
+            recorder.stderr.on('data', (d) => { recorderErr += d; });
+            recorder.stdout.on('data', () => {});
+
+            const { sessionDir, session } =
+                await waitForRecordingSession(repo, recorder, () => recorderErr);
+            browserPid = session.browserPid;
+            assert.deepStrictEqual(session.pace.navigation, [1500, 4000], 'human pace is the default');
+
+            const ended = await waitFor(() => recorder.exitCode !== null, 180000);
+            assert.ok(ended, `the recording never ended -- nothing noticed the site throttling:\n${recorderErr}`);
+
+            const finalSession = readJson(path.join(sessionDir, 'session.json'));
+            agentPid = finalSession.agentPid;
+            assert.strictEqual(finalSession.endedBy, 'handed-over',
+                `the hand-over, with nobody at the terminal, is the ending:\n${recorderErr}`);
+            assert.strictEqual(finalSession.agentStopped, 'hand-over');
+            assert.ok(finalSession.handOver && finalSession.handOver.why === 'ignored-pause',
+                `the hand-over must say why: ${JSON.stringify(finalSession.handOver)}`);
+            assert.strictEqual(finalSession.handOver.status, 429);
+            assert.ok(!/\?/.test(finalSession.handOver.url), 'session.json records where, never the query');
+            const signals = finalSession.throttle || [];
+            assert.ok(signals.length >= 2 && signals[0].action === 'pause' && signals[0].waitMs === 30000,
+                `the first 429 is a pause for the Retry-After it named: ${JSON.stringify(signals)}`);
+
+            // THE AGENT WAS STOPPED, and long before its ten clicks were done.
+            const stoppedDead = await waitFor(() => !pidAlive(agentPid), 15000);
+            assert.ok(stoppedDead, `the agent (pid ${agentPid}) is still running after the hand-over`);
+            const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
+            assert.match(stepLog, /the recorder stopped the agent .*\(hand-over\)/);
+            assert.doesNotMatch(stepLog, /never stopped/, `the agent ran to the end:\n${stepLog}`);
+
+            // THE OPERATOR WAS TOLD -- what the site did, that nothing evades it,
+            // and that the browser is theirs.
+            assert.match(recorderErr, /The agent has been stopped/);
+            assert.match(recorderErr, /THE BROWSER IS YOURS/);
+            assert.match(recorderErr, /Nothing here retries it, solves it or works around it/);
+            assert.ok(!recorderErr.includes('still running (pid'),
+                'an agent the recorder stopped is not reported as still driving');
+
+            // The refusals are in the capture, and it was post-processed.
+            const har = readJson(path.join(sessionDir, 'raw.har'));
+            assert.ok(har && har.log.entries.some((e) =>
+                e.request.url.includes('/api/limited') && e.response.status === 429),
+            'the 429s the site answered must be in the capture -- they are part of its error taxonomy');
+            assert.ok(finalSession.postProcess, 'a handed-over capture is post-processed as usual');
+
+            assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid),
+                'a hand-over stops the agent, never the browser');
+        } finally {
+            server.close();
+            if (agentPid && pidAlive(agentPid)) killTree(agentPid);
             if (browserPid) killTree(browserPid);
             if (recorder && recorder.exitCode === null) recorder.kill();
         }

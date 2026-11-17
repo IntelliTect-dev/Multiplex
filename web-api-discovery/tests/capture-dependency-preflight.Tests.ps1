@@ -109,16 +109,24 @@ process.stdout.write(JSON.stringify(m.START_OPTIONS || null));
         # tools remain, for a site the operator is signed into something
         # sensitive on. No existing lever can say it, and it is refused without --ai.
         #
+        #
+        # `pace` joined with the pacing and throttling change, at the owner's
+        # request ("configurable, with a flag to set them to 0 for tests"): HOW
+        # FAST the recorder acts on a page and an agent is told to. No existing
+        # lever can say it -- the pace is a range per kind of action plus a
+        # ceiling, not a mode of any flag above -- and `off` is the test switch
+        # the request names. Unreadable values are refused, never defaulted.
+        #
         # THE EQUALITY IS KEPT DELIBERATELY. Loosening it to a subset check would
         # end the prompt-first gate for every future option, which is the whole
         # value of this assertion -- the next one has to come through here.
         ($options | Sort-Object) -join ',' | Should -Be (
             (@('ai', 'ai-tools', 'attach', 'browser', 'describe', 'isolated', 'log-level', 'no-wait',
-               'output-path', 'port', 'profile', 'snapshot-seconds', 'uri', 'validate-only') |
+               'output-path', 'pace', 'port', 'profile', 'snapshot-seconds', 'uri', 'validate-only') |
              Sort-Object) -join ',') -Because (
-            'issue #512 adds no command-line option; the two #73 added and the ones #98 and #112 added ' +
-            'are the ones those issues name. Changing this list is a deliberate API decision ' +
-            'that the Adding Command-Line Options rule says to prompt for')
+            'issue #512 adds no command-line option; the two #73 added, the ones #98 and #112 added, ' +
+            'and the pacing change''s --pace are the ones those changes name. Changing this list is a ' +
+            'deliberate API decision that the Adding Command-Line Options rule says to prompt for')
     }
 
     It 'rejects an unknown option rather than ignoring it' {

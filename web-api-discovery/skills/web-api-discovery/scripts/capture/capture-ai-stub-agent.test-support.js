@@ -140,6 +140,25 @@ async function driveTheRecording(prompt) {
         }
         step(`attached to ${target.url()}`);
 
+        // THE AGENT THAT DOES NOT NOTICE IT IS BEING THROTTLED, on request: it
+        // clicks a button the fixture answers with 429 every few seconds, the
+        // way an agent the recorder cannot slow down would keep on going. The
+        // recorder must see the site refusing and stop it -- so this loop
+        // ending on its own is the failure, and the case asserts it did not.
+        if (process.env.HAR_STUB_AGENT_MODE === 'throttled') {
+            await target.waitForSelector('#limited', { timeout: 30000 });
+            for (let i = 1; i <= 10; i++) {
+                const res = await Promise.all([
+                    target.waitForResponse((r) => r.url().includes('/api/limited'), { timeout: 30000 }),
+                    target.click('#limited')
+                ]).then(([r]) => r);
+                step(`clicked #limited (${i}); the site answered ${res.status()}`);
+                await new Promise((r) => setTimeout(r, 3000));
+            }
+            process.stdout.write('SUMMARY: clicked #limited ten times and was never stopped.\n');
+            return 0;
+        }
+
         // ONE ACTION, at a human pace, in the tab the recorder opened -- the
         // shape the rules in drive-prompt.md demand, performed rather than
         // asserted. The click is what produces traffic no other part of this run

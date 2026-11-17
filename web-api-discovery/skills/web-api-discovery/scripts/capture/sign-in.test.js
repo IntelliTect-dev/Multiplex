@@ -33,6 +33,10 @@
 //   S4  where the temporary file would not be ignored, nothing is written beside it
 //   S5  a rotated session cookie (same name, new value) counts as a new session
 //   S1  storage state merge keeps other sites and replaces this one
+//   H1  the fills are paced, and each wait comes before the check that vets the step
+//   H2  a page that moved during a wait is not typed into
+//   H3  no pacer, no wait
+//   H4  the real pacer waits within the action range, and not at all with --pace off
 //   P1  password form: filled, submitted, onSignedIn fires, secrets() reported
 //   P2  identifier-first: username, then password on the next page
 //   P3  a form on another host is never filled
@@ -390,6 +394,82 @@ test('S4: where the temporary file would not be ignored, the session is written 
     assert.strictEqual(r.saved, true);
     assert.deepStrictEqual(fs.readdirSync(dir), ['.har-storage-state.json'], 'a cookie-bearing file outside the ignore rule');
     fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Pacing (pacing.js): the recorder signs in one step at a time, at a human
+// pace, and the wait never sits between a check and the step it vetted.
+// ---------------------------------------------------------------------------
+
+// A fake page whose locators record what was done to them, in order -- enough
+// of Playwright's surface for fillStep and nothing more.
+function recordingPage(events, fields) {
+    return {
+        url: () => 'https://www.example.com/login',
+        locator(selector) {
+            const name = Object.keys(fields).find((k) => selector.includes(fields[k]));
+            const loc = {
+                first: () => loc,
+                count: async () => (name ? 1 : 0),
+                inputValue: async () => '',
+                fill: async () => { events.push(`fill ${name}`); },
+                press: async (key) => { events.push(`press ${key} in ${name}`); }
+            };
+            return loc;
+        }
+    };
+}
+
+test('H1: sign-in steps are paced, and each wait comes BEFORE the check that vets the step', async () => {
+    const events = [];
+    const page = recordingPage(events, { user: 'autocomplete~=username', password: 'type=password' });
+    const pace = { beforeAction: async () => { events.push('pause'); } };
+    const stillHere = () => { events.push('stillHere'); return true; };
+    const done = await signIn.fillStep(page, { username: USER, password: PASSWORD }, 'password', stillHere, pace);
+    assert.strictEqual(done, 'password');
+    assert.deepStrictEqual(events, [
+        'pause', 'stillHere', 'fill user',
+        'pause', 'stillHere', 'fill password',
+        'pause', 'stillHere', 'press Enter in password'
+    ], 'a wait between stillHere() and the step it vetted would let the page move under it');
+});
+
+test('H2: a page that moved during the wait is not typed into', async () => {
+    const events = [];
+    const page = recordingPage(events, { user: 'autocomplete~=username', password: 'type=password' });
+    let here = true;
+    const pace = { beforeAction: async () => { events.push('pause'); here = false; } };
+    const done = await signIn.fillStep(page, { username: USER, password: PASSWORD }, 'password', () => here, pace);
+    assert.strictEqual(done, null);
+    assert.ok(!events.some((e) => e.startsWith('fill') || e.startsWith('press')),
+        `nothing may be typed once the page has moved: ${events.join(', ')}`);
+});
+
+test('H3: with no pacer, fillStep waits for nothing (the unit cases and older callers)', async () => {
+    const events = [];
+    const page = recordingPage(events, { user: 'autocomplete~=username' });
+    const done = await signIn.fillStep(page, { username: USER }, 'identifier', () => true);
+    assert.strictEqual(done, 'identifier');
+    assert.deepStrictEqual(events, ['fill user', 'press Enter in user']);
+});
+
+test('H4: the real pacer spaces the steps by the action range, and --pace off by nothing', async () => {
+    const pacing = require(path.join(__dirname, 'pacing.js'));
+    for (const [pace, expectWait] of [[pacing.DEFAULT_PACE, true], [pacing.PACE_OFF, false]]) {
+        let t = 0;
+        const slept = [];
+        const pacer = pacing.createPacer(pace, {
+            now: () => t, sleep: async (ms) => { slept.push(ms); t += ms; }, rng: () => 0.5
+        });
+        const page = recordingPage([], { user: 'autocomplete~=username', password: 'type=password' });
+        await signIn.fillStep(page, { username: USER, password: PASSWORD }, 'password', () => true, pacer);
+        if (expectWait) {
+            assert.strictEqual(slept.length, 2, `a wait before the password and before Enter, got ${slept}`);
+            for (const ms of slept) assert.ok(ms >= 300 && ms <= 1200, `${ms} outside 300-1200`);
+        } else {
+            assert.deepStrictEqual(slept, [], '--pace off types without waiting');
+        }
+    }
 });
 
 // ---------------------------------------------------------------------------
