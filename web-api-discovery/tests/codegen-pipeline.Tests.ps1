@@ -351,20 +351,40 @@ Describe 'anti-bot challenge warning (issue #66)' {
         }
     }
 
-    It 'README includes an Anti-bot challenge warning section when Akamai cookies are present' {
-        $out = New-OutDir
-        $har = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
-        try {
-            New-AkamaiHarFixture -Path $har -IncludeAkamai
-            Invoke-Gen -Har @($har) -Out $out | Out-Null
-            $readme = Get-Content (Join-Path $out 'README.md') -Raw
-            $readme | Should -Match '(?i)Anti-bot challenge warning'
-            $readme | Should -Match '_abck'
-            $readme | Should -Match 'bm_sz'
-            $readme | Should -Match '(?i)public landing page'
-        } finally {
-            if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-            if (Test-Path $har) { Remove-Item -Force $har }
+    Context 'when the capture shows Akamai bot management' {
+        # The section tells the truth and stops there: the site may refuse this
+        # client, a refusal is the client's blocked exception, and the remedy is
+        # a person. It never advises a way past the refusal -- no warm-up request
+        # to collect the bot manager's cookies, no sending the call again
+        # (SKILL.md, "Pacing, throttling, and where the line is").
+        BeforeAll {
+            $script:BotOut = New-OutDir
+            $script:BotHar = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+            New-AkamaiHarFixture -Path $script:BotHar -IncludeAkamai
+            Invoke-Gen -Har @($script:BotHar) -Out $script:BotOut | Out-Null
+            $readme = Get-Content (Join-Path $script:BotOut 'README.md') -Raw
+            $script:BotSection = [regex]::Match($readme, '(?ms)^## Anti-bot challenge warning[ \t]*$.*?(?=^## |\z)').Value
+        }
+        AfterAll {
+            if (Test-Path $script:BotOut) { Remove-Item -Recurse -Force $script:BotOut }
+            if (Test-Path $script:BotHar) { Remove-Item -Force $script:BotHar }
+        }
+
+        It 'README includes the warning section, naming the cookies it found' {
+            $script:BotSection | Should -Not -BeNullOrEmpty
+            $script:BotSection | Should -Match '_abck'
+            $script:BotSection | Should -Match 'bm_sz'
+        }
+        It 'says a refused call fails with the client''s blocked exception' {
+            $script:BotSection | Should -Match 'ExampleExBlockedException'
+        }
+        It 'gives the remedy as a fresh session from a real, signed-in browser, or a person' {
+            $script:BotSection | Should -Match '(?i)fresh session from a real, signed-in browser'
+            $script:BotSection | Should -Match '(?i)\bor have a person\b'
+        }
+        It 'advises no warm-up request and no retry' {
+            $script:BotSection | Should -Not -BeNullOrEmpty -Because 'an empty section would pass this vacuously'
+            $script:BotSection | Should -Not -Match '(?i)warm[- ]?up|retr(y|ies|ied)|landing page|\bseed'
         }
     }
 
