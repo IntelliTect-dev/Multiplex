@@ -37,7 +37,9 @@
 BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..') | Select-Object -ExpandProperty Path
     $script:Runner = Join-Path $script:RepoRoot 'scripts/Invoke-NodeTestSuite.ps1'
-    $script:Workflow = Join-Path $script:RepoRoot '.github/workflows/ci.yml'
+    # The skill lives in a subfolder of Multiplex; GitHub runs only workflows at
+    # the repository root, so that is where its CI is.
+    $script:Workflow = Join-Path $script:RepoRoot '..' '.github/workflows/web-api-discovery.yml'
     # The root the runner sweeps when -Path is not given. A literal here ON
     # PURPOSE: reading the default out of the script under test would make this
     # suite agree with whatever that script says, including a typo, instead of

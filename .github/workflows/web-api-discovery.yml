@@ -1,14 +1,22 @@
-name: CI
+name: web-api-discovery
 
+# The skill lives in web-api-discovery/ and its suites assume they run from
+# there, so every run step starts in that folder. Only a change to the skill
+# or this workflow triggers it.
 on:
   push:
     branches: [main]
+    paths: ["web-api-discovery/**", ".github/workflows/web-api-discovery.yml"]
   pull_request:
+    paths: ["web-api-discovery/**", ".github/workflows/web-api-discovery.yml"]
 
 jobs:
   pester:
     name: Pester tests
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-api-discovery
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

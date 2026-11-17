@@ -1273,7 +1273,7 @@ function blockedOrSkipped(name, blocker) {
             `${name} cannot run: ${blocker}\n  In CI this is a FAILURE and not a skip -- it is ` +
             'the only case that proves an agent can drive a real\n  recording, so a run that ' +
             'skips it has proved nothing about the mode it covers. Install the\n  driver and a ' +
-            'browser on the runner (see .github/workflows/ci.yml), or set CI=false.');
+            'browser on the runner (see .github/workflows/web-api-discovery.yml at the repository root), or set CI=false.');
     }
     process.stderr.write(`  SKIP ${name} -- ${blocker}\n`);
     skipped.push(`${name} (${blocker.split('\n')[0]})`);

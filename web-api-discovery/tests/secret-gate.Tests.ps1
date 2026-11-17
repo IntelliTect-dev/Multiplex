@@ -311,7 +311,7 @@ Describe "This repo's own CI installs gitleaks (issue #312)" {
     # ever executed. Installing it in the Pester job is what makes them real; this
     # test keeps the install step from being dropped again.
     BeforeAll {
-        $script:CiYmlPath = Join-Path $script:RepoRoot ".github/workflows/ci.yml"
+        $script:CiYmlPath = Join-Path $script:RepoRoot ".." ".github/workflows/web-api-discovery.yml"
         $script:CiYml     = Get-Content -Raw $script:CiYmlPath
     }
 
