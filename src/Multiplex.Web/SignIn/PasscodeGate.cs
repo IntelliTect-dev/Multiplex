@@ -130,7 +130,9 @@ public sealed class GateCookie(IDataProtectionProvider provider, IOptions<SignIn
         context.Response.Cookies.Append(Name(slug), value, new CookieOptions
         {
             HttpOnly = true,
-            Secure = context.Request.IsHttps,
+            // Behind an HTTPS tunnel the app itself sees http; a false header can only make the cookie stricter.
+            Secure = context.Request.IsHttps
+                     || string.Equals(context.Request.Headers["X-Forwarded-Proto"], "https", StringComparison.OrdinalIgnoreCase),
             SameSite = SameSiteMode.Strict,
             Path = "/connect/" + slug,
             MaxAge = lifetime,

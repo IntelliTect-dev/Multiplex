@@ -137,15 +137,19 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions
         {
             StubBaseUrl = site.BaseUrl,
-            AttemptTimeout = TimeSpan.FromSeconds(6),
+            AttemptTimeout = TimeSpan.FromSeconds(12),
         });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
         var (gate, _) = await client.PassGateAsync("p1");
         var attempt = Attempt(host, gate);
-        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
-        await mirror.WaitForStatusAsync("live", s_long);
+        await using var firstTab = await client.OpenMirrorAsync(attempt.Id);
+        await firstTab.WaitForStatusAsync("live", s_long);
         Assert.NotEmpty(host.TempProfiles());
+
+        // A second tab takes over; the first is told not to reconnect.
+        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
+        await WaitForAsync(() => Task.FromResult(firstTab.CloseStatus == MirrorProtocol.ReplacedCloseStatus), TimeSpan.FromSeconds(10));
 
         var timedOut = await mirror.WaitForStatusAsync("timeout", s_long);
 

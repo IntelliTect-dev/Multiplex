@@ -29,6 +29,9 @@ public sealed record ViewportInput(int Width, int Height) : MirrorInput;
 public static class MirrorProtocol
 {
     public const int MaxMessageBytes = 8 * 1024;
+
+    /// <summary>Close code for a page whose place was taken by a newer connection (another tab); it must not reconnect.</summary>
+    public const System.Net.WebSockets.WebSocketCloseStatus ReplacedCloseStatus = (System.Net.WebSockets.WebSocketCloseStatus)4000;
     public const int MaxTextLength = 512;
 
     /// <summary>The only keys the phone may press; names as Puppeteer's keyboard knows them.</summary>
@@ -90,4 +93,6 @@ public static class MirrorProtocol
     public static string Url(string host, bool secure) => JsonSerializer.Serialize(new { t = "url", host, secure });
 
     public static string Blocked(string host) => JsonSerializer.Serialize(new { t = "blocked", host });
+
+    public static string Viewport(int width, int height) => JsonSerializer.Serialize(new { t = "viewport", w = width, h = height });
 }
