@@ -25,8 +25,7 @@ public abstract class TripItCmdletBase : PSCmdlet
             return s_cachedClient;
         }
         var store = ResolveStore();
-        var session = new TripItSession(store);
-        s_cachedClient = new TripItClient(session);
+        s_cachedClient = new TripItClient(new LocalSessionProvider(store));
         s_cachedStoreLocation = StoreLocation;
         return s_cachedClient;
     }

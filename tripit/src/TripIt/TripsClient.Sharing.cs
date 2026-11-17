@@ -172,15 +172,42 @@ public sealed partial class TripsClient
 
 public sealed partial class TripItClient
 {
-    private string? _myProfileRef;
+    /// <summary>"Who am I", cached on this client for the session snapshot it was read with.</summary>
+    private sealed record MyProfile(TripItSession Session, string? Ref);
 
-    /// <summary>The signed-in user's profile ref (cached), used to tell "me" apart on shared trips.</summary>
+    private MyProfile? _me;
+
+    /// <summary>
+    /// The signed-in user's profile ref, used to tell "me" apart on shared trips. Cached on this
+    /// client instance only, and only while the session snapshot is unchanged, so a client never
+    /// answers with another account's identity.
+    /// </summary>
     public async Task<string?> GetMyProfileRefAsync(CancellationToken ct = default)
     {
-        if (_myProfileRef is not null) return _myProfileRef;
+        var session = _sessions.Current;
+        if (Volatile.Read(ref _me) is { } cached && ReferenceEquals(cached.Session, session)) return cached.Ref;
         using var doc = await GetJsonAsync("/api/v2/get/profile", null, ct).ConfigureAwait(false);
         var profile = TripItJson.AsList(doc.RootElement, "Profile").FirstOrDefault();
-        _myProfileRef = TripItJson.Obj(profile, "@attributes") is { } a ? TripItJson.Str(a, "ref") : null;
-        return _myProfileRef;
+        var reference = TripItJson.Obj(profile, "@attributes") is { } a ? TripItJson.Str(a, "ref") : null;
+        Volatile.Write(ref _me, new MyProfile(_sessions.Current, reference));
+        return reference;
+    }
+
+    /// <summary>The signed-in account's email addresses (<c>Profile.ProfileEmailAddresses</c>).</summary>
+    public async Task<IReadOnlyList<string>> GetMyEmailAddressesAsync(CancellationToken ct = default)
+    {
+        using var doc = await GetJsonAsync("/api/v2/get/profile", null, ct).ConfigureAwait(false);
+        return ProfileEmailAddresses(doc.RootElement);
+    }
+
+    /// <summary>Reads the email addresses from a <c>get/profile</c> envelope. Public for unit testing.</summary>
+    public static IReadOnlyList<string> ProfileEmailAddresses(JsonElement root)
+    {
+        var profile = TripItJson.AsList(root, "Profile").FirstOrDefault();
+        if (profile.ValueKind != JsonValueKind.Object) return [];
+        return [.. TripItJson.AsList(profile, "ProfileEmailAddresses")
+            .SelectMany(e => TripItJson.AsList(e, "ProfileEmailAddress"))
+            .Select(e => TripItJson.Str(e, "address"))
+            .OfType<string>()];
     }
 }
