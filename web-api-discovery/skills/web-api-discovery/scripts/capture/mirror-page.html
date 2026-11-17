@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Capture hand-over</title>
+<!--
+  The phone view of a capture hand-over (mirror.js). Self-contained: no CDN, no
+  font, no external file; the script and the style carry the response's CSP
+  nonce. Frames and status arrive as Server-Sent Events; input goes back as
+  small JSON POSTs, in order. Phone-first, after the Multiplex server's live
+  sign-in page, which is proven on a phone.
+-->
+<style nonce="__NONCE__">
+:root{--bg:#f6f7f9;--fg:#14171a;--muted:#59626e;--card:#fff;--border:#d4d9e0;--accent:#1f5fd6;--accent-fg:#fff;--danger:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e8eaed;--muted:#a0a8b3;--card:#191c22;--border:#2c313a;--accent:#5b95ff;--accent-fg:#0b0d10;--danger:#ff8a80}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+body{overflow-x:hidden}
+.bar{position:sticky;top:0;z-index:2;background:var(--bg);padding:max(8px,env(safe-area-inset-top)) 10px 6px;border-bottom:1px solid var(--border)}
+.status{margin:2px 2px 6px;font-size:15px;font-weight:600}
+.row{display:flex;gap:6px;align-items:center;margin-top:6px}
+button{font:inherit;font-size:16px;font-weight:600;border-radius:10px;border:1px solid transparent;padding:10px 12px;min-height:46px;cursor:pointer;background:var(--accent);color:var(--accent-fg);touch-action:manipulation}
+button.secondary{background:var(--card);color:var(--fg);border-color:var(--border)}
+button.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
+button[disabled]{opacity:.6}
+.actions button{flex:1}
+.type input{flex:1;min-width:0;font-size:17px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--fg);min-height:46px}
+.keys{flex-wrap:wrap}
+.keys button{flex:1 1 22%;min-height:42px;font-size:15px;padding:6px;background:var(--card);color:var(--fg);border-color:var(--border)}
+.keys button[aria-pressed=true]{background:var(--accent);color:var(--accent-fg)}
+.hint{margin:6px 2px 0;font-size:13px;color:var(--muted)}
+.stage{position:relative;width:100%;min-height:240px;background:var(--card);touch-action:pinch-zoom;user-select:none;-webkit-user-select:none}
+.stage img{display:block;width:100%;height:auto;-webkit-touch-callout:none;touch-action:pinch-zoom}
+.stage .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.stage.has-frame .loading{display:none}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin:12px 10px}
+</style>
+</head>
+<body>
+<header id="bar" class="bar">
+  <p id="status" class="status" role="status" aria-live="polite">Connecting to the capture browser...</p>
+  <div class="row actions">
+    <button id="done" type="button">I'm done, continue</button>
+    <button id="end" type="button" class="danger">End the capture</button>
+  </div>
+  <div class="row type">
+    <input id="txt" type="text" maxlength="512" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the page">
+    <button id="send" type="button">Send</button>
+  </div>
+  <div class="row keys">
+    <button type="button" data-key="Enter">Enter</button>
+    <button type="button" data-key="Backspace">Delete</button>
+    <button type="button" data-key="Tab">Tab</button>
+    <button type="button" id="back">Back</button>
+    <button type="button" id="mode" aria-pressed="false">Tap &amp; scroll</button>
+  </div>
+  <p class="hint">Pinch with two fingers to zoom. For "press and hold" or a slider, switch Tap &amp; scroll to Press &amp; drag.</p>
+</header>
+<main id="stage" class="stage"><img id="screen" alt="Live view of the capture browser" draggable="false"><span class="loading">Waiting for the browser...</span></main>
+<section id="over" class="card" hidden><p id="over-msg"></p></section>
+<script nonce="__NONCE__">
+(function () {
+  var base = location.pathname.replace(/[^/]*$/, '');
+  var img = document.getElementById('screen'), stage = document.getElementById('stage');
+  var statusEl = document.getElementById('status'), txt = document.getElementById('txt');
+  var es = null, finished = false, drag = false, queue = Promise.resolve();
+
+  // In order, one at a time: a press must reach the page before its release.
+  function post(m) {
+    queue = queue.then(function () {
+      return fetch(base + 'input', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(m),
+        credentials: 'same-origin', cache: 'no-store'
+      }).catch(function () { });
+    });
+    return queue;
+  }
+  function over(text) {
+    finished = true;
+    try { es.close(); } catch (_) { }
+    statusEl.textContent = text;
+    document.getElementById('over-msg').textContent = text;
+    document.getElementById('over').hidden = false;
+    stage.hidden = true;
+    document.querySelectorAll('.row, .hint').forEach(function (r) { r.hidden = true; });
+  }
+  function connect() {
+    es = new EventSource(base + 'events');
+    es.addEventListener('status', function (e) {
+      try { statusEl.textContent = JSON.parse(e.data).text; } catch (_) { }
+    });
+    es.addEventListener('frame', function (e) {
+      try {
+        var m = JSON.parse(e.data);
+        img.src = 'data:image/jpeg;base64,' + m.d;
+        stage.classList.add('has-frame');
+      } catch (_) { }
+    });
+    es.addEventListener('end', function (e) {
+      try { over(JSON.parse(e.data).text); } catch (_) { over('This hand-over is over.'); }
+    });
+    es.onerror = function () { if (!finished && es.readyState !== 2) statusEl.textContent = 'Reconnecting...'; };
+  }
+  // Back from another app: reconnect straight away if the stream was dropped.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !finished && es && es.readyState === 2) connect();
+  });
+
+  function clamp(v) { return Math.min(1, Math.max(0, v)); }
+  function frac(e) {
+    var r = img.getBoundingClientRect();
+    return { x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), r: r };
+  }
+  var pointers = 0, start = null, moved = false, lastX = 0, lastY = 0, pdx = 0, pdy = 0;
+  var flush = null, pressed = false, moveTimer = null, pending = null;
+  function cancelGesture() {
+    if (drag && pressed && start) post({ t: 'up', x: start.x, y: start.y });
+    pressed = false; start = null;
+  }
+  stage.addEventListener('pointerdown', function (e) {
+    pointers++;
+    // A second finger is a pinch: the browser zooms, nothing reaches the page.
+    if (pointers > 1) { cancelGesture(); return; }
+    if (!stage.classList.contains('has-frame')) return;
+    start = frac(e); lastX = e.clientX; lastY = e.clientY; moved = false;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { }
+    if (drag) { pressed = true; post({ t: 'down', x: start.x, y: start.y }); }
+    e.preventDefault();
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!start || pointers > 1) return;
+    if (drag) {
+      pending = frac(e);
+      if (!moveTimer) moveTimer = setTimeout(function () {
+        moveTimer = null;
+        if (pending && pressed) post({ t: 'move', x: pending.x, y: pending.y });
+      }, 40);
+      return;
+    }
+    var r = start.r;
+    if (!moved && Math.hypot(e.clientX - (r.left + start.x * r.width), e.clientY - (r.top + start.y * r.height)) > 10) moved = true;
+    if (!moved) return;
+    pdx += (lastX - e.clientX) / r.width; pdy += (lastY - e.clientY) / r.height;
+    lastX = e.clientX; lastY = e.clientY;
+    if (!flush) flush = setTimeout(function () {
+      post({ t: 'scroll', x: start ? start.x : 0.5, y: start ? start.y : 0.5, dx: pdx, dy: pdy });
+      pdx = pdy = 0; flush = null;
+    }, 50);
+  });
+  function endPointer(e, cancelled) {
+    pointers = Math.max(0, pointers - 1);
+    if (!start) return;
+    var f = frac(e);
+    if (drag) { if (pressed) post({ t: 'up', x: f.x, y: f.y }); pressed = false; }
+    else if (!moved && !cancelled) post({ t: 'tap', x: f.x, y: f.y });
+    start = null;
+  }
+  stage.addEventListener('pointerup', function (e) { endPointer(e, false); });
+  stage.addEventListener('pointercancel', function (e) { endPointer(e, true); });
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var f = frac(e);
+    post({ t: 'scroll', x: f.x, y: f.y, dx: e.deltaX / f.r.width, dy: e.deltaY / f.r.height });
+  }, { passive: false });
+
+  function sendText() { if (txt.value) { post({ t: 'text', v: txt.value }); txt.value = ''; } }
+  var sendBtn = document.getElementById('send');
+  // Keep the text field focused (and the phone keyboard open) when Send is tapped.
+  sendBtn.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  sendBtn.addEventListener('click', sendText);
+  txt.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); sendText(); } });
+  document.querySelectorAll('[data-key]').forEach(function (b) {
+    b.addEventListener('pointerdown', function (e) { if (document.activeElement === txt) e.preventDefault(); });
+    b.addEventListener('click', function () { sendText(); post({ t: 'key', k: b.dataset.key }); });
+  });
+  document.getElementById('back').addEventListener('click', function () { post({ t: 'back' }); });
+  var mode = document.getElementById('mode');
+  mode.addEventListener('click', function () {
+    drag = !drag;
+    mode.setAttribute('aria-pressed', drag ? 'true' : 'false');
+    mode.textContent = drag ? 'Press & drag' : 'Tap & scroll';
+  });
+  document.getElementById('done').addEventListener('click', function () {
+    this.disabled = true;
+    statusEl.textContent = 'Handing the browser back...';
+    post({ t: 'done' });
+  });
+  document.getElementById('end').addEventListener('click', function () {
+    if (!window.confirm('End the capture now? What was recorded is kept.')) return;
+    this.disabled = true;
+    statusEl.textContent = 'Ending the capture...';
+    post({ t: 'end' });
+  });
+  connect();
+})();
+</script>
+</body>
+</html>
