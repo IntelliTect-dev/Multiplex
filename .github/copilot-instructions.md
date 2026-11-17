@@ -1,0 +1,768 @@
+# Copilot Workspace Instructions
+
+> **Warning: Generic instructions -- no project-specific content. Upstream-only edits.**
+> These instruction files are shared across multiple projects. Never add
+> project names, architecture details, domain concepts, specific dependencies,
+> or hardcoded paths. All changes must be made in the
+> [IntelliSDLC.ai](https://github.com/IntelliTect-Samples/IntelliSDLC.ai)
+> repo and pulled into consuming projects -- never edited locally and pushed back.
+> Project-specific context belongs in the consuming project's own
+> `.github/instructions/project.instructions.md` (and optionally
+> `CLAUDE.project.md`). See `README.md` for details.
+
+## Init Protocol for Consuming Projects
+
+When an AI agent runs first-time setup (e.g., `/init`) in a project that
+consumes IntelliSDLC.ai, follow this protocol:
+
+**DO NOT modify any upstream-managed file:**
+
+- `CLAUDE.md`
+- `.github/copilot-instructions.md`
+- `.github/agents/*`
+- `.github/instructions/*` (except `project.instructions.md`)
+- `.github/skills/*` (shared skills -- but **not** the consumer-owned `.github/skills/project-*/`)
+- `.claude/skills/next-issue/` and `.claude/skills/wrap-up/` (the issue-queue
+  slash commands -- the rest of `.claude/` is the consumer's own)
+
+These are pulled from IntelliSDLC.ai and any local edits will be lost
+on the next sync. The Validate Instructions workflow may also flag leaks.
+
+**DO create or extend the consumer-owned files:**
+
+- `.github/instructions/project.instructions.md` -- copy from
+  `project.instructions.md.template` if missing. Document project name,
+  architecture, tech stack, build commands, key conventions, and domain
+  glossary here.
+- `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
+  Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the
+  bottom of `CLAUDE.md`.
+- `.github/skills/project-<name>/SKILL.md` -- optional per-repo skills. Any
+  skill directory whose name starts with `project-` is consumer-owned: the
+  sync never overwrites or deletes it and the leak-scan skips it, so it may
+  contain project-specific names. No upstream change is required. (Exception:
+  files named `*.template` or `.gitkeep` stay upstream-managed even inside a
+  `project-*/` directory, so avoid those two filenames for consumer content.)
+- `README.md` -- copy from `README.md.template` if missing. Default
+  skeleton covers GitHub's five README questions (what / why / start /
+  help / who) using `##` headings so GitHub auto-generates the Outline.
+
+If a `*.template` file is present but the corresponding consumer-owned file
+is not, copy the template (drop the `.template` suffix) and fill in the
+sections. `Pull-SDLC.ai.ps1` does this automatically on first sync.
+
+## Project Overview
+
+This is a **C#/.NET** project. Discover the project's purpose, architecture, and full
+technology stack from the solution/project files, `README.md`, and NuGet package references.
+
+Key baseline technologies: C# / .NET 10+, xUnit, Moq.
+
+## Language Detection
+
+Detect the project's primary language from its files and apply the matching guidance below.
+When multiple languages coexist, apply each language's rules to the files of that language.
+
+| Indicator files | Language | Conventions |
+|---|---|---|
+| `.cs`, `.csproj`, `.sln` | C# / .NET | `.github/instructions/csharp.instructions.md` |
+| `.ps1`, `.psm1`, `.psd1` | PowerShell | `.github/instructions/powershell.instructions.md` |
+| `.ts`, `.js`, `package.json` | TypeScript / JS | `.github/instructions/typescript.instructions.md` |
+| `.py`, `pyproject.toml` | Python | Infer from project |
+| `.go`, `go.mod` | Go | Infer from project |
+| `.rs`, `Cargo.toml` | Rust | Infer from project |
+| `.java`, `pom.xml` | Java | Infer from project |
+
+If the language is not listed, infer conventions from the project's existing code,
+README, and build files.
+
+Whatever the language, code that writes interactive status to a terminal (progress,
+spinners, pickers, live counters) follows `.github/instructions/console-ui.instructions.md`.
+
+## Development Philosophy
+
+1. **Behavior-first testing** -- Ship a test with every behavior change; default to test-first. The test must fail for a behavioral reason (assertion failure, not compile error) when the change is reverted. Spikes may defer test-first but must be deleted or retro-fitted with behavior-first tests before merge.
+2. **Systematic over ad-hoc** -- Process over guessing. Follow structured workflows.
+3. **Complexity reduction** -- Simplicity as primary goal. YAGNI ruthlessly.
+4. **Evidence over claims** -- Verify before declaring success.
+5. **Functional Testing** -- Validate user-facing behavior with integration or E2E tests.
+6. **Continuous Refactoring** -- Eliminate duplication after every green step.
+
+## Code Style -- Generic (All Languages)
+
+- Keep functions / methods small (<= 20 lines) and single-purpose.
+- Prefer immutable variables where the language supports them.
+- Every public function must have a documentation comment.
+- Follow the language's established naming, formatting, and module conventions.
+- Use the project's existing linter / formatter. Run it after every change.
+- After **every step** (RED, GREEN, REFACTOR, or any code change), run the project's
+  compile/lint command and verify there are no errors. Fix any errors before proceeding.
+
+## Adding Command-Line Options -- Prompt First
+
+New command-line options (flags, switches, positional arguments, environment-variable
+toggles, or other public CLI surface) are easy to add and hard to remove. Treat every
+new option as a deliberate API decision, not an implementation detail.
+
+- **STOP before adding any new command-line option.** Do not introduce a new flag,
+  switch, or argument silently as part of a larger change.
+- **First ask whether an option is needed at all.** Before proposing a new option,
+  consider making the new behavior the **default** instead:
+  - If the new behavior is simply better, change the default and do **not** keep the
+    old behavior behind a flag -- prefer replacing over accumulating options.
+  - Only keep both behaviors (and therefore an option) when there is a genuine,
+    ongoing need for each. Two options that no one needs are worse than one good default.
+- **Prompt the user with a recommendation first.** Surface the proposal and ask for
+  confirmation before implementing it. The recommendation should state:
+  - whether the change should be the new default (no option) or genuinely needs an option;
+  - if an option is proposed, the exact option name and what it does;
+  - the default behavior and any alternatives considered (prefer no new option -- YAGNI).
+- **Wait for explicit approval** before writing the option, its parsing, its help text,
+  or its tests.
+- This applies even in autopilot mode: a new CLI option is a design decision worth a
+  confirmation prompt rather than a unilateral assumption.
+
+## Pre-Production -- No Backwards Compatibility
+
+Until a project is explicitly marked as released to production, do **not** maintain
+backwards compatibility for its API or CLI surface.
+
+- **Default assumption: pre-production.** Treat a project as pre-production unless it
+  carries an explicit production/release marker (e.g., a statement in `README.md`, a
+  `1.0.0`+ release, a `project.instructions.md` note, or similar).
+- **Switch straight to the best design.** When you improve an API signature, CLI option,
+  or other public surface, replace the old form outright -- do not keep deprecated
+  aliases, shims, compatibility flags, or legacy code paths around.
+- **Don't clutter the eventual release.** The goal is a clean API/CLI at launch, with no
+  legacy cruft carried in from earlier iterations.
+- **Once production is declared, this rule no longer applies** -- from that point,
+  follow normal deprecation and backwards-compatibility discipline.
+
+## Testing Conventions -- Generic
+
+- **Unit tests** mirror the source tree.
+- **Test files live in a `tests/` directory** (or the language's conventional location).
+- Use the project's established test framework. If none exists, choose the community
+  standard for the language.
+- Functional / integration tests are organized by feature or user flow.
+- **Judge a Pester run by `Result` and `FailedContainersCount`, never by
+  `PassedCount` / `FailedCount` alone.** A test file that fails to load (a
+  parse error, a throwing `BeforeAll`) is a failed *container*: its tests never
+  run, so they are counted as neither passed nor failed, and a run can report
+  `FailedCount = 0` while a whole suite did not execute.
+
+> Language-specific testing conventions are in the corresponding
+> `*.instructions.md` files referenced in the Language Detection table above.
+
+### Provider and Service Boundaries -- Live Tests Are Required
+
+Both kinds of test have a place, and they prove different things:
+
+- **Unit tests with mocks or fakes** cover logic on our side of the boundary:
+  mapping, parsing, validation, control flow, retry and error classification.
+  They are fast, deterministic and run everywhere.
+- **Live tests** cover every operation that crosses a provider or service
+  boundary -- a third-party HTTP API, a cloud service, a database, another
+  team's service, an undocumented web backend. They run against the real
+  provider with real authentication. A real instance of the provider, local or
+  hosted, counts as live -- a local database server or container is fine; a
+  hand-rolled fake is not.
+
+**Every operation that crosses a provider or service boundary needs at least
+one live test. An operation without one is not done.** A mock of the provider
+only restates our assumption about how the provider behaves, so it cannot fail
+when that assumption is wrong -- and wrong assumptions about payload shape,
+field types, status codes, auth and paging are exactly what breaks at a
+boundary. The thinner the wrapper, the less a mock proves: for a client method
+that mostly forwards a request and maps the reply, the live test *is* the test.
+
+Rules for live tests:
+
+- **Never pass silently when they could not run.** Without credentials or
+  access, a live test must skip with a stated reason, and the run reports how
+  many were skipped. A skip is never green.
+- **Reads run by default** wherever credentials are available.
+- **Writes are opt-in** -- an explicit switch in the test harness (for
+  example an environment variable read only by the test project; not a
+  product CLI option) -- and confined to a disposable resource created by the
+  test, named so it is recognisable, and deleted in a `finally` block or
+  equivalent. A live test never changes anything it did not create.
+- **Assert meaning, not just success.** Check the returned data against an
+  independent source where one exists, not only that the call returned 2xx.
+- **Drive each boundary-crossing operation through every public surface that
+  exposes it** (library, CLI, tool server, module): at least one live test per
+  surface drives that operation through the surface, not only through the
+  underlying client. Surface-side control flow -- argument parsing, rendering,
+  prompts -- stays unit-tested; see **CLI Testing -- Scope and the `--dry-run`
+  Seam** below.
+- **Recorded fixtures come from the real provider.** When a unit test needs a
+  provider's response, use one captured from the provider, never a
+  hand-written guess at its shape.
+- **Run the live suite on a schedule** as well as on demand, so a provider
+  change is noticed before a user hits it.
+
+### CLI Testing -- Scope and the `--dry-run` Seam
+
+- **Scope live/integration coverage to what actually needs a real dependency.**
+  CLI-layer concerns -- argument/option parsing, selection/listing rendering
+  and paging, confirmation prompts, and any other pure control-flow branching
+  -- should be unit-tested against mocks/fakes of the underlying client or
+  provider. None of that logic depends on real external state, so it never
+  needs a live/integration test. Reserve live/integration tests for the
+  functions that actually call out to the real external system (real ids,
+  real auth, real network calls, real writes) -- the places where a mock
+  genuinely can't prove correctness (e.g., an id-format heuristic that has
+  never run against real ids, or confirming a delete actually removed
+  something). When scoping test coverage for a CLI feature, ask "does this
+  case need real external state to be meaningful, or is it exercising
+  CLI-side control flow?" and route accordingly -- apply this across the
+  whole feature, not just to one option or flag within it. The functions that
+  do call out fall under **Provider and Service Boundaries -- Live Tests Are
+  Required** above: each needs at least one live test.
+- **Proactively suggest `--dry-run` for write/destructive commands.** When a
+  CLI command performs a write or destructive operation (create, delete,
+  publish, or anything that mutates real external state) and has no
+  `--dry-run` option, suggest adding one rather than waiting to be asked --
+  as a recommendation, subject to the **Adding Command-Line Options -- Prompt
+  First** rule above (surface the proposal and wait for confirmation before
+  implementing it). Beyond safety, `--dry-run` is a testing seam: it resolves
+  and validates everything the real operation would (arguments, selection, id
+  resolution) while stopping short of the actual external call. Once it
+  exists, that resolution/validation logic can be unit- or dry-run-tested
+  without touching a live account or system, shrinking what still needs live
+  coverage down to the write call itself. It narrows the live-test surface --
+  it does not replace a live test of the actual write path.
+
+## Product Specification
+
+If the project maintains a living product specification (e.g., `product-spec.md`):
+
+- **Update the spec with every feature** -- document new behavior in the spec.
+- **When a requirement changes, update the spec** -- it always describes the current state.
+- **Replace superseded acceptance criteria** -- rewrite to match new behavior.
+- Sections: Overview, Features (with acceptance criteria), API Surface, Data Model,
+  Known Limitations.
+- Use Conventional Commits: `docs(spec): add <feature> specification`.
+
+## Tool Preferences
+
+- **Prefer Git CLI over GitKraken MCP tools.** Use standard `git` commands for common
+  operations.
+- **GitKraken MCP tools are acceptable** when they provide functionality not easily
+  available via the Git CLI.
+- **Playwright MCP output directory: `.playwright-mcp/` at the repo root.** When a
+  coding agent uses the Playwright MCP server (browser automation, console logs,
+  page snapshots), all output -- `console-*.log`, `page-*.yml`, traces, screenshots
+  -- must be written to `.playwright-mcp/` at the repo root. Do not let the MCP
+  server create a different directory (e.g. `.playwright/`, `playwright-output/`,
+  or a per-session temp dir under the user profile). Pin the path explicitly when
+  invoking Playwright tools that accept an output directory. Consuming projects
+  must add `.playwright-mcp/` to their `.gitignore` -- the directory is a
+  per-session scratch area for the agent, not a build artifact, and must never be
+  committed.
+
+## Branching Strategy
+
+- **Never commit directly to `main`.** Always create a feature branch first.
+- Branch naming: `<type>/<issue#>-<short-description>`
+  Examples: `feat/42-user-auth`, `fix/57-validation-error`.
+- **Git worktrees must be placed in `.worktrees/`** of the repo root.
+- **Clean up feature branches and worktrees after the PR closes.**
+  - **Recommended:** use `Cleanup-Worktree.ps1`:
+    ```powershell
+    ../../Cleanup-Worktree.ps1                           # From worktree (auto-detect)
+    ./Cleanup-Worktree.ps1 -Branch <branch-name>         # From repo root
+    ./Cleanup-Worktree.ps1 -Sweep                        # Also prune stale refs
+    ```
+  - Manual fallback: unlock worktree, remove it, prune, checkout main, pull, delete branch.
+  - **Cleanup refuses on a dirty worktree, and that refusal is correct.**
+    `git worktree remove` declines when tracked files are modified or staged;
+    the script no longer forces past that silently (issue #392). It lists the
+    files, prompts when a human is attached, and **fails** when none is --
+    because the merge-then-cleanup sequence routinely catches an authoring
+    agent still finishing. If you see the refusal, commit or stash the work;
+    pass `-Force` only once you have decided those changes are expendable.
+    `-Force` authorises discarding both the uncommitted worktree changes and
+    an unmerged branch (`git branch -D`).
+
+### The Rule Covers WRITES, Not Just Commits
+
+The no-work-on-`main` rule reads as a rule about **committing**, and that
+reading is how it gets bypassed without anyone meaning to: *"I am not
+committing, I am just running a script."* Tooling then writes its output
+relative to the working directory, the files land in the root checkout on the
+protected branch where commits are blocked, and nothing says so -- the discovery
+path is a human eventually noticing a dirty tree.
+
+So, before running **anything that produces files** -- a capture, a generator, a
+build that emits artifacts, a scratch script -- be in a worktree, not the root
+checkout. The pre-commit hook cannot help here: it enforces commits, and a
+working-tree write never reaches it.
+
+Two mechanical controls back this up, because instructions alone did not:
+
+- **Tooling warns before it starts.** Output-producing scripts check placement
+  up front and warn, then proceed -- deliberately advisory, since the warning
+  fires before anything exists to lose. Heed it: cancel and make a worktree.
+- **`.githooks/check-dirty-primary-checkout`** reports a dirty primary checkout
+  on the protected branch, whatever put the files there. Wire it into your agent
+  harness as an end-of-turn or end-of-session check.
+
+## Concurrent Session Safety
+
+- **All commits must come from a worktree** -- pre-commit hook blocks repo-root commits.
+- **One worktree per issue** -- prevents two sessions from colliding.
+- **Lock worktrees after creation** (`git worktree lock`).
+- **Unlock before removal** (`git worktree unlock`).
+- **`--no-verify` escape hatch** -- only for exceptional circumstances.
+- **Issue bodies go stale -- re-scan before acting on them.** An inventory,
+  count, file list, or line number written into an issue describes the tree on
+  the day it was written. Re-derive it from the current default branch before
+  planning off it.
+- **A hand-applied rebase is new authorship.** Resolving conflicts by hand, or
+  re-applying a change onto a moved base, produces code no reviewer has read.
+  It needs a fresh independent review, not the one the pre-rebase diff received.
+
+## Issue Queue -- Priority Labels and Claims
+
+Work is queued on the issues themselves, not in tracking or controller issues.
+A tracker duplicates state that already lives on the issues it lists, so every
+change has to be mirrored by hand, and the mirror drifts. `/next-issue` selects
+and dispatches from this queue; `/wrap-up` ends a session against it.
+
+### Labels -- the shared contract
+
+The queue uses the **Kubernetes label convention** (the label set maintained in
+`kubernetes/test-infra`, the most widely adopted set on GitHub), so the names
+say what they mean without a legend.
+
+| Label | Spoken alias | Meaning |
+|---|---|---|
+| `priority/critical-urgent` | **P0** / "Priority 0" | Emergency -- someone's top priority **right now** (e.g. an account must be disabled, a live safety incident). Handled before anything else. |
+| `priority/important-soon` | **P1** / "Priority 1" | Worked on now or very soon. |
+| `priority/important-longterm` | **P2** / "Priority 2" | Important, but may not be staffed yet or may take several releases. |
+| `priority/backlog` | **P3** / "Priority 3" | Lower priority. |
+| `priority/awaiting-more-evidence` | **P4** / "Priority 4" | Lowest -- possibly useful, not yet enough support. |
+| `hold` | | Do not start (awaiting discussion or an owner decision). Never dispatched; a held PR is never merged. Kept as is: Kubernetes' own hold label is for pull requests only. |
+| `lifecycle/active` | | Claimed by a session. Never dispatched while the claim is live. |
+| `area/<name>` | | Optional family label, so a session can be pointed at -- or kept away from -- one area. |
+
+Exactly one `priority/*` label per open issue. **The spoken aliases are part of
+the contract**: people say "P0" or "Priority 3", so translate them both ways --
+read "P2" as `priority/important-longterm`, and report a priority as the alias
+plus the label, e.g. `P1 (priority/important-soon)`.
+
+**When you set a priority, comment the reason on that issue.** The reason lives
+beside the label, not in a tracker.
+
+**Ordering is GitHub's native "blocked by".** "A prerequisite lands before the
+thing that consumes it" is a blocked-by link between the two issues.
+
+**Next** = open, highest priority in the fixed order P0 > P1 > P2 > P3 > P4
+(never alphabetical), not `hold`, not `lifecycle/active`, no open blocker. Ties
+go to the oldest issue. An issue with no priority label is triaged by
+`/next-issue` and never dispatched until it carries a priority.
+
+### Claims
+
+The assignee field cannot be the claim: every session runs as the same GitHub
+account, so an assignee cannot tell sessions apart.
+
+- **Claim** = push the feature branch (`<type>/<issue#>-<slug>`) at once, add
+  `lifecycle/active`, and post a claim comment naming the session, its session ID,
+  the host, the branch, and the UTC time, with a marker:
+  `<!-- claim: session="<name>" session_id="<id>" host="<host>" branch="<branch>" -->`.
+  `<id>` is the session ID the harness provides (Claude Code substitutes it
+  into a skill as `${CLAUDE_SESSION_ID}`), or `unknown` when none is provided --
+  never guessed. `<host>` is the machine name, because a session's transcript
+  lives only on the machine that ran it; the ID is what lets a crashed or quiet
+  session be resumed (`claude --resume <id>`) or its transcript loaded.
+  Claim **before** starting work or dispatching it.
+- **Race** -- after claiming, re-read the comments. Among claims not followed by
+  a matching release, the earliest wins; the loser posts a release and moves on.
+- **Stale** -- a claim with no comment on the issue and no commit on its branch
+  for **3 days** may be taken over, with a comment saying whose claim and why,
+  quoting the previous holder's session ID and host so the new session can load
+  that transcript before it starts.
+- **Release** -- a merged PR closes the issue. An abandoned or parked attempt
+  removes `lifecycle/active` and posts
+  `<!-- release: session="<name>" session_id="<id>" reason="<reason>" -->` with
+  a one-line reason.
+- **Who holds what** -- `/next-issue` lists every live claim (session, session
+  ID, host, branch, claimed-at, last activity, stale) from these markers, beside
+  the pick list, with a ready-to-run `claude --resume <id>` for a quiet one.
+
+### Filing an issue
+
+Any session that files an issue sets these **at creation**, not later:
+
+- exactly one `priority/*` label (P0-P4, per the table above), or `hold` when
+  it must not start yet;
+- an `area/<name>` label, when the repository uses area labels;
+- a **blocked by** link to every open issue it depends on
+  (`gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<id>`,
+  where `<id>` is the blocker's numeric `id` from `gh api repos/<owner>/<repo>/issues/<blocker>`,
+  not its number);
+- a comment giving the reason for the priority, ending with the marker
+  `<!-- priority: label="priority/<level>" -->` (e.g.
+  `<!-- priority: label="priority/important-soon" -->`).
+
+**When re-prioritization happens:**
+
+- **At filing** -- the rule above.
+- **Whenever `/next-issue` runs** -- it triages first: unprioritized issues, and
+  issues whose body or comments changed after their priority was set, and asks
+  the owner to confirm or change each before showing the list. Unattended, it
+  labels nothing and reports them instead.
+- **When a session changes an issue's scope** -- it re-evaluates the priority
+  then, and comments why.
+
+A blocker closing changes no priority; it only lets the issue into the list.
+Every priority decision -- set, changed or confirmed -- is recorded by its
+reason comment and that marker, which is what tells the next triage when the
+priority was last decided. A change adds the new label **before** removing the
+old one, so an issue is never without a priority; a confirmation changes no
+label at all.
+
+### Legacy label names
+
+Earlier versions of this contract used other names, and some repositories
+already used their own. `/next-issue` still **reads** them, so no queue is empty
+while a repository migrates, and reports each one as "to migrate":
+
+| Legacy name | Current name |
+|---|---|
+| `priority-N`, `priority: N` (N = 0..3) | the P`N` label above (`priority-0` is `priority/critical-urgent`, ...) |
+| `in-progress` | `lifecycle/active` |
+| `area:<name>` | `area/<name>` |
+
+Migration happens only after the owner confirms it -- never unattended, and
+never by the sync, which does not write to GitHub. The preferred move is to
+**rename the label in place** (`gh label edit "<old>" --name "<new>"`), which
+moves every issue carrying it, open or closed, and keeps its history. Priority
+marker comments already written keep the old name; they are read through the
+same mapping, so they never need rewriting.
+
+## Plan Tracking
+
+Every feature must be tracked as a **GitHub issue** through the full lifecycle:
+
+- **Brainstorm (Phase 0) is owned by the `@plan` agent.** `@dev-loop`
+  delegates the design dialogue to `@plan`, which creates the GitHub issue.
+  If a design issue already exists, Phase 0 confirms it is still open -- a
+  closed issue stops the run -- and is otherwise skipped.
+- **Update the issue with the implementation plan (Phase 2).**
+- **Link the PR to the issue** with `Closes #<issue-number>`.
+
+## Autopilot Usage
+
+- **When autopilot mode is used to implement a plan, always use the Dev Loop
+  agent (`@dev-loop`).** Never skip the full quality cycle for plan work.
+
+## Surfacing Assumptions -- Report What You Decided Without Me
+
+When you proceed without the user because they are unavailable (autopilot,
+background / `bg:` tasks, or any other unattended continuation) and you resolve
+an ambiguity by making your own assumption instead of asking, **record it and
+surface it at the end for review**. In your final summary, list every such
+assumption with (a) what you assumed and (b) the decision it drove, so the user
+can confirm or correct it. State "None" when you made no autonomous assumptions.
+
+This applies to **all** cases where you continued on your own judgment because
+the user could not be consulted -- not just plan work. It is enforced as the
+mandatory **Assumptions** field of the Task Complete Summary Format (see
+**Skills & Agents -> Task Complete Summary Format** below). When the work
+produces a pull request, mirror the same assumptions in the PR description so
+they are visible to reviewers as well.
+
+## PR & Issue Body Formatting
+
+When writing PR descriptions, issue bodies, or review comments through the CLI
+(`gh pr create`, `gh pr edit`, `gh issue create`), **always use `--body-file`**
+instead of inline `--body "..."`. Two problems occur with inline bodies:
+
+1. **Collapsed newlines** -- the shell strips line breaks from multiline strings.
+2. **CP437 mojibake** -- on Windows, the `gh` CLI garbles Unicode through the OEM codepage.
+
+### Never Read-Modify-Write PR Bodies on Windows
+
+**Never** capture `gh pr view --json body --jq '.body'` into a PowerShell variable
+and re-interpolate it. PowerShell destroys newlines. Always construct the complete
+body from scratch and write it to a file.
+
+### Required Workflow
+
+```powershell
+# Build the COMPLETE body from scratch (never read-modify-write)
+$body = @"
+## Summary
+
+<description of changes>
+
+Closes #<issue-number>
+"@
+
+# Write body to a temp file with explicit UTF-8 (no BOM)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
+
+# Pass via --body-file
+gh pr create --title "feat: ..." --body-file pr-body.tmp
+
+# Clean up
+Remove-Item pr-body.tmp
+```
+
+**ASCII replacements** for common Unicode characters:
+
+| Instead of | Use |
+|---|---|
+| em dash | ` -- ` |
+| en dash | `-` |
+| arrow | `->` |
+| smart quotes | `'` or `"` |
+| `<=` `>=` symbols | `<=` `>=` |
+
+## Commit Messages
+
+Follow Conventional Commits: `type(scope): description`
+
+Types: `feat`, `fix`, `test`, `refactor`, `docs`, `chore`.
+
+## Skills & Agents
+
+### Skills (`.github/skills/`)
+
+Reusable process definitions invoked on demand. Skills enforce methodology and discipline.
+
+| Skill | Purpose |
+|---|---|
+| `behavior-first-testing` | Red -> Green -> Refactor cycle with anti-collusion guardrails and a spike clause |
+| `refactor-workflow` | Eliminate duplication after each green step -- YAGNI, simplicity first |
+| `functional-testing` | Generate & maintain functional / E2E tests -- explore first, verify before completion |
+| `evidence-capture` | Produce a runtime artifact for every change + AI review loop verifying it visibly matches the issue intent (max 3 iterations, then escalate) |
+| `code-review-workflow` | Independent review by severity using a parallel panel of non-author vendor models; defines the advisory triage & convergence protocol the authoring model follows |
+| `systematic-debugging` | 4-phase root cause investigation -- no fixes without understanding |
+| `dev-loop-phase-gate` | Verify phase completion before proceeding -- quality gate enforcement |
+| `security-review` | Scan code for vulnerabilities, exposed secrets, and insecure dependencies (vendored from [github/awesome-copilot](https://github.com/github/awesome-copilot)) |
+
+Recording a site's traffic and discovering its API (`web-api-discovery`) now
+lives in its own repository and installs for any agent:
+https://github.com/IntelliTect-Samples/web-api-discovery.
+
+### Agents (`.github/agents/`)
+
+Orchestrators and interactive workflows with specific tooling and model requirements.
+
+| Agent | Purpose |
+|---|---|
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Independent Review+Dry Run]* -> Merge -> Cleanup |
+| `plan.agent.md` | Design and planning -- Socratic questioning, approach trade-offs, GitHub issue creation |
+| `code-review.agent.md` | Independent code review via a parallel panel of non-author vendor models; produces advisory findings (the authoring model dedupes, triages, and converges) |
+| `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
+| `prd.agent.md` | Generate Product Requirements Documents with user stories and acceptance criteria |
+
+### Development Workflow
+
+Use `@dev-loop` to drive the full quality cycle. It coordinates skills in order.
+Phases 3-7 use an expanding loop -- each phase is a quality gate, failure routes
+back to Phase 3 (TDD).
+
+```
+Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Independent Review+Dry Run]* -> Merge -> Cleanup
+```
+
+#### CI Failure Restart Loop
+
+After pushing to a PR branch, if CI fails: investigate, fix locally, push again.
+A PR must **never** be merged while hosted CI is red. When hosted CI cannot run
+at all, see the Merge Step below.
+
+#### Merge Step
+
+Once the expanding loop exits cleanly (CI green (or the hosted-CI-unavailable
+exception below applies), all review threads resolved,
+**an independent review satisfied the invariant** -- a reviewer that is not the
+authoring model read the latest diff and surfaced no new accepted Critical /
+Important findings -- dry run passes if applicable), merge the PR before running
+Cleanup. Copilot review is one way to satisfy that invariant; a review by a
+different model than the authoring one satisfies it equally. See the
+**Independent Code Review -- Reviewer != Author Model** section in `CLAUDE.md`
+for the canonical rule, the substitution trigger, and the detection call.
+
+**Merging is pre-authorized.** When those criteria hold, merge, close the issue,
+and clean up the worktree **without asking**, then report using the **Task
+Complete Summary Format** below -- the report replaces the permission prompt and
+is not optional. The independent review is mandatory; the permission is not. See
+**Merging a Finished PR Is Pre-Authorized** in `CLAUDE.md`.
+
+**This repo only allows rebase merges:**
+
+```powershell
+gh pr merge <pr-number> --rebase --delete-branch
+```
+
+Never merge with unresolved review threads. **Hosted CI that cannot run is not
+"CI red"**: when hosted CI cannot run at all, a recorded local run of the same
+checks satisfies the gate, provided the switch to local CI is
+developer-confirmed and recorded and the PR carries the runner's output with
+real counts. The confirmation must be verifiable by any session or reviewer -- a
+linked, timestamped developer comment cited in the PR, or the repository's own
+committed instructions or config; a personal or session-local memory note does
+not count. While on local CI, hosted CI is rechecked daily and the repository
+switches back as soon as it works -- the shared local-CI runner's job, not
+implemented by hand. If hosted CI ran and failed, that is a hard stop unless the
+identical failure is shown, with evidence in the PR, to be pre-existing on
+`main`. If any post-merge check fails, route back to Phase 3 (TDD) on a new
+branch.
+
+**Stop and ask only when** the PR or its issue carries the `hold` label; the
+reviewer's model is not recorded; the PR belongs to another session or another
+author; or the change is outside the approved design.
+
+Use `@plan` when exploring a new idea before committing to implementation.
+Use `@systematic-debugging` (or the `systematic-debugging` skill) for bugs.
+Use `@instructions` for changes to instruction files or platform config.
+
+#### `bg:` Background Task Shorthand
+
+When a user message is prefixed with `bg:` (case-insensitive), launch a background
+Dev Loop agent for that work and return control immediately.
+
+#### Agent Output Linking
+
+In all agent summaries, **always use full GitHub links** for PR numbers, issue numbers,
+and branch names -- never plain-text references like `#131`.
+
+| Reference type | Format |
+|---|---|
+| Pull request | `[#131](https://github.com/<owner>/<repo>/pull/131)` |
+| Issue | `[#60](https://github.com/<owner>/<repo>/issues/60)` |
+| Branch | `` [`feat/126-name`](https://github.com/<owner>/<repo>/tree/feat/126-name) `` |
+
+##### Task Complete Summary Format
+
+**Numbering Report Items** below is deliberately scoped wider than this
+section: it binds every end-of-turn report, whatever the harness calls it and
+whatever layout the harness imposes. Everything else here describes the
+`task_complete` summary specifically.
+
+Every `task_complete` summary must include the following fields whenever the
+underlying data exists. Omit a field only when it does not apply to the work
+just performed (e.g., a Q&A turn with no PR). **Exception:** on every dev-loop
+run the **Result display** is mandatory and must not be omitted -- only the PR
+link may be dropped when no PR exists. The **Assumptions** field is **always
+present** in every summary: list the assumptions you made while proceeding
+without the user, or state "None".
+
+| Field | Required format |
+|---|---|
+| **PR** | Full link: `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)` |
+| **Issue** | Full link: `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)` |
+| **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
+| **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
+| **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
+| **Results** | The list of what was done or found, one item per outcome, numbered `R1`, `R2`, ... per **Numbering Report Items** below. This is not the **Result display**: that field is the single captured output and is not numbered. |
+| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. **Always present in every `task_complete` summary** -- state "None" when you made no autonomous assumptions (see **Surfacing Assumptions**). Numbered per **Numbering Report Items** below. |
+| **Needs you** | Every decision, question, approval, or command the user must act on. Numbered per **Numbering Report Items** below. Omit when nothing needs the user. |
+| **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
+| **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
+
+Place these near the top of the summary so they are immediately scannable.
+The command-to-test field is the project's actual verification command (e.g.,
+`dotnet test`, `npm test`, `Invoke-Pester -Path .\...`). When multiple commands
+are needed, list them in the order they should be run.
+
+The Evidence fields link to the artifact produced by the evidence-capture skill
+(Phase 5b). The **local** link is the primary review path -- a clickable
+`file:///` URL the reviewer opens with one click from the terminal. The **PR**
+link is the durable copy for teammates. See
+`.github/skills/evidence-capture/SKILL.md` for the artifact formats and the
+local-link contract, and `Publish-Evidence.ps1` for the upload helper.
+
+Example:
+
+```markdown
+- **Issue**: [#42](https://github.com/owner/repo/issues/42)
+- **PR**: [#57](https://github.com/owner/repo/pull/57) (merged)
+- **Branch**: [`feat/42-user-auth`](https://github.com/owner/repo/tree/feat/42-user-auth)
+- **Test**: `dotnet test --no-build`
+- **Result**:
+  ```text
+  > app auth --user alice
+  Authenticated alice (token expires in 3600s)
+  ```
+- **Results**:
+  - **R1.** Added `app auth`, which authenticates a user and reports the token lifetime.
+  - **R2.** Expired tokens are now refreshed once before a request fails.
+- **Assumptions**:
+  - **A1.** Kept the token TTL at the existing 3600s default (the issue did not specify); no new option added.
+- **Needs you**:
+  - **N1.** Confirm 3600s is the TTL you want before the next release.
+- **Evidence (local)**: file:///D:/Git/repo/.evidence/phase-5b-20260101T000000Z/evidence.md
+- **Evidence (PR)**: https://github.com/owner/repo/pull/57#issuecomment-1234567
+```
+
+###### Numbering Report Items
+
+**The numbering binds every end-of-turn report, not only a `task_complete`
+summary.** Whatever the report is called, and whatever layout it uses, if it
+lists what was done those items are `R`-numbered, assumptions are
+`A`-numbered, and anything the user must act on is `N`-numbered. The rule is
+attached to the report, not to one format that happens to describe it.
+
+Number every item in a report's list sections, so the user can answer one
+item by name ("A2 is wrong, N3 yes") and nothing open is lost across a
+multi-turn exchange. Each item gets its section's letter plus a number:
+
+- `R` -- **Results** (the list of what was done or found): `R1`, `R2`, ...
+- `A` -- **Assumptions**: `A1`, `A2`, ...
+- `N` -- **Needs you** (decisions, questions, approvals, or commands for the
+  user): `N1`, `N2`, ...
+
+The **Result display** field is the single captured output, not a list, and it
+is not `R`-numbered.
+
+**`N` numbers are stable for the whole session.** A number is never reused.
+Every end-of-turn report re-lists every open item under its same number --
+including any the user's last reply left unanswered -- until it is answered.
+An answered item is marked **resolved** once in the following end-of-turn
+report and never renumbered, so an earlier "re N3" still points at the right
+item.
+
+**`R` and `A` numbers restart at 1 in each end-of-turn report.** They describe
+that report's work; an older one is referred to by when it was said
+("yesterday's A2").
+
+Use no `X.Y` (report.item) numbering: a session cannot reliably count its own
+end-of-turn reports, especially after earlier context has been summarized, and
+a wrong report number is worse than none. Other lists -- work orders, option
+lists, steps -- get plain numbers; the letter prefixes are for the summary
+sections only.
+
+**An imposed report layout carries the numbers into it.** When an output style,
+a persona, a custom agent prompt, or any other harness-level instruction
+supplies its own report layout -- its own section names, its own ordering, its
+own bullet formatting -- carry the letters into that layout's equivalent
+sections: what was done is `R`-numbered, assumptions `A`-numbered, whatever the
+user must act on `N`-numbered, under whatever headings the layout uses. A
+layout that asks for a bullet list is not an exemption; a numbered item is
+still a bullet, with `**R1.**` at its front. Such a layout typically lives in
+personal machine configuration outside any repository, so it cannot be fixed
+from here -- which is precisely why the rule binds the report itself.
+
+**If the active layout genuinely cannot carry the numbers, say so in the
+report** -- one line naming what was dropped and why -- rather than silently
+omitting them, so the operator can repair the layout instead of discovering the
+loss later. Reaching for this should be near-never: `**R1.**` fits wherever the
+item's own text fits, so reformat the item -- into a bullet, a line, a
+sentence -- before concluding that the layout cannot carry it. A layout that
+merely makes the numbers inconvenient is not a layout that cannot carry them.
+
+##### PR Summary Formatting
+
+When listing multiple PRs, use a **numbered list format** (not a table):
+
+```
+N. [`#NNN`](pr-url) . `branch-name` . `CI-result` . Result text
+```
