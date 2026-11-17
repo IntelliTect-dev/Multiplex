@@ -94,10 +94,12 @@ working around it.
   numbers in its prompt. `-Pace 'nav=2000-6000,action=500-1500,per-minute=6'`
   changes them; `-Pace off` makes them zero, for tests.
 - **Throttling is honoured.** The recorder reads every response from the site.
-  A `429`, or a `503` with `Retry-After`, pauses for what the site asked (or
-  backs off with jitter). A block (a small HTML `403` from a CDN), a bot check,
-  or throttling that persists stops an `-AI` agent, says what the site did and
-  where, and leaves the still-recording browser to you; press ENTER when done.
+  A `429`, or a `503` with `Retry-After`, pauses the recorder's own steps for
+  what the site asked (or backs off with jitter); a running `-AI` agent cannot
+  be slowed, so it is warned about instead. A block (the page refused with a
+  small HTML `403` from a CDN), a bot check, or throttling that persists stops
+  an `-AI` agent (or keeps it from starting), says what the site did and where,
+  and leaves the still-recording browser to you; press ENTER when done.
 - **Generated clients** carry a `PacingHandler`: one request at a time, about a
   second apart, `Retry-After` honoured, retries only for `GET`/`HEAD` (never
   `POST`), a clear exception when retries run out, and a block never retried.

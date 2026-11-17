@@ -222,6 +222,16 @@ test('C2: an HTML 403 from a CDN is a block; an application JSON 403 is not', ()
     assert.strictEqual(pacing.classifyResponse(onSite({
         status: 403, mimeType: 'text/html', body: '<html>You do not have access to this project</html>'
     })), null, 'an HTML 403 with no edge evidence is the application\'s');
+    // EDGE HEADERS ALONE ARE WEAK: a CDN-fronted site puts them on everything.
+    const edgeOnly = { mimeType: 'text/html', headers: { 'cf-ray': 'x', server: 'cloudflare' },
+        body: '<html><h1>Not allowed</h1></html>' };
+    assert.strictEqual(pacing.classifyResponse(onSite(Object.assign({ status: 403, isDocument: false }, edgeOnly))),
+        null, 'a sub-resource\'s HTML 403 through a CDN, with no block signature, is not a block');
+    assert.strictEqual(pacing.classifyResponse(onSite(Object.assign({ status: 503, isDocument: true }, edgeOnly))),
+        null, 'a bare HTML 503 through a CDN is an outage, not a refusal');
+    assert.strictEqual(pacing.classifyResponse(onSite({ status: 403, isDocument: false, mimeType: 'text/html',
+        body: '<script src="https://geo.captcha-delivery.com/captcha/"></script>' })).kind, 'blocked',
+    'with a known signature a sub-resource counts');
     assert.strictEqual(pacing.classifyResponse(onSite({
         status: 200, mimeType: 'text/html', headers: { 'cf-mitigated': 'challenge' }, body: '<html></html>'
     })).kind, 'challenge');
@@ -339,6 +349,17 @@ test('L1: the hand-over hands the browser to the human, and evades nothing', () 
         .map(([, t]) => t).join('\n');
     assert.match(pause, /Wait at least 30 s/);
     assert.deepStrictEqual(pacing.throttleLines({ action: 'none', signal: throttle() }), []);
+    // Never the query string: that is where sites put search terms and emails.
+    const queried = Object.assign({}, decision, { signal: Object.assign({}, decision.signal,
+        { url: 'https://www.example.com/search?email=someone%40example.com&q=DCA' }) });
+    const said = pacing.throttleLines(queried, 'agent').map(([, t]) => t).join('\n');
+    assert.match(said, /https:\/\/www\.example\.com\/search\)/);
+    assert.doesNotMatch(said, /email|q=DCA/, `the query reached the terminal:\n${said}`);
+    // An -AI run refused before the agent was launched says so, rather than
+    // claiming to have stopped something that never ran.
+    const unstarted = pacing.throttleLines(decision, 'agent-unstarted').map(([, t]) => t).join('\n');
+    assert.match(unstarted, /The agent was not started, and will not be/);
+    assert.doesNotMatch(unstarted, /has been stopped/);
 });
 
 // ---------------------------------------------------------------------------
