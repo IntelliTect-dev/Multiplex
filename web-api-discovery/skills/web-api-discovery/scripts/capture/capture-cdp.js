@@ -7,8 +7,21 @@
  * network traffic to a HAR file. Polite-crawl defaults: descriptive
  * User-Agent and ~1 req/sec throttle on automated traversal.
  *
+ * Its navigation is paced and its responses are read for throttling, by the
+ * same pacing.js the recorder uses: a 429 or a 503 with Retry-After pauses; a
+ * block, a challenge or throttling that persists stops automated browsing and
+ * says so -- the browser is left to the person (headed), or the run ends with
+ * exit 3 (headless, where there is nobody to hand it to). Nothing here works
+ * around a block.
+ *
  * Usage:
- *   node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--headless] [--throttle-ms 1000]
+ *   node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--headless]
+ *                       [--throttle-ms 1000] [--pace off|human|<spec>]
+ *
+ *   --throttle-ms  a random delay of up to this many ms before every request;
+ *                  0 turns it off (and with it the request interception).
+ *   --pace         as capture-har.js: the wait between navigations; `off`
+ *                  for tests.
  *
  * Notes:
  *   - This is a template consumed by the web-api-discovery agent. The
@@ -21,11 +34,14 @@
  * Exit codes:
  *   0 -- HAR written successfully
  *   1 -- argument or runtime error
+ *   3 -- headless, and the site throttled or blocked the session; the HAR
+ *        holds what was recorded, refusals included
  */
 
 'use strict';
 
 const path = require('path');
+const pacing = require(path.join(__dirname, 'pacing.js'));
 
 function parseArgs(argv) {
     const out = { headless: false, 'throttle-ms': 1000 };
@@ -44,7 +60,19 @@ function parseArgs(argv) {
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.url || !args.out) {
-        console.error('usage: node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--validate-only] [--headless] [--throttle-ms 1000]');
+        console.error('usage: node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--validate-only] [--headless] [--throttle-ms 1000] [--pace off|human|<spec>]');
+        process.exit(1);
+    }
+    // ZERO MEANS ZERO. This was `Number(...) || 1000`, which read an explicit
+    // `--throttle-ms 0` as "use the default" -- there was no way to turn it off.
+    const throttleMs = Number(args['throttle-ms']);
+    if (!Number.isFinite(throttleMs) || throttleMs < 0) {
+        console.error(`capture-cdp: --throttle-ms must be a number of milliseconds, 0 or more (got '${args['throttle-ms']}')`);
+        process.exit(1);
+    }
+    const paced = pacing.parsePace(args.pace);
+    if (paced.error) {
+        console.error('capture-cdp: ' + paced.error);
         process.exit(1);
     }
 
@@ -88,7 +116,6 @@ async function main() {
 
     const projectUA = process.env.CAPTURE_USER_AGENT
         || 'web-api-discovery/0.1 (+https://github.com/IntelliTect-Samples/web-api-discovery)';
-    const throttleMs = Number(args['throttle-ms']) || 1000;
 
     const browser = await playwright.chromium.launch({ headless: !!args.headless });
     const contextOptions = {
@@ -103,13 +130,52 @@ async function main() {
     const page = await context.newPage();
 
     // Polite crawl: throttle requests by inserting a small delay.
-    await context.route('**/*', async (route) => {
-        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * throttleMs)));
-        return route.continue();
+    if (throttleMs > 0) {
+        await context.route('**/*', async (route) => {
+            await new Promise((r) => setTimeout(r, Math.floor(Math.random() * throttleMs)));
+            return route.continue();
+        });
+    }
+
+    // PACED, AND WATCHING FOR THE SITE SAYING NO (pacing.js). Only the site's
+    // own responses count -- a main-frame document, or the target's host.
+    const pacer = pacing.createPacer(paced.pace);
+    const monitor = pacing.createThrottleMonitor();
+    const site = new URL(args.url).hostname.toLowerCase().replace(/^www\./, '');
+    let handedOver = null;
+    context.on('response', (response) => {
+        void (async () => {
+            try {
+                const request = response.request();
+                const frame = request.frame();
+                const isDocument = request.isNavigationRequest() && !!frame && frame.parentFrame() === null;
+                const host = new URL(response.url()).hostname.toLowerCase();
+                const headers = await response.allHeaders().catch(() => ({}));
+                const status = response.status();
+                const html = /html/i.test(headers['content-type'] || '');
+                const body = html && (isDocument || status === 403 || status === 503)
+                    ? await response.body().catch(() => null) : null;
+                const decision = monitor.observe(pacing.classifyResponse({
+                    url: response.url(), status, headers, mimeType: headers['content-type'], body, isDocument,
+                    onSite: host === site || host.endsWith('.' + site)
+                }));
+                if (!decision || decision.action === 'none') return;
+                if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
+                if (decision.action === 'hand-over') handedOver = decision;
+                const finish = args.headless ? 'nobody can take over a headless browser, so this run ends'
+                    : 'close the window to finish';
+                for (const [, line] of pacing.throttleLines(decision, 'script', { tool: 'capture-cdp', finish })) {
+                    console.error(line);
+                }
+            } catch (e) {
+                // Reading a response for throttling must never cost the capture.
+                void e;
+            }
+        })();
     });
 
     console.log(`capture-cdp: navigating to ${args.url}`);
-    await page.goto(args.url, { waitUntil: 'networkidle' });
+    await pacer.navigate(() => page.goto(args.url, { waitUntil: 'networkidle' }));
 
     if (!args.headless && !args['storage-state']) {
         console.log('capture-cdp: interact with the browser to drive the capture. Press Ctrl+C when done.');
@@ -124,7 +190,7 @@ async function main() {
     await context.close();
     await browser.close();
     console.log(`capture-cdp: HAR written to ${args.out}`);
-    process.exit(0);
+    process.exit(handedOver && args.headless ? 3 : 0);
 }
 
 // A CLI, and a module (issue #456). The rejection handler stays with the call

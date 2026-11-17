@@ -401,17 +401,30 @@ async function identifierField(page) {
  * minute over, and a page can navigate anywhere in that time; a locator is
  * re-evaluated against whatever document is current, so without this check a
  * credential could be typed into a host nobody vetted.
+ *
+ * `pace` (pacing.js's pacer, optional) puts a human-scale wait before every
+ * fill and keypress -- one step at a time, the way a person signs in. The wait
+ * comes BEFORE `stillHere()`, never between it and the step it vets: a page
+ * can move during a wait, and the check has to be about the page the step
+ * then lands on. No pacer, no wait -- for the unit tests and older callers.
  */
-async function fillStep(page, creds, step, stillHere = () => true) {
+async function fillStep(page, creds, step, stillHere = () => true, pace = null) {
+    const ready = async () => {
+        if (pace) await pace.beforeAction();
+        return stillHere();
+    };
     if (step === 'password') {
         const user = await firstVisible(page, USERNAME_SELECTOR);
         if (user && creds.username && !(await user.inputValue().catch(() => ''))) {
-            if (!stillHere()) return null;
+            if (!(await ready())) return null;
             await user.fill(creds.username);
         }
         const pw = await firstVisible(page, PASSWORD_SELECTOR);
-        if (!pw || !stillHere()) return null;
+        if (!pw || !(await ready())) return null;
         await pw.fill(creds.password);
+        // A wait between typing and submitting is one more chance for the page
+        // to move, so the submit is vetted like the fill was.
+        if (pace && !(await ready())) return null;
         await pw.press('Enter');
         return step;
     }
@@ -420,16 +433,18 @@ async function fillStep(page, creds, step, stillHere = () => true) {
         const code = await creds.totp();
         if (!code) return null;
         const otp = await firstVisible(page, OTP_SELECTOR);
-        if (!otp || !stillHere()) return null;
+        if (!otp || !(await ready())) return null;
         await otp.fill(code);
+        if (pace && !(await ready())) return null;
         await otp.press('Enter');
         return step;
     }
     if (step === 'identifier') {
         if (!creds.username) return null;
         const user = await identifierField(page);
-        if (!user || !stillHere()) return null;
+        if (!user || !(await ready())) return null;
         await user.fill(creds.username);
+        if (pace && !(await ready())) return null;
         await user.press('Enter');
         return step;
     }
@@ -447,6 +462,8 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
  *   resolve(host)  -> resolveCredentials(...), called at most once
  *   say(lines)     operator output (never given a value)
  *   inScope(page)  optional: whether this page belongs to the capture
+ *   pace           optional: pacing.js's pacer; each fill and keypress waits
+ *                  on it (see fillStep). Absent, nothing waits.
  *   onSignedIn({cookiesBefore})  optional: called once, after a filled
  *                  password step has gone; `cookiesBefore` is the set of
  *                  cookie keys present before the fill, for saveSession
@@ -562,7 +579,7 @@ function createSignInWatcher(context, opts) {
             // new value) rather than adding one.
             cookiesBefore = new Map((await context.cookies().catch(() => [])).map((c) => [cookieKey(c), c.value]));
         }
-        const done = await fillStep(page, creds, step, () => allowedUrl(page.url()));
+        const done = await fillStep(page, creds, step, () => allowedUrl(page.url()), opts.pace || null);
         if (!done) {
             if (step === 'otp') otpDeclined = true;
             return;
