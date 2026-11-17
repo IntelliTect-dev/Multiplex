@@ -2,6 +2,10 @@
   <Folder Name="/src/">
     <Project Path="src/Multiplex.Web/Multiplex.Web.csproj" />
   </Folder>
+  <Folder Name="/tripit/">
+    <Project Path="tripit/src/TripIt/TripIt.csproj" />
+    <Project Path="tripit/tests/TripIt.UnitTests/TripIt.UnitTests.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Multiplex.Tests/Multiplex.Tests.csproj" />
   </Folder>
