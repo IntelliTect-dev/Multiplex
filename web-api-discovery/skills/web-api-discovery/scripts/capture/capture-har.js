@@ -2226,21 +2226,6 @@ function captureSite(uri) {
     return host.startsWith('www.') ? host.slice(4) : host;
 }
 
-/**
- * A URL as session.json records a throttle signal: origin and path only. The
- * query string is where sites put search terms, emails and tokens, and the
- * record only has to say WHERE the site refused.
- */
-function urlForRecord(url) {
-    try {
-        const u = new URL(url);
-        return u.origin + u.pathname;
-    } catch (e) {
-        void e;
-        return null;
-    }
-}
-
 function onCaptureSite(site, url) {
     if (!site || !url) return false;
     let host;
@@ -3264,6 +3249,33 @@ function agentExitEnding(result, recordingEndedBy) {
         warning: `capture-har: the agent exited ${result.status} -- ending the recording ` +
             'and post-processing what it did record.'
     };
+}
+
+/**
+ * May the agent still be started? Asked immediately before it would be.
+ *
+ * Under --ai the start page loads BEFORE the agent is launched, so the site can
+ * refuse -- a block, a bot check -- before there is an agent to stop. Starting
+ * one then would put an agent to work on a page that has already said no, and
+ * nothing would ever stop it: the hand-over has been made. Likewise a
+ * recording that already ended (an unattended sign-in wall, ENTER, a closed
+ * window) has nothing left for an agent to do, and anything it did would go
+ * unrecorded.
+ *
+ * @returns {null | Array<[level, text]>} null to start it; otherwise what the
+ *          operator is told instead
+ */
+function agentStartRefusal(session, recordingEndedBy) {
+    if (session.handOver) {
+        return [['warn', 'capture-har: the agent was not started: the site refused the start page ' +
+            `(${session.handOver.signature} on ${session.handOver.url}).\n` +
+            '  The browser is yours; nothing will drive it.']];
+    }
+    if (recordingEndedBy) {
+        return [['warn', `capture-har: the agent was not started: the recording had already ended ` +
+            `(${recordingEndedBy}).`]];
+    }
+    return null;
 }
 
 /**
@@ -4955,38 +4967,48 @@ async function start(args) {
     const throttleMonitor = pacing.createThrottleMonitor();
     const agentRate = ai ? pacing.createRateWatch(pace.perMinute) : null;
     const agentControl = {};
+    // Whether the agent child has been launched. Under --ai the start page
+    // loads BEFORE it is, and a refusal there must stop it from ever starting
+    // (agentStartRefusal) rather than "stop" an agent that does not exist yet.
+    let agentLaunched = false;
     const site = captureSite(args.uri);
     const writeSession = () => writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+    const nobodyToTakeOver = () => {
+        log.warn('capture-har: nobody is at this terminal to take over, so the recording ' +
+            'ends here and what it holds is post-processed.');
+        settle('handed-over');
+    };
     const onThrottle = (decision) => {
         if (!decision || decision.action === 'none' || reason) return;
         const s = decision.signal;
         const record = {
-            at: new Date().toISOString(), kind: s.kind, status: s.status, url: urlForRecord(s.url),
+            at: new Date().toISOString(), kind: s.kind, status: s.status, url: pacing.whereOf(s.url),
             signature: s.signature, retryAfterMs: s.retryAfterMs, action: decision.action
         };
         if (decision.action === 'pause') record.waitMs = decision.waitMs;
         if (decision.why) record.why = decision.why;
         (session.throttle = session.throttle || []).push(record);
-        // Who is driving decides what a signal MEANS. An agent still running
-        // is stopped on a hand-over; anything else is a person's browser.
-        const agentDriving = ai && session.agentExitCode === undefined && !session.agentStopped;
+        // Who is driving decides what a signal MEANS. An agent running is
+        // stopped on a hand-over; one not launched yet never will be; anything
+        // else is a person's browser, and gets advice.
+        const agentDriving = ai && agentLaunched && session.agentExitCode === undefined && !session.agentStopped;
+        const agentPending = ai && !agentLaunched;
         if (decision.action === 'pause') {
             pacer.pauseFor(decision.waitMs);
-            log.lines(pacing.throttleLines(decision, agentDriving ? 'agent' : 'you'));
+            log.lines(pacing.throttleLines(decision, agentDriving ? 'agent' : agentPending ? 'script' : 'you'));
+        } else if (agentDriving) {
+            session.handOver = Object.assign({}, record, { by: 'agent-stopped' });
+            session.agentStopped = 'hand-over';
+            if (agentControl.stop) agentControl.stop('hand-over');
+            log.lines(pacing.throttleLines(decision, 'agent'));
+            if (!humanAtTerminal) nobodyToTakeOver();
+        } else if (agentPending) {
+            session.handOver = Object.assign({}, record, { by: 'agent-not-started' });
+            log.lines(pacing.throttleLines(decision, 'agent-unstarted'));
+            if (!humanAtTerminal) nobodyToTakeOver();
         } else {
-            session.handOver = Object.assign({}, record, { by: agentDriving ? 'agent-stopped' : 'advice' });
-            if (agentDriving) {
-                session.agentStopped = 'hand-over';
-                if (agentControl.stop) agentControl.stop('hand-over');
-                log.lines(pacing.throttleLines(decision, 'agent'));
-                if (!humanAtTerminal) {
-                    log.warn('capture-har: nobody is at this terminal to take over, so the recording ' +
-                        'ends here and what it holds is post-processed.');
-                    settle('handed-over');
-                }
-            } else {
-                log.lines(pacing.throttleLines(decision, 'you'));
-            }
+            session.handOver = Object.assign({}, record, { by: 'advice' });
+            log.lines(pacing.throttleLines(decision, 'you'));
         }
         writeSession();
     };
@@ -5131,9 +5153,29 @@ async function start(args) {
     // Launched AFTER the banner and after session.json exists, because the prompt
     // hands the agent that file's path and an agent that read it a moment early
     // would find no `startedUtc` and no endpoint.
+    //
+    // NOT AT ALL when the site already refused (agentStartRefusal). And not
+    // before a throttle on the start page has run out: the agent cannot be
+    // slowed once it is going, so its first step is the one the recorder can
+    // still hold back. ENTER, the stop command and a closed window all still
+    // end the wait.
     if (ai) {
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
+        if (!reason && !session.handOver && pacer.pausedUntil() > Date.now()) {
+            log.info('capture-har: the site asked for a pause on the start page; the agent starts ' +
+                'when it is over.');
+            while (!reason && !session.handOver && Date.now() < pacer.pausedUntil()) await sleep(POLL_MS);
+        }
+    }
+    const refusal = ai ? agentStartRefusal(session, reason) : null;
+    if (refusal) {
+        session.agentStarted = false;
+        writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+        log.lines(refusal);
+    } else if (ai) {
+        agentLaunched = true;
+        const prompt = fs.readFileSync(session.agentPromptPath, 'utf8');
         log.lines(agentBannerLines(session));
         endings.push(driveWithAgent(session, prompt, { control: agentControl }).then((result) => {
             // AN AGENT THE RECORDER STOPPED ENDED NOTHING EITHER (a hand-over:
@@ -5190,7 +5232,7 @@ async function start(args) {
     // AND THE OTHER DIRECTION: this run ended first, and the agent did not. Said
     // before the recorder is torn down, because from here on what the agent does
     // is not being recorded -- and nothing killed it (see agentStillDrivingLines).
-    if (ai && session.agentExitCode === undefined && !session.agentStopped) {
+    if (agentLaunched && session.agentExitCode === undefined && !session.agentStopped) {
         log.lines(agentStillDrivingLines(session));
     }
 
@@ -5895,6 +5937,7 @@ module.exports = {
     agentBannerLines,
     agentStillDrivingLines,
     agentExitEnding,
+    agentStartRefusal,
     claudeOnPath,
     driveWithAgent,
     settleRecorder,

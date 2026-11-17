@@ -730,13 +730,23 @@ site asking this visitor to slow down.
 
 | Observed | Means | What happens |
 |---|---|---|
-| `429`, or `503` with `Retry-After` | throttled | **pause**: wait out `Retry-After` (seconds or an HTTP-date), or back off exponentially with jitter when it names none |
-| a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, or a challenge interstitial ("Just a moment...", "Press & Hold", "unusual traffic", a CAPTCHA page) | blocked / challenged | **hand over** at once |
+| `429`, or `503` with `Retry-After` | throttled | **pause** for `Retry-After` (seconds or an HTTP-date), or a backoff with jitter when it names none -- see below for what a pause can and cannot hold |
+| the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, or a known block or challenge interstitial on the site ("Just a moment...", "Press & Hold", "unusual traffic", a CAPTCHA page) | blocked / challenged | **hand over** at once |
 | throttling that persists (3 episodes in 10 minutes), throttling **through** a pause, or a `Retry-After` over 60 s | the site means it | **hand over** |
+
+**What a pause holds.** The tooling's own steps wait it out: a paced
+navigation or sign-in step does not start before it ends, and under `-AI` the
+agent is not *launched* until a pause on the start page is over. An agent that
+is already running cannot be slowed from here -- so for it a pause is a warning
+to you, and the agent's own rule is to stop at a page that says it is being
+throttled. If the site throttles again inside the pause, the agent was not
+waiting, and that is a hand-over.
 
 A burst of throttled requests on one page load is one episode, not three. A
 page that merely embeds a CAPTCHA widget (reCAPTCHA v3 runs invisibly on many
-sign-in pages) is not a challenge.
+sign-in pages) is not a challenge, and edge headers alone (`cf-ray` and the
+like, which a CDN-fronted site sends on everything) make a block only of the
+page itself answering `403` -- never of a sub-resource, and never of a `503`.
 
 **The hand-over.** By hand, you are told what the site did and how long it
 asked you to wait -- nothing stops, it is your browser. Under `-AI`, the
@@ -746,11 +756,22 @@ and leaves the browser open and still recording for you: take over there,
 answer the check yourself if you choose to, then press ENTER. With nobody at
 the terminal (`--no-wait`, or no console) nobody can take over, so the recording
 ends instead (`endedBy: handed-over`) and what was recorded is post-processed
-as usual. Either way `session.json` records each signal under `throttle`, and
-the hand-over under `handOver`.
+as usual. If the start page itself is refused, the agent is **never started**.
+Either way `session.json` records each signal under `throttle` (origin and path
+only, never the query), and the hand-over under `handOver`. After one hand-over
+the recorder says nothing more about the site for the rest of that recording.
 
 **Generated clients** carry the same rules in their own pipeline -- see
 **Pacing and throttling in the generated client** in Phase 6.
+
+**Known exceptions, awaiting an owner decision.** Three older parts of the
+generated wrapper sit on the wrong side of this line and were deliberately not
+changed with it: `Client.cs.tmpl` sends a fixed Chrome `User-Agent` string;
+Phase 6 below says to emit the full browser header set (`sec-ch-ua*`,
+`sec-fetch-*`) because anti-bot stacks gate on it; and the generated README's
+**Anti-bot challenge warning** suggests a warm-up `GET` and "retry once" on a
+challenge (the generated client itself never retries one -- it raises
+`<Name>BlockedException`).
 
 ### Signing in
 
@@ -2597,9 +2618,11 @@ The skill's final user-visible output is:
   `[Experimental]` attribute on first scaffold.
 - **Do not** get past a block. No user-agent or fingerprint spoofing, no
   `navigator.webdriver` or stealth patches, no CAPTCHA solving, no retrying a
-  403 or a challenge until it clears -- in the capture tooling, the agent's
-  prompt, or a generated client. Pace politely, honour `Retry-After`, and when
-  the site says no, stop and hand it to a person.
+  403 or a challenge until it clears -- in the capture tooling or the agent's
+  prompt; and a generated client never retries a block. Pace politely, honour
+  `Retry-After`, and when the site says no, stop and hand it to a person. (The
+  generated client's older browser-shaped headers are a known exception
+  awaiting a decision -- see **Pacing, throttling, and where the line is**.)
 
 ## Reference projects
 
