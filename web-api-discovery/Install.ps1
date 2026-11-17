@@ -46,7 +46,7 @@
       1. $env:WEBAPIDISCOVERY_CLONE, for a clone somewhere unguessable
       2. the pointer file above, written by THIS script -- the deterministic
          answer on a machine that has run it
-      3. web-api-discovery, or Multiplex\web-api-discovery, under Git,
+      3. Multiplex\web-api-discovery, then web-api-discovery, under Git,
          source\repos, repos or src, off the home folder or any fixed drive root -- so a machine that has NOT run this
          script still works when the clone is somewhere conventional
 
@@ -99,6 +99,22 @@ function Get-MainCheckout {
     $prefix = (& git -C $Path rev-parse --show-prefix 2>$null) -join ''
     $main = if ($dirs[0] -ne $dirs[1]) { Split-Path $dirs[1] -Parent } else { $dirs[2] }
     return [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Join-Path $main $prefix)))
+}
+
+function Assert-SkillCheckout {
+    <#
+        Refuse to link a checkout that does not hold the skill. From a linked
+        worktree the links point at the MAIN checkout, which may be on a branch
+        that predates web-api-discovery/ (not merged, or not pulled yet);
+        linking there leaves a dangling link and a pointer at nothing.
+    #>
+    param([Parameter(Mandatory)][string]$Root)
+
+    $manifest = Join-Path $Root 'WebApiDiscovery.psd1'
+    $skill = Join-Path $Root 'skills' $script:SkillName
+    if (-not (Test-Path -LiteralPath $manifest) -or -not (Test-Path -LiteralPath $skill)) {
+        throw "The main checkout has no web-api-discovery at '$Root'. Merge or pull it there (or check out a branch that has it), then run this again."
+    }
 }
 
 function Get-SkillFolders {
@@ -188,8 +204,8 @@ function Update-ProfileBlock {
         '        if (Test-Path -LiteralPath $pointer) { Get-Content -LiteralPath $pointer -TotalCount 1 }'
         '        foreach ($root in $roots) {'
         "            foreach (`$dir in 'Git', 'source/repos', 'repos', 'src') {"
-        "                Join-Path `$root `$dir '$($script:SkillName)'"
         "                Join-Path `$root `$dir 'Multiplex' '$($script:SkillName)'"
+        "                Join-Path `$root `$dir '$($script:SkillName)'"
         '            }'
         '        }'
         '    )'
@@ -264,6 +280,7 @@ function Get-PrerequisiteWarnings {
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $root = Get-MainCheckout $PSScriptRoot
+Assert-SkillCheckout -Root $root
 $skill = Join-Path $root 'skills' $script:SkillName
 
 $folders = @(Get-SkillFolders -HomeDir $HOME)
