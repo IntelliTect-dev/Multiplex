@@ -64,15 +64,21 @@ dotnet format
 dotnet run --project src/Multiplex.Web --launch-profile http
 ```
 
-Serves on `http://localhost:5190`; MCP endpoints at `/<slug>/mcp`. Set
-`Browser:Headless=false` and `Browser:StepDelayMs` (e.g. `500`) to watch a tool
-drive the browser.
+Serves on `http://localhost:5190`; MCP endpoints at `/<slug>/mcp`. To watch a
+tool drive the browser, set `Browser:Headless` to `false` and
+`Browser:StepDelayMs` to e.g. `500` -- from a shell, as environment variables
+(`Browser__Headless=false`, `Browser__StepDelayMs=500`) or in
+`appsettings.Development.json`.
+
+Browser-driven tests need `MULTIPLEX_CHROMIUM` on Windows (the default path is
+Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 ## Key Conventions
 
 - **New MCP server = new tool class.** A static class with
   `[McpServerToolType]` and `[McpEndpoint("<slug>")]` under `Mcp/Tools/`. No
   other registration. A tool class without `[McpEndpoint]` is not served.
+  Add the endpoint to the README's Endpoints table.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
