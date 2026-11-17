@@ -249,6 +249,11 @@
     a prompt somebody retypes per run is a prompt that eventually drops one of
     them.
 
+    THE AGENT IS TOLD, NEVER ENDED. `claude -p` runs with stream-json in and
+    out: the prompt is its first message, and its input stays open so the
+    recorder can tell it the site asked for a pause, the wait is over, a person
+    is taking over, the person is done, or the capture has ended (see -Pace).
+
     ONLY BROWSER TOOLS ARE PRE-APPROVED. `claude -p` is given an
     `--allowedTools` list of the Claude-in-Chrome page tools and Playwright MCP's
     navigate, click, type, screenshot and snapshot -- no shell, no file writes.
@@ -346,11 +351,25 @@
                          milliseconds; any subset, the rest keep their defaults
       off                every wait zero -- for tests, never for a real site
 
-    Whatever the pace, the recorder reads every response from the site: a 429
-    or a 503 with Retry-After pauses; a block, a bot check or throttling that
-    persists stops an -AI agent and hands the browser to you. Nothing retries a
-    block or works around a bot check. See "Pacing, throttling, and where the
-    line is" in SKILL.md.
+    Whatever the pace, the recorder reads every response from the site. A 429
+    or a 503 with Retry-After PAUSES THE WHOLE CAPTURE -- the agent included,
+    with the browser holding this capture's requests to the site -- for exactly
+    as long as the site asks (up to a day), or for a backoff of about 1, 2, 4,
+    8 then 15 minutes when it names no wait, and then carries on by itself. A
+    block, a bot check, or throttling that goes on for an hour with no page
+    loading hands the browser to you; the agent is told to wait, never ended.
+    This command's output says so as it happens:
+
+      capture-har: Paused until 10:42 -- the site asked us to wait 5 min (HTTP 429)
+      capture-har: Resumed after 5 min; the agent has been told to carry on.
+      capture-har: Handed over to you: <reason>. Open on your phone: <link>
+
+    The phone link appears only when this PC is on a Tailscale tailnet: it
+    shows the capture browser live, privately, on the owner's tailnet, with
+    "I'm done, continue" and "End the capture". At this PC, ENTER ends the
+    recording and `continue` + ENTER hands back. Nothing retries a block or
+    works around a bot check. Each pause is recorded under `pauses` in
+    session.json. See "Pacing, throttling, and where the line is" in SKILL.md.
 
 .OUTPUTS
     WebApiDiscovery.HarCapture.CatalogueEntry
@@ -760,10 +779,23 @@ switch ($exit) {
 # the -OutputPath fallback below is only for a run that ended before the
 # recorder could report -- a cancel, or a recording nothing was written for.
 $cataloguePath = $null
+$pauses = $null
 foreach ($line in @($recorderStdout)) {
     if ($line -isnot [string] -or -not $line.TrimStart().StartsWith('{')) { continue }
     try { $report = $line | ConvertFrom-Json } catch { continue }
     if ($report.cataloguePath) { $cataloguePath = $report.cataloguePath }
+    if ($report.PSObject.Properties['pauses']) { $pauses = $report.pauses }
+}
+
+# THE PAUSES, SUMMED UP (owner request: "communicate that back"). Each pause
+# and hand-over was already said live on stderr as it happened -- "Paused
+# until 10:42 -- ...", "Resumed after 5 min", "Handed over to you: ..." -- and
+# is recorded in session.json under `pauses`. This line is for whoever reads
+# only the end: a caller capturing this command, or an AI session.
+if ($pauses -and (($pauses.count -gt 0) -or ($pauses.handOvers -gt 0))) {
+    $minutes = [Math]::Round(([double]$pauses.totalMs) / 60000, 1)
+    Write-Information ("The capture paused $($pauses.count) time(s) and was handed over " +
+        "$($pauses.handOvers) time(s), $minutes min in all -- see ``pauses`` in session.json.")
 }
 if (-not $cataloguePath -and $OutputPath) {
     $cataloguePath = Join-Path (Join-Path $OutputPath $uriFolder) 'catalogue.json'
