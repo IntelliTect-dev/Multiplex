@@ -38,7 +38,7 @@ public static class TripItServerRegistration
         services.AddOptions<TripItServerOptions>().Bind(configuration.GetSection(TripItServerOptions.Section));
         services.AddHttpContextAccessor();
         services.TryAddSingleton(TimeProvider.System);
-        services.AddMultiplexDataProtection(configuration);
+        services.AddMultiplexDataProtection();
 
         // Per-account pacing state is a singleton: clients are per request and handler chains are pooled.
         services.TryAddSingleton(sp =>
