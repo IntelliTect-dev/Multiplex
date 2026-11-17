@@ -12,7 +12,7 @@ on:
 
 jobs:
   pester:
-    name: Pester tests
+    name: web-api-discovery / Pester tests
     runs-on: ubuntu-latest
     defaults:
       run:

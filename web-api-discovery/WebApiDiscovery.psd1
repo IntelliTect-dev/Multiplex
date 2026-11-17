@@ -20,7 +20,7 @@
     AliasesToExport   = @()
     PrivateData       = @{
         PSData = @{
-            ProjectUri = 'https://github.com/IntelliTect-Samples/web-api-discovery'
+            ProjectUri = 'https://github.com/IntelliTect-dev/Multiplex/tree/main/web-api-discovery'
             Tags       = @('HAR', 'API', 'Playwright', 'scrub', 'AgentSkills')
         }
     }

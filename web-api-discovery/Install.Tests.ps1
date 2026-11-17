@@ -72,6 +72,25 @@ Describe 'Get-MainCheckout' {
     }
 }
 
+Describe 'Assert-SkillCheckout' {
+    BeforeEach { $script:tmp = New-TempDir }
+    AfterEach { Remove-TempDir $tmp }
+
+    It 'refuses a main checkout that does not have the skill yet, naming where it looked' {
+        # From a worktree whose main checkout is on an older branch (the skill
+        # not merged or not pulled there), linking would leave a dangling link
+        # and a pointer at nothing -- while reporting success.
+        { Assert-SkillCheckout -Root $tmp } | Should -Throw "*$tmp*"
+    }
+
+    It 'accepts a checkout that has the module and the skill' {
+        Set-Content -LiteralPath (Join-Path $tmp 'WebApiDiscovery.psd1') -Value "@{}"
+        New-Item -ItemType Directory -Path (Join-Path $tmp 'skills' 'web-api-discovery') -Force | Out-Null
+
+        { Assert-SkillCheckout -Root $tmp } | Should -Not -Throw
+    }
+}
+
 Describe 'Get-SkillFolders' {
     BeforeEach { $script:home_ = New-TempDir }
     AfterEach { Remove-TempDir $home_ }

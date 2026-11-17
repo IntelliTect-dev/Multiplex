@@ -36,7 +36,7 @@ prerequisites. It is safe to run again.
 (through OneDrive, say) and your clones do not — they sit at `C:\Git` on one
 machine and `D:\Git` on another — so the block names no paths at all. It finds
 the clone at load time from `$env:WEBAPIDISCOVERY_CLONE`, then this machine's
-`clone.path`, then `web-api-discovery` or `Multiplex/web-api-discovery` under `Git`, `source\repos`, `repos` or
+`clone.path`, then `Multiplex/web-api-discovery` or `web-api-discovery` under `Git`, `source\repos`, `repos` or
 `src` off your home folder or any fixed drive. A clone in a conventional place
 therefore works even on a machine where you have never run the installer. To
 **update**, pull:
