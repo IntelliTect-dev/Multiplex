@@ -19,6 +19,22 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     }
 
     [Fact]
+    public async Task Index_ListsTimeMcpEndpoint()
+    {
+        var body = await _client.GetStringAsync("/");
+
+        Assert.Contains("<code>/time/mcp</code>", body);
+    }
+
+    [Fact]
+    public async Task Index_DoesNotAdvertiseRootMcp()
+    {
+        var body = await _client.GetStringAsync("/");
+
+        Assert.DoesNotContain("<code>/mcp</code>", body);
+    }
+
+    [Fact]
     public async Task Health_ReturnsOk()
     {
         var response = await _client.GetAsync("/healthz");
