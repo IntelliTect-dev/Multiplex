@@ -68,7 +68,7 @@ function Invoke-SessionProbe {
     $req = [System.Net.HttpWebRequest]::Create('https://api.tripit.com/v1/list/trip/format/json')
     $req.Method = 'GET'
     $req.Headers.Add('Cookie', $cookieHeader)
-    $req.UserAgent = 'Mozilla/5.0 (dogfood-probe)'
+    $req.UserAgent = 'web-api-discovery-dogfood-probe/0.1 (+https://github.com/IntelliTect-Samples/web-api-discovery)'
     $req.Accept = 'application/json'
     $req.Timeout = 8000
     try {

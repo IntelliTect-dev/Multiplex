@@ -138,6 +138,14 @@ Describe 'agent-dogfood: run-dogfood.ps1 reproducer' {
         $text | Should -Not -Match '-Out\s+\$repoRoot'
     }
 
+    It 'the live session probe names itself rather than posing as a browser' {
+        # The probe calls the real site, so it says what it is -- the same
+        # convention as capture-cdp.js's descriptive User-Agent.
+        $text = Get-Content $script:ScriptPath -Raw
+        $text | Should -Match "\.UserAgent\s*=\s*'web-api-discovery"
+        $text | Should -Not -Match "\.UserAgent\s*=\s*'Mozilla"
+    }
+
 }
 
 Describe 'agent-dogfood: .gitignore hygiene' {

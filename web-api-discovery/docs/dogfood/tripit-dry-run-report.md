@@ -163,6 +163,12 @@ implemented but the agent could not discover from a HAR alone; the
 warning now bridges that gap on a best-effort, "the consumer reads the
 README" basis without claiming auto-bypass.
 
+> **Note, 2026-11-17:** the warm-up workaround described above was removed
+> from the generated README as contrary to the skill's boundary (nothing
+> works around a site's bot management). The README now says a refused call
+> fails with `<Name>BlockedException` and needs a fresh session from a real,
+> signed-in browser, or a person. The Akamai cookie detection is unchanged.
+
 The generated `Authenticator.cs` + `Client.cs` partial still wire the
 `Cookie` and `X-CSRF-Token` headers on every request, exactly as
 `TripItEx/src/TripIt/Auth/TripItAuthenticator.cs` does.
@@ -266,6 +272,8 @@ All five follow-ups raised by the 2026-05-15 dry-run have shipped:
       `_abck` / `bm_sz` / `bm_sv` / `ak_bmsc` cookies under
       `antiBotCookies` and the generated README includes the
       "seed cookies via public landing page" workaround.
+      *(2026-11-17: that workaround was removed as contrary to the
+      skill's boundary; see the note under Auth Approach.)*
 
 ### New follow-ups from this refresh
 
