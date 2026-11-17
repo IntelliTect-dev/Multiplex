@@ -198,12 +198,11 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
             _services.Logger.LogWarning("{Site} account {AccountId} is not on the allowlist; refusing it.", Slug, account.AccountId);
             await CloseBrowserAsync();
             await _services.Manager.DeleteProfileAsync(TempProfile);
-            var description = "This account is not allowed on this server.";
-            Uri? returnUrl = null;
+            // Claim the end first, so a Cancel arriving meanwhile cannot also end the authorization.
+            if (!TryEnd(AttemptState.Denied, $"This {Definition.DisplayName} account is not allowed on this server.")) return;
             if (_services.Completer() is { } completer)
-                returnUrl = await completer.FailAsync(PendingId, "access_denied", description, CancellationToken.None);
-            ReturnUrl = returnUrl;
-            await EndAsync(AttemptState.Denied, $"This {Definition.DisplayName} account is not allowed on this server.");
+                ReturnUrl = await completer.FailAsync(PendingId, "access_denied", "This account is not allowed on this server.", CancellationToken.None);
+            await AfterEndAsync(AttemptState.Denied, null);
             return;
         }
 
@@ -247,25 +246,36 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     /// <summary>The person gave up: stop the browser, delete the profile and end the authorization.</summary>
     public async Task<Uri?> CancelAsync(IAuthorizationCompleter? completer)
     {
-        if (State is AttemptState.Cancelled or AttemptState.Denied) return ReturnUrl;
-        if (State is AttemptState.Ready or AttemptState.Completed) return null;
+        if (!TryEnd(AttemptState.Cancelled, "Sign-in cancelled."))
+            return State is AttemptState.Cancelled or AttemptState.Denied ? ReturnUrl : null;
 
-        await EndAsync(AttemptState.Cancelled, "Sign-in cancelled.");
-        await _lifetime.CancelAsync();
-        if (completer is not null && ReturnUrl is null)
+        try { await _lifetime.CancelAsync(); } catch (ObjectDisposedException) { }
+        if (completer is not null)
             ReturnUrl = await completer.FailAsync(PendingId, "access_denied", "Sign-in cancelled", CancellationToken.None);
+        await AfterEndAsync(AttemptState.Cancelled, null);
         return ReturnUrl;
     }
 
     private async Task EndAsync(AttemptState state, string message, string? next = null)
     {
+        if (TryEnd(state, message)) await AfterEndAsync(state, next);
+    }
+
+    /// <summary>Moves to an end state exactly once; false when the attempt had already ended.</summary>
+    private bool TryEnd(AttemptState state, string message)
+    {
         lock (_stateLock)
         {
-            if (HasEnded) return;
+            if (HasEnded) return false;
             State = state;
             StatusMessage = message;
             EndedAt = _services.Time.GetUtcNow();
+            return true;
         }
+    }
+
+    private async Task AfterEndAsync(AttemptState state, string? next)
+    {
         await BroadcastStatusAsync(next);
         if (state != AttemptState.Ready && !_lifetime.IsCancellationRequested)
         {
@@ -526,12 +536,14 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         var previous = Interlocked.Exchange(ref _client, socket);
         if (previous is not null && previous != socket)
         {
-            try { await previous.CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", CancellationToken.None); } catch (Exception) { }
+            // A distinct close code tells the older tab not to reconnect (else two tabs would take turns forever).
+            try { await previous.CloseAsync(MirrorProtocol.ReplacedCloseStatus, "replaced", CancellationToken.None); } catch (Exception) { }
         }
 
         try
         {
             await SendTextAsync(socket, MirrorProtocol.Status(StateName(), StatusMessage, NextFor(State)));
+            await SendTextAsync(socket, MirrorProtocol.Viewport(_viewportWidth, _viewportHeight));
             if (_currentHost is not null) await SendTextAsync(socket, MirrorProtocol.Url(_currentHost, _currentSecure));
             if (_lastFrame is { } frame && !HasEnded) await SendAsync(socket, frame, WebSocketMessageType.Binary);
 
@@ -569,6 +581,16 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     /// <summary>Replays one input from the phone into the mirrored page. Ignored unless the attempt is live.</summary>
     internal async Task HandleInputAsync(MirrorInput input)
     {
+        // The phone reports its size as soon as it connects, usually while the browser is still starting.
+        if (input is ViewportInput viewport)
+        {
+            if (!HasEnded)
+            {
+                try { await ResizeAsync(viewport.Width, viewport.Height); }
+                catch (Exception ex) { _services.Logger.LogDebug("Resizing the {Site} mirror failed: {Error}", Slug, ex.GetType().Name); }
+            }
+            return;
+        }
         if (State != AttemptState.Live || _activePage is not { IsClosed: false } page) return;
         try
         {
@@ -594,9 +616,6 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
                 case ReloadInput:
                     _ = page.ReloadAsync(new ReloadOptions { Timeout = 30_000 }).ContinueWith(_ => { }, TaskScheduler.Default);
                     break;
-                case ViewportInput viewport:
-                    await ResizeAsync(viewport.Width, viewport.Height);
-                    break;
             }
         }
         catch (Exception ex)
@@ -609,9 +628,13 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     /// <summary>Matches the mirrored page's viewport to the phone's mirror area, within sane bounds.</summary>
     private async Task ResizeAsync(int width, int height)
     {
-        width = Math.Clamp(width, 320, 600);
-        height = Math.Clamp(height, 480, 1100);
-        if (Math.Abs(width - _viewportWidth) < 4 && Math.Abs(height - _viewportHeight) < 4) return;
+        width = Math.Clamp(width, 320, 1024);
+        height = Math.Clamp(height, 360, 1100);
+        if (Math.Abs(width - _viewportWidth) < 4 && Math.Abs(height - _viewportHeight) < 4)
+        {
+            await SendViewportAsync();
+            return;
+        }
         _viewportWidth = width;
         _viewportHeight = height;
         _frameCssWidth = width;
@@ -624,6 +647,14 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
             try { await active.Client.SendAsync("Page.stopScreencast"); } catch (Exception) { }
             await StartScreencastAsync(active);
         }
+        await SendViewportAsync();
+    }
+
+    /// <summary>Tells the phone the CSS size of the mirrored viewport, so it draws frames at that size.</summary>
+    private async Task SendViewportAsync()
+    {
+        if (_client is { State: WebSocketState.Open } client)
+            await SendTextAsync(client, MirrorProtocol.Viewport(_viewportWidth, _viewportHeight));
     }
 
     private async Task SendUrlAsync(string url)

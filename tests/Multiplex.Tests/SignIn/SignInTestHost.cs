@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Mvc.Testing.Handlers;
 using Microsoft.AspNetCore.TestHost;
@@ -86,6 +88,17 @@ public sealed class SignInTestHost : IAsyncDisposable
         });
     }
 
+    /// <summary>Serves the app on a real loopback port (instead of the in-memory test server) so a real browser can open it.</summary>
+    public Uri StartKestrel()
+    {
+        Factory.UseKestrel(0);
+        Factory.StartServer();
+        var address = Factory.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses
+            .Select(a => new Uri(a.Replace("[::]", "127.0.0.1").Replace("0.0.0.0", "127.0.0.1").Replace("localhost", "127.0.0.1")))
+            .First();
+        return new Uri(address.GetLeftPart(UriPartial.Authority) + "/");
+    }
+
     public IServiceProvider Services => Factory.Services;
 
     public T Get<T>() where T : notnull => Factory.Services.GetRequiredService<T>();
@@ -151,10 +164,10 @@ public sealed partial class ConnectClient
     public static string AttemptIdOf(Uri location) =>
         Regex.Match(location.OriginalString, @"[?&]a=([^&]+)").Groups[1].Value;
 
-    public async Task<MirrorClient> OpenMirrorAsync(string attemptId)
+    public async Task<MirrorClient> OpenMirrorAsync(string attemptId, string slug = StubSignInDefinition.SiteSlug)
     {
         var client = _factory.Server.CreateWebSocketClient();
-        var path = $"/connect/{StubSignInDefinition.SiteSlug}/live";
+        var path = $"/connect/{slug}/live";
         client.ConfigureRequest = request => request.Headers.Cookie = Cookies.GetCookieHeader(new Uri("http://localhost" + path));
         var socket = await client.ConnectAsync(new Uri($"ws://localhost{path}?a={Uri.EscapeDataString(attemptId)}"), CancellationToken.None);
         return new MirrorClient(socket);
@@ -179,6 +192,7 @@ public sealed class MirrorClient : IAsyncDisposable
     }
 
     public int Frames => Volatile.Read(ref _frames);
+    public WebSocketCloseStatus? CloseStatus => _socket.CloseStatus;
     public byte[]? LastFrame { get; private set; }
     public IReadOnlyCollection<JsonElement> Messages => _messages;
 

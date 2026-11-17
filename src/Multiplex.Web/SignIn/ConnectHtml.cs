@@ -205,7 +205,7 @@ public static class ConnectHtml
         .row.keys button[aria-pressed=true]{background:var(--accent);color:var(--accent-fg)}
         .toast{margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--card);border:1px solid var(--danger);color:var(--danger);font-size:14px}
         .stage{position:relative;width:100%;min-height:240px;background:var(--card);touch-action:none;user-select:none;-webkit-user-select:none}
-        .stage img{display:block;width:100%;height:auto;touch-action:none;-webkit-touch-callout:none}
+        .stage img{display:block;width:100%;max-width:100%;height:auto;margin:0 auto;touch-action:none;-webkit-touch-callout:none}
         .stage .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted)}
         .stage.has-frame .loading{display:none}
         body.live #end,body.live .hint{margin:12px 10px}
@@ -256,19 +256,31 @@ public static class ConnectHtml
               var m; try { m = JSON.parse(e.data); } catch (_) { return; }
               if (m.t === 'status') onStatus(m);
               else if (m.t === 'url') { hostEl.textContent = (m.secure ? '' : 'Not secure: ') + m.host; hostEl.classList.toggle('insecure', !m.secure); }
+              else if (m.t === 'viewport') img.style.width = m.w + 'px';
               else if (m.t === 'blocked') toast('Blocked a link to ' + m.host + '. Only ' + cfg.site + ' sign-in pages open here.');
             };
-            ws.onclose = function () {
+            ws.onclose = function (e) {
               if (finished) return;
+              if (e.code === 4000) { finished = true; statusEl.textContent = 'This sign-in is now showing in another tab or window.'; return; }
               statusEl.textContent = 'Reconnecting…';
-              setTimeout(connect, Math.min(10000, 1000 * (++retry)));
+              clearTimeout(reconnectTimer);
+              reconnectTimer = setTimeout(connect, Math.min(10000, 1000 * (++retry)));
             };
           }
+          var reconnectTimer = null;
+          // Back from another app (e.g. after reading a code): reconnect straight away.
+          document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'visible' && !finished && ws && ws.readyState === 3) {
+              clearTimeout(reconnectTimer); connect();
+            }
+          });
           function onStatus(m) {
             statusEl.textContent = m.msg;
             if ((m.s === 'ready' || m.s === 'cancelled') && m.next) { finished = true; location.replace(m.next); return; }
             if (m.s === 'denied' || m.s === 'timeout' || m.s === 'failed' || m.s === 'cancelled') {
-              finished = true;
+              // A refusal's way back to the app may follow a moment later; keep listening for it.
+              var waitForLink = (m.s === 'denied' || m.s === 'cancelled') && !m.next;
+              finished = !waitForLink;
               document.getElementById('end-msg').textContent = m.msg;
               var ret = document.getElementById('end-return');
               if (m.next) { ret.href = m.next; ret.hidden = false; }
@@ -276,7 +288,7 @@ public static class ConnectHtml
               document.getElementById('end').hidden = false;
               stage.hidden = true;
               document.querySelectorAll('.row.type, .row.keys').forEach(function (r) { r.hidden = true; });
-              try { ws.close(); } catch (_) { }
+              if (!waitForLink) { try { ws.close(); } catch (_) { } }
             }
           }
 
