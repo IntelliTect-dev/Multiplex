@@ -263,6 +263,8 @@ public sealed class TripItOperations(TripItClient client)
     public async Task<string> CreateTripAsync(string destination, string startDate, string endDate, string? name,
         string? description, bool shareWithInnerCircle, string purpose, bool iAmTraveling, CancellationToken ct)
     {
+        // Read "who am I" first: a failure after the create would invite a duplicate on retry.
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         var trip = await client.Trips.CreateAsync(new TripInput
         {
             DisplayName = name,
@@ -274,7 +276,6 @@ public sealed class TripItOperations(TripItClient client)
             PurposeTypeCode = PurposeCode(purpose),
             IsOwnerTraveler = iAmTraveling,
         }, ct).ConfigureAwait(false);
-        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         return ToJson(new { created = Summarize(trip, me) });
     }
 
@@ -282,6 +283,7 @@ public sealed class TripItOperations(TripItClient client)
         string? endDate, string? description, bool? shareWithInnerCircle, string? purpose, bool? iAmTraveling,
         CancellationToken ct)
     {
+        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         var trip = await client.Trips.UpdateAsync(tripUuid, t => t with
         {
             DisplayName = name ?? t.DisplayName,
@@ -293,7 +295,6 @@ public sealed class TripItOperations(TripItClient client)
             PurposeTypeCode = purpose is null ? t.PurposeTypeCode : PurposeCode(purpose),
             IsOwnerTraveler = iAmTraveling ?? t.IsOwnerTraveler,
         }, ct).ConfigureAwait(false);
-        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
         return ToJson(new { updated = Summarize(trip, me) });
     }
 
@@ -327,8 +328,8 @@ public sealed class TripItOperations(TripItClient client)
     {
         var source = await TripNamedAsync(sourceTripUuid, confirmSourceName, "confirmSourceName", "merged", ct)
             .ConfigureAwait(false);
-        var merged = await client.Trips.MergeAsync(sourceTripUuid, destinationTripUuid, ct).ConfigureAwait(false);
         var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
+        var merged = await client.Trips.MergeAsync(sourceTripUuid, destinationTripUuid, ct).ConfigureAwait(false);
         return ToJson(new
         {
             merged_from = Summarize(source.Trip, me),
@@ -414,10 +415,29 @@ public sealed class TripItOperations(TripItClient client)
         return (detail, target);
     }
 
+    /// <summary>
+    /// Reports a participant change and the trip's participants afterwards. The change is done
+    /// by the time this runs, so a failed re-read is reported, not thrown: an error here would
+    /// make a retry send the invitation email again.
+    /// </summary>
     private async Task<string> ParticipantsAsync(string tripUuid, object action, CancellationToken ct)
     {
-        var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
-        var detail = await client.Trips.GetAsync(tripUuid, includeObjects: false, ct).ConfigureAwait(false);
+        string? me;
+        TripDetail detail;
+        try
+        {
+            me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
+            detail = await client.Trips.GetAsync(tripUuid, includeObjects: false, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && TripItErrorText.ForTool(ex) is { } why)
+        {
+            return ToJson(new
+            {
+                action,
+                done = true,
+                note = $"The change was made, but the trip's participants could not be re-read ({why}). Do not repeat the call.",
+            });
+        }
         return ToJson(new
         {
             action,

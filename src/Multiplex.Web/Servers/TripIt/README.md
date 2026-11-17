@@ -33,7 +33,7 @@ its [`CLAUDE.md`](../../../../tripit/CLAUDE.md) holds the hard-won API knowledge
 
 Same names as the TripItEx stdio server. Every tool declares `readOnlyHint`,
 `destructiveHint`, `idempotentHint` and `openWorldHint` (ChatGPT asks before calling any tool
-without `readOnlyHint`). Parameter names are camelCase (`tripUuid`, `confirmToken`).
+without `readOnlyHint`). Parameter names are camelCase (`tripUuid`, `confirmName`), except `confirm_token` (spec section 6).
 
 | Tool | Kind | Notes |
 |---|---|---|
@@ -57,7 +57,7 @@ without `readOnlyHint`). Parameter names are camelCase (`tripUuid`, `confirmToke
 ## Confirm step
 
 The host is stateless, so it cannot ask the client mid-call. A confirm tool called without
-`confirmToken` changes nothing: it reads what it needs and returns a preview, for example
+`confirm_token` changes nothing: it reads what it needs and returns a preview, for example
 *"Will permanently delete trip 'Iceland' (2027-01-18–2027-01-21) and its 7 plans."*, plus a
 `confirm_token`. The model shows the preview to the person; only if they agree does it call
 again with the same arguments and the token. The existing guards stay (`confirmName` must be

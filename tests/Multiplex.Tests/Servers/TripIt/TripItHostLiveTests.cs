@@ -64,7 +64,7 @@ public sealed class TripItHostLiveTests(ITestOutputHelper output)
             Assert.False(stillThere.IsError, "the preview must not delete anything: " + stillThere.Text);
 
             var delete = await mcp.CallAsync("tripit_delete_trip",
-                new { tripUuid = uuid, confirmName = name, confirmToken = p.GetProperty("confirm_token").GetString() });
+                new { tripUuid = uuid, confirmName = name, confirm_token = p.GetProperty("confirm_token").GetString() });
             Assert.False(delete.IsError, delete.Text);
             deleted = true;
 
@@ -80,7 +80,7 @@ public sealed class TripItHostLiveTests(ITestOutputHelper output)
                 if (!again.IsError)
                 {
                     var token = JsonDocument.Parse(again.Text).RootElement.GetProperty("confirm_token").GetString();
-                    await mcp.CallAsync("tripit_delete_trip", new { tripUuid = uuid, confirmName = name, confirmToken = token });
+                    await mcp.CallAsync("tripit_delete_trip", new { tripUuid = uuid, confirmName = name, confirm_token = token });
                 }
             }
         }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Multiplex.Web.Servers.TripIt;
 
 namespace Multiplex.Tests.Servers.TripIt;
@@ -64,7 +65,7 @@ public sealed class TripItServerTests : IDisposable
             }
             var confirm = s_confirmTools.Contains(name);
             Assert.Equal(confirm, hints.GetProperty("destructiveHint").GetBoolean());
-            Assert.Equal(confirm, tool.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("confirmToken", out _));
+            Assert.Equal(confirm, tool.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("confirm_token", out _));
         }
         foreach (var read in new[] { "tripit_describe_plan_fields", "tripit_lookup_flight", "tripit_get_trip", "tripit_session_status" })
         {
@@ -199,7 +200,7 @@ public sealed class TripItServerTests : IDisposable
             preview.GetProperty("preview").GetString());
         Assert.Equal(0, _host.TripIt.Count("POST", $"/api/v2/delete/trip/uuid/{TripUuid}"));
 
-        args["confirmToken"] = preview.GetProperty("confirm_token").GetString();
+        args["confirm_token"] = preview.GetProperty("confirm_token").GetString();
         var (deleteError, deleteText) = await mcp.CallAsync("tripit_delete_trip", args);
 
         Assert.False(deleteError, deleteText);
@@ -218,13 +219,13 @@ public sealed class TripItServerTests : IDisposable
         var token = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
 
         var tampered = await _host.McpFor("acct-a").CallAsync("tripit_delete_trip",
-            new { tripUuid = OtherTripUuid, confirmName = "Iceland", confirmToken = token });
+            new { tripUuid = OtherTripUuid, confirmName = "Iceland", confirm_token = token });
         var otherAccount = await _host.McpFor("acct-b").CallAsync("tripit_delete_trip",
-            new { tripUuid = TripUuid, confirmName = "Iceland", confirmToken = token });
+            new { tripUuid = TripUuid, confirmName = "Iceland", confirm_token = token });
         var otherTool = await _host.McpFor("acct-a").CallAsync("tripit_delete_plan",
-            new { type = "note", uuid = TripUuid, confirmToken = token });
+            new { type = "note", uuid = TripUuid, confirm_token = token });
         var garbage = await _host.McpFor("acct-a").CallAsync("tripit_delete_trip",
-            new { tripUuid = TripUuid, confirmName = "Iceland", confirmToken = "not-a-token" });
+            new { tripUuid = TripUuid, confirmName = "Iceland", confirm_token = "not-a-token" });
 
         foreach (var (isError, text) in new[] { tampered, otherAccount, otherTool })
         {
@@ -249,7 +250,7 @@ public sealed class TripItServerTests : IDisposable
         var token = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
 
         var (isError, text) = await mcp.CallAsync("tripit_delete_trip",
-            new { tripUuid = TripUuid, confirmName = "Iceland", confirmToken = token });
+            new { tripUuid = TripUuid, confirmName = "Iceland", confirm_token = token });
 
         Assert.True(isError);
         Assert.Contains("expired", text, StringComparison.Ordinal);
@@ -283,6 +284,25 @@ public sealed class TripItServerTests : IDisposable
         Assert.Contains("a@example.com, b@example.com", preview, StringComparison.Ordinal);
         Assert.Contains("as editor", preview, StringComparison.Ordinal);
         Assert.Equal(0, _host.TripIt.Count("POST", "/api/v2/invite"));
+    }
+
+    [Fact]
+    public void TripIt_http_client_paces_and_has_no_cookie_jar_or_redirects()
+    {
+        // The real wiring, not the fake: a shared cookie jar would mix accounts, and a followed
+        // 302 would hide a rotated session.
+        using var host = new TripItTestHost(fakeTripIt: false);
+        var handler = host.Services.GetRequiredService<IHttpMessageHandlerFactory>()
+            .CreateHandler(TripItServerRegistration.HttpClientName);
+
+        var chain = new List<HttpMessageHandler>();
+        for (HttpMessageHandler? h = handler; h is not null; h = (h as DelegatingHandler)?.InnerHandler) chain.Add(h);
+
+        Assert.Single(chain.OfType<global::TripIt.Http.PacingHandler>());
+        var primary = Assert.IsType<SocketsHttpHandler>(chain[^1]);
+        Assert.False(primary.UseCookies);
+        Assert.False(primary.AllowAutoRedirect);
+        Assert.Equal(DecompressionMethods.All, primary.AutomaticDecompression);
     }
 
     [Fact]

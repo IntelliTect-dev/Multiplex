@@ -12,7 +12,7 @@ namespace Multiplex.Web.Servers.TripIt;
 /// </summary>
 /// <remarks>
 /// Deletes, merges, participant removal and invitations (which email people) take a confirm
-/// step: called without <c>confirmToken</c> they change nothing and return a preview plus a
+/// step: called without <c>confirm_token</c> they change nothing and return a preview plus a
 /// token; called again with the same arguments and that token, they act. See
 /// <see cref="ConfirmTokens"/>. <c>tripit_raw_get</c> is deliberately not served here.
 /// </remarks>
@@ -21,12 +21,12 @@ namespace Multiplex.Web.Servers.TripIt;
 public sealed class TripItWriteTools(TripItToolContext tripIt)
 {
     private const string ConfirmTokenHelp =
-        "Leave empty on the first call: nothing changes and you get a preview plus a confirmToken. Show the " +
-        "preview to the person; only if they agree, call again with the same arguments and that confirmToken " +
+        "Leave empty on the first call: nothing changes and you get a preview plus a confirm_token. Show the " +
+        "preview to the person; only if they agree, call again with the same arguments and that confirm_token " +
         "(valid 5 minutes).";
 
     private const string ConfirmStep =
-        " Two-step: the first call (no confirmToken) only previews; the change happens on a second call with the token.";
+        " Two-step: the first call (no confirm_token) only previews; the change happens on a second call with the token.";
 
     // ── Trips ────────────────────────────────────────────────────────────────
 
@@ -77,9 +77,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
     public Task<string> DeleteTrip(
         [Description("The trip uuid.")] string tripUuid,
         [Description("The trip's exact current name.")] string confirmName,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_delete_trip", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_delete_trip", confirm_token,
             Args(("tripUuid", tripUuid), ("confirmName", confirmName)),
             ops => ops.PreviewDeleteTripAsync(tripUuid, confirmName, ct),
             ops => ops.DeleteTripAsync(tripUuid, confirmName, ct), ct);
@@ -93,9 +93,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
         [Description("The trip to merge FROM (it will disappear).")] string sourceTripUuid,
         [Description("The trip to merge INTO (it is kept).")] string destinationTripUuid,
         [Description("The source trip's exact current name.")] string confirmSourceName,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_merge_trips", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_merge_trips", confirm_token,
             Args(("sourceTripUuid", sourceTripUuid), ("destinationTripUuid", destinationTripUuid),
                 ("confirmSourceName", confirmSourceName)),
             ops => ops.PreviewMergeTripsAsync(sourceTripUuid, destinationTripUuid, confirmSourceName, ct),
@@ -112,9 +112,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
         [Description("Email addresses, comma-separated.")] string emails,
         [Description("viewer (default), editor or traveler.")] string role = "viewer",
         [Description("Optional personal message included in the invitation email.")] string? message = null,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_add_participants", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_add_participants", confirm_token,
             Args(("tripUuid", tripUuid), ("emails", emails), ("role", role), ("message", message)),
             ops => ops.PreviewAddParticipantsAsync(tripUuid, emails, role, message, ct),
             ops => ops.AddParticipantsAsync(tripUuid, emails, role, message, ct), ct);
@@ -137,9 +137,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
     public Task<string> RemoveParticipant(
         [Description("The trip uuid.")] string tripUuid,
         [Description("The participant's profile_ref.")] string profileRef,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_remove_participant", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_remove_participant", confirm_token,
             Args(("tripUuid", tripUuid), ("profileRef", profileRef)),
             ops => ops.PreviewRemoveParticipantAsync(tripUuid, profileRef, ct),
             ops => ops.RemoveParticipantAsync(tripUuid, profileRef, ct), ct);
@@ -243,9 +243,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
     public Task<string> DeletePlan(
         [Description("Plan type.")] string type,
         [Description("The plan's object uuid.")] string uuid,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_delete_plan", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_delete_plan", confirm_token,
             Args(("type", type), ("uuid", uuid)),
             ops => ops.PreviewDeletePlanAsync(type, uuid, ct),
             ops => ops.DeletePlanAsync(type, uuid, ct), ct);
@@ -259,9 +259,9 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
         [Description("The segment uuid.")] string segmentUuid,
         [Description("The plan's type (air, rail, transport or cruise), to describe the leg.")] string? type = null,
         [Description("The plan's object uuid, to describe the leg and check it belongs to that plan.")] string? objectUuid = null,
-        [Description(ConfirmTokenHelp)] string? confirmToken = null,
+        [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
-        => tripIt.RunConfirmedAsync("tripit_delete_segment", confirmToken,
+        => tripIt.RunConfirmedAsync("tripit_delete_segment", confirm_token,
             Args(("segmentUuid", segmentUuid), ("type", type), ("objectUuid", objectUuid)),
             ops => ops.PreviewDeleteSegmentAsync(segmentUuid, type, objectUuid, ct),
             ops => ops.DeleteSegmentAsync(segmentUuid, ct), ct);
