@@ -139,6 +139,17 @@ public sealed class PacingHandler : DelegatingHandler
                 try
                 {
                     response = await base.SendAsync(request, ct).ConfigureAwait(false);
+                    try
+                    {
+                        // Read the body inside the gate, so "one request in flight" covers the
+                        // download too (callers read with ResponseHeadersRead).
+                        await response.Content.LoadIntoBufferAsync(ct).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        response.Dispose();
+                        throw;
+                    }
                 }
                 finally
                 {

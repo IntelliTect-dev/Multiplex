@@ -279,6 +279,33 @@ public sealed class RawGetTests
 public sealed class SharedOperationsTests
 {
     [Fact]
+    public async Task Invitation_sent_but_participants_not_rereadable_is_reported_not_thrown()
+    {
+        // An error here would make the caller retry, and TripIt would email the invitation again.
+        var (client, handler, _) = FakeTripIt.Create();
+        handler.OnJson("/api/v2/invite", """{"timestamp":"1"}""")
+               .On($"/api/v2/get/trip/uuid/{Fixtures.TripUuid}", _ => FakeHandler.Json("""{"Error":{"code":"503","description":"busy"}}""", HttpStatusCode.ServiceUnavailable));
+
+        var json = await new TripItOperations(client).AddParticipantsAsync(Fixtures.TripUuid, "a@example.com", "viewer", null, default);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.GetProperty("done").GetBoolean());
+        Assert.Contains("Do not repeat", doc.RootElement.GetProperty("note").GetString(), StringComparison.Ordinal);
+        Assert.Single(handler.Requests, r => r.Uri.AbsolutePath == "/api/v2/invite");
+    }
+
+    [Fact]
+    public async Task Create_trip_reads_who_am_I_before_creating()
+    {
+        var (client, handler, _) = FakeTripIt.Create();
+        handler.OnJson("/api/v2/create/trip", Fixtures.ListTripSingle);
+
+        await new TripItOperations(client).CreateTripAsync("Lisbon", "2027-03-01", "2027-03-05", null, null, false, "leisure", true, default);
+
+        Assert.Equal(["/api/v2/get/profile", "/api/v2/create/trip"], handler.Requests.Select(r => r.Uri.AbsolutePath));
+    }
+
+    [Fact]
     public async Task Delete_trip_preview_names_trip_dates_and_plan_count_and_changes_nothing()
     {
         var (client, handler, _) = FakeTripIt.Create();
