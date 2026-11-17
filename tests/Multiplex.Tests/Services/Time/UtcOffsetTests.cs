@@ -1,6 +1,6 @@
-using Multiplex.Web.Mcp.Tools;
+using Multiplex.Web.Services.Time;
 
-namespace Multiplex.Tests;
+namespace Multiplex.Tests.Services.Time;
 
 public class UtcOffsetTests
 {

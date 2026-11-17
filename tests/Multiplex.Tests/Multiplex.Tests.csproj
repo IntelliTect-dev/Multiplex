@@ -20,7 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Each service keeps its saved pages in Services/<Name>/Fixtures; they keep that path in the output folder. -->
+    <Content Include="Services\*\Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -2,9 +2,10 @@ using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Multiplex.Web.Browser;
+using Multiplex.Web.Mcp;
 using PuppeteerSharp;
 
-namespace Multiplex.Web.Mcp.Tools;
+namespace Multiplex.Web.Services.Time;
 
 [McpServerToolType]
 [McpEndpoint("time")]
