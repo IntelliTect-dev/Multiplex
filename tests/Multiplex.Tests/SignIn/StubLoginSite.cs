@@ -92,6 +92,8 @@ public sealed class StubLoginSite : IAsyncDisposable
             ? Results.Json(new { id = AccountId, emails = new[] { Email }, name = DisplayName })
             : Results.StatusCode(401));
         app.MapGet("/foreign", () => Results.Content("<h1 id='foreign'>Somewhere else</h1>", "text/html"));
+        app.MapGet("/foreign-tab", () => Results.Content("<h1>Somewhere else, new tab</h1>", "text/html"));
+        app.MapGet("/help", () => Results.Content("<!doctype html><title>Help</title><h1 id='help'>Help</h1>", "text/html"));
     }
 
     private string LoginPage(HttpContext c, string? error) => $$"""
@@ -105,6 +107,8 @@ public sealed class StubLoginSite : IAsyncDisposable
           <button id="submit" type="submit">Sign in</button>
         </form>
         <a id="foreign" href="http://localhost:{{c.Request.Host.Port}}/foreign">Somewhere else</a>
+        <a id="foreign-tab" href="http://localhost:{{c.Request.Host.Port}}/foreign-tab" target="_blank">Somewhere else, new tab</a>
+        <a id="help-tab" href="/help" target="_blank">Help, new tab</a>
         <p id="error">{{error}}</p>
         </body></html>
         """;
