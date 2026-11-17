@@ -38,6 +38,42 @@ public class AuthHostingTests
     }
 
     [Fact]
+    public async Task Registration_LastsWhileUsed_AndEndsAfter90DaysUnused()
+    {
+        using var app = new AuthTestApp();
+        var driver = new OAuthDriver(app);
+        var clientId = await driver.RegisterAsync();
+
+        app.Clock.Advance(TimeSpan.FromDays(89));
+        await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
+        app.Clock.Advance(TimeSpan.FromDays(89));
+        await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
+
+        app.Clock.Advance(TimeSpan.FromDays(91));
+        var response = await driver.AuthorizeAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(response.Headers.Location);
+    }
+
+    [Fact]
+    public async Task PendingAuthorization_ExpiresAfter10Minutes_ButCanStillBeFailed()
+    {
+        using var app = new AuthTestApp();
+        var driver = new OAuthDriver(app);
+        var clientId = await driver.RegisterAsync();
+        var pendingId = await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
+
+        app.Clock.Advance(TimeSpan.FromMinutes(10));
+
+        Assert.Null(await driver.Completer.FindAsync(pendingId, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            driver.Completer.CompleteAsync(pendingId, OAuthDriver.Account(), CancellationToken.None));
+        var redirect = await driver.Completer.FailAsync(pendingId, "access_denied", "Timed out.", CancellationToken.None);
+        Assert.Equal("access_denied", OAuthDriver.Query(redirect)["error"]);
+    }
+
+    [Fact]
     public void Production_WithoutPublicBaseUrl_FailsAtStartup()
     {
         using var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
