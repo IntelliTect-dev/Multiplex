@@ -8,7 +8,7 @@ Multiplex gives AI agents tools for websites that have no public API. One web ap
 
 A service calls the website's own API: the same requests the site's pages send to its server. The site doesn't document that API, so a developer first finds it with the web-api-discovery skill. In other words, a service is a server to the AI agent but a client of the website.
 
-A service uses a browser only for what the API can't do. For a site that needs signing in (TripIt is the first), the person signs in on the site's own page, shown live from a browser that Multiplex runs, so the site's password never reaches Multiplex. The browser then keeps that session's cookies fresh, and the tools' calls go to the API. (The Time service is the exception: it still reads time.now's pages in the browser. See the known gaps.)
+A service uses a browser only for what the API can't do. For a site that needs signing in (TripIt is the first), the person signs in on the site's own page, shown live from a browser that Multiplex runs, so the site's password never reaches Multiplex. The browser then keeps that session's cookies fresh, and the tools' calls go to the API. A service may also read a site's pages with the browser if the site truly has no usable API, but that isn't expected in practice, since most sites' pages get their data from an API behind them. (The Time service is the exception today: it still reads time.now's pages in the browser. See the known gaps.)
 
 The requirement that matters most: a person connects a service from Claude or ChatGPT on any device, including a phone, and signs in to the website as part of connecting.
 
@@ -57,6 +57,5 @@ On the owner's PC for now, reachable from the internet over HTTPS through a tunn
 
 ## Open questions
 
-- Should a service ever read a site's pages with the browser when the site has no usable API (as Time does today), or should such sites be left out?
 - Which sites get services next?
 - How large does a service get before it moves to its own repository?
