@@ -93,9 +93,11 @@ node tools/extract-session.js      # -> ~/.tripit-mcp/session.json
   (`errors.edgesuite.net`, `Reference #18...`) on every endpoint; re-running the extractor
   restored `200` immediately, with no sign-in needed. The `bm_sz` / `bm_sv` bot-management
   cookies are part of what the API requires, and they are the short-lived part.
-  `TripItClient.Classify` maps it to `TripItAuthenticationException`, and the client then
-  re-reads the session file / runs its `ISessionRefresher` (the MCP server uses
-  `CommandSessionRefresher` → `node tools/extract-session.js`) and retries once.
+  `TripItClient.Classify` maps it to `TripItAuthenticationException`, and the client then asks
+  its `ITripItSessionProvider` for a renewed snapshot and retries once, only if the cookie
+  changed. Locally `LocalSessionProvider` re-reads the session file and runs
+  `CommandSessionRefresher` (`node tools/extract-session.js`, 30 s cool-down); the Multiplex
+  host renews through its own browser (`ISiteSessionRefresher`) instead.
   **A 403 with a small HTML body means re-extract the session, not "the client is broken".**
 - A 302 or 401 also means the session rotated: re-run the extractor.
 
@@ -142,8 +144,12 @@ binary module targets `net10.0` and will not load in 5.1 or 7.4.
 - To capture a new mutation: drive the SPA in the capture browser (port 9333) with
   Playwright and read bodies via `page.route` — `request.postData()` is null over CDP for
   the SPA's fetch calls.
-- Live write tests need `TRIPIT_ALLOW_WRITES=1` and stay inside one dated, private
-  throwaway trip that is deleted in `finally`. Deleting a trip deletes its plans.
+- Live tests run only with `TRIPIT_TEST_SESSION_FILE` (a snapshot of the dedicated TEST account)
+  and `TRIPIT_TEST_ACCOUNT` (its email; the fixture refuses any other account). Live write
+  tests also need `TRIPIT_ALLOW_WRITES=1` and stay inside one dated, private throwaway trip
+  that is deleted in `finally`. Deleting a trip deletes its plans.
+- Dates are `yyyy-MM-dd` only. A `Segment` update must name every existing leg by uuid
+  (`replacePlan` deletes legs left out).
 
 - **`list/trip` defaults to `traveler=true`** and silently hides trips the user is on but
   not travelling on. Always send `traveler` (the client defaults to `all`).

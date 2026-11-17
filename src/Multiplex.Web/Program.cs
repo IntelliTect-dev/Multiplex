@@ -1,5 +1,6 @@
 using Multiplex.Web.Auth;
 using Multiplex.Web.Mcp;
+using Multiplex.Web.Servers.TripIt;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,6 +9,7 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 builder.Services.AddMultiplexAuth(builder.Configuration).RequireAuthFor("tripit", "TripIt");
+builder.Services.AddTripItServer(builder.Configuration);
 
 // Stateless Streamable HTTP: no Mcp-Session-Id, safe behind a load balancer without sticky sessions.
 builder.Services

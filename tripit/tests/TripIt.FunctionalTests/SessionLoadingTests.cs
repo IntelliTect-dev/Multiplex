@@ -13,7 +13,7 @@ namespace TripIt.FunctionalTests;
 public sealed class EnvironmentVariableCollection;
 
 /// <summary>
-/// Tests for <see cref="TripItSession"/> precedence rules. These do NOT hit the network.
+/// Tests for <see cref="LocalSessionProvider"/> precedence rules. These do NOT hit the network.
 /// </summary>
 [Collection(nameof(EnvironmentVariableCollection))]
 public sealed class SessionLoadingTests : IDisposable
@@ -55,7 +55,7 @@ public sealed class SessionLoadingTests : IDisposable
         File.WriteAllText(path, """{"cookie":"file-cookie","csrf_token":"file-csrf"}""");
         Environment.SetEnvironmentVariable("TRIPIT_SESSION_FILE", path);
 
-        var session = new TripItSession();
+        var session = new LocalSessionProvider().Current;
         Assert.Equal("env-cookie", session.Cookie);
         Assert.Equal("env-csrf", session.CsrfToken);
         Assert.Equal("environment", session.Source);
@@ -68,7 +68,7 @@ public sealed class SessionLoadingTests : IDisposable
         File.WriteAllText(path, """{"cookie":"file-cookie","csrf_token":"file-csrf"}""");
         Environment.SetEnvironmentVariable("TRIPIT_SESSION_FILE", path);
 
-        var session = new TripItSession();
+        var session = new LocalSessionProvider().Current;
         Assert.Equal("file-cookie", session.Cookie);
         Assert.Equal("file-csrf", session.CsrfToken);
         Assert.Equal(path, session.Source);
@@ -80,7 +80,7 @@ public sealed class SessionLoadingTests : IDisposable
         Environment.SetEnvironmentVariable("TRIPIT_COOKIE", "env-cookie");
 
         var fakeStore = new InMemoryStore(new SessionCredentials("store-cookie", "store-csrf"));
-        var session = new TripItSession(fakeStore);
+        var session = new LocalSessionProvider(fakeStore).Current;
 
         Assert.Equal("store-cookie", session.Cookie);
         Assert.Equal("store-csrf", session.CsrfToken);
@@ -90,22 +90,48 @@ public sealed class SessionLoadingTests : IDisposable
     [Fact]
     public void IsConfigured_false_when_no_source()
     {
-        var session = new TripItSession();
+        var session = new LocalSessionProvider().Current;
         Assert.False(session.IsConfigured);
+    }
+
+    [Fact]
+    public void Malformed_file_is_ignored_and_the_reason_logged_without_values()
+    {
+        var path = Path.Combine(_tempDir, "session.json");
+        File.WriteAllText(path, """{"cookie":"secret-cookie-value","csrf_token":"x" """);
+        Environment.SetEnvironmentVariable("TRIPIT_SESSION_FILE", path);
+        var log = new ListLogger();
+
+        var session = new LocalSessionProvider(log: log).Current;
+
+        Assert.False(session.IsConfigured);
+        var warning = Assert.Single(log.Messages);
+        Assert.Contains("not valid JSON", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-cookie-value", warning, StringComparison.Ordinal);
     }
 
     [Fact]
     public void Save_persists_to_store_and_updates_in_memory()
     {
         var store = new InMemoryStore(null);
-        var session = new TripItSession(store);
-        Assert.False(session.IsConfigured);
+        var sessions = new LocalSessionProvider(store);
+        Assert.False(sessions.Current.IsConfigured);
 
-        session.Save(new SessionCredentials("new-cookie", "new-csrf"));
+        sessions.Save(new SessionCredentials("new-cookie", "new-csrf"));
 
-        Assert.Equal("new-cookie", session.Cookie);
-        Assert.Equal("new-csrf", session.CsrfToken);
+        Assert.Equal("new-cookie", sessions.Current.Cookie);
+        Assert.Equal("new-csrf", sessions.Current.CsrfToken);
         Assert.True(store.SaveCalled);
+    }
+
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Messages.Add(formatter(state, exception));
     }
 
     private sealed class InMemoryStore : ISessionStore

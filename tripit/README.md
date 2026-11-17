@@ -39,7 +39,7 @@ switch it.
 
 ## MCP tools (read)
 
-All tools are read-only. Output is compact JSON: trips are summarized, and each trip's
+All tools are read-only (`readOnlyHint`). Output is compact JSON: trips are summarized, and each trip's
 contents are flattened into a chronological **itinerary** — one line per flight leg, hotel
 stay, car rental, train, transfer, reservation or note, with local times, time zones,
 confirmation numbers and type-specific details (seats, flight status, room type …).
@@ -57,8 +57,13 @@ confirmation numbers and type-specific details (seats, flight status, room type 
 | `tripit_list_alerts` | `GET v2/listProAlerts` | Pro alerts and account notices |
 | `tripit_get_purchased_products` | `GET v2/purchasedProductInfo` | Subscription status |
 | `tripit_lookup` | `GET v2/autocomplete*` | Airports, airlines, places, countries, states, addresses |
+| `tripit_lookup_flight` | `GET v2/flightInfo` | Scheduled route and local times |
+| `tripit_describe_plan_fields` | (local) | The writable fields of a type |
 | `tripit_session_status` | `GET v2/get/profile` | Is the session configured, refreshable, accepted? |
-| `tripit_raw_get` | `GET /api/v2/…` | Escape hatch for anything else |
+
+`tripit_raw_get` (`GET /api/v2/…`, an escape hatch) is registered only with the write tools,
+because some TripIt GETs change data (`v2/move`); it rejects `..`, percent-encoding, `?` and
+`#`. The Multiplex-hosted server (`/tripit/mcp`) does not serve it at all.
 
 ## MCP tools (write)
 
@@ -76,7 +81,6 @@ throwaway trip. Destructive tools carry the MCP `destructive` annotation.
 | `tripit_add_lodging` | `POST v2/create` | |
 | `tripit_add_note` | `POST v2/create` | |
 | `tripit_add_plan` | `POST v2/create` | Any type (car, rail, transport, cruise, restaurant, activity, parking, map, directions …) from TripIt field names |
-| `tripit_describe_plan_fields` | (local) | The writable fields of a type |
 | `tripit_update_plan` | `GET` + `POST v2/replacePlan/{type}/uuid/{uuid}` | Deep-merges changes into the current state; `segment_uuid` targets one leg |
 | `tripit_delete_plan` | `POST v2/delete/{type}/uuid/{uuid}` | Whole reservation |
 | `tripit_delete_segment` | `POST v2/delete/segment/uuid/{uuid}` | One leg; the rest stays |
@@ -85,11 +89,12 @@ throwaway trip. Destructive tools carry the MCP `destructive` annotation.
 | `tripit_add_participants` | `POST v2/invite` | **Emails invitations**; role viewer / editor / traveler |
 | `tripit_change_participant_role` | `POST v2/changeTripInvitations` | |
 | `tripit_remove_participant` | `POST v2/delete/trip_participant/...` | Refuses the owner |
-| `tripit_lookup_flight` | `GET v2/flightInfo` | Scheduled route and local times |
 
-Tool errors (unknown fields, a mismatched `confirm_name`, TripIt's own validation
-messages, an expired session) are returned as readable tool errors rather than the SDK's
-generic "An error occurred".
+Tool errors (unknown fields, a mismatched `confirmName`, TripIt's own validation
+messages, an expired session) are returned as short, readable tool errors rather than the
+SDK's generic "An error occurred". TripIt's response bodies are never echoed (only its
+validation message, when short); the detail is logged at Debug. Dates are `yyyy-MM-dd` only.
+A `Segment` update must name every existing leg by uuid; leaving one out is refused.
 
 ## Authentication
 
@@ -146,8 +151,11 @@ fails as **403 with an Akamai HTML block page**, which the client reports as
 
 ### Automatic session refresh
 
-On an authentication failure (302, 401 or Akamai 403) `TripItClient` re-reads the session
-file and, if that has not changed, runs an `ISessionRefresher`, then retries once. The MCP
+On an authentication failure (302, 401 or Akamai 403) the client asks its session provider
+for a new session. `LocalSessionProvider` re-reads the store / environment / session file and,
+if that still holds the rejected cookie, runs an `ISessionRefresher` (at most once per 30 s
+cool-down). The request is retried once, and only when the cookie actually changed. Sessions
+are immutable snapshots (`TripItSession`), swapped whole, so one request never mixes values. The MCP
 server wires in `CommandSessionRefresher`, which runs `node tools/extract-session.js`
 (discovered beside or above the server binary) — so as long as the signed-in capture
 browser stays open, the server keeps working past the ~2-hour cookie lifetime.
@@ -265,12 +273,20 @@ tools/
 
 ## Functional tests
 
-`dotnet test` skips backend tests by default. To run them locally, set
-`TRIPIT_COOKIE` (and optionally `TRIPIT_CSRF`) or run `Connect-TripIt -StoreLocation UserSecrets`
-first; the test fixture auto-loads from user-secrets.
+`dotnet test` skips backend tests by default. They run only against a dedicated **test**
+account, never whatever session happens to be on the machine:
 
-In CI, push the secrets via `Sync-TripItSecretToGitHub` and trigger the
-`Functional tests (live API)` workflow manually.
+```powershell
+$env:TRIPIT_TEST_SESSION_FILE = 'C:\path\to\test-session.json'   # snapshot of the TEST account
+$env:TRIPIT_TEST_ACCOUNT      = '<the test account email>'        # required when the file is set
+$env:TRIPIT_ALLOW_WRITES      = '1'                               # only for the write tests
+dotnet test tests/TripIt.FunctionalTests
+```
+
+The fixture loads only that file (no user secrets, no `TRIPIT_COOKIE`, no
+`~/.tripit-mcp/session.json`, no refresher), then reads the profile and requires one of its
+email addresses to equal `TRIPIT_TEST_ACCOUNT`. A mismatch or a missing variable fails every
+test loudly instead of running against another account.
 
 ## Notes & limitations
 

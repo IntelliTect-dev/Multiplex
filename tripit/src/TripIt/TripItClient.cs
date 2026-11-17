@@ -35,23 +35,23 @@ public sealed partial class TripItClient : IDisposable
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttpClient;
-    private readonly TripItSession _session;
+    private readonly ITripItSessionProvider _sessions;
     private readonly ILogger<TripItClient> _log;
-    private readonly ISessionRefresher? _refresher;
-    private readonly SemaphoreSlim _refreshLock = new(1, 1);
+    private readonly string? _pacingKey;
 
-    public TripItClient(TripItSession session, ILogger<TripItClient>? log = null, ISessionRefresher? refresher = null)
+    /// <summary>
+    /// A client that owns its HTTP stack: <see cref="CreatePrimaryHandler"/> behind a
+    /// <see cref="Http.PacingHandler"/> (one request at a time, polite spacing, throttling honoured).
+    /// </summary>
+    public TripItClient(ITripItSessionProvider sessions, ILogger<TripItClient>? log = null)
     {
-        _session = session;
+        ArgumentNullException.ThrowIfNull(sessions);
+        _sessions = sessions;
         _log = log ?? NullLogger<TripItClient>.Instance;
-        _refresher = refresher;
-        var handler = new HttpClientHandler
+        _http = new HttpClient(new Http.PacingHandler(new Http.RequestPacer(), CreatePrimaryHandler()))
         {
-            UseCookies = false,                          // we set the Cookie header ourselves
-            AutomaticDecompression = DecompressionMethods.All,
-            AllowAutoRedirect = false,
+            Timeout = TimeSpan.FromSeconds(150),
         };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
         _ownsHttpClient = true;
         Trips = new TripsClient(this);
         Objects = new ObjectsClient(this);
@@ -59,20 +59,43 @@ public sealed partial class TripItClient : IDisposable
     }
 
     /// <summary>
-    /// Test/DI overload that accepts an externally-owned <see cref="HttpClient"/>.
+    /// A client over an externally owned <see cref="HttpClient"/> (DI, tests). The caller's
+    /// handler chain must not follow redirects or keep a cookie jar; see <see cref="CreatePrimaryHandler"/>.
     /// </summary>
-    public TripItClient(TripItSession session, HttpClient httpClient, ILogger<TripItClient>? log = null,
-        ISessionRefresher? refresher = null)
+    /// <param name="pacingKey">Sent as <see cref="Http.RequestPacer.KeyOption"/> so a shared pacer paces per account.</param>
+    public TripItClient(ITripItSessionProvider sessions, HttpClient httpClient, ILogger<TripItClient>? log = null,
+        string? pacingKey = null)
     {
-        _session = session;
+        ArgumentNullException.ThrowIfNull(sessions);
+        ArgumentNullException.ThrowIfNull(httpClient);
+        _sessions = sessions;
         _http = httpClient;
         _ownsHttpClient = false;
         _log = log ?? NullLogger<TripItClient>.Instance;
-        _refresher = refresher;
+        _pacingKey = pacingKey;
         Trips = new TripsClient(this);
         Objects = new ObjectsClient(this);
         Lookup = new LookupClient(this);
     }
+
+    /// <summary>A client for one fixed session that is never reloaded or refreshed.</summary>
+    public TripItClient(TripItSession session, ILogger<TripItClient>? log = null)
+        : this(new SnapshotSessionProvider(session), log)
+    {
+    }
+
+    /// <summary>
+    /// The primary handler every TripIt HTTP stack needs: no cookie jar (the Cookie header comes
+    /// from the session snapshot, and a shared jar would mix accounts), no automatic redirects
+    /// (a 302 means the session rotated) and transparent decompression.
+    /// </summary>
+    public static HttpMessageHandler CreatePrimaryHandler() => new SocketsHttpHandler
+    {
+        UseCookies = false,
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    };
 
     /// <summary>Trips: list, get (with all objects), search.</summary>
     public TripsClient Trips { get; }
@@ -83,9 +106,12 @@ public sealed partial class TripItClient : IDisposable
     /// <summary>Reference lookups (airports, airlines, places).</summary>
     public LookupClient Lookup { get; }
 
-    public string SessionSource => _session.Source ?? "(none)";
-    public bool   IsConfigured  => _session.IsConfigured;
-    public bool   CanRefreshSession => _refresher is not null;
+    public string SessionSource => _sessions.Current.Source ?? "(none)";
+    public bool   IsConfigured  => _sessions.Current.IsConfigured;
+    public bool   CanRefreshSession => _sessions.CanRefresh;
+
+    /// <summary>When the current session was captured from the browser, if known.</summary>
+    public DateTimeOffset? SessionCapturedAt => _sessions.Current.CapturedAt;
 
     // ── Account-level endpoints ──────────────────────────────────────────────
 
@@ -181,8 +207,8 @@ public sealed partial class TripItClient : IDisposable
     /// classified from status <i>and</i> body: an Akamai 403 HTML page and 302/401 raise
     /// <see cref="TripItAuthenticationException"/>; a JSON <c>Error</c> envelope or any other
     /// non-success raises <see cref="TripItApiException"/>. On an authentication failure the
-    /// session is reloaded (and refreshed, if a <see cref="ISessionRefresher"/> is attached)
-    /// and the request is retried once.
+    /// session provider is asked for a renewed session, and the request is retried once, only
+    /// when the renewed cookie differs from the rejected one.
     /// </summary>
     public async Task<string> SendAsync(
         HttpMethod method,
@@ -194,74 +220,41 @@ public sealed partial class TripItClient : IDisposable
         if (string.IsNullOrWhiteSpace(path) || !path.StartsWith('/'))
             throw new ArgumentException("path must start with '/'", nameof(path));
 
-        EnsureConfigured();
         var queryList = query?.ToList();
-        var cookieBefore = _session.Cookie;
+        var session = await ConfiguredSessionAsync(ct).ConfigureAwait(false);
         TripItAuthenticationException authFailure;
         try
         {
-            return await SendOnceAsync(method, path, queryList, jsonBody, ct).ConfigureAwait(false);
+            return await SendOnceAsync(session, method, path, queryList, jsonBody, ct).ConfigureAwait(false);
         }
         catch (TripItAuthenticationException ex)
         {
             authFailure = ex;
         }
-        if (!await TryRecoverSessionAsync(cookieBefore, authFailure, ct).ConfigureAwait(false))
+
+        var renewed = await _sessions.RenewAsync(session, ct).ConfigureAwait(false);
+        if (renewed is null || !renewed.IsConfigured || renewed.Cookie == session.Cookie)
         {
             throw authFailure;
         }
-        _log.LogInformation("TripIt session refreshed; retrying {Method} {Path}", method, path);
-        return await SendOnceAsync(method, path, queryList, jsonBody, ct).ConfigureAwait(false);
+        _log.LogInformation("TripIt session renewed; retrying {Method} {Path}", method, path);
+        return await SendOnceAsync(renewed, method, path, queryList, jsonBody, ct).ConfigureAwait(false);
     }
 
-    private void EnsureConfigured()
+    private async Task<TripItSession> ConfiguredSessionAsync(CancellationToken ct)
     {
-        if (_session.IsConfigured) return;
-        _session.Reload();
-        if (!_session.IsConfigured)
-        {
-            throw new TripItAuthenticationException(
+        var session = _sessions.Current;
+        if (session.IsConfigured) return session;
+        session = await _sessions.RenewAsync(session, ct).ConfigureAwait(false) ?? session;
+        return session.IsConfigured
+            ? session
+            : throw new TripItAuthenticationException(
                 "TripIt session is not configured. Run `node tools/extract-session.js` against a " +
                 "signed-in browser (writes ~/.tripit-mcp/session.json), or set TRIPIT_COOKIE / TRIPIT_CSRF.");
-        }
-    }
-
-    /// <summary>
-    /// Re-reads the session source; if that yields nothing new and a refresher is attached,
-    /// runs it and re-reads again. Returns true when a retry is worthwhile.
-    /// </summary>
-    private async Task<bool> TryRecoverSessionAsync(string cookieBefore, Exception ex, CancellationToken ct)
-    {
-        await _refreshLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            // Another request may already have refreshed while we waited.
-            if (_session.Cookie != cookieBefore) return true;
-
-            _session.Reload();
-            if (_session.IsConfigured && _session.Cookie != cookieBefore) return true;
-
-            if (_refresher is null) return false;
-            _log.LogWarning("TripIt authentication failed ({Message}); refreshing session.", ex.Message);
-            try
-            {
-                await _refresher.RefreshAsync(ct).ConfigureAwait(false);
-            }
-            catch (Exception refreshEx) when (refreshEx is not OperationCanceledException)
-            {
-                _log.LogError(refreshEx, "TripIt session refresh failed.");
-                return false;
-            }
-            _session.Reload();
-            return _session.IsConfigured;
-        }
-        finally
-        {
-            _refreshLock.Release();
-        }
     }
 
     private async Task<string> SendOnceAsync(
+        TripItSession session,
         HttpMethod method,
         string path,
         IReadOnlyList<KeyValuePair<string, string?>>? query,
@@ -270,23 +263,30 @@ public sealed partial class TripItClient : IDisposable
     {
         var url = BaseUrl + path + BuildQuery(query);
         using var req = new HttpRequestMessage(method, url);
-        ApplyHeaders(req);
+        ApplyHeaders(req, session);
+        if (_pacingKey is not null) req.Options.Set(Http.RequestPacer.KeyOption, _pacingKey);
         if (jsonBody is not null)
         {
             var payload = jsonBody as string ?? JsonSerializer.Serialize(jsonBody, TripItJson.Options);
             req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         }
 
-        _log.LogDebug("{Method} {Url}", method, url);
+        _log.LogDebug("{Method} {Path}", method, path);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        Classify(path, (int)resp.StatusCode, resp.Content.Headers.ContentType?.MediaType, body);
+        var status = (int)resp.StatusCode;
+        if (status is < 200 or > 299 && _log.IsEnabled(LogLevel.Debug))
+        {
+            // The body never carries the session (cookies travel in headers, which are not logged).
+            _log.LogDebug("TripIt {Method} {Path} answered {Status}: {Body}", method, path, status, Preview(body));
+        }
+        Classify(path, status, resp.Content.Headers.ContentType?.MediaType, body);
         return body;
     }
 
-    private void ApplyHeaders(HttpRequestMessage req)
+    private static void ApplyHeaders(HttpRequestMessage req, TripItSession session)
     {
-        var spa = _session.SpaHeaders;
+        var spa = session.SpaHeaders;
         string? Spa(string name) => spa.TryGetValue(name, out var v) && !string.IsNullOrWhiteSpace(v) ? v : null;
 
         req.Headers.TryAddWithoutValidation("User-Agent", Spa("user-agent") ?? DefaultUserAgent);
@@ -301,11 +301,11 @@ public sealed partial class TripItClient : IDisposable
         req.Headers.Add("Origin", BaseUrl);
         req.Headers.Add("X-Requested-With", "XMLHttpRequest");
         req.Headers.Add("X-TRIPIT-APP-INFO", AppInfo);
-        if (!string.IsNullOrEmpty(_session.CsrfToken))
+        if (!string.IsNullOrEmpty(session.CsrfToken))
         {
-            req.Headers.Add("X-CSRF-Token-WA", _session.CsrfToken);
+            req.Headers.TryAddWithoutValidation("X-CSRF-Token-WA", session.CsrfToken);
         }
-        req.Headers.TryAddWithoutValidation("Cookie", _session.Cookie);
+        req.Headers.TryAddWithoutValidation("Cookie", session.Cookie);
     }
 
     /// <summary>
@@ -331,7 +331,12 @@ public sealed partial class TripItClient : IDisposable
         }
         if (status is < 200 or > 299)
         {
-            throw new TripItApiException(status, path, ExtractError(body) ?? Preview(body));
+            // Never copy the raw body into the exception: it surfaces in tool errors. The body
+            // is logged at Debug by the caller instead.
+            var tripItMessage = ExtractError(body);
+            throw new TripItApiException(status, path,
+                tripItMessage ?? $"no error description ({(looksHtml ? "HTML" : "non-JSON")} body, {body.Length} bytes)",
+                tripItMessage);
         }
         if (looksHtml)
         {
@@ -340,7 +345,7 @@ public sealed partial class TripItClient : IDisposable
         }
         if (ExtractError(body) is { } error)
         {
-            throw new TripItApiException(status, path, error);
+            throw new TripItApiException(status, path, error, error);
         }
     }
 
@@ -401,7 +406,6 @@ public sealed partial class TripItClient : IDisposable
         {
             _http.Dispose();
         }
-        _refreshLock.Dispose();
     }
 }
 
@@ -419,15 +423,37 @@ public sealed class TripItAuthenticationException : InvalidOperationException
 /// </summary>
 public sealed class TripItApiException : Exception
 {
-    public TripItApiException(int statusCode, string path, string detail)
+    public TripItApiException(int statusCode, string path, string detail, string? tripItMessage = null)
         : base($"TripIt {path} -> {statusCode}: {detail}")
     {
         StatusCode = statusCode;
         Path = path;
         Detail = detail;
+        TripItMessage = tripItMessage;
     }
 
     public int StatusCode { get; }
     public string Path { get; }
+
+    /// <summary>What went wrong: TripIt's error description, or this library's own summary. Never the raw body.</summary>
     public string Detail { get; }
+
+    /// <summary>The description from TripIt's JSON <c>Error</c> envelope, or null when it sent none.</summary>
+    public string? TripItMessage { get; }
+}
+
+/// <summary>
+/// A multi-step write stopped half way: the first step created <see cref="CreatedUuid"/> and a
+/// follow-up step failed. Callers must not repeat the create (that would duplicate it); update
+/// the created item instead.
+/// </summary>
+public sealed class TripItPartialWriteException : Exception
+{
+    public TripItPartialWriteException(string createdUuid, string message, Exception inner)
+        : base(message, inner)
+    {
+        CreatedUuid = createdUuid;
+    }
+
+    public string CreatedUuid { get; }
 }
