@@ -99,7 +99,8 @@ public sealed partial class AuthorizationServer(
         var pending = await store.ReadAsync(s => s.PendingAuthorizations.GetValueOrDefault(pendingId), ct);
         return pending is null || pending.ExpiresAt <= now
             ? null
-            : new PendingAuthorization(pending.Id, pending.Site, pending.ClientName, pending.ExpiresAt);
+            : new PendingAuthorization(pending.Id, pending.Site, pending.ClientName, pending.ExpiresAt,
+                Uri.TryCreate(pending.RedirectUri, UriKind.Absolute, out var back) ? back.Authority : null);
     }
 
     /// <exception cref="InvalidOperationException">The pending authorization is unknown, already ended, or expired.</exception>

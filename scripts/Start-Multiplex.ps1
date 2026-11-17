@@ -41,11 +41,21 @@ try {
         }
         'Tailscale' {
             $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
-            & $ts funnel --bg --yes "$($config.Port)" | Out-Null
-            $dns = (& $ts status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
-            $config.PublicBaseUrl = "https://$dns"
-            Write-MultiplexConfig -Config $config -Path $configPath
-            Write-Host "Public address: $($config.PublicBaseUrl)"
+            # When Funnel is not enabled for the tailnet, `tailscale funnel` prints an enable link and
+            # waits indefinitely; never let that keep the server from starting.
+            $job = Start-Job { param($exe, $port) & $exe funnel --bg --yes "$port" 2>&1 } -ArgumentList $ts, $config.Port
+            $finished = Wait-Job $job -Timeout 20
+            $output = (Receive-Job $job) -join "`n"
+            Remove-Job $job -Force
+            if (-not $finished -or $output -match 'not enabled') {
+                Add-Content -LiteralPath (Join-Path $logDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available: $output"
+                Write-Warning "Tailscale Funnel is not enabled for this tailnet; serving locally only. $output"
+            } else {
+                $dns = (& $ts status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
+                $config.PublicBaseUrl = "https://$dns"
+                Write-MultiplexConfig -Config $config -Path $configPath
+                Write-Host "Public address: $($config.PublicBaseUrl)"
+            }
         }
     }
 

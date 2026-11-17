@@ -221,14 +221,20 @@ Step 'refresh token rotation' {
     $new = Invoke-RestMethod $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
         grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
     if ($new.refresh_token -eq $tokens.refresh_token) { throw 'refresh token was not rotated' }
+    if ($SaveGrantTo) {
+        # For a later renewal check: the live refresh token and where to use it. Test servers only.
+        # The reuse check below is skipped: reusing a spent refresh token revokes the whole grant
+        # (as OAuth 2.1 requires), which would revoke the token being saved.
+        @{ client_id = $clientId; refresh_token = $new.refresh_token; token_endpoint = $as.token_endpoint; mcp_url = $mcpUrl } |
+            ConvertTo-Json | Set-Content -LiteralPath $SaveGrantTo
+        return
+    }
     $reuse = Invoke-WebRequest $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck -Body @{
         grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
     if ($reuse.StatusCode -ne 400) { throw "reusing the old refresh token gave HTTP $($reuse.StatusCode), expected 400" }
-    if ($SaveGrantTo) {
-        # For a later renewal check: the live refresh token and where to use it. Test servers only.
-        @{ client_id = $clientId; refresh_token = $new.refresh_token; token_endpoint = $as.token_endpoint; mcp_url = $mcpUrl } |
-            ConvertTo-Json | Set-Content -LiteralPath $SaveGrantTo
-    }
+    $after = Invoke-WebRequest $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck -Body @{
+        grant_type = 'refresh_token'; refresh_token = $new.refresh_token; client_id = $clientId; resource = $mcpUrl }
+    if ($after.StatusCode -ne 400) { throw "after a reuse, the newest refresh token still worked (HTTP $($after.StatusCode)); the grant should be revoked" }
 } | Out-Null
 
 if ($failures) { exit 1 }
