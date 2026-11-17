@@ -42,7 +42,8 @@ public sealed partial class OAuthClients(
             return await documents.GetAsync(clientId, ct);
         }
 
-        var registered = await store.ReadAsync(s => s.Clients.GetValueOrDefault(clientId), ct);
+        var now = time.GetUtcNow();
+        var registered = await store.ReadAsync(s => s.FindClient(clientId, now), ct);
         return registered is null
             ? ClientLookup.Fail("The client is not registered with this server.")
             : ClientLookup.Found(new OAuthClient(
