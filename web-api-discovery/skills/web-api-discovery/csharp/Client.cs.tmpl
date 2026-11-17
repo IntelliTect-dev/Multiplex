@@ -21,9 +21,6 @@ namespace {{Namespace}};
 public sealed partial class {{ProjectName}}Client : IDisposable
 {
     private const string BaseUrl = "{{BaseUrl}}";
-    private const string UserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
@@ -34,6 +31,7 @@ public sealed partial class {{ProjectName}}Client : IDisposable
     private readonly bool _ownsHttpClient;
     private readonly SessionCredentials _session;
     private readonly ILogger<{{ProjectName}}Client> _log;
+    private readonly string _userAgent;
 
     /// <summary>
     /// The everyday constructor: requests are paced and throttling is honoured by
@@ -58,6 +56,7 @@ public sealed partial class {{ProjectName}}Client : IDisposable
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         ArgumentNullException.ThrowIfNull(pacing);
+        _userAgent = pacing.UserAgent;
         _log = log ?? NullLogger<{{ProjectName}}Client>.Instance;
         var network = innerHandler ?? new HttpClientHandler
         {
@@ -80,11 +79,14 @@ public sealed partial class {{ProjectName}}Client : IDisposable
     /// Test / DI overload that accepts an externally owned <see cref="HttpClient"/>.
     /// Its pipeline is the caller's: no <see cref="PacingHandler"/> is added, so
     /// put one in it to keep the pacing and throttling the other constructors give.
+    /// The User-Agent is the everyday constructor's: <see cref="PacingOptions.UserAgent"/>
+    /// as <see cref="PacingOptions.FromEnvironment"/> reads it.
     /// </summary>
     public {{ProjectName}}Client(SessionCredentials session, HttpClient httpClient, ILogger<{{ProjectName}}Client>? log = null)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _http = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _userAgent = PacingOptions.FromEnvironment().UserAgent;
         _ownsHttpClient = false;
         _log = log ?? NullLogger<{{ProjectName}}Client>.Instance;
     }
@@ -121,10 +123,14 @@ public sealed partial class {{ProjectName}}Client : IDisposable
         var url = BaseUrl + path + qs;
 
         using var req = new HttpRequestMessage(method, url);
-        req.Headers.UserAgent.ParseAdd(UserAgent);
+        // Only what the API needs, under the client's own name. Nothing here is
+        // meant to pass for a browser: no browser User-Agent, and none of the
+        // client-hint or fetch-metadata headers a browser adds. Compression is
+        // asked for by the handler that decompresses it. Origin and X-Requested-With
+        // are what a site's CSRF checks look for; the Cookie and the CSRF token
+        // are the session.
+        req.Headers.UserAgent.ParseAdd(_userAgent);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        req.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
-        req.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
         req.Headers.Add("Origin", BaseUrl);
         req.Headers.Add("X-Requested-With", "XMLHttpRequest");
         if (!string.IsNullOrEmpty(_session.CsrfToken))
