@@ -924,7 +924,7 @@ function emitReadme(opts, patterns, hasGraphQL) {
     lines.push(mobileImportReadmeSection());
     if (Array.isArray(opts.antiBotCookies) && opts.antiBotCookies.length > 0) {
         lines.push('');
-        lines.push(antiBotWarningSection(opts.antiBotCookies));
+        lines.push(antiBotWarningSection(opts.antiBotCookies, opts.projectName));
     }
     return lines.join('\n');
 }
@@ -1040,30 +1040,36 @@ function mobileImportReadmeSection() {
  * Build the "Anti-bot challenge warning" README section (issue #66).
  *
  * Rendered only when the captured HAR contained one or more Akamai
- * bot-management cookies (`_abck`, `bm_sz`, `bm_sv`, `ak_bmsc`). The section
- * does NOT implement a bypass -- it warns the human consumer that a pure
- * session-replay wrapper may hit a non-200 anti-bot challenge response and
- * points at a documented warm-up workaround.
+ * bot-management cookies (`_abck`, `bm_sz`, `bm_sv`, `ak_bmsc`). It says what
+ * is true and stops there: the site runs bot management, so it may refuse this
+ * client; a refusal fails with `<Name>BlockedException`; and the remedy is a
+ * person -- a fresh session from a real, signed-in browser. It never advises a
+ * way past the refusal (SKILL.md, "Pacing, throttling, and where the line is").
  */
-function antiBotWarningSection(cookies) {
+function antiBotWarningSection(cookies, projectName) {
     const list = cookies.map((c) => '`' + c + '`').join(', ');
     return [
         '## Anti-bot challenge warning',
         '',
-        'The captured HAR contains Akamai bot-management cookies (' + list + '). ' +
-        'This API almost certainly fronts traffic with Akamai Bot Manager, which ' +
-        'means a **session-replay-only wrapper may hit a non-200 anti-bot ' +
-        'challenge response** instead of the expected payload. This generator ' +
-        'does not attempt to derive a bypass from the HAR alone.',
+        'The captured HAR contains Akamai bot-management cookies (' + list + '), so this site ' +
+        'almost certainly runs Akamai Bot Manager. Bot management decides whether a caller is a ' +
+        'person in a browser. This client is not one and does not pretend to be, so **the site may ' +
+        'refuse it**.',
         '',
-        '### Documented workaround',
+        'When it does, the call fails with `' + projectName + 'BlockedException` (an HTML `403` from ' +
+        "the site's edge, or a challenge). The client does not send that call again and does not try " +
+        'to get past the refusal. That is deliberate.',
         '',
-        'Before issuing the first authenticated request, send a plain `GET` to ' +
-        "the target's **public landing page** with no auth headers. That request " +
-        'lets Akamai seed `_abck` / `bm_sz` on the client; subsequent ' +
-        'authenticated calls then ride a cookie jar Akamai recognises as ' +
-        'human-shaped. If you still see challenge responses, add a brief delay ' +
-        'and retry once before surfacing the error to callers.',
+        '### When a call is refused',
+        '',
+        '- **Get a fresh session from a real, signed-in browser.** Run `' + projectName + 'Authenticator` ' +
+        '(`BrowserLoginAsync`), sign in yourself in the browser window it opens, and build the client ' +
+        'with the session it returns.',
+        '- **Or have a person do the task** on the site itself.',
+        '',
+        'Do not add browser headers or a browser `User-Agent`, make extra requests to collect the bot ' +
+        "manager's cookies, or send a refused call again until it goes through. Each of those works " +
+        "around the site's decision, and this project does not do that.",
         '',
         'Detected cookies: ' + list + '.',
     ].join('\n');
