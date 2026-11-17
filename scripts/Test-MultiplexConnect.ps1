@@ -22,7 +22,9 @@ param(
     [string] $ClientMetadataUrl,
     # Also create a private, dated throwaway trip and delete it through the confirm step.
     # Use only with a test account.
-    [switch] $WriteCheck)
+    [switch] $WriteCheck,
+    # Saves the final refresh token and endpoints as JSON, to check renewal hours later. Test servers only.
+    [string] $SaveGrantTo)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $BaseUrl = $BaseUrl.TrimEnd('/')
@@ -222,6 +224,11 @@ Step 'refresh token rotation' {
     $reuse = Invoke-WebRequest $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck -Body @{
         grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
     if ($reuse.StatusCode -ne 400) { throw "reusing the old refresh token gave HTTP $($reuse.StatusCode), expected 400" }
+    if ($SaveGrantTo) {
+        # For a later renewal check: the live refresh token and where to use it. Test servers only.
+        @{ client_id = $clientId; refresh_token = $new.refresh_token; token_endpoint = $as.token_endpoint; mcp_url = $mcpUrl } |
+            ConvertTo-Json | Set-Content -LiteralPath $SaveGrantTo
+    }
 } | Out-Null
 
 if ($failures) { exit 1 }
