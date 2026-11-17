@@ -3,10 +3,10 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using TripIt;
 using TripIt.Http;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
-/// <summary>Configuration for the TripIt server (<c>Multiplex:Sites:TripIt</c>).</summary>
-public sealed class TripItServerOptions
+/// <summary>Configuration for the TripIt service (<c>Multiplex:Sites:TripIt</c>).</summary>
+public sealed class TripItServiceOptions
 {
     public const string Section = "Multiplex:Sites:TripIt";
 
@@ -20,21 +20,21 @@ public sealed class TripItServerOptions
     public int RefreshCooldownSeconds { get; set; } = 30;
 }
 
-public static class TripItServerRegistration
+public static class TripItServiceRegistration
 {
     /// <summary>The named <see cref="HttpClient"/> every per-request <see cref="TripItClient"/> uses.</summary>
     public const string HttpClientName = "TripIt";
 
     /// <summary>
-    /// Registers the TripIt MCP server's services. The tools themselves are discovered by
+    /// Registers what the TripIt service needs. The tools themselves are discovered by
     /// <c>WithToolsFromAssembly</c> and served at <c>/tripit/mcp</c> by
     /// <c>[McpEndpoint("tripit")]</c>. Session storage and refresh
     /// (<see cref="Sites.ISiteSessionStore"/>, <see cref="Sites.ISiteSessionRefresher"/>) are
     /// registered by the sign-in part and resolved lazily, so this works without them.
     /// </summary>
-    public static IServiceCollection AddTripItServer(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddTripItService(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddOptions<TripItServerOptions>().Bind(configuration.GetSection(TripItServerOptions.Section));
+        services.AddOptions<TripItServiceOptions>().Bind(configuration.GetSection(TripItServiceOptions.Section));
         services.AddHttpContextAccessor();
         services.TryAddSingleton(TimeProvider.System);
         AddDataProtectionOnce(services, configuration);
@@ -42,7 +42,7 @@ public static class TripItServerRegistration
         // Per-account pacing state is a singleton: clients are per request and handler chains are pooled.
         services.TryAddSingleton(sp =>
         {
-            var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<TripItServerOptions>>().Value;
+            var o = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<TripItServiceOptions>>().Value;
             return new RequestPacer(new TripItPacingOptions
             {
                 MinSpacing = TimeSpan.FromMilliseconds(o.MinRequestSpacingMs),

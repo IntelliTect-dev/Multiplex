@@ -3,7 +3,7 @@ using Multiplex.Web.Sites;
 using TripIt;
 using TripIt.Tools;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
 /// <summary>
 /// Per-request tool plumbing (scoped): finds the account the validated request acts for,
@@ -24,7 +24,7 @@ public sealed class TripItToolContext(
         "Your TripIt session has ended (you are signed out of TripIt). Reconnect the TripIt connector " +
         "(in Claude or ChatGPT, open the connector and choose Connect) to sign in again, then retry.";
 
-    private readonly ILogger _log = loggers.CreateLogger("Multiplex.Servers.TripIt.Tools");
+    private readonly ILogger _log = loggers.CreateLogger("Multiplex.Services.TripIt.Tools");
     private TripItClient? _client;
 
     /// <summary>The TripIt account the authenticated request acts for.</summary>
@@ -52,7 +52,7 @@ public sealed class TripItToolContext(
         var snapshot = await sessions.LoadAsync(requestServices, accountId, ct).ConfigureAwait(false);
         var provider = new SnapshotSessionProvider(snapshot,
             (rejected, c) => sessions.RenewAsync(requestServices, accountId, rejected, c));
-        _client = new TripItClient(provider, httpClients.CreateClient(TripItServerRegistration.HttpClientName),
+        _client = new TripItClient(provider, httpClients.CreateClient(TripItServiceRegistration.HttpClientName),
             loggers.CreateLogger<TripItClient>(), pacingKey: accountId);
         return _client;
     }

@@ -9,7 +9,7 @@ Multiplex serves several MCP servers from one ASP.NET Core host at `/{slug}/mcp`
 TripIt at `/tripit/mcp`, built from the existing TripItEx toolkit (imported under `tripit/`
 as four condensed commits).
 
-**The defining requirement:** a person connects to the TripIt server from Claude or ChatGPT
+**The defining requirement:** a person connects to the TripIt service from Claude or ChatGPT
 on *any* device, including a phone, and signs in to TripIt as part of that connect step.
 Afterwards the Multiplex server makes the TripIt calls on their behalf. TripIt was picked as
 the first real site precisely because it requires authentication, so this design is the
@@ -68,7 +68,7 @@ Defects that the port fixes (C = critical for an HTTP host):
 - **C1** One process-wide session and a cached "my profile ref": every caller would act as
   the first user. → per-account session provider; client created per request.
 - **C2** `tripit_raw_get` can reach state-changing GETs (`v2/move/...`) and ignores read-only
-  mode. → removed from the hosted server.
+  mode. → removed from the hosted service.
 - **C3** An environment-variable session can never refresh, and each auth failure spawns a
   `node` process for up to 120 s. → no process refresher in the host; refresh comes from the
   server's own browser, with a cool-down.
@@ -112,7 +112,8 @@ Claude / ChatGPT (phone, web, desktop)            the person's own browser (phon
                                   www.tripit.com/api/v2
 ```
 
-Server code lives in `src/Multiplex.Web/Servers/TripIt/` (the per-server folder convention
+
+
 an in-flight branch introduces for the time server). Generic sign-in and OAuth code lives in
 `src/Multiplex.Web/Auth/` and `src/Multiplex.Web/SignIn/` so the next site reuses it.
 

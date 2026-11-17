@@ -2,7 +2,7 @@ using System.Security.Claims;
 
 namespace Multiplex.Web.Sites;
 
-// The seams between the three parts of an authenticated site server (see
+// The seams between the three parts of an authenticated site service (see
 // docs/designs/6-tripit-mcp-server-spec.md, section 4):
 //
 //   Auth/            OAuth 2.1 authorization + resource server for every /{slug}/mcp endpoint.
