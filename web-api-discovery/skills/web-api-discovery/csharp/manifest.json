@@ -24,6 +24,13 @@
       ]
     },
     {
+      "file": "PacingHandler.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace"
+      ]
+    },
+    {
       "file": "Authenticator.cs.tmpl",
       "requiredTokens": [
         "ProjectName",

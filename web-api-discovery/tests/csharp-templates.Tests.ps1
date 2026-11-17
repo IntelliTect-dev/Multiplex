@@ -65,6 +65,7 @@ Describe "C# template manifest" {
         $manifest = Get-Manifest
         $expected = @(
             "Client.cs.tmpl",
+            "PacingHandler.cs.tmpl",
             "Authenticator.cs.tmpl",
             "ISessionStore.cs.tmpl",
             "DpapiSessionStore.cs.tmpl",
@@ -88,6 +89,7 @@ Describe "Per-template token contract" {
 
     It "<file> declares every token appearing in its body and vice versa" -ForEach @(
         @{ file = "Client.cs.tmpl" }
+        @{ file = "PacingHandler.cs.tmpl" }
         @{ file = "Authenticator.cs.tmpl" }
         @{ file = "ISessionStore.cs.tmpl" }
         @{ file = "DpapiSessionStore.cs.tmpl" }
@@ -186,7 +188,9 @@ Describe "Buildable output" {
 
         $emitMap = [ordered]@{
             "Client.cs.tmpl"                  = (Join-Path $script:BuildDir "ContosoExClient.cs")
-            "Authenticator.cs.tmpl"           = (Join-Path $authDir "ContosoExAuthenticator.cs")
+            # The client builds its pipeline from it, so they compile together.
+            "PacingHandler.cs.tmpl"           = (Join-Path $script:BuildDir "PacingHandler.cs")
+            "Authenticator.cs.tmpl"         = (Join-Path $authDir "ContosoExAuthenticator.cs")
             "ISessionStore.cs.tmpl"           = (Join-Path $authDir "ISessionStore.cs")
             "DpapiSessionStore.cs.tmpl"       = (Join-Path $authDir "DpapiSessionStore.cs")
             "UserSecretsSessionStore.cs.tmpl" = (Join-Path $authDir "UserSecretsSessionStore.cs")
