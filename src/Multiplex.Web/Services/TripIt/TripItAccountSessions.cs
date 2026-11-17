@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 using Multiplex.Web.Sites;
 using TripIt;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
 /// <summary>The account's TripIt session is gone for good (the person signed out); the connector must reconnect.</summary>
 public sealed class TripItSessionEndedException : Exception
@@ -28,7 +28,7 @@ public sealed class TripItSignInUnavailableException(string message) : Exception
 /// </remarks>
 public sealed class TripItAccountSessions(
     TimeProvider time,
-    IOptions<TripItServerOptions> options,
+    IOptions<TripItServiceOptions> options,
     ILogger<TripItAccountSessions> log)
 {
     public const string Site = "tripit";

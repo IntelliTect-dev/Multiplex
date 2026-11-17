@@ -3,7 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using TripIt.Http;
 
-namespace Multiplex.Tests.Servers.TripIt;
+namespace Multiplex.Tests.Services.TripIt;
 
 /// <summary>
 /// The per-account pacing handler, on a fake clock: spacing, one request in flight per

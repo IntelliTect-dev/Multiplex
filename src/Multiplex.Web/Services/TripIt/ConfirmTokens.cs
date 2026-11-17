@@ -4,7 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using ModelContextProtocol;
 
-namespace Multiplex.Web.Servers.TripIt;
+namespace Multiplex.Web.Services.TripIt;
 
 /// <summary>
 /// Stateless confirmation for risky tools. A call without a token changes nothing and gets a
@@ -17,7 +17,7 @@ public sealed class ConfirmTokens(IDataProtectionProvider dataProtection, TimePr
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(5);
 
     private readonly ITimeLimitedDataProtector _protector =
-        dataProtection.CreateProtector("Multiplex.Servers.TripIt.ConfirmToken.v1").ToTimeLimitedDataProtector();
+        dataProtection.CreateProtector("Multiplex.Services.TripIt.ConfirmToken.v1").ToTimeLimitedDataProtector();
 
     /// <summary>Issues a token for this account, tool and argument set.</summary>
     public string Issue(string accountId, string tool, IReadOnlyDictionary<string, string?> arguments)

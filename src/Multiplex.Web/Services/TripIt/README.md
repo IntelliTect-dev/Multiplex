@@ -1,6 +1,6 @@
-# TripIt server (`/tripit/mcp`)
+# TripIt service (`/tripit/mcp`)
 
-The TripIt MCP server lets Claude or ChatGPT read and change a person's TripIt trips: trips,
+The TripIt service, the MCP server Multiplex hosts for TripIt, lets Claude or ChatGPT read and change a person's TripIt trips: trips,
 every plan type (flights, lodging, cars, rail, transfers, cruises, restaurants, activities,
 notes, parking, maps, directions), participants and lookups. Each signed-in TripIt account
 gets its own data; nothing is shared between accounts.
@@ -81,20 +81,20 @@ refused with a message telling the model to preview again and ask the person.
 
 ## Registration
 
-`builder.Services.AddTripItServer(builder.Configuration)` in `Program.cs`. It registers Data
+`builder.Services.AddTripItService(builder.Configuration)` in `Program.cs`. It registers Data
 Protection with the shared Multiplex settings (application name `Multiplex`, keys under
 `Multiplex:DataPath`, default `%LOCALAPPDATA%\Multiplex\data\keys`), the pacing state, the
 "TripIt" `HttpClient` and the per-request context. `ISiteSessionStore` and
-`ISiteSessionRefresher` come from SignIn/ and are resolved per request, so the server starts
+`ISiteSessionRefresher` come from SignIn/ and are resolved per request, so Multiplex starts
 (and reports "sign-in is not set up") without them.
 
 ## Tests
 
-- `tests/Multiplex.Tests/Servers/TripIt/TripItServerTests.cs`: real MCP JSON-RPC over HTTP
+- `tests/Multiplex.Tests/Services/TripIt/TripItServiceTests.cs`: real MCP JSON-RPC over HTTP
   against a fake TripIt, with a test authentication scheme, in-memory store and refresher:
   tool list and hints, per-account sessions, refresh on 403, sign-out, confirm flow, errors.
 - `PacingHandlerTests.cs`: the pacing handler on a fake clock.
-- `TripItHostLiveTests.cs` (opt-in): the hosted server against real TripIt as the dedicated
+- `TripItHostLiveTests.cs` (opt-in): the hosted service against real TripIt as the dedicated
   **test** account:
 
   ```powershell

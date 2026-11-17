@@ -11,10 +11,10 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Multiplex.Web.Auth.Store;
-using Multiplex.Web.Servers.TripIt;
+using Multiplex.Web.Services.TripIt;
 using Multiplex.Web.Sites;
 
-namespace Multiplex.Tests.Servers.TripIt;
+namespace Multiplex.Tests.Services.TripIt;
 
 /// <summary>
 /// Multiplex with its real MCP pipeline and its real OAuth protection at <c>/tripit/mcp</c>:
@@ -41,8 +41,8 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
         builder.UseSetting("Multiplex:Auth:AuthorizePermitLimit", "10000");
         if (fakeTripIt)
         {
-            builder.UseSetting($"{TripItServerOptions.Section}:MinRequestSpacingMs", "0");
-            builder.UseSetting($"{TripItServerOptions.Section}:RequestJitterMs", "0");
+            builder.UseSetting($"{TripItServiceOptions.Section}:MinRequestSpacingMs", "0");
+            builder.UseSetting($"{TripItServiceOptions.Section}:RequestJitterMs", "0");
         }
         builder.ConfigureTestServices(services =>
         {
@@ -53,7 +53,7 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
             if (fakeTripIt) services.AddSingleton<ISiteSessionRefresher>(Refresher);
             if (fakeTripIt)
             {
-                services.AddHttpClient(TripItServerRegistration.HttpClientName)
+                services.AddHttpClient(TripItServiceRegistration.HttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => TripIt);
             }
             if (Clock is { } clock) services.AddSingleton(clock);
