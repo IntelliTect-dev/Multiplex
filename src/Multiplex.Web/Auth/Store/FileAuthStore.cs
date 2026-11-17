@@ -6,21 +6,32 @@ using Microsoft.Extensions.Options;
 namespace Multiplex.Web.Auth.Store;
 
 /// <summary>
-/// Persists the auth state to <c>&lt;DataPath&gt;/auth.dat</c>, encrypted with ASP.NET Core Data Protection.
-/// Writes go to a temporary file that then replaces the store, so a crash never leaves half a file.
-/// Nothing touches the disk until the first read or write. Assumes one server process per data folder.
+/// Persists the auth state to <c>&lt;DataPath&gt;/auth.dat</c>, encrypted with ASP.NET Core Data Protection
+/// using a key ring in <c>&lt;DataPath&gt;/keys</c> (DPAPI-protected on Windows). Writes go to a temporary
+/// file that then replaces the store, so a crash never leaves half a file. Nothing (store or key ring)
+/// touches the disk until the first read or write. Assumes one server process per data folder.
 /// </summary>
 public sealed partial class FileAuthStore(
     IOptions<MultiplexAuthOptions> options,
-    IDataProtectionProvider dataProtection,
     TimeProvider time,
     ILogger<FileAuthStore> logger) : AuthStoreBase(time)
 {
     private const string Purpose = "Multiplex.Auth.Store.v1";
 
-    private readonly IDataProtector _protector = dataProtection.CreateProtector(Purpose);
+    private IDataProtector? _protector;
 
-    private string StorePath => Path.Combine(options.Value.ResolveDataPath(), "auth.dat");
+    private string DataPath => options.Value.ResolveDataPath();
+
+    private string StorePath => Path.Combine(DataPath, "auth.dat");
+
+    /// <summary>Created on first use; the app-wide Data Protection setup is left alone.</summary>
+    private IDataProtector Protector => _protector ??= DataProtectionProvider
+        .Create(new DirectoryInfo(Path.Combine(DataPath, "keys")), builder =>
+        {
+            builder.SetApplicationName("Multiplex");
+            if (OperatingSystem.IsWindows()) builder.ProtectKeysWithDpapi();
+        })
+        .CreateProtector(Purpose);
 
     protected override async Task<AuthState> LoadAsync(CancellationToken ct)
     {
@@ -30,7 +41,7 @@ public sealed partial class FileAuthStore(
         try
         {
             var protectedBytes = await File.ReadAllBytesAsync(path, ct);
-            return AuthStateSerializer.Deserialize(_protector.Unprotect(protectedBytes));
+            return AuthStateSerializer.Deserialize(Protector.Unprotect(protectedBytes));
         }
         catch (Exception ex) when (ex is CryptographicException or JsonException)
         {
@@ -47,7 +58,7 @@ public sealed partial class FileAuthStore(
         var path = StorePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-        var bytes = _protector.Protect(AuthStateSerializer.Serialize(state));
+        var bytes = Protector.Protect(AuthStateSerializer.Serialize(state));
         var temp = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {

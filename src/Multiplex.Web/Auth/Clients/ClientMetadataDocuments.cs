@@ -65,6 +65,7 @@ public sealed partial class ClientMetadataDocuments(
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Accept.ParseAdd("application/json");
+                request.Headers.UserAgent.ParseAdd("Multiplex-OAuth/1.0");
                 using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
 
                 if ((int)response.StatusCode is >= 300 and < 400)
@@ -156,21 +157,34 @@ public sealed partial class ClientMetadataDocuments(
     /// </summary>
     internal static async ValueTask<Stream> ConnectToPublicAddressAsync(SocketsHttpConnectionContext context, CancellationToken ct)
     {
-        var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct);
-        var address = addresses.FirstOrDefault(IsPublic)
-            ?? throw new HttpRequestException(HttpRequestError.ConnectionError, "The host does not resolve to a public address.");
+        var addresses = (await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct)).Where(IsPublic).ToList();
+        if (addresses.Count == 0)
+        {
+            throw new HttpRequestException(HttpRequestError.ConnectionError, "The host does not resolve to a public address.");
+        }
 
-        var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-        try
+        // Try each public address in turn, so an unreachable first one (often IPv6) does not fail the fetch.
+        Exception? last = null;
+        foreach (var address in addresses)
         {
-            await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), ct);
-            return new NetworkStream(socket, ownsSocket: true);
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), ct);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (SocketException ex)
+            {
+                socket.Dispose();
+                last = ex;
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
         }
-        catch
-        {
-            socket.Dispose();
-            throw;
-        }
+        throw new HttpRequestException(HttpRequestError.ConnectionError, "No public address of the host accepted a connection.", last);
     }
 
     internal static bool IsPublic(IPAddress address)
