@@ -108,9 +108,21 @@ public sealed partial class TripsClient
         var trip = ParseTrip(body);
         // Measured 2026-11-07: create/trip ignores is_owner_traveler=false (the owner is always
         // made a traveler), but replace/trip honours it. Re-apply it with a replace.
-        if (!input.IsOwnerTraveler && trip.Uuid is not null)
+        if (!input.IsOwnerTraveler && trip.Uuid is { } createdUuid)
         {
-            trip = await ReplaceAsync(trip.Uuid, input, ct).ConfigureAwait(false);
+            try
+            {
+                trip = await ReplaceAsync(createdUuid, input, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The trip exists now. Say so with its uuid, so a retry updates it instead of
+                // creating a duplicate.
+                throw new TripItPartialWriteException(createdUuid,
+                    $"The trip was created (uuid {createdUuid}, '{trip.DisplayName}'), but marking the owner as not " +
+                    $"travelling on it failed ({TripItErrorText.Describe(ex)}). Do not create it again: update trip " +
+                    $"{createdUuid} to set the owner as not travelling.", ex);
+            }
         }
         return trip;
     }
@@ -209,13 +221,19 @@ public sealed partial class ObjectsClient
     /// Updates selected fields of a travel object: fetches it, projects it to its writable
     /// fields, deep-merges <paramref name="changes"/> (objects merge, arrays and scalars
     /// replace; a JSON null removes a field), and replaces it.
-    /// For segmented types, pass <c>Segment</c> to replace the legs, or use
-    /// <paramref name="segmentUuid"/> + segment fields to change one leg.
+    /// For segmented types, use <paramref name="segmentUuid"/> + segment fields to change one
+    /// leg, or pass a whole <c>Segment</c> array that names every existing leg by its
+    /// <c>uuid</c> (new legs have none). A <c>Segment</c> that leaves out an existing leg is
+    /// refused: the replace would delete that leg.
     /// </summary>
     public async Task<PlanWriteResult> UpdateAsync(TripItObjectType type, string uuid, JsonObject changes,
         string? segmentUuid = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(changes);
+        if (segmentUuid is not null && changes.ContainsKey("uuid"))
+        {
+            throw new ArgumentException("A leg's uuid cannot be changed; leave 'uuid' out of the segment changes.");
+        }
         var current = await GetAsync(type, uuid, ct).ConfigureAwait(false);
         var writable = PlanSchema.ToWritable(type, current);
         if (segmentUuid is not null)
@@ -228,9 +246,82 @@ public sealed partial class ObjectsClient
         }
         else
         {
-            TripItWrite.DeepMerge(writable, (JsonObject)changes.DeepClone());
+            EnsureSegmentPatchKeepsLegs(type, writable, changes);
+            TripItWrite.DeepMerge(writable, MergeLegsByUuid(writable, changes));
         }
         return await ReplaceAsync(type, uuid, writable, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="changes"/> whose <c>Segment</c> legs that carry a uuid
+    /// are merged into the existing leg (so a leg patch need not repeat its flight number and
+    /// airports); legs without a uuid are new.
+    /// </summary>
+    private static JsonObject MergeLegsByUuid(JsonObject writable, JsonObject changes)
+    {
+        var copy = (JsonObject)changes.DeepClone();
+        if (copy["Segment"] is not { } patch || writable["Segment"] is not JsonArray current) return copy;
+        var legs = patch switch
+        {
+            JsonArray a => a.OfType<JsonObject>().ToList(),
+            JsonObject o => [o],
+            _ => [],
+        };
+        var merged = new JsonArray();
+        foreach (var leg in legs)
+        {
+            var id = leg["uuid"] is JsonValue v && v.TryGetValue<string>(out var u) ? u : null;
+            var existing = id is null
+                ? null
+                : current.OfType<JsonObject>().FirstOrDefault(s => string.Equals((string?)s["uuid"], id, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                merged.Add(leg.DeepClone());
+                continue;
+            }
+            var target = (JsonObject)existing.DeepClone();
+            TripItWrite.DeepMerge(target, (JsonObject)leg.DeepClone());
+            merged.Add(target);
+        }
+        copy["Segment"] = merged;
+        return copy;
+    }
+
+    /// <summary>
+    /// Refuses a whole-<c>Segment</c> change that would drop existing legs: replacePlan takes
+    /// the complete state, so a leg whose uuid is missing from the new array is deleted.
+    /// </summary>
+    internal static void EnsureSegmentPatchKeepsLegs(TripItObjectType type, JsonObject writable, JsonObject changes)
+    {
+        if (!changes.TryGetPropertyValue("Segment", out var patch)) return;
+        var existing = (writable["Segment"] as JsonArray)?.OfType<JsonObject>()
+            .Select(s => (string?)s["uuid"]).OfType<string>().ToList() ?? [];
+        if (existing.Count == 0) return;
+
+        var legs = patch switch
+        {
+            JsonArray a => a.OfType<JsonObject>().ToList(),
+            JsonObject o => [o],
+            _ => [],
+        };
+        var given = legs.Select(s => s["uuid"] is JsonValue v && v.TryGetValue<string>(out var u) ? u : null)
+            .OfType<string>().ToList();
+        var unknown = given.Except(existing, StringComparer.OrdinalIgnoreCase).ToList();
+        if (unknown.Count > 0)
+        {
+            throw new ArgumentException(
+                $"Segment uuid(s) {string.Join(", ", unknown)} are not legs of this {type.ToDisplayName()}. " +
+                $"Its legs are: {string.Join(", ", existing)}.");
+        }
+        var missing = existing.Except(given, StringComparer.OrdinalIgnoreCase).ToList();
+        if (missing.Count > 0)
+        {
+            throw new ArgumentException(
+                $"This {type.ToDisplayName()} has {existing.Count} leg(s) ({string.Join(", ", existing)}). " +
+                "A Segment change replaces every leg, so it must include each existing leg with its uuid; " +
+                $"the leg(s) left out ({string.Join(", ", missing)}) would be deleted. To change one leg, " +
+                "update it by its segment uuid; to remove a leg, delete that segment. Nothing was changed.");
+        }
     }
 
     /// <summary>Deletes a travel object (<c>POST v2/delete/{type}/uuid/{uuid}</c>). Permanent.</summary>
@@ -363,16 +454,21 @@ public static class TripItWrite
         }
     }
 
-    /// <summary>Accepts yyyy-MM-dd or any invariant date; returns yyyy-MM-dd.</summary>
+    /// <summary>
+    /// Accepts ISO dates only (<c>yyyy-MM-dd</c>) and returns them unchanged. Other forms are
+    /// rejected rather than guessed: <c>03/04/2026</c> is March 4 in the US and 3 April elsewhere.
+    /// </summary>
     public static string? NormalizeDate(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return value;
-        if (DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ||
-            DateOnly.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out d))
+        var trimmed = value.Trim();
+        if (DateOnly.TryParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
         {
             return d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         }
-        throw new ArgumentException($"'{value}' is not a date; use yyyy-MM-dd.");
+        throw new ArgumentException(
+            $"'{value}' is not a date in yyyy-MM-dd form (for example 2027-01-18). " +
+            "Other forms are not accepted because they are ambiguous (03/04/2026 is March 4 or 3 April).");
     }
 
     /// <summary>Accepts HH:mm, HH:mm:ss, or h:mm tt; returns HH:mm:ss.</summary>
