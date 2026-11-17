@@ -21,14 +21,19 @@ public sealed partial class TripItClient : IDisposable
     private const string BaseUrl  = "https://www.tripit.com";
     private const string Referer  = "https://www.tripit.com/app/trips";
     private const string AppInfo  = "web/0.0.2";
-    private const string DefaultUserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+    /// <summary>
+    /// Sent only when the session carries no browser User-Agent: the client names itself and
+    /// never invents a browser identity. (TripIt may refuse it; the session is then renewed.)
+    /// </summary>
+    private static readonly string s_ownUserAgent =
+        $"Multiplex-TripIt/{typeof(TripItClient).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
 
     /// <summary>
     /// Browser headers replayed from the captured SPA request when present in the session
     /// file. Akamai binds its bot cookies to the client fingerprint, so the user agent and
-    /// client hints should match the browser that minted them.
+    /// client hints should match the browser that minted them. This presents the client to
+    /// TripIt as that browser; it is an owner-accepted exception to the no-disguise stance
+    /// (see docs/designs/6-tripit-mcp-server-spec.md, section 9).
     /// </summary>
     private static readonly string[] s_replayedSpaHeaders =
         ["user-agent", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "accept-language"];
@@ -289,7 +294,7 @@ public sealed partial class TripItClient : IDisposable
         var spa = session.SpaHeaders;
         string? Spa(string name) => spa.TryGetValue(name, out var v) && !string.IsNullOrWhiteSpace(v) ? v : null;
 
-        req.Headers.TryAddWithoutValidation("User-Agent", Spa("user-agent") ?? DefaultUserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", Spa("user-agent") ?? s_ownUserAgent);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         req.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
         req.Headers.TryAddWithoutValidation("Accept-Language", Spa("accept-language") ?? "en-US");

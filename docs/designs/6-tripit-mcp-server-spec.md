@@ -40,7 +40,7 @@ Two consequences shape everything below:
 | Tools | All read and write tools; deletes, merges, participant removal and invitations (which email people) need an explicit confirm step. |
 | Clients | Claude Desktop chat, claude.ai web and mobile, ChatGPT web and mobile. Claude Code also works (it reaches localhost directly). |
 | History | TripItEx copied with only its significant commits (4), sample HAR captures left out. |
-| Automation stance | Polite pacing and honouring throttling; no techniques meant to hide automation (fingerprint spoofing, stealth patches, CAPTCHA solving). When TripIt blocks, hand control to the person through the live page. Open exception: the HTTP client sends the signed-in browser's identity headers with its cookies (section 9). |
+| Automation stance | Polite pacing and honouring throttling; no techniques meant to hide automation (fingerprint spoofing, stealth patches, CAPTCHA solving). When TripIt blocks, hand control to the person through the live page. Owner-accepted exception: the HTTP client sends the signed-in browser's identity headers with its cookies (section 9). |
 
 ## 3. Is the existing implementation a good starting point? Yes, with changes
 
@@ -337,12 +337,16 @@ connection; the live page lets the person clear such challenges themselves.
 - The HTTP client sends the `User-Agent`, client hints (`sec-ch-ua*`) and `Accept-Language`
   captured from the signed-in browser together with that browser's cookies, because TripIt's
   bot manager ties those cookies to them. This presents the HTTP client to TripIt as that
-  browser, which sits uneasily with the automation stance in section 2. When a snapshot has
-  no User-Agent, the imported library falls back to a fixed Chrome string: an invented
-  identity. **Open owner decision:** keep this for TripIt (the owner's own account, proven
-  live), or make the calls from inside the server's own browser so nothing presents itself
-  as anything else (a redesign: the window stays open while tools are in use, and calls are
-  slower).
+  browser, which sits uneasily with the automation stance in section 2. **Owner decision
+  (2026-11-17):** keep it for TripIt for now (the owner's own account, proven live) and
+  revisit after seeing the server in use. The alternative is making the calls from inside
+  the server's own browser, so nothing presents itself as anything else (a redesign: the
+  window stays open while tools are in use, and calls are slower).
+- No invented identity: when a snapshot has no User-Agent, the client sends its own
+  (`Multiplex-TripIt/<version>`) instead of the fixed Chrome string the imported library
+  used. The library's password form post (`Connect-TripIt -UserName/-Password`, which also
+  used a fixed Chrome User-Agent and an Akamai warm-up request) is removed; sign-in is
+  always in a real browser.
 - The same rules go into the web-api-discovery skill's capture driver and generated clients.
 
 ## 10. Insights from TripIt's old public API (v1)

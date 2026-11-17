@@ -117,13 +117,14 @@ Describe 'Cmdlet metadata' {
 
 Describe 'Connect-TripIt' {
     It 'supports -WhatIf' {
-        { Connect-TripIt -NoBrowserFallback -WhatIf } | Should -Not -Throw
+        { Connect-TripIt -WhatIf } | Should -Not -Throw
     }
 
-    It 'requires Password when UserName is supplied' {
-        $cmd = Get-Command Connect-TripIt
-        $params = $cmd.ParameterSets | Where-Object Name -EQ 'Credentials'
-        ($params.Parameters | Where-Object Name -EQ 'Password').IsMandatory | Should -BeTrue
+    It 'never takes the TripIt password: sign-in happens in a real browser' {
+        $names = (Get-Command Connect-TripIt).Parameters.Keys
+        $names | Should -Not -Contain 'Password'
+        $names | Should -Not -Contain 'UserName'
+        $names | Should -Not -Contain 'NoBrowserFallback'
     }
 }
 

@@ -266,7 +266,7 @@ scripts/
 tools/
   capture-cdp.js             Playwright-CDP HAR capture (login + browse + logout)
   extract-session.js         Pulls Cookie + CSRF from a logged-in Chrome
-                             (used by Connect-TripIt's browser fallback)
+                             (used by Connect-TripIt)
   smoke-test.js              Quick smoke test of the capture pipeline
 .github/workflows/ci.yml     dotnet build/test + Pester; manual functional-tests job
 ```
