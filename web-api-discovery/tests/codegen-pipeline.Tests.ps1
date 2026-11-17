@@ -84,6 +84,58 @@ Describe 'har-codegen end-to-end (REST)' {
     }
 }
 
+Describe 'pacing + throttling handler in the generated client' {
+    # Every generated client is polite by construction: the handler is emitted,
+    # the client's own constructor puts it in front of the network, the MCP
+    # server builds the client with it, and the project's tests pin it. The
+    # build and `dotnet test` of this output are asserted in agent-e2e and
+    # tests-templates; these pin that the pieces are present and connected.
+    BeforeAll {
+        $script:PaceOut = New-OutDir
+        $script:PaceRes = Invoke-Gen -Har @($script:RestHar) -Out $script:PaceOut
+        $script:ProjDir = Join-Path $script:PaceOut 'src/ExampleEx'
+    }
+    AfterAll {
+        if (Test-Path $script:PaceOut) { Remove-Item -Recurse -Force $script:PaceOut }
+    }
+    It 'emits PacingHandler.cs with its options and exceptions, tokens substituted' {
+        $script:PaceRes.ExitCode | Should -Be 0
+        $file = Join-Path $script:ProjDir 'PacingHandler.cs'
+        Test-Path $file | Should -BeTrue
+        $code = Get-Content $file -Raw
+        $code | Should -Match 'public sealed class PacingHandler : DelegatingHandler'
+        $code | Should -Match 'public sealed class PacingOptions'
+        $code | Should -Match 'class ExampleExThrottledException : HttpRequestException'
+        $code | Should -Match 'class ExampleExBlockedException : HttpRequestException'
+        $code | Should -Match 'namespace Example;'
+        $code | Should -Not -Match '\{\{'
+    }
+    It 'retries only idempotent methods, defaulting to GET and HEAD' {
+        $code = Get-Content (Join-Path $script:ProjDir 'PacingHandler.cs') -Raw
+        $code | Should -Match 'IdempotentMethods\s*=\s*new HashSet<HttpMethod>\s*\{\s*HttpMethod\.Get, HttpMethod\.Head, HttpMethod\.Options, HttpMethod\.Trace, HttpMethod\.Put, HttpMethod\.Delete,'
+        $code | Should -Match 'RetryMethods \{ get; init; \} = new HashSet<HttpMethod> \{ HttpMethod\.Get, HttpMethod\.Head \}'
+        $code | Should -Match 'PacingOptions\.IdempotentMethods\.Contains\(request\.Method\) && _options\.RetryMethods\.Contains\(request\.Method\)' -Because 'a POST listed in RetryMethods must still never be retried'
+    }
+    It 'the client builds its pipeline through the handler, and does not time out the polite waits' {
+        $client = Get-Content (Join-Path $script:ProjDir 'Client.cs') -Raw
+        $client | Should -Match 'new HttpClient\(new PacingHandler\(pacing, _log\) \{ InnerHandler = network \}\)'
+        $client | Should -Match 'Timeout = Timeout\.InfiniteTimeSpan'
+        $client | Should -Match ': this\(session, PacingOptions\.FromEnvironment\(\), innerHandler: null, log\)' -Because 'the everyday constructor is paced too'
+        $client | Should -Not -Match 'Timeout = TimeSpan\.FromSeconds\(60\)' -Because 'a whole-request timeout would cancel a 60 s Retry-After wait'
+    }
+    It 'the MCP server registers the options and builds the client with them' {
+        $mcp = Get-Content (Join-Path $script:ProjDir 'McpProgram.cs') -Raw
+        $mcp | Should -Match 'AddSingleton\(_ => PacingOptions\.FromEnvironment\(\)\)'
+        $mcp | Should -Match 'sp\.GetRequiredService<PacingOptions>\(\)'
+    }
+    It 'the generated README tells a consumer how the client paces and how to tune it' {
+        $readme = Get-Content (Join-Path $script:PaceOut 'README.md') -Raw
+        $readme | Should -Match 'Retry-After'
+        $readme | Should -Match 'EXAMPLEEX_PACING_MIN_SPACING_MS'
+        $readme | Should -Match '(?i)never retried'
+    }
+}
+
 Describe 'endpoint-dedup' {
     It 'collapses /users/{int} into a single method with id param' {
         $out = New-OutDir
