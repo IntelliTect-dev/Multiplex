@@ -52,8 +52,11 @@ try {
     foreach ($pair in (Get-MultiplexServerEnvironment -Config $config -Root $Root).GetEnumerator()) {
         [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'Process')
     }
-    $exe = Join-Path $Root 'app\Multiplex.Web.exe'
-    & $exe *>> (Join-Path $logDir 'server.log')
+    # Run from the app folder: the server reads appsettings.json from its working directory.
+    $appDir = Join-Path $Root 'app'
+    Push-Location $appDir
+    try { & (Join-Path $appDir 'Multiplex.Web.exe') *>> (Join-Path $logDir 'server.log') }
+    finally { Pop-Location }
     exit $LASTEXITCODE
 }
 finally {
