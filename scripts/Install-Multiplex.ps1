@@ -4,8 +4,10 @@
     Installs Multiplex on this PC so Claude and ChatGPT (including on a phone) can connect to it.
 .DESCRIPTION
     Unattended and idempotent; safe to re-run. It:
-      1. publishes the server to %LOCALAPPDATA%\Multiplex\app;
-      2. writes %LOCALAPPDATA%\Multiplex\multiplex.config.json: port, tunnel, the TripIt accounts
+      1. publishes the server to %USERPROFILE%\.multiplex\app (not AppData: the Claude desktop
+         app keeps a private copy of AppData for everything started from it, which the logon
+         task could not see);
+      2. writes %USERPROFILE%\.multiplex\multiplex.config.json: port, tunnel, the TripIt accounts
          allowed to connect, and the hash of the owner passcode (generated on first install and
          kept, encrypted for your Windows account only, in passcode.dpapi — see -ShowPasscode);
       3. registers a per-user "Multiplex" scheduled task that starts the server (and tunnel) at
@@ -35,6 +37,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Force
 
 $Root = Get-MultiplexRoot -Root $Root
+if ($problem = Get-MultiplexRootProblem -Root $Root) { throw $problem }
 $configPath = Join-Path $Root 'multiplex.config.json'
 $secretPath = Join-Path $Root 'passcode.dpapi'
 

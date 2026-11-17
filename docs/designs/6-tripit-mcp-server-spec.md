@@ -189,7 +189,7 @@ metadata and the 401 challenge).
 ### 5.2 Layer 2: Multiplex → TripIt (browser session, server-held)
 
 - One persistent Chrome profile per TripIt account under
-  `%LOCALAPPDATA%\Multiplex\data\sites\tripit\profiles\<account-id>`, owned by the server (Chrome
+  `%USERPROFILE%\.multiplex\data\sites\tripit\profiles\<account-id>` (the installer's data folder), owned by the server (Chrome
   locks a profile to one process).
 - After sign-in the server reads the cookie jar over CDP (never intercepted request headers,
   which lack the `httpOnly` session cookies), plus the CSRF token and the SPA's request
@@ -269,7 +269,7 @@ the person to get a meaningful second call, and both MCP hosts also prompt on
 
 `Install-Multiplex.ps1` (repo root, idempotent, `-WhatIf` aware):
 
-1. Builds and publishes `Multiplex.Web` to `%LOCALAPPDATA%\Multiplex\app`.
+1. Builds and publishes `Multiplex.Web` to `%USERPROFILE%\.multiplex\app`.
 2. Ensures configuration: public base URL, TripIt allowlist, passcode (generated if absent;
    location printed), Data Protection key folder.
 3. Registers a per-user scheduled task "Multiplex" that starts the server at logon and
@@ -467,6 +467,10 @@ signed-out path.
 - Loopback redirect URIs match on any port (RFC 8252): Claude Code and `mcp-remote` register
   once and pick a free port each sign-in.
 - One app-wide Data Protection key ring, keys encrypted with DPAPI.
+- The install lives in `%USERPROFILE%\.multiplex`, not AppData: the Claude desktop app keeps a
+  private copy of AppData for every process started from it (its terminal, its Run button,
+  Claude Code), so an AppData install made from inside Claude was invisible to the logon
+  task. The installer refuses an AppData folder when it detects that redirection.
 - Behind a local tunnel every request arrives from loopback, so lockouts and rate limits key
   on the tunnel's last `X-Forwarded-For` entry, and MCP endpoints without sign-in (e.g.
   `/time/mcp`, which drives a browser on this PC) answer 404 to any request from outside the
