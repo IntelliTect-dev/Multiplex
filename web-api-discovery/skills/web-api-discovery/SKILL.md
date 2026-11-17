@@ -788,7 +788,8 @@ pause (lengthened if it names a later end), never a hand-over. If the browser
 cannot install the hold, the run **says so** rather than claiming a hold it does
 not have. Without `-AI` and with nobody at the terminal, whatever drives the
 browser is automation over CDP: the browser holds for it too, though nothing
-can tell it. A hand-driven run -- someone at the terminal -- is not held: you
+can tell it -- and a check is handed to your phone when there is a tailnet, or
+is advice on the output (as before) when there is not. A hand-driven run -- someone at the terminal -- is not held: you
 are told how long the site asked you to wait, and only the recorder's own steps
 (the sign-in fills) wait it out.
 

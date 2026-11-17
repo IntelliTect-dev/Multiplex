@@ -5279,7 +5279,9 @@ async function start(args) {
         log.lines(pacing.throttleLines(decision, who, { link: h.phone && h.phone.url, noLink, finish }));
         syncPauses();
         if (!humanAtTerminal) {
-            if (!h.phone) { nobodyToTakeOver(); return; }
+            // (Automation over CDP whose phone view failed to start is left
+            // to end the recording itself, as it always could.)
+            if (!h.phone) { if (who !== 'external') nobodyToTakeOver(); return; }
             h.timer = setTimeout(() => {
                 if (handOver !== h || reason) return;
                 log.warn(`capture-har: nobody took over within ${pacing.describeDuration(HAND_OVER_UNATTENDED_MS)}; ` +
@@ -5321,6 +5323,15 @@ async function start(args) {
                         named: decision.named }));
             }
             syncPauses();
+            return;
+        }
+        // Automation over CDP with no phone to hand to: there is nobody to
+        // hand over to and nothing that can be told, so it is what it always
+        // was -- advice on the output, and the driver ends the recording.
+        if (who === 'external' && !mirror.findTailnetAddress({ env: process.env }).address) {
+            session.handOver = Object.assign({}, record, { by: 'advice' });
+            log.lines(pacing.throttleLines(decision, 'you'));
+            writeSession();
             return;
         }
         session.handOver = Object.assign({}, record,
