@@ -50,7 +50,8 @@ downloads a Puppeteer-managed Chromium unless `Browser:ExecutablePath` is set.
 Add a static class under `src/Multiplex.Web/Mcp/Tools/` marked
 `[McpServerToolType]` and `[McpEndpoint("<name>")]`. It is served at
 `/<name>/mcp` with no other registration. A tool class without
-`[McpEndpoint]` is not served at all.
+`[McpEndpoint]` is not served at all. Add the new endpoint to the
+[Endpoints](#endpoints) table.
 
 ## Development and Testing
 
@@ -64,13 +65,19 @@ dotnet test
 | `MULTIPLEX_CHROMIUM` | Path to Chromium for the browser-driven tests (default `/usr/bin/chromium`). Without one they are skipped |
 | `MULTIPLEX_LIVE_TESTS=1` | Also run the tests that hit the real time.now site (needs Chromium too) |
 
+The default Chromium path is Linux-only, so on Windows a bare `dotnet test`
+skips the browser tests, including the page-parsing ones. Point it at Chrome:
+
+```powershell
+$env:MULTIPLEX_CHROMIUM = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+```
+
 ## Working with AI coding agents
 
 This repository's AI instructions -- `CLAUDE.md`, `.github/copilot-instructions.md`,
 `.github/agents/`, `.github/skills/`, `.github/instructions/` -- come from
 [IntelliSDLC.ai](https://github.com/IntelliTect-Samples/IntelliSDLC.ai). Claude
-Code, GitHub Copilot, Codex and Gemini read them automatically; there is
-nothing to install.
+Code and GitHub Copilot read them automatically; there is nothing to install.
 
 **Once per clone**, turn on the commit guard:
 
@@ -93,9 +100,11 @@ git worktree add .worktrees/<issue#>-<name> -b <type>/<issue#>-<name> main
 | `.github/instructions/project.instructions.md` -- this project's architecture, conventions and glossary | `CLAUDE.md`, `.github/copilot-instructions.md` |
 | `CLAUDE.project.md` -- Claude-only additions (create it if you need it) | `.github/agents/*`, `.github/skills/*` |
 | `.github/skills/project-<name>/` -- skills for this repository only | the generic `.github/instructions/*.instructions.md` |
-| `README.md`, `docs/` | `Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `run.ps1` and the other synced scripts |
+| `README.md`, `docs/`, `.gitattributes`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml` | `Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`, `Start-IssueAgent.ps1`, `.githooks/*` |
 
-The right-hand files are overwritten by the next sync. To change one, change it
+The right-hand files are overwritten by the next sync. (`run.ps1` is synced
+too, but once you edit it the sync leaves your copy alone; put local behavior
+in `run.project.ps1` instead.) To change one, change it
 in IntelliSDLC.ai. To pull the latest shared instructions, run
 `./Pull-SDLC.ai.ps1`; it opens a sync pull request.
 
