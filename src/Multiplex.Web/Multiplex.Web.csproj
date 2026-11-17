@@ -15,4 +15,8 @@
     <PackageReference Include="PuppeteerSharp" Version="25.17.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../../tripit/src/TripIt/TripIt.csproj" />
+  </ItemGroup>
+
 </Project>
