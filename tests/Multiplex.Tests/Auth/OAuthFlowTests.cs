@@ -141,6 +141,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
             context => { seen = context.User; return Task.CompletedTask; },
             app.Services.GetRequiredService<AuthenticatedEndpoints>(),
             app.Services.GetRequiredService<TokenService>(),
+            app.Services.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>(),
             NullLogger<McpBearerMiddleware>.Instance);
         var context = new DefaultHttpContext();
         context.Request.Method = "POST";

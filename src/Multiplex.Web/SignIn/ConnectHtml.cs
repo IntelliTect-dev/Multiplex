@@ -31,6 +31,7 @@ public static class ConnectHtml
         return Page(nonce, $"Connect to {site.DisplayName}", $"""
             <h1>Connect {E(pending.ClientName)} to {E(site.DisplayName)}</h1>
             <p><strong>{E(pending.ClientName)}</strong> wants to connect to your <strong>{E(site.DisplayName)}</strong> account.</p>
+            {(pending.ReturnsTo is { } back ? $"<p>Afterwards you go back to <strong>{E(back)}</strong>. Continue only if that is the app you are connecting.</p>" : "")}
             <form method="post" action="/connect/{E(site.Slug)}?p={Uri.EscapeDataString(pending.Id)}" class="card">
               {token.Html}
               <label for="passcode">Multiplex passcode</label>

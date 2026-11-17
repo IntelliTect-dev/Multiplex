@@ -124,15 +124,5 @@ public static class MultiplexAuthExtensions
     /// from loopback, so the address the tunnel appended last to <c>X-Forwarded-For</c> is used instead;
     /// a remote caller cannot forge that last entry.
     /// </summary>
-    internal static string ClientAddress(HttpContext context)
-    {
-        var remote = context.Connection.RemoteIpAddress;
-        if (remote is not null && IPAddress.IsLoopback(remote)
-            && context.Request.Headers["X-Forwarded-For"].ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                is [.., var forwarded])
-        {
-            return forwarded;
-        }
-        return remote?.ToString() ?? "unknown";
-    }
+    internal static string ClientAddress(HttpContext context) => Sites.RequestOrigin.ClientAddress(context);
 }

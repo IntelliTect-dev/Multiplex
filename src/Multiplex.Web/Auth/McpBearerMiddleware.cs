@@ -11,12 +11,26 @@ public sealed partial class McpBearerMiddleware(
     RequestDelegate next,
     AuthenticatedEndpoints endpoints,
     TokenService tokens,
+    IConfiguration configuration,
     ILogger<McpBearerMiddleware> logger)
 {
+    // MCP endpoints that need no sign-in may be called from the internet only when listed here.
+    private readonly HashSet<string> _publicOpenEndpoints = new(
+        configuration.GetSection("Multiplex:PublicOpenEndpoints").Get<string[]>() ?? [], StringComparer.OrdinalIgnoreCase);
+
     public async Task InvokeAsync(HttpContext context)
     {
         if (endpoints.FindByPath(context.Request.Path) is not { } endpoint)
         {
+            // An endpoint without sign-in (e.g. /time/mcp, which drives a browser on this PC) stays
+            // local: once a tunnel publishes the server, anyone on the internet could call it.
+            if (OpenMcpSlug(context.Request.Path) is { } slug && !_publicOpenEndpoints.Contains(slug)
+                && Sites.RequestOrigin.IsFromOutsideThisPc(context))
+            {
+                LogOpenEndpointRefused(logger, slug);
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
             await next(context);
             return;
         }
@@ -52,6 +66,16 @@ public sealed partial class McpBearerMiddleware(
         response.Headers.CacheControl = "no-store";
     }
 
+    /// <summary>The slug of a <c>/{slug}/mcp</c> path (or below), or null for any other path.</summary>
+    internal static string? OpenMcpSlug(PathString path) =>
+        path.Value?.Split('/', StringSplitOptions.RemoveEmptyEntries) is [var slug, var mcp, ..]
+            && mcp.Equals("mcp", StringComparison.OrdinalIgnoreCase)
+            ? slug
+            : null;
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Rejected a bearer token for site {Site}.")]
     private static partial void LogInvalidToken(ILogger logger, string site);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Refused an internet request to the open endpoint /{Slug}/mcp; list it in Multiplex:PublicOpenEndpoints to allow that.")]
+    private static partial void LogOpenEndpointRefused(ILogger logger, string slug);
 }

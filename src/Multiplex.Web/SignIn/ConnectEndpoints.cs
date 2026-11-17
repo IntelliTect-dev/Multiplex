@@ -382,7 +382,7 @@ public static class ConnectEndpoints
     /// The connecting address. Behind a tunnel this is the tunnel's local end (usually loopback),
     /// so the per-address lockout then covers everyone; forwarded headers are not trusted for it.
     /// </summary>
-    private static string ClientIp(HttpContext context) => context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    private static string ClientIp(HttpContext context) => RequestOrigin.ClientAddress(context);
 
     private static ILogger Logger(HttpContext context) =>
         context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Multiplex.Web.SignIn.Connect");
