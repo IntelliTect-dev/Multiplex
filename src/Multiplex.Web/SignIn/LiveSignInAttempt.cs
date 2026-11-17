@@ -44,6 +44,8 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
 
     private IDisposable? _slot;
     private IBrowser? _browser;
+    private ICDPSession? _lockSession;
+    private DateTimeOffset _lastBlockedAt = DateTimeOffset.MinValue;
     private IPage? _mainPage;
     private volatile IPage? _activePage;
     private WebSocket? _client;
@@ -130,6 +132,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
                 if (!HasEnded && State != AttemptState.Checking)
                     _ = EndAsync(AttemptState.Failed, "The sign-in browser closed unexpectedly. Please start again.");
             };
+            await LockNavigationAsync(_browser);
 
             var page = (await _browser.PagesAsync()).FirstOrDefault() ?? await _browser.NewPageAsync();
             _mainPage = page;
@@ -346,7 +349,6 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     private async Task AttachPageAsync(IPage page)
     {
         lock (_pagesLock) _pages.Add(page);
-        page.Request += (_, e) => _ = OnRequestAsync(page, e.Request);
         page.Popup += (_, e) => _ = OnPopupAsync(e.PopupPage);
         page.FrameNavigated += (_, e) =>
         {
@@ -356,7 +358,68 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         page.Close += (_, _) => _ = OnPageClosedAsync(page);
         page.Client.MessageReceived += (_, e) => OnCdpMessage(page, e);
         await page.SetViewportAsync(Viewport());
-        await page.SetRequestInterceptionAsync(true);
+    }
+
+    /// <summary>
+    /// The navigation lock, browser-wide: every Document request (in any tab, including a new
+    /// tab's very first request) is paused, and a top-level one to a host outside
+    /// <see cref="ISiteSignInDefinition.AllowedNavigationHosts"/> is failed before it leaves the
+    /// browser. Frames and sub-resources may load from anywhere.
+    /// </summary>
+    private async Task LockNavigationAsync(IBrowser browser)
+    {
+        var session = await browser.Target.CreateCDPSessionAsync();
+        _lockSession = session;
+        session.MessageReceived += (_, e) =>
+        {
+            if (e.MessageID == "Fetch.requestPaused") _ = DecideAsync(session, e.MessageData);
+        };
+        await session.SendAsync("Fetch.enable", new Dictionary<string, object>
+        {
+            ["patterns"] = new[]
+            {
+                new Dictionary<string, object> { ["urlPattern"] = "*", ["resourceType"] = "Document", ["requestStage"] = "Request" },
+            },
+        });
+    }
+
+    private async Task DecideAsync(ICDPSession session, System.Text.Json.JsonElement paused)
+    {
+        string? requestId = null;
+        try
+        {
+            requestId = paused.GetProperty("requestId").GetString()!;
+            var url = paused.GetProperty("request").GetProperty("url").GetString() ?? "";
+            if (!IsAllowed(url) && paused.TryGetProperty("frameId", out var frame) && await IsTopLevelFrameAsync(session, frame.GetString()))
+            {
+                await session.SendAsync("Fetch.failRequest", new Dictionary<string, object>
+                {
+                    ["requestId"] = requestId,
+                    ["errorReason"] = "BlockedByClient",
+                });
+                await NotifyBlockedAsync(url);
+                return;
+            }
+            await session.SendAsync("Fetch.continueRequest", new Dictionary<string, object> { ["requestId"] = requestId });
+        }
+        catch (Exception ex)
+        {
+            // The request or browser went away mid-decision.
+            _services.Logger.LogDebug("Navigation lock on {Site} skipped a request: {Error}", Slug, ex.GetType().Name);
+        }
+    }
+
+    /// <summary>A page's main frame has the same id as its target; iframes (even out-of-process ones) are not "page" targets.</summary>
+    private static async Task<bool> IsTopLevelFrameAsync(ICDPSession session, string? frameId)
+    {
+        if (string.IsNullOrEmpty(frameId)) return true; // unknown: treat as top level, i.e. block
+        var targets = await session.SendAsync<System.Text.Json.JsonElement>("Target.getTargets");
+        foreach (var info in targets.GetProperty("targetInfos").EnumerateArray())
+        {
+            if (info.GetProperty("targetId").GetString() == frameId)
+                return info.GetProperty("type").GetString() == "page";
+        }
+        return false;
     }
 
     private ViewPortOptions Viewport() => new()
@@ -371,41 +434,34 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
         && Definition.AllowedNavigationHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase);
 
-    private static bool IsTopLevelNavigation(IRequest request) =>
-        request.IsNavigationRequest && request.ResourceType == ResourceType.Document
-        && (request.Frame is null || request.Frame.ParentFrame is null);
-
-    private async Task OnRequestAsync(IPage page, IRequest request)
-    {
-        try
-        {
-            if (IsTopLevelNavigation(request) && !IsAllowed(request.Url))
-            {
-                await request.AbortAsync(RequestAbortErrorCode.BlockedByClient);
-                await NotifyBlockedAsync(request.Url);
-                if (page != _mainPage && (page.Url is "" or "about:blank" || !IsAllowed(page.Url)))
-                    await page.CloseAsync();
-                return;
-            }
-            await request.ContinueAsync();
-        }
-        catch (Exception ex)
-        {
-            // The page or request went away mid-decision; nothing to continue.
-            _services.Logger.LogDebug("Request interception on {Site} skipped: {Error}", Slug, ex.GetType().Name);
-        }
-    }
-
     /// <summary>
-    /// Second line of the navigation lock: a top-level page that still lands on a host outside
-    /// the allowed list (e.g. a popup that navigated before interception was on) is undone.
+    /// Second line of the navigation lock: a tab whose navigation was refused (it shows Chrome's
+    /// error page) is closed; a top-level page that somehow committed a page outside the allowed
+    /// hosts is sent back to the sign-in page.
     /// </summary>
     private async Task OnNavigatedAsync(IPage page, string url)
     {
         try
         {
             if (url is "" or "about:blank") return;
-            if (!IsAllowed(url))
+            if (url.StartsWith("chrome-error:", StringComparison.Ordinal))
+            {
+                if (page != _mainPage)
+                {
+                    await page.CloseAsync();
+                }
+                else if (_services.Time.GetUtcNow() - _lastBlockedAt < TimeSpan.FromSeconds(5))
+                {
+                    // The error page is our own refusal: put the person back where they were.
+                    // (A genuine network error stays on screen; they can Reload.)
+                    try { await page.GoBackAsync(new NavigationOptions { Timeout = 30_000 }); }
+                    catch (Exception) { }
+                    if (!IsAllowed(page.Url))
+                        await page.GoToAsync(Definition.SignInStartUrl.AbsoluteUri, new NavigationOptions { Timeout = 30_000 });
+                }
+                return;
+            }
+            if (!IsAllowed(url) && (url.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https:", StringComparison.OrdinalIgnoreCase)))
             {
                 await NotifyBlockedAsync(url);
                 if (page == _mainPage)
@@ -428,9 +484,9 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         {
             if (HasEnded) { await popup.CloseAsync(); return; }
             var url = popup.Url;
+            // Its request was already refused by the lock (which told the phone); just close the tab.
             if (url is not ("" or "about:blank") && !IsAllowed(url))
             {
-                await NotifyBlockedAsync(url);
                 await popup.CloseAsync();
                 return;
             }
@@ -667,6 +723,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
 
     private async Task NotifyBlockedAsync(string url)
     {
+        _lastBlockedAt = _services.Time.GetUtcNow();
         var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "another site";
         _services.Logger.LogInformation("Blocked a navigation from the {Site} sign-in to {Host}.", Slug, host);
         if (_client is { State: WebSocketState.Open } client) await SendTextAsync(client, MirrorProtocol.Blocked(host));

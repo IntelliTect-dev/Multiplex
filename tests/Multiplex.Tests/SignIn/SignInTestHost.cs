@@ -39,6 +39,9 @@ public sealed class SignInTestOptions
     public string ExecutablePath { get; set; } = ChromiumLocator.Path ?? Path.Combine(Path.GetTempPath(), "no-such-chrome.exe");
 
     public TimeSpan AttemptTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>Any further configuration.</summary>
+    public Dictionary<string, string> Settings { get; } = [];
 }
 
 /// <summary>
@@ -71,6 +74,7 @@ public sealed class SignInTestHost : IAsyncDisposable
             b.UseSetting(PasscodeGate.HashKey, options.WithPasscode ? s_passcodeHash.Value : "");
             for (var i = 0; i < options.AllowedAccounts.Length; i++)
                 b.UseSetting($"Multiplex:Sites:{StubSignInDefinition.SiteSlug}:AllowedAccounts:{i}", options.AllowedAccounts[i]);
+            foreach (var (key, value) in options.Settings) b.UseSetting(key, value);
 
             b.ConfigureTestServices(services =>
             {
@@ -164,11 +168,15 @@ public sealed partial class ConnectClient
     public static string AttemptIdOf(Uri location) =>
         Regex.Match(location.OriginalString, @"[?&]a=([^&]+)").Groups[1].Value;
 
-    public async Task<MirrorClient> OpenMirrorAsync(string attemptId, string slug = StubSignInDefinition.SiteSlug)
+    public async Task<MirrorClient> OpenMirrorAsync(string attemptId, string slug = StubSignInDefinition.SiteSlug, string? origin = null)
     {
         var client = _factory.Server.CreateWebSocketClient();
         var path = $"/connect/{slug}/live";
-        client.ConfigureRequest = request => request.Headers.Cookie = Cookies.GetCookieHeader(new Uri("http://localhost" + path));
+        client.ConfigureRequest = request =>
+        {
+            request.Headers.Cookie = Cookies.GetCookieHeader(new Uri("http://localhost" + path));
+            if (origin is not null) request.Headers.Origin = origin;
+        };
         var socket = await client.ConnectAsync(new Uri($"ws://localhost{path}?a={Uri.EscapeDataString(attemptId)}"), CancellationToken.None);
         return new MirrorClient(socket);
     }

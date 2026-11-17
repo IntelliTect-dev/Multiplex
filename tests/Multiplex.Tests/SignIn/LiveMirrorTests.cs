@@ -118,9 +118,10 @@ public sealed class LiveMirrorTests
 
         var blocked = await mirror.WaitForAsync(m => m.GetProperty("t").GetString() == "blocked", s_long, "a blocked navigation");
         Assert.Equal("localhost", blocked.GetProperty("host").GetString());
-        await Task.Delay(1000);
+        // The person is put back on the sign-in page, and the other host never saw a request.
+        await WaitForAsync(() => Task.FromResult(attempt.ActivePage!.Url == new Uri(site.BaseUrl, "/login").AbsoluteUri), TimeSpan.FromSeconds(30));
         Assert.DoesNotContain(site.Requests, r => r.StartsWith("/foreign", StringComparison.Ordinal));
-        Assert.Equal("127.0.0.1", new Uri(attempt.ActivePage!.Url).Host);
+        Assert.Equal(AttemptState.Live, attempt.State);
 
         var (cancel, _) = await client.PostAsync($"/connect/stub/cancel?a={attempt.Id}", liveHtml);
         Assert.Equal(HttpStatusCode.SeeOther, cancel.StatusCode);
@@ -128,6 +129,37 @@ public sealed class LiveMirrorTests
         Assert.Equal(("p1", "access_denied", "Sign-in cancelled"), Assert.Single(host.Completer.Failed));
         await attempt.Completion.WaitAsync(s_long);
         Assert.Empty(host.TempProfiles());
+    }
+
+    [ChromiumFact]
+    public async Task New_tab_to_another_host_is_closed_and_new_tab_on_the_site_is_mirrored_until_Back()
+    {
+        await using var site = await StubLoginSite.StartAsync();
+        await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
+        host.Completer.Add("p1", "stub");
+        var client = host.NewClient();
+        var (gate, _) = await client.PassGateAsync("p1");
+        var attempt = Attempt(host, gate);
+        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
+        await mirror.WaitForStatusAsync("live", s_long);
+        var login = attempt.ActivePage!;
+
+        // target=_blank to a host outside the list: the new tab is closed and never mirrored.
+        var foreign = await CenterOfAsync(attempt, "#foreign-tab");
+        await mirror.SendAsync(new { t = "tap", x = foreign.X, y = foreign.Y });
+        var blocked = await mirror.WaitForAsync(m => m.GetProperty("t").GetString() == "blocked", s_long, "a blocked new tab");
+        Assert.Equal("localhost", blocked.GetProperty("host").GetString());
+        await WaitForAsync(async () => (await login.Browser.PagesAsync()).Length == 1, TimeSpan.FromSeconds(20));
+        Assert.Same(login, attempt.ActivePage);
+        Assert.DoesNotContain(site.Requests, r => r.StartsWith("/foreign-tab", StringComparison.Ordinal));
+
+        // target=_blank on the site itself: mirrored, and Back closes it and returns to the sign-in page.
+        var help = await CenterOfAsync(attempt, "#help-tab");
+        await mirror.SendAsync(new { t = "tap", x = help.X, y = help.Y });
+        await WaitForAsync(() => Task.FromResult(attempt.ActivePage!.Url.EndsWith("/help", StringComparison.Ordinal)), TimeSpan.FromSeconds(30));
+        await mirror.SendAsync(new { t = "back" });
+        await WaitForAsync(() => Task.FromResult(attempt.ActivePage == login), TimeSpan.FromSeconds(30));
+        Assert.Equal(AttemptState.Live, attempt.State);
     }
 
     [ChromiumFact]

@@ -163,6 +163,42 @@ public sealed class ConnectGateTests : IAsyncLifetime
     }
 }
 
+/// <summary>The live WebSocket accepts pages served by this server only (no cross-site WebSocket hijacking).</summary>
+public sealed class LiveSocketOriginTests : IAsyncLifetime
+{
+    private SignInTestHost _host = null!;
+
+    public Task InitializeAsync()
+    {
+        var options = new SignInTestOptions { ExecutablePath = Path.Combine(Path.GetTempPath(), "no-such-chrome.exe") };
+        options.Settings["Multiplex:PublicBaseUrl"] = "https://mx.example.ts.net";
+        _host = new SignInTestHost(options);
+        return Task.CompletedTask;
+    }
+
+    public async Task DisposeAsync() => await _host.DisposeAsync();
+
+    [Theory]
+    [InlineData("http://localhost", true)]           // the page's own origin (Host)
+    [InlineData("https://mx.example.ts.net", true)]  // the public URL behind a tunnel that rewrites Host
+    [InlineData(null, true)]                         // not a browser; the gate cookie still applies
+    [InlineData("https://evil.example", false)]
+    [InlineData("http://localhost.evil.example", false)]
+    public async Task Origin_must_be_this_server(string? origin, bool accepted)
+    {
+        _host.Completer.Add("p1", "stub");
+        var client = _host.NewClient();
+        var (gate, _) = await client.PassGateAsync("p1");
+
+        var error = await Record.ExceptionAsync(async () =>
+        {
+            await using var mirror = await client.OpenMirrorAsync(ConnectClient.AttemptIdOf(gate.Headers.Location!), origin: origin);
+        });
+
+        Assert.Equal(accepted, error is null);
+    }
+}
+
 /// <summary>Without a configured passcode hash the gate fails closed.</summary>
 public sealed class ConnectGateNotConfiguredTests : IAsyncLifetime
 {

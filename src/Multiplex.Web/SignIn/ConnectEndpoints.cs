@@ -170,6 +170,10 @@ public static class ConnectEndpoints
         {
             if (!SameOrigin(context))
             {
+                // Logged loudly: behind a tunnel that rewrites Host this would otherwise look like an endless "Reconnecting…".
+                Logger(context).LogWarning(
+                    "Refused the live sign-in WebSocket: Origin {Origin} matches neither Host {Host}, X-Forwarded-Host nor Multiplex:PublicBaseUrl.",
+                    context.Request.Headers.Origin.ToString(), context.Request.Host.Value);
                 context.Response.StatusCode = 403;
                 return;
             }
