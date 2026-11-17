@@ -78,6 +78,24 @@ public sealed class PacingHandlerTests
     }
 
     [Fact]
+    public async Task The_next_request_waits_until_the_previous_body_has_arrived()
+    {
+        var http = Client(new TripItPacingOptions { MinSpacing = TimeSpan.Zero, MaxJitter = TimeSpan.Zero });
+        var body = new TaskCompletionSource();
+        _inner.Respond = n => n == 0 ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new SlowContent(body.Task) } : Ok();
+
+        var first = http.SendAsync(Get("a"), HttpCompletionOption.ResponseHeadersRead);
+        await _inner.EnteredA.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var second = http.SendAsync(Get("a"), HttpCompletionOption.ResponseHeadersRead);
+        await Task.Delay(200);
+
+        Assert.Single(_inner.Starts);   // headers are in, but the first body is still downloading
+        body.SetResult();
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, _inner.Starts.Count);
+    }
+
+    [Fact]
     public async Task Throttled_GET_honours_Retry_After_seconds()
     {
         var http = Client();
@@ -166,6 +184,22 @@ public sealed class PacingHandlerTests
             response.Headers.RetryAfter = b.Date is { } date ? new RetryConditionHeaderValue(date) : new RetryConditionHeaderValue(b.Delta!.Value);
         }
         return response;
+    }
+
+    /// <summary>A body that arrives only when <paramref name="until"/> completes.</summary>
+    private sealed class SlowContent(Task until) : HttpContent
+    {
+        protected override async Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+        {
+            await until;
+            await stream.WriteAsync("{}"u8.ToArray());
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 
     private sealed class RetryConditionHeaderValueBuilder
