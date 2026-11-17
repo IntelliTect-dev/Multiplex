@@ -300,14 +300,14 @@ public sealed class TripItOperations(TripItClient client)
     /// <summary>Checks <paramref name="confirmName"/> and describes what deleting the trip removes. Changes nothing.</summary>
     public async Task<string> PreviewDeleteTripAsync(string tripUuid, string confirmName, CancellationToken ct)
     {
-        var current = await TripNamedAsync(tripUuid, confirmName, "confirm_name", "deleted", ct).ConfigureAwait(false);
+        var current = await TripNamedAsync(tripUuid, confirmName, "confirmName", "deleted", ct).ConfigureAwait(false);
         return $"Will permanently delete trip '{current.Trip.DisplayName}' ({Dates(current.Trip)}) and its " +
                $"{Plans(current.ObjectCount)}.";
     }
 
     public async Task<string> DeleteTripAsync(string tripUuid, string confirmName, CancellationToken ct)
     {
-        var current = await TripNamedAsync(tripUuid, confirmName, "confirm_name", "deleted", ct).ConfigureAwait(false);
+        var current = await TripNamedAsync(tripUuid, confirmName, "confirmName", "deleted", ct).ConfigureAwait(false);
         await client.Trips.DeleteAsync(tripUuid, ct).ConfigureAwait(false);
         return ToJson(new { deleted = Summarize(current.Trip), plans_deleted = current.ObjectCount });
     }
@@ -315,7 +315,7 @@ public sealed class TripItOperations(TripItClient client)
     public async Task<string> PreviewMergeTripsAsync(string sourceTripUuid, string destinationTripUuid,
         string confirmSourceName, CancellationToken ct)
     {
-        var source = await TripNamedAsync(sourceTripUuid, confirmSourceName, "confirm_source_name", "merged", ct)
+        var source = await TripNamedAsync(sourceTripUuid, confirmSourceName, "confirmSourceName", "merged", ct)
             .ConfigureAwait(false);
         var into = await client.Trips.GetAsync(destinationTripUuid, includeObjects: false, ct).ConfigureAwait(false);
         return $"Will move {Plans(source.ObjectCount)} from trip '{source.Trip.DisplayName}' ({Dates(source.Trip)}) into " +
@@ -325,7 +325,7 @@ public sealed class TripItOperations(TripItClient client)
     public async Task<string> MergeTripsAsync(string sourceTripUuid, string destinationTripUuid, string confirmSourceName,
         CancellationToken ct)
     {
-        var source = await TripNamedAsync(sourceTripUuid, confirmSourceName, "confirm_source_name", "merged", ct)
+        var source = await TripNamedAsync(sourceTripUuid, confirmSourceName, "confirmSourceName", "merged", ct)
             .ConfigureAwait(false);
         var merged = await client.Trips.MergeAsync(sourceTripUuid, destinationTripUuid, ct).ConfigureAwait(false);
         var me = await client.GetMyProfileRefAsync(ct).ConfigureAwait(false);
@@ -437,8 +437,8 @@ public sealed class TripItOperations(TripItClient client)
     public async Task<string> AddFlightAsync(string legsJson, string? tripUuid, string? confirmation, string? bookingSite,
         string? totalCost, string? travelersJson, string? notes, CancellationToken ct)
     {
-        var legs = ParseArray(legsJson, "legs_json");
-        if (legs.Count == 0) throw new ArgumentException("legs_json must contain at least one leg.");
+        var legs = ParseArray(legsJson, "legsJson");
+        if (legs.Count == 0) throw new ArgumentException("legsJson must contain at least one leg.");
         var segments = new JsonArray();
         var looked = new List<object>();
         var assumptions = new List<string>();
@@ -503,7 +503,7 @@ public sealed class TripItOperations(TripItClient client)
         Put(fields, "booking_site_name", bookingSite);
         Put(fields, "total_cost", totalCost);
         Put(fields, "notes", notes);
-        if (travelersJson is not null) fields["Traveler"] = ParseArray(travelersJson, "travelers_json");
+        if (travelersJson is not null) fields["Traveler"] = ParseArray(travelersJson, "travelersJson");
 
         var result = await client.Objects.CreateAsync(TripItObjectType.Air, fields, tripUuid, ct).ConfigureAwait(false);
         return Describe(result, looked.Count == 0 ? null : looked, assumptions);
@@ -545,7 +545,7 @@ public sealed class TripItOperations(TripItClient client)
     public async Task<string> AddPlanAsync(string type, string fieldsJson, string? tripUuid, CancellationToken ct)
     {
         var t = TripItObjectTypes.Parse(type);
-        var result = await client.Objects.CreateAsync(t, ParseObject(fieldsJson, "fields_json"), tripUuid, ct)
+        var result = await client.Objects.CreateAsync(t, ParseObject(fieldsJson, "fieldsJson"), tripUuid, ct)
             .ConfigureAwait(false);
         return Describe(result);
     }
@@ -554,7 +554,7 @@ public sealed class TripItOperations(TripItClient client)
         CancellationToken ct)
     {
         var t = TripItObjectTypes.Parse(type);
-        var changes = ParseObject(changesJson, "changes_json");
+        var changes = ParseObject(changesJson, "changesJson");
         if (segmentUuid is not null)
         {
             // A leg patch may change any leg field except the leg's own uuid.
