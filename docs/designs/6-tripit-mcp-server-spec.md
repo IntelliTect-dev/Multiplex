@@ -40,7 +40,7 @@ Two consequences shape everything below:
 | Tools | All read and write tools; deletes, merges, participant removal and invitations (which email people) need an explicit confirm step. |
 | Clients | Claude Desktop chat, claude.ai web and mobile, ChatGPT web and mobile. Claude Code also works (it reaches localhost directly). |
 | History | TripItEx copied with only its significant commits (4), sample HAR captures left out. |
-| Automation stance | Polite pacing and honouring throttling; no techniques meant to hide automation (fingerprint spoofing, stealth patches, CAPTCHA solving). When TripIt blocks, hand control to the person through the live page. |
+| Automation stance | Polite pacing and honouring throttling; no techniques meant to hide automation (fingerprint spoofing, stealth patches, CAPTCHA solving). When TripIt blocks, hand control to the person through the live page. Open exception: the HTTP client sends the signed-in browser's identity headers with its cookies (section 9). |
 
 ## 3. Is the existing implementation a good starting point? Yes, with changes
 
@@ -334,8 +334,15 @@ connection; the live page lets the person clear such challenges themselves.
   random jitter; no background polling.
 - `429` and `503`: honour `Retry-After` (seconds or date, capped at 60 s), else exponential
   back-off with jitter (1 s, 2 s, 4 s), for idempotent GETs only; never auto-retry POSTs.
-- A `User-Agent` and headers matching the signed-in browser (they come from the same
-  profile), not an invented fingerprint.
+- The HTTP client sends the `User-Agent`, client hints (`sec-ch-ua*`) and `Accept-Language`
+  captured from the signed-in browser together with that browser's cookies, because TripIt's
+  bot manager ties those cookies to them. This presents the HTTP client to TripIt as that
+  browser, which sits uneasily with the automation stance in section 2. When a snapshot has
+  no User-Agent, the imported library falls back to a fixed Chrome string: an invented
+  identity. **Open owner decision:** keep this for TripIt (the owner's own account, proven
+  live), or make the calls from inside the server's own browser so nothing presents itself
+  as anything else (a redesign: the window stays open while tools are in use, and calls are
+  slower).
 - The same rules go into the web-api-discovery skill's capture driver and generated clients.
 
 ## 10. Insights from TripIt's old public API (v1)
@@ -440,8 +447,10 @@ signed-out path.
 
 - TripIt answers headless Chrome with "Access Denied" on its app pages. TripIt's server
   browser therefore runs as a normal visible window by default
-  (`Multiplex:Sites:tripit:Headless=false`); nothing disguises it. A session refresh briefly
-  opens that window on the PC.
+  (`Multiplex:Sites:tripit:Headless=false`); the browser itself is not disguised. A session
+  refresh briefly opens that window on the PC. The tool calls themselves are not made by
+  that browser: the server's HTTP client sends the browser's identity headers with its
+  cookies (section 9), so to TripIt they look like the browser's own requests.
 - TripIt's only third-party sign-in is Google; allowed navigation hosts default to
   `www.tripit.com`, `tripit.com`, `accounts.google.com`.
 - Allowlist matching uses only email addresses TripIt marks confirmed.

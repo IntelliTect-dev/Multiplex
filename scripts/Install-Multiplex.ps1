@@ -48,7 +48,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $config = Read-MultiplexConfig -Path $configPath
 if ($PSBoundParameters.ContainsKey('Port')) { $config.Port = $Port }
 if ($PSBoundParameters.ContainsKey('Tunnel')) { $config.Tunnel = $Tunnel }
-if ($AllowedAccount) { $config.AllowedAccounts.tripit = @($AllowedAccount | ForEach-Object { $_.Trim().ToLowerInvariant() } | Sort-Object -Unique) }
+if ($AllowedAccount) { $config.AllowedAccounts.tripit = ConvertTo-MultiplexAccountList -Account $AllowedAccount }
 if (-not @($config.AllowedAccounts.tripit).Count) {
     throw 'No TripIt account is allowed to connect yet. Pass -AllowedAccount <your TripIt email>.'
 }
