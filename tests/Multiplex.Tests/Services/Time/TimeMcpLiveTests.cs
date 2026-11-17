@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 
-namespace Multiplex.Tests.Servers.Time;
+namespace Multiplex.Tests.Services.Time;
 
 /// <summary>
 /// End-to-end: MCP call over HTTP, real Chromium, real time.now. Opt in with MULTIPLEX_LIVE_TESTS=1.

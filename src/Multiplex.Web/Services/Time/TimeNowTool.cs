@@ -5,7 +5,7 @@ using Multiplex.Web.Browser;
 using Multiplex.Web.Mcp;
 using PuppeteerSharp;
 
-namespace Multiplex.Web.Servers.Time;
+namespace Multiplex.Web.Services.Time;
 
 [McpServerToolType]
 [McpEndpoint("time")]

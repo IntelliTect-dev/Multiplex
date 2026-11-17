@@ -1,6 +1,6 @@
 using PuppeteerSharp;
 
-namespace Multiplex.Web.Servers.Time;
+namespace Multiplex.Web.Services.Time;
 
 /// <summary>DOM knowledge for time.now: the search form, its result list, and a location's clock page.</summary>
 internal static class TimeNowPage
