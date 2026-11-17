@@ -60,7 +60,7 @@ Describe 'configuration' {
         $env['Multiplex__Sites__tripit__AllowedAccounts__0'] | Should -Be 'a@example.com'
         $env['Multiplex__Sites__tripit__AllowedAccounts__1'] | Should -Be 'b@example.com'
         $env['Multiplex__Gate__PasscodeHash'] | Should -Be 'pbkdf2-sha256$1$a$b'
-        $env['ASPNETCORE_URLS'] | Should -Be 'http://127.0.0.1:5190'
+        $env['ASPNETCORE_URLS'] | Should -Be 'http://localhost:5190'
         $env['Multiplex__DataPath'] | Should -Be (Join-Path 'C:\M' 'data')
     }
 

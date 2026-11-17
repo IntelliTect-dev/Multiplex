@@ -89,7 +89,9 @@ function Get-MultiplexServerEnvironment {
     param([Parameter(Mandatory)] [System.Collections.IDictionary] $Config, [Parameter(Mandatory)] [string] $Root)
     $envVars = [ordered]@{
         ASPNETCORE_ENVIRONMENT        = 'Production'
-        ASPNETCORE_URLS               = "http://127.0.0.1:$($Config.Port)"
+        # "localhost" makes Kestrel listen on both 127.0.0.1 and ::1; binding only 127.0.0.1 costs
+        # every client that resolves localhost to ::1 first a ~2 s connection retry.
+        ASPNETCORE_URLS               = "http://localhost:$($Config.Port)"
         Multiplex__DataPath           = Join-Path $Root 'data'
         Multiplex__PublicBaseUrl      = ($Config.PublicBaseUrl ?? "http://localhost:$($Config.Port)").TrimEnd('/')
         Multiplex__Gate__PasscodeHash = $Config.PasscodeHash
