@@ -243,8 +243,12 @@ public class PacingHandlerTests
             return response;
         };
         var rig = Build(PacingOptions.Default, 0.5, blocked, Succeed);
-        await Assert.ThrowsAsync<{{ProjectName}}BlockedException>(() => rig.Http.GetAsync(Url));
+        var ex = await Assert.ThrowsAsync<{{ProjectName}}BlockedException>(() => rig.Http.GetAsync(Url));
         Assert.Equal(1, rig.Site.Calls);
+        Assert.Equal(HttpStatusCode.Forbidden, ex.StatusCode);
+        // What the edge actually said, so a reader can tell bot protection from
+        // the site's own HTML error page served through the same CDN.
+        Assert.Contains("<title>Access denied</title>", ex.Message);
     }
 
     [Fact]

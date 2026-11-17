@@ -162,9 +162,10 @@ async function main() {
                 if (!decision || decision.action === 'none') return;
                 if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
                 if (decision.action === 'hand-over') handedOver = decision;
-                const finish = args.headless ? 'nobody can take over a headless browser, so this run ends'
-                    : 'close the window to finish';
-                for (const [, line] of pacing.throttleLines(decision, 'script', { tool: 'capture-cdp', finish })) {
+                const say = args.headless
+                    ? { tool: 'capture-cdp', noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' }
+                    : { tool: 'capture-cdp', finish: 'close the window to finish' };
+                for (const [, line] of pacing.throttleLines(decision, 'script', say)) {
                     console.error(line);
                 }
             } catch (e) {
