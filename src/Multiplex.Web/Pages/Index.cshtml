@@ -1,8 +1,15 @@
 ﻿@page
 @model IndexModel
+@using Multiplex.Web.Mcp
 @{
     ViewData["Title"] = "Hello World";
 }
 
 <h1>Hello, World!</h1>
-<p>Multiplex is up. MCP endpoint: <code>/mcp</code></p>
+<p>Multiplex is up. Each service's MCP address:</p>
+<ul>
+    @foreach (var path in McpEndpointRouting.EndpointPaths)
+    {
+        <li><code>@path</code></li>
+    }
+</ul>
