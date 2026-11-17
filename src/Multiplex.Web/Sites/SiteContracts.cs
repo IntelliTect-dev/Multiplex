@@ -5,10 +5,10 @@ namespace Multiplex.Web.Sites;
 // The seams between the three parts of an authenticated site service (see
 // docs/designs/6-tripit-mcp-server-spec.md, section 4):
 //
-//   Auth/            OAuth 2.1 authorization + resource server for every /{slug}/mcp endpoint.
-//   SignIn/          the connect pages: passcode gate, live mirrored site sign-in, browser
-//                    profiles, and the encrypted per-account site sessions.
-//   Servers/{Site}/  the site's MCP tools, which call the site with the account's session.
+//   Auth/             OAuth 2.1 authorization + resource server for every /{slug}/mcp endpoint.
+//   SignIn/           the connect pages: passcode gate, live mirrored site sign-in, browser
+//                     profiles, and the encrypted per-account site sessions.
+//   Services/{Site}/  the site's MCP tools, which call the site with the account's session.
 //
 // Each part depends only on these contracts, never on another part's classes.
 
