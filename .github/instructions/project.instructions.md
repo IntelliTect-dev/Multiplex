@@ -7,11 +7,14 @@ applyTo: '**/*'
 
 ## Project Overview
 
-Multiplex is an ASP.NET Core web app that hosts several small Model Context
-Protocol (MCP) servers, each at its own `/{slug}/mcp` endpoint. Its tools read
-websites that have no API by driving a shared headless Chromium. The repository
-also carries the self-contained `web-api-discovery` skill under
-`web-api-discovery/`.
+Multiplex is an ASP.NET Core web app that hosts several **services**, one per
+website, each a Model Context Protocol (MCP) server at its own `/{slug}/mcp`
+endpoint. A service calls its website's own (undocumented) API, found with the
+`web-api-discovery` skill; a browser is only for what the API can't do, such as
+signing in. Time is the exception today: it reads time.now's pages in a shared
+headless Chromium. The repository also carries the self-contained
+`web-api-discovery` skill under `web-api-discovery/`. The product overview,
+with the catalog of services, is `spec/product.md`.
 
 ## Architecture
 
@@ -21,8 +24,10 @@ also carries the self-contained `web-api-discovery` skill under
 - `Mcp/McpEndpointAttribute.cs`, `Mcp/McpEndpointRouting.cs` -- every distinct
   `[McpEndpoint("<slug>")]` slug is mapped to `/<slug>/mcp`, and each request's
   tool list is scoped to the tools of the endpoint it arrived on.
-- `Mcp/Tools/` -- tool classes, plus one `*Page` class per website holding that
-  site's DOM knowledge (URLs, selectors, parsing), e.g. `TimeNowPage`.
+- `Services/<Name>/` -- one folder per service: its tool class, its README, and
+  for a service that reads pages, a `*Page` class holding that site's DOM
+  knowledge (URLs, selectors, parsing), e.g. `Services/Time/TimeNowPage.cs`.
+  Its tests and saved pages are in `tests/Multiplex.Tests/Services/<Name>/`.
 - `Browser/BrowserService.cs` -- one shared browser, launched lazily; tools rent
   and return pages.
 - `tests/Multiplex.Tests/` -- xUnit: `WebApplicationFactory<Program>`
@@ -75,25 +80,32 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 ## Key Conventions
 
-- **New MCP server = new tool class.** A static class with
-  `[McpServerToolType]` and `[McpEndpoint("<slug>")]` under `Mcp/Tools/`. No
-  other registration. A tool class without `[McpEndpoint]` is not served.
-  Add the endpoint to the README's Endpoints table.
+- **Call the site's API, not its pages.** Find the API with the
+  `web-api-discovery` skill first; use the browser only for what the API can't
+  do (such as signing in).
+- **New service = new folder.** A static class with `[McpServerToolType]` and
+  `[McpEndpoint("<slug>")]` in `src/Multiplex.Web/Services/<Name>/`, with a
+  README there. No other registration. A tool class without `[McpEndpoint]` is
+  not served. Add one row for it to the catalog in `spec/product.md`.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
   `ReturnPageAsync` in a `try`/`finally`. Closing the last tab of a headed
   window closes the window and breaks the next call.
 - **Site knowledge lives in the `*Page` class**, not in the tool. Selectors and
-  parsing there are testable against saved HTML in `tests/Multiplex.Tests/Fixtures/`.
+  parsing there are testable against saved HTML in
+  `tests/Multiplex.Tests/Services/<Name>/Fixtures/`.
 - **Report "not found" with `McpException`** and a message naming the input, so
   the client sees a tool error rather than a crash.
 - Call `BrowserService.PauseAsync` between visible steps so `StepDelayMs` works.
 
 ## Domain Glossary
 
-- **Endpoint / slug** -- the `<slug>` in `/<slug>/mcp`; one MCP server as a client
-  sees it.
+- **Service** -- one MCP server that Multiplex hosts for one website, in its own
+  `Services/<Name>/` folder: a server to the AI agent, a client of the website.
+  Say "service", not "server", for these; keep "MCP server" for the protocol
+  role.
+- **Endpoint / slug** -- the `<slug>` in `/<slug>/mcp`; one service's address.
 - **Tool** -- an MCP tool method (`[McpServerTool]`) on a tool class.
 - **Page class** -- the `*Page` static class that knows one website's DOM.
 - **Live test** -- a test that hits the real website; opt-in only.

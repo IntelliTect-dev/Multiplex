@@ -1,27 +1,32 @@
 # Multiplex
 
-Many small MCP servers in one ASP.NET Core app -- each at its own
-`/{name}/mcp` endpoint -- with tools that drive a shared headless browser to
-read websites that have no API.
+Many services in one ASP.NET Core app, one per website or subject. Each service
+is an MCP server at its own `/{name}/mcp` address, and its tools call that
+website's own API. For what it's for, and the list of services, see the
+[product overview](spec/product.md).
 
 ## Overview
 
 Multiplex hosts [Model Context Protocol](https://modelcontextprotocol.io) tools
-over stateless Streamable HTTP. Each tool class names the endpoint it belongs
-to, so one deployment serves several separately addressable MCP servers, and an
-MCP client connects only to the ones it needs. Tools that read a website rent a
-page from one shared headless Chromium (PuppeteerSharp).
+over stateless Streamable HTTP. Each tool class names the service it belongs
+to, so one deployment serves several separately addressable services, and an
+MCP client connects only to the ones it needs.
+
+A service calls the website's own API: the requests the site's pages send to
+its server. A browser is only for what the API can't do, such as signing in.
+Services that read a site's pages (only Time, today) rent a page from one
+shared headless Chromium (PuppeteerSharp).
 
 The repository also carries the **web-api-discovery** skill, which records a
 site's traffic and turns it into an API reference and, optionally, a .NET
-wrapper. It is self-contained; see [`web-api-discovery/README.md`](web-api-discovery/README.md).
+wrapper. It's how a developer finds the API a service calls. It is
+self-contained; see [`web-api-discovery/README.md`](web-api-discovery/README.md).
 
-## Endpoints
+## Services
 
-| Endpoint | Tool | What it does |
-|---|---|---|
-| `/time/mcp` | `get_local_time` | Current local time and UTC offset for a city or country, read from time.now |
-| `/healthz` | -- | Health check |
+The list of services, with each one's address and status, is the catalog in
+the [product overview](spec/product.md#services). Each service's own README
+covers its tools and details. The health check is at `/healthz`.
 
 ## Quick Start
 
@@ -34,10 +39,15 @@ git config core.hooksPath .githooks   # once per clone -- see "Working with AI c
 dotnet run --project src/Multiplex.Web --launch-profile http
 ```
 
-Point an MCP client at `http://localhost:5190/time/mcp`. The first tool call
+Point an MCP client at a service's address, for example
+`http://localhost:5190/time/mcp`. The first call that needs a browser
 downloads a Puppeteer-managed Chromium unless `Browser:ExecutablePath` is set.
 
 ## Configuration
+
+Services that read a website's pages share one Chromium. Set these in
+`appsettings.json`, or as environment variables (for example,
+`Browser__Headless=false`).
 
 | Key | Default | Description |
 |---|---|---|
@@ -45,13 +55,21 @@ downloads a Puppeteer-managed Chromium unless `Browser:ExecutablePath` is set.
 | `Browser:Headless` | `true` | `false` shows the browser window |
 | `Browser:StepDelayMs` | `0` | Pause between tool steps, so a headed run can be followed by eye |
 
-## Adding an MCP server
+## Adding a service
 
-Add a static class under `src/Multiplex.Web/Mcp/Tools/` marked
-`[McpServerToolType]` and `[McpEndpoint("<name>")]`. It is served at
-`/<name>/mcp` with no other registration. A tool class without
-`[McpEndpoint]` is not served at all. Add the new endpoint to the
-[Endpoints](#endpoints) table.
+1. Find the website's API first, with the
+   [web-api-discovery](web-api-discovery/README.md) skill. A service calls that
+   API; the [product overview](spec/product.md) says where a browser fits.
+2. Give the service its own folder, `src/Multiplex.Web/Services/<Name>/`, with
+   its tests in `tests/Multiplex.Tests/Services/<Name>/`.
+3. Mark its tool class with `[McpServerToolType]` and `[McpEndpoint("<name>")]`.
+   The host then serves that class's tools, and only those, at `/<name>/mcp`,
+   with no other registration. A tool class without `[McpEndpoint]` is not
+   served at all.
+4. Write a README in its folder covering its tools, their inputs and outputs,
+   how it reaches the site (its API, or the browser and why), its quirks, its
+   risks and its tests.
+5. Add one row for it to the catalog in the [product overview](spec/product.md#services).
 
 ## Development and Testing
 
@@ -63,7 +81,7 @@ dotnet test
 | Variable | Effect |
 |---|---|
 | `MULTIPLEX_CHROMIUM` | Path to Chromium for the browser-driven tests (default `/usr/bin/chromium`). Without one they are skipped |
-| `MULTIPLEX_LIVE_TESTS=1` | Also run the tests that hit the real time.now site (needs Chromium too) |
+| `MULTIPLEX_LIVE_TESTS=1` | Also run the tests that call the real websites end to end (needs Chromium too). These are the tests that notice when a site changes its API or its pages |
 
 The default Chromium path is Linux-only, so on Windows a bare `dotnet test`
 skips the browser tests, including the page-parsing ones. Point it at Chrome:
@@ -71,6 +89,8 @@ skips the browser tests, including the page-parsing ones. Point it at Chrome:
 ```powershell
 $env:MULTIPLEX_CHROMIUM = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
+
+Each service's README describes its own tests.
 
 ## Working with AI coding agents
 
