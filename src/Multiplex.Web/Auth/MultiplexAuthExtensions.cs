@@ -69,7 +69,8 @@ public static class MultiplexAuthExtensions
                 // rather than the document's host.
                 UseProxy = false,
                 AutomaticDecompression = DecompressionMethods.All,
-                ConnectTimeout = TimeSpan.FromSeconds(5),
+                // Within the 15 s the whole fetch is allowed: a busy PC was slow to connect, not the host.
+                ConnectTimeout = TimeSpan.FromSeconds(10),
                 ConnectCallback = ClientMetadataDocuments.ConnectToPublicAddressAsync,
             });
 
