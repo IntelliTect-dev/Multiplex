@@ -1021,10 +1021,18 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
     }
     lines.push('');
     lines.push('The hints are what an MCP client reads to decide whether a call needs confirming. They are a');
-    lines.push('first draft from each endpoint\'s HTTP method and path -- a `GET` is read-only, a `POST` adds');
-    lines.push('unless its path names a change or removal, `PUT` and `DELETE` are destructive and idempotent --');
-    lines.push('and nothing here knows what the site really does with a call. Review the table before relying');
-    lines.push('on a client that acts on hints without asking.');
+    lines.push('first draft from each endpoint\'s HTTP method and path, and nothing here knows what the site');
+    lines.push('really does with a call:');
+    lines.push('');
+    lines.push('- a `GET` is read-only;');
+    lines.push('- `PUT` and `DELETE` are destructive and idempotent; `PATCH` is destructive;');
+    lines.push('- a `POST` is destructive unless something vouches for it. It is called additive only when its');
+    lines.push('  path has no id in it, names no change, action, opaque call or sign-in (`delete`, `send`,');
+    lines.push('  `rpc`, `login` and the like), and either says `create`, `add` or `new` or is a collection:');
+    lines.push('  the capture also holds that same path with an id appended.');
+    lines.push('');
+    lines.push('So a `POST` the capture says little about asks for confirmation. Review the table before');
+    lines.push('relying on a client that acts on hints without asking.');
     lines.push('');
     lines.push('The server starts without a session and never prompts for one. It reads the saved session at');
     lines.push('the first tool call; a tool called before anyone has signed in answers with an error that says');
