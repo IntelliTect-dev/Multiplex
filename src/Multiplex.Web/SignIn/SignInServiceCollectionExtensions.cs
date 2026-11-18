@@ -39,29 +39,6 @@ public static class SignInServiceCollectionExtensions
         return new SiteSignInBuilder(services);
     }
 
-    /// <summary>
-    /// The host's one Data Protection key ring: <c>DataPath\keys</c>, application name
-    /// "Multiplex", keys encrypted with DPAPI on Windows. Safe to call more than once and
-    /// alongside another part's <c>AddDataProtection().PersistKeysToFileSystem(...)</c> for the
-    /// same folder. The folder is read from configuration when first needed, not at registration.
-    /// </summary>
-    public static IServiceCollection AddMultiplexDataProtection(this IServiceCollection services)
-    {
-        if (services.Any(d => d.ServiceType == typeof(MultiplexDataProtectionMarker))) return services;
-        services.AddSingleton<MultiplexDataProtectionMarker>();
-
-        services.AddDataProtection().SetApplicationName("Multiplex");
-        services.AddOptions<KeyManagementOptions>().Configure<IConfiguration, ILoggerFactory>((options, config, loggers) =>
-        {
-            options.XmlRepository = new FileSystemXmlRepository(
-                new DirectoryInfo(Path.Combine(SignInPaths.Resolve(config), "keys")), loggers);
-            if (OperatingSystem.IsWindows())
-                options.XmlEncryptor = new DpapiXmlEncryptor(protectToLocalMachine: false, loggers);
-        });
-        return services;
-    }
-
-    private sealed class MultiplexDataProtectionMarker;
 }
 
 public sealed class SiteSignInBuilder(IServiceCollection services)

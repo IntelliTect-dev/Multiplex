@@ -156,12 +156,11 @@ public sealed class TripItServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Request_without_an_account_claim_is_refused_before_calling_TripIt()
+    public async Task Request_without_a_token_gets_HTTP_401_before_calling_TripIt()
     {
-        var (isError, text) = await _host.McpFor(null).CallAsync("tripit_get_profile");
+        var (status, _) = await _host.McpFor(null).SendAsync("tools/call", new { name = "tripit_get_profile", arguments = new { } });
 
-        Assert.True(isError);
-        Assert.Contains("not signed in to a TripIt account", text, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.Unauthorized, status);
         Assert.Empty(_host.TripIt.Requests);
     }
 

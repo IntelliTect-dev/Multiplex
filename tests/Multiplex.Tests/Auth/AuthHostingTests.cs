@@ -51,7 +51,8 @@ public class AuthHostingTests
             {
                 var metadata = await first.Client().GetAsync("/.well-known/oauth-authorization-server");
                 Assert.Equal(HttpStatusCode.OK, metadata.StatusCode);
-                Assert.False(Directory.Exists(dataPath), "Starting the host must not touch the data folder.");
+                // The app-wide Data Protection key ring may be created at startup; the auth store itself must not be.
+                Assert.False(File.Exists(Path.Combine(dataPath, "auth.dat")), "Starting the host must not create the auth store.");
 
                 clientId = await new OAuthDriver(first).RegisterAsync();
             }
