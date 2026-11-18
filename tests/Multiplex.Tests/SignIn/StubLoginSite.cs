@@ -14,7 +14,7 @@ namespace Multiplex.Tests.SignIn;
 /// <summary>
 /// A tiny login site on a random loopback port, standing in for TripIt: a login form, a
 /// persistent session cookie, a signed-in app page that calls its own API, and a JSON
-/// profile endpoint. The user and password are fake and exist only in these tests.
+/// profile endpoint. Its two users and their passwords are fake and exist only in these tests.
 /// Reachable as <c>127.0.0.1</c> (allowed) and as <c>localhost</c> (a "foreign" host).
 /// </summary>
 public sealed class StubLoginSite : IAsyncDisposable
@@ -23,10 +23,25 @@ public sealed class StubLoginSite : IAsyncDisposable
     public const string Password = "stub-pass-123";
     public const string AccountId = "stub-account-1";
     public const string DisplayName = "Stub Tester";
+
+    /// <summary>A second account on the same site, for a second connection signed in as someone else.</summary>
+    public const string OtherEmail = "other-tester@example.test";
+    public const string OtherPassword = "other-pass-456";
+    public const string OtherAccountId = "stub-account-2";
+    public const string OtherDisplayName = "Other Tester";
+
     public const string CookieName = "stub_session";
 
+    private static readonly User[] s_users =
+    [
+        new(Email, Password, AccountId, DisplayName),
+        new(OtherEmail, OtherPassword, OtherAccountId, OtherDisplayName),
+    ];
+
     private readonly WebApplication _app;
-    private readonly ConcurrentDictionary<string, bool> _sessions = new();
+
+    /// <summary>Session token → the user it signs in.</summary>
+    private readonly ConcurrentDictionary<string, User> _sessions = new();
 
     public ConcurrentQueue<string> Requests { get; } = new();
 
@@ -49,15 +64,15 @@ public sealed class StubLoginSite : IAsyncDisposable
         return site;
     }
 
-    /// <summary>Seeds a valid session token, as if someone had signed in already.</summary>
-    public string IssueSession()
+    private string IssueSession(User user)
     {
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
-        _sessions[token] = true;
+        _sessions[token] = user;
         return token;
     }
 
-    private bool SignedIn(HttpContext c) => c.Request.Cookies.TryGetValue(CookieName, out var t) && t is not null && _sessions.ContainsKey(t);
+    private User? SignedIn(HttpContext c) =>
+        c.Request.Cookies.TryGetValue(CookieName, out var t) && t is not null && _sessions.TryGetValue(t, out var user) ? user : null;
 
     private void Map(WebApplication app)
     {
@@ -71,16 +86,16 @@ public sealed class StubLoginSite : IAsyncDisposable
         app.MapPost("/login", async (HttpContext c) =>
         {
             var form = await c.Request.ReadFormAsync();
-            if (form["email"] == Email && form["password"] == Password)
+            if (s_users.FirstOrDefault(u => form["email"] == u.Email && form["password"] == u.Password) is { } user)
             {
-                var token = IssueSession();
+                var token = IssueSession(user);
                 // Persistent, like "Keep me signed in": it must survive the browser closing.
                 c.Response.Cookies.Append(CookieName, token, new CookieOptions { HttpOnly = true, Path = "/", Expires = DateTimeOffset.UtcNow.AddDays(1) });
                 return Results.Redirect("/app");
             }
             return Results.Content(LoginPage(c, "Wrong email or password."), "text/html");
         });
-        app.MapGet("/app", (HttpContext c) => SignedIn(c)
+        app.MapGet("/app", (HttpContext c) => SignedIn(c) is not null
             ? Results.Content("""
                 <!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Stub app</title></head>
                 <body><h1 id="hello">Your trips</h1>
@@ -88,8 +103,8 @@ public sealed class StubLoginSite : IAsyncDisposable
                 </body></html>
                 """, "text/html")
             : Results.Redirect("/login"));
-        app.MapGet("/api/profile", (HttpContext c) => SignedIn(c)
-            ? Results.Json(new { id = AccountId, emails = new[] { Email }, name = DisplayName })
+        app.MapGet("/api/profile", (HttpContext c) => SignedIn(c) is { } user
+            ? Results.Json(new { id = user.AccountId, emails = new[] { user.Email }, name = user.DisplayName })
             : Results.StatusCode(401));
         app.MapGet("/foreign", () => Results.Content("<h1 id='foreign'>Somewhere else</h1>", "text/html"));
         app.MapGet("/foreign-tab", () => Results.Content("<h1>Somewhere else, new tab</h1>", "text/html"));
@@ -118,4 +133,6 @@ public sealed class StubLoginSite : IAsyncDisposable
         await _app.StopAsync();
         await _app.DisposeAsync();
     }
+
+    private sealed record User(string Email, string Password, string AccountId, string DisplayName);
 }

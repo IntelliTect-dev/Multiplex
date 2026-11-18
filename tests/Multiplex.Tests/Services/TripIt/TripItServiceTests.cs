@@ -105,6 +105,28 @@ public sealed class TripItServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_connections_added_through_the_connect_page_as_different_accounts_each_list_only_their_own_trips()
+    {
+        // No account list is configured: behind the passcode, each connection is bound to the account chosen while adding it.
+        await _host.SaveSignInAsync("acct-a", "cookie-a");
+        await _host.SaveSignInAsync("acct-b", "cookie-b");
+        _host.TripIt.OnJson("/api/v2/list/trip", cookie =>
+            $$$"""{"Trip":{"uuid":"{{{TripUuid}}}","display_name":"Trip of {{{cookie}}}","start_date":"2027-01-18","end_date":"2027-01-21"},"page_num":"1","max_page":"1"}""");
+
+        var first = await _host.ConnectThroughPagesAsync("acct-a");
+        var second = await _host.ConnectThroughPagesAsync("acct-b");
+        var a = await first.CallAsync("tripit_list_trips");
+        var b = await second.CallAsync("tripit_list_trips");
+
+        Assert.False(a.IsError, a.Text);
+        Assert.False(b.IsError, b.Text);
+        Assert.Contains("Trip of cookie-a", a.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("cookie-b", a.Text, StringComparison.Ordinal);
+        Assert.Contains("Trip of cookie-b", b.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("cookie-a", b.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Rejected_session_is_refreshed_once_and_the_request_retried()
     {
         _host.SignIn("acct-a", "old");

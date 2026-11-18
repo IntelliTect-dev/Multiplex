@@ -71,32 +71,41 @@ public sealed class LiveMirrorTests
     }
 
     [ChromiumFact]
-    public async Task Account_not_on_the_allowlist_is_refused_and_its_profile_deleted()
+    public async Task Two_connections_sign_in_as_different_accounts_and_each_is_bound_to_its_own()
     {
+        // No account list is configured: the passcode is the gate, and each connection gets the account signed in while adding it.
         await using var site = await StubLoginSite.StartAsync();
-        await using var host = new SignInTestHost(new SignInTestOptions
-        {
-            StubBaseUrl = site.BaseUrl,
-            AllowedAccounts = ["someone-else@example.test"],
-        });
+        await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
-        var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
-        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
-        await mirror.WaitForStatusAsync("live", s_long);
+        host.Completer.Add("p2", "stub");
 
-        await SignInAsync(attempt, mirror, StubLoginSite.Email, StubLoginSite.Password);
+        // The first connection signs in as the first account.
+        var first = host.NewClient();
+        var (gate1, _) = await first.PassGateAsync("p1");
+        await SignInLiveAsync(host, first, gate1, StubLoginSite.Email, StubLoginSite.Password);
 
-        var denied = await mirror.WaitForStatusAsync("denied", s_long);
-        Assert.Contains("not allowed", denied.GetProperty("msg").GetString());
-        Assert.Contains("error=access_denied", denied.GetProperty("next").GetString());
-        Assert.Equal(("p1", "access_denied", "This account is not allowed on this server."), Assert.Single(host.Completer.Failed));
-        Assert.Empty(host.Completer.Completed);
-        await attempt.Completion;
+        // The same connector added again, from another client: it chooses a different account and signs in as that one.
+        var second = host.NewClient();
+        var (gate2, _) = await second.PassGateAsync("p2");
+        var (_, choose) = await second.GetAsync(gate2.Headers.Location!.OriginalString);
+        Assert.Contains($"Continue as {StubLoginSite.DisplayName}", choose);
+        var (start, _) = await second.PostAsync("/connect/stub/start?p=p2", choose);
+        await SignInLiveAsync(host, second, start, StubLoginSite.OtherEmail, StubLoginSite.OtherPassword);
+
+        Assert.Equal(
+            [("p1", StubLoginSite.AccountId), ("p2", StubLoginSite.OtherAccountId)],
+            host.Completer.Completed.Select(c => (c.PendingId, c.Account.AccountId)));
+        Assert.Empty(host.Completer.Failed);
+        // Each account keeps its own session and its own browser profile.
+        var store = host.Get<ISiteSessionStore>();
+        var firstSession = await store.GetAsync("stub", StubLoginSite.AccountId, CancellationToken.None);
+        var secondSession = await store.GetAsync("stub", StubLoginSite.OtherAccountId, CancellationToken.None);
+        Assert.Contains($"{StubLoginSite.CookieName}=", firstSession);
+        Assert.Contains($"{StubLoginSite.CookieName}=", secondSession);
+        Assert.NotEqual(firstSession, secondSession);
+        Assert.True(Directory.Exists(Path.Combine(host.ProfilesDirectory, StubLoginSite.AccountId)));
+        Assert.True(Directory.Exists(Path.Combine(host.ProfilesDirectory, StubLoginSite.OtherAccountId)));
         Assert.Empty(host.TempProfiles());
-        Assert.False(Directory.Exists(Path.Combine(host.ProfilesDirectory, StubLoginSite.AccountId)));
-        Assert.Null(await host.Get<ISiteSessionStore>().GetAsync("stub", StubLoginSite.AccountId, CancellationToken.None));
     }
 
     [ChromiumFact]
@@ -245,6 +254,22 @@ public sealed class LiveMirrorTests
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// From the redirect to the live page to the client's code: open the mirror, sign in as
+    /// <paramref name="email"/>, collect the code, and wait for the attempt to release its browser.
+    /// </summary>
+    private static async Task SignInLiveAsync(SignInTestHost host, ConnectClient client, HttpResponseMessage toLive, string email, string password)
+    {
+        var attempt = Attempt(host, toLive);
+        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
+        await mirror.WaitForStatusAsync("live", s_long);
+        await SignInAsync(attempt, mirror, email, password);
+        var ready = await mirror.WaitForStatusAsync("ready", s_long);
+        var (done, _) = await client.GetAsync(ready.GetProperty("next").GetString()!);
+        Assert.Equal(HttpStatusCode.Redirect, done.StatusCode);
+        await attempt.Completion.WaitAsync(s_long);
+    }
 
     internal static LiveSignInAttempt Attempt(SignInTestHost host, HttpResponseMessage gate)
     {

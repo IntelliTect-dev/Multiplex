@@ -41,8 +41,8 @@ public sealed class TripItSignInDefinitionTests
     }
 
     /// <summary>
-    /// The allowlist matches on these addresses, so anything short of an explicit "true" must
-    /// keep an address out: an address someone added but never confirmed must not unlock the server.
+    /// The connect page may label an account with these addresses, so anything short of an explicit
+    /// "true" must keep an address out: an address someone added but never confirmed is not theirs.
     /// </summary>
     [Theory]
     [InlineData("\"true\"", true)]

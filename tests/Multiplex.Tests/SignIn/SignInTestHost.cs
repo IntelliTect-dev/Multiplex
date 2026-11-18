@@ -27,7 +27,6 @@ public sealed class SignInBrowserCollection
 public sealed class SignInTestOptions
 {
     public bool WithPasscode { get; set; } = true;
-    public string[] AllowedAccounts { get; set; } = [StubLoginSite.Email];
 
     /// <summary>The stub site the definition points at; null registers the definition against an unused address.</summary>
     public Uri? StubBaseUrl { get; set; }
@@ -53,6 +52,9 @@ public sealed class SignInTestHost : IAsyncDisposable
     public const string Passcode = "test-passcode-42";
     private static readonly Lazy<string> s_passcodeHash = new(() => PasscodeHasher.Hash(Passcode));
 
+    /// <summary>The stored form of <see cref="Passcode"/>, for any host that serves the connect pages.</summary>
+    public static string PasscodeHash => s_passcodeHash.Value;
+
     public string DataPath { get; } = Path.Combine(Path.GetTempPath(), "multiplex-signin-tests", Guid.NewGuid().ToString("N"));
     public FakeCompleter Completer { get; } = new();
     public FakeRevoker Revoker { get; } = new();
@@ -76,8 +78,6 @@ public sealed class SignInTestHost : IAsyncDisposable
             b.UseSetting("SignIn:AttemptTimeout", options.AttemptTimeout.ToString("c"));
             b.UseSetting("SignIn:RefreshTimeout", "00:00:20");
             b.UseSetting(PasscodeGate.HashKey, options.WithPasscode ? s_passcodeHash.Value : "");
-            for (var i = 0; i < options.AllowedAccounts.Length; i++)
-                b.UseSetting($"Multiplex:Sites:{StubSignInDefinition.SiteSlug}:AllowedAccounts:{i}", options.AllowedAccounts[i]);
             foreach (var (key, value) in options.Settings) b.UseSetting(key, value);
 
             b.ConfigureTestServices(services =>
@@ -161,10 +161,11 @@ public sealed partial class ConnectClient
     }
 
     /// <summary>Opens the connect page and submits the passcode; returns the POST's response.</summary>
-    public async Task<(HttpResponseMessage Response, string Html)> PassGateAsync(string pendingId, string passcode = SignInTestHost.Passcode)
+    public async Task<(HttpResponseMessage Response, string Html)> PassGateAsync(
+        string pendingId, string passcode = SignInTestHost.Passcode, string slug = StubSignInDefinition.SiteSlug)
     {
-        var (_, page) = await GetAsync($"/connect/{StubSignInDefinition.SiteSlug}?p={pendingId}");
-        return await PostAsync($"/connect/{StubSignInDefinition.SiteSlug}?p={pendingId}", page, ("passcode", passcode));
+        var (_, page) = await GetAsync($"/connect/{slug}?p={pendingId}");
+        return await PostAsync($"/connect/{slug}?p={pendingId}", page, ("passcode", passcode));
     }
 
     public static string? TokenOf(string html) =>

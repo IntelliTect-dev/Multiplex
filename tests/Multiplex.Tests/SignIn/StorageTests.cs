@@ -185,20 +185,4 @@ public sealed class StorageTests : IDisposable
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Multiplex", "data"),
             paths.DataPath);
     }
-
-    [Fact]
-    public void Allowlist_is_case_insensitive_and_empty_means_nobody()
-    {
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Multiplex:Sites:tripit:AllowedAccounts:0"] = "Owner@Example.test",
-            ["Multiplex:Sites:other:AllowedAccounts"] = "a@example.test; b@example.test",
-        }).Build();
-        var allowlist = new SiteAllowlist(config);
-
-        Assert.True(allowlist.IsAllowed(new SiteAccount("tripit", "1", ["x@example.test", "owner@example.TEST"], "")));
-        Assert.False(allowlist.IsAllowed(new SiteAccount("tripit", "1", ["x@example.test"], "")));
-        Assert.True(allowlist.IsAllowed(new SiteAccount("other", "1", ["b@example.test"], "")));
-        Assert.False(allowlist.IsAllowed(new SiteAccount("nobody", "1", ["owner@example.test"], "")));
-    }
 }
