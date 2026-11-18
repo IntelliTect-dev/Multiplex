@@ -5,9 +5,10 @@ namespace Multiplex.Web.SignIn;
 
 /// <summary>
 /// The connect pages, reached from <c>/oauth/authorize</c> as <c>/connect/{slug}?p={pendingId}</c>:
-/// passcode gate → "Continue as …" or live sign-in → back to the client with a code or an error.
-/// Each pending authorization is one connection being added; it is bound to the account chosen or
-/// signed in to here. There is no list of accounts: the passcode is the gate.
+/// passcode gate → live sign-in → back to the client with a code or an error.
+/// Each pending authorization is one connection being added, bound to the account signed in to
+/// here. The passcode only lets a person reach the sign-in: every connection proves its account by
+/// signing in, and no account the server holds a session for is ever offered or selectable (#52).
 /// </summary>
 public static class ConnectEndpoints
 {
@@ -17,7 +18,6 @@ public static class ConnectEndpoints
         group.MapGet("", ShowAsync);
         group.MapPost("", PasscodeAsync);
         group.MapPost("/start", StartAsync);
-        group.MapPost("/continue", ContinueAsync);
         group.MapGet("/live", LiveAsync);
         group.MapGet("/done", DoneAsync);
         group.MapPost("/cancel", CancelAsync);
@@ -36,8 +36,7 @@ public static class ConnectEndpoints
 
         if (services.GetRequiredService<GateCookie>().HasPassed(context, site.Slug, pending.Id))
         {
-            var accounts = await OfferableAccountsAsync(services, site, context.RequestAborted);
-            await WriteHtmlAsync(context, 200, nonce => ConnectHtml.Choose(nonce, site, pending, Token(context), accounts));
+            await WriteHtmlAsync(context, 200, nonce => ConnectHtml.SignIn(nonce, site, pending, Token(context)));
             return;
         }
 
@@ -70,13 +69,7 @@ public static class ConnectEndpoints
         }
 
         services.GetRequiredService<GateCookie>().Issue(context, site.Slug, pending.Id);
-        var accounts = await OfferableAccountsAsync(services, site, context.RequestAborted);
-        if (accounts.Count > 0)
-        {
-            SeeOther(context, $"/connect/{site.Slug}?p={Uri.EscapeDataString(pending.Id)}");
-            return;
-        }
-        await StartLiveAsync(context, site, pending.Id, notice: null);
+        await StartLiveAsync(context, site, pending.Id);
     }
 
     // ---------------------------------------------------------------- POST /connect/{slug}/start?p=
@@ -85,65 +78,12 @@ public static class ConnectEndpoints
     {
         if (await ResolveAsync(context, slug, p) is not ({ } site, { } pending)) return;
         if (!await ValidAntiforgeryAsync(context) || !await RequireGateAsync(context, site, pending.Id)) return;
-        await StartLiveAsync(context, site, pending.Id, notice: null);
-    }
-
-    // ---------------------------------------------------------------- POST /connect/{slug}/continue?p=
-
-    private static async Task ContinueAsync(HttpContext context, string slug, string? p)
-    {
-        if (await ResolveAsync(context, slug, p) is not ({ } site, { } pending)) return;
-        if (!await ValidAntiforgeryAsync(context) || !await RequireGateAsync(context, site, pending.Id)) return;
-
-        var services = context.RequestServices;
-        var ct = context.RequestAborted;
-        var form = await context.Request.ReadFormAsync(ct);
-        var accountId = form["account"].ToString();
-        var index = services.GetRequiredService<SiteAccountIndex>();
-        var logger = Logger(context);
-
-        var account = string.IsNullOrEmpty(accountId) ? null : await index.FindAsync(site.Slug, accountId, ct);
-        if (account is null)
-        {
-            logger.LogWarning("Continue refused for {Site} account {AccountId}: the server holds no session for it.", site.Slug, accountId);
-            await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Account not found",
-                $"This server holds no {site.DisplayName} session for that account. Go back and sign in.",
-                $"/connect/{site.Slug}?p={Uri.EscapeDataString(pending.Id)}", "Back"));
-            return;
-        }
-
-        string? snapshot = null;
-        var store = services.GetRequiredService<SiteSessionStore>();
-        var paths = services.GetRequiredService<SignInPaths>();
-        if (store.Exists(site.Slug, account.AccountId) && Directory.Exists(paths.AccountProfile(site.Slug, account.AccountId)))
-        {
-            try
-            {
-                snapshot = await services.GetRequiredService<ISiteSessionRefresher>().RefreshAsync(site.Slug, account.AccountId, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                logger.LogWarning("Could not confirm the saved {Site} session for {AccountId} ({Error}); falling back to a live sign-in.",
-                    site.Slug, account.AccountId, ex.GetType().Name);
-            }
-        }
-
-        if (snapshot is not null)
-        {
-            var completer = services.GetService<IAuthorizationCompleter>()!;
-            var redirect = await completer.CompleteAsync(pending.Id, account, ct);
-            logger.LogInformation("Connect for {Site} completed with the saved session of {AccountId}.", site.Slug, account.AccountId);
-            SeeOther(context, redirect.AbsoluteUri);
-            return;
-        }
-
-        await StartLiveAsync(context, site, pending.Id,
-            notice: $"Your saved {site.DisplayName} session has ended. Please sign in again.");
+        await StartLiveAsync(context, site, pending.Id);
     }
 
     // ---------------------------------------------------------------- GET /connect/{slug}/live?a=  (page or WebSocket)
 
-    private static async Task LiveAsync(HttpContext context, string slug, string? a, string? n)
+    private static async Task LiveAsync(HttpContext context, string slug, string? a)
     {
         var services = context.RequestServices;
         var attempt = services.GetRequiredService<LiveSignInRegistry>().Find(a);
@@ -176,8 +116,7 @@ public static class ConnectEndpoints
             return;
         }
 
-        var notice = n == "signed-out" ? $"Your saved {attempt.Definition.DisplayName} session has ended. Please sign in again." : null;
-        await WriteHtmlAsync(context, 200, nonce => ConnectHtml.Live(nonce, attempt, Token(context), notice));
+        await WriteHtmlAsync(context, 200, nonce => ConnectHtml.Live(nonce, attempt, Token(context)));
     }
 
     // ---------------------------------------------------------------- GET /connect/{slug}/done?a=
@@ -246,7 +185,7 @@ public static class ConnectEndpoints
 
     // ---------------------------------------------------------------- helpers
 
-    private static async Task StartLiveAsync(HttpContext context, ISiteSignInDefinition site, string pendingId, string? notice)
+    private static async Task StartLiveAsync(HttpContext context, ISiteSignInDefinition site, string pendingId)
     {
         var attempt = context.RequestServices.GetRequiredService<LiveSignInRegistry>().StartOrResume(site, pendingId);
         if (attempt is null)
@@ -254,19 +193,7 @@ public static class ConnectEndpoints
             await WriteHtmlAsync(context, 503, nonce => ConnectHtml.Busy(nonce, site, pendingId, Token(context)));
             return;
         }
-        var url = $"/connect/{site.Slug}/live?a={Uri.EscapeDataString(attempt.Id)}";
-        if (notice is not null) url += "&n=signed-out";
-        SeeOther(context, url);
-    }
-
-    /// <summary>Accounts the server holds a usable session for: stored snapshot and kept browser profile.</summary>
-    internal static async Task<IReadOnlyList<SiteAccount>> OfferableAccountsAsync(IServiceProvider services, ISiteSignInDefinition site, CancellationToken ct)
-    {
-        var store = services.GetRequiredService<SiteSessionStore>();
-        var paths = services.GetRequiredService<SignInPaths>();
-        var accounts = await services.GetRequiredService<SiteAccountIndex>().ListAsync(site.Slug, ct);
-        return [.. accounts.Where(a => store.Exists(site.Slug, a.AccountId)
-                                      && Directory.Exists(paths.AccountProfile(site.Slug, a.AccountId)))];
+        SeeOther(context, $"/connect/{site.Slug}/live?a={Uri.EscapeDataString(attempt.Id)}");
     }
 
     /// <summary>Finds the site and the pending authorization; on failure writes the friendly error page and returns null.</summary>

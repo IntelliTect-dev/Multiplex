@@ -105,13 +105,6 @@ public sealed class RefresherAndAdoptTests
             var listed = Assert.Single(await host.Get<SiteAccountIndex>().ListAsync("stub", CancellationToken.None));
             Assert.Equal(StubLoginSite.Email, Assert.Single(listed.Emails));
             Assert.True(Directory.Exists(source)); // copied, not moved
-
-            // The adopted account is now offered as "Continue as …" after the gate.
-            host.Completer.Add("p1", "stub");
-            var client = host.NewClient();
-            var (gate, _) = await client.PassGateAsync("p1");
-            var (_, choose) = await client.GetAsync(gate.Headers.Location!.OriginalString);
-            Assert.Contains($"Continue as {StubLoginSite.DisplayName}", choose);
         }
         finally
         {

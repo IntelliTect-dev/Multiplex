@@ -6,12 +6,15 @@ using PuppeteerSharp;
 
 namespace Multiplex.Tests.SignIn;
 
-/// <summary>The stub site's sign-in definition, shaped like TripIt's: cookie check, then an in-page API call.</summary>
-public sealed class StubSignInDefinition(Uri baseUrl) : ISiteSignInDefinition
+/// <summary>
+/// The stub site's sign-in definition, shaped like TripIt's: cookie check, then an in-page API call.
+/// <paramref name="slug"/> lets it stand in for a real service's sign-in, e.g. TripIt's.
+/// </summary>
+public sealed class StubSignInDefinition(Uri baseUrl, string slug = StubSignInDefinition.SiteSlug) : ISiteSignInDefinition
 {
     public const string SiteSlug = "stub";
 
-    public string Slug => SiteSlug;
+    public string Slug => slug;
     public string DisplayName => "Stub Site";
     public Uri SignInStartUrl => new(baseUrl, "/login");
     public Uri RefreshUrl => new(baseUrl, "/app");
@@ -28,7 +31,7 @@ public sealed class StubSignInDefinition(Uri baseUrl) : ISiteSignInDefinition
         if (result.Status != 200) return null;
         using var doc = JsonDocument.Parse(result.Body!);
         var root = doc.RootElement;
-        return new SiteAccount(SiteSlug, root.GetProperty("id").GetString()!,
+        return new SiteAccount(Slug, root.GetProperty("id").GetString()!,
             [.. root.GetProperty("emails").EnumerateArray().Select(e => e.GetString()!)], root.GetProperty("name").GetString()!);
     }
 
