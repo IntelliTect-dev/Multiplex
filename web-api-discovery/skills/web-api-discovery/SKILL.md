@@ -2110,6 +2110,60 @@ Emit a JSON manifest the codegen step consumes.
 - Detect GraphQL: POST to `*/graphql*` with `{query, variables}`. When
   detected, emit a single `QueryAsync<T>` client plus typed convenience
   methods per observed `operationName`.
+- **Collect each endpoint's query parameters across all its captured calls**
+  (`scripts/codegen/query-params.js`). The calls a pattern groups are its
+  evidence: a name every call sent with the same value is a constant, a name
+  whose value differed is what a caller chooses. Values are compared call by
+  call, so `type=A&type=B` in every call is one constant repeated parameter.
+  Names and values are decoded once, as a server reads them (percent-escapes,
+  and `+` as a space), and keep the order they were first seen in.
+
+#### What a query parameter defaults to
+
+One rule decides, in this order, what a generated call sends when the caller
+supplies nothing. Every parameter is optional either way.
+
+| Kind | When | When omitted |
+|---|---|---|
+| `scrubbed` | a captured value was put there by the scrub, or the name is one the scrub policy calls a secret | left out |
+| `nonce` | it looks like a per-request timestamp or nonce | left out |
+| `single` | the endpoint was captured once | the captured value |
+| `constant` | every captured call sent the same value(s) | the captured value(s) |
+| `varying` | anything else: the values differ, or some calls left it out | left out |
+
+- **One call is no evidence of what varies.** With a single captured call every
+  parameter is exposed with the captured value as its default. Capture the
+  action more than once, with different input, to learn which one is the
+  search term.
+- **A value the scrub replaced is never baked in**, however constant it was. It
+  is recognised in two ways, and neither is an option:
+  - *by its marker* -- `<UserEmail>`, `<REDACTED-...>`, `<BLUNTED:...>`,
+    `redacted-<hex>`, and the fakes the leak gate exempts as its own
+    (`isRedacted` in `har-secrets.js`, `LEAK_PATTERNS[].isFake` in
+    `har-shapes.js`). A value with a shape the scrub always replaces -- a JWT,
+    a UUID, a 32/64-hex run, an email -- counts too: in a scrubbed capture it
+    is a fake, and in an unscrubbed one it must not be written into source.
+  - *by the substitution tables* -- a typed fake for a city or a name is an
+    ordinary word. `run-agent.js` writes the scrubbed capture to
+    `.run-agent/scrubbed.har` and the tables to `.run-agent/.har-captures/`,
+    and the generator looks for `.har-substitutions.json` and
+    `.substitutions.json` in `.har-captures/` beside each `--har`, and beside
+    the capture itself. It reads the replacement values only, never the keys.
+    **Run the generator through `run-agent.js`**, or keep the tables beside the
+    scrubbed capture, or a marker-less fake is taken for a constant.
+- **A per-request timestamp or nonce is never baked in**: a 10- or 13-digit
+  number within a day of its own call's `startedDateTime` (this is what
+  catches a cache-buster such as `_=<milliseconds>` on an endpoint captured
+  once); a digit run of 10 or more, or an opaque token of 16 or more
+  characters, that differs on every call; or a long number under a
+  conventional cache-buster name (`_`, `ts`, `nocache`, `rnd`, ...).
+  `page=1,2,3` and `offset=0,20,40` are short: they are `varying`.
+- **A constant opaque token IS baked in.** A token that did not change across
+  the captured calls is a constant by this rule; the scrub, not the generator,
+  decides what is a credential. Read the generated README's table; if a default
+  there should not be in source, add the parameter's name to `secretFields` in
+  the project's `.har-policy.project.json` and run the pipeline again -- the
+  scrub then replaces it, and the generator leaves it out.
 
 #### Interpreting captured responses
 
@@ -2210,6 +2264,32 @@ Generated rules:
   response key that reads as a field name is listed; an object keyed by data
   has no field list, because a description is text the model reads. They are a
   draft; refine them where the capture could not know what an endpoint is for.
+- **Every query parameter the capture showed is a parameter of the client
+  method and of its tool** (`query-params.js` decides, `query-emit.js`
+  writes). Each is optional and a string -- a list of strings when a call
+  repeated it -- because the wire is text and a typed parameter would re-spell
+  it (`True`, `1` for `01`). Its default follows **What a query parameter
+  defaults to** in Phase 5: the captured value for a constant and for an
+  endpoint captured once, nothing for a varying one, and **never** a value the
+  scrub replaced or a per-request timestamp or nonce. `null` leaves a
+  parameter out and `""` sends `name=`; a repeated constant sends its captured
+  values when it is `null` and nothing when it is an empty list. The signature
+  order is path parameters, `body`, the query parameters in first-seen order,
+  `ct`. An endpoint captured with no query is emitted exactly as before
+  (`query: null`).
+- **The wire name stays exact; the C# name is made valid.** `page-size` is
+  `pageSize`, `q[0]` is `q0`, `filter.name` is `filterName`, `_` is
+  `underscore`; a C# keyword is escaped (`@class`, which a tool lists as
+  `class`); a name the method already uses -- a path parameter, `body`, `ct`,
+  or a local of the emitted body -- gets a `Query` suffix (`idQuery`); two wire
+  names that give one identifier are numbered (`pageSize2`). The tool's
+  property name is the C# name, so it is ASCII letters and digits, unique
+  without regard to case, and at most 64 characters. Names and values are
+  percent-encoded when the request is built (`Uri.EscapeDataString`).
+- Each query parameter carries a `[Description]` built from what was observed:
+  its name on the wire, what the captured calls sent, a few example values
+  **called examples**, and what happens when it is omitted. A scrubbed value or
+  a nonce is never quoted, in a description, a default, the README or a test.
 - **Send only the headers the API needs, under the client's own name.** A
   generated request carries the session (cookie or bearer), the CSRF token
   when there is one, `Accept` / `Content-Type`, the `Origin` /
@@ -2460,9 +2540,11 @@ the skill).
   `tests/<Name>.Tests/pester/Mcp.Tests.ps1` builds the wrapper, starts the
   built assembly over stdio (`McpStdio.ps1`, beside it), sends `initialize`
   and `tools/list`, and asserts the server lists every tool baked in from the
-  captured endpoints, each with a description and its hints, and that stdout
-  carried only protocol messages. A tool written by hand is listed beside
-  them and is not its business -- but the names the left-out endpoints' tools
+  captured endpoints, each with a description and its hints, that each tool's
+  `inputSchema` lists its endpoint's query parameters with none of them
+  required, and that stdout carried only protocol messages. A tool written by
+  hand is listed beside the generated ones
+  and is not its business -- but the names the left-out endpoints' tools
   would have had are baked in as well, and the suite fails if the server
   lists one, which is what catches a sign-in tool coming back through a
   generator regression. It lists tools and never calls one: a call
@@ -2471,6 +2553,17 @@ the skill).
   over a server that never started would be a false green. The generated
   `.github/workflows/ci.yml` runs it, in a `pwsh` step after the build.
   `ToolsTests.cs` and `ToolSessionTests.cs` cover the calls, against fixtures.
+- **The query string is asserted on the wire.** When an endpoint takes query
+  parameters the wrapper carries `QueryStringTests.cs`: four facts per such
+  endpoint -- no query argument supplied (the captured defaults) and every one
+  supplied, from the client and again through the tool class -- each asserting
+  the exact path and query the HTTP handler received (`MockHandler.FromJson`
+  with a list records the request URIs). The expected strings are computed
+  from the capture, not read back from the emitted client. The generated
+  README's **Query parameters** table sets out, per tool, each parameter, its
+  name on the wire and what is sent when it is omitted, and marks the ones that
+  are never baked in.
+
 **Authenticator contract (issue #97).** The generated
 `<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
 the interactive sign-in ceremony. It must **never**:
