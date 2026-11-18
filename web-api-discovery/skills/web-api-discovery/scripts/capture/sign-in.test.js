@@ -37,6 +37,7 @@
 //   H2  a page that moved during a wait is not typed into
 //   H3  no pacer, no wait
 //   H4  the real pacer waits within the action range, and not at all with --pace off
+//   H5  a one-time code is made after the paced waits, then typed and sent at once
 //   P1  password form: filled, submitted, onSignedIn fires, secrets() reported
 //   P2  identifier-first: username, then password on the next page
 //   P3  a form on another host is never filled
@@ -451,6 +452,26 @@ test('H3: with no pacer, fillStep waits for nothing (the unit cases and older ca
     const done = await signIn.fillStep(page, { username: USER }, 'identifier', () => true);
     assert.strictEqual(done, 'identifier');
     assert.deepStrictEqual(events, ['fill user', 'press Enter in user']);
+});
+
+test('H5: the one-time code is made AFTER the paced waits, and typed and sent at once', async () => {
+    // A code lives about 30 s, and a paced wait lasts as long as any throttle
+    // pause the site asked for. A code made before the waits could be stale by
+    // the time it was sent.
+    const events = [];
+    const page = recordingPage(events, { otp: 'one-time-code' });
+    const pace = { beforeAction: async () => { events.push('pause'); } };
+    const stillHere = () => { events.push('stillHere'); return true; };
+    const totp = async () => { events.push('totp'); return '123456'; };
+    const done = await signIn.fillStep(page, { totp }, 'otp', stillHere, pace);
+    assert.strictEqual(done, 'otp');
+    assert.deepStrictEqual(events, ['pause', 'pause', 'totp', 'stillHere', 'fill otp', 'press Enter in otp'],
+        'no wait may sit between making the code and sending it, and the vet comes after the code -- ' +
+        'which can be a prompt the operator takes a minute over');
+    // Without a pacer, nothing waits and the order is otherwise the same.
+    const bare = [];
+    await signIn.fillStep(recordingPage(bare, { otp: 'one-time-code' }), { totp: async () => '123456' }, 'otp', () => true);
+    assert.deepStrictEqual(bare, ['fill otp', 'press Enter in otp']);
 });
 
 test('H4: the real pacer spaces the steps by the action range, and --pace off by nothing', async () => {

@@ -823,7 +823,9 @@ What is guaranteed:
 - **One step at a time, at the run's pace.** Each fill and each Enter waits the
   click/typing range of `--pace` first (0.3–1.2 s by default), and the address
   check above comes *after* that wait, immediately before the step -- so a wait
-  never gives a page time to move under a credential.
+  never gives a page time to move under a credential. A one-time code is made
+  only after both of its waits (a throttle pause can stretch one), then typed
+  and sent at once, so it is never stale when it arrives.
 - **The session is saved, the password is not.** After a successful sign-in
   the site's cookies are merged into `.har-storage-state.json` (other sites in
   the file are kept) -- only when git ignores that file, only when the site set
