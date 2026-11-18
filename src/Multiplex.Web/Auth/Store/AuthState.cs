@@ -72,6 +72,7 @@ public sealed record RegisteredClient(
     DateTimeOffset CreatedAt,
     DateTimeOffset LastUsedAt);
 
+/// <param name="CallerKey">A short keyed hash of the caller's rate-limit key, never the address itself; null for records saved before it existed.</param>
 public sealed record PendingAuthorizationRecord(
     string Id,
     string Site,
@@ -82,7 +83,8 @@ public sealed record PendingAuthorizationRecord(
     string CodeChallenge,
     string Resource,
     string Scope,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string? CallerKey = null);
 
 public sealed record AuthorizationCodeRecord(
     string ClientId,

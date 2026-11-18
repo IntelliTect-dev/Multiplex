@@ -71,4 +71,10 @@ internal static class AuthCapacity
 
     /// <summary>Pending authorizations, kept until 10 minutes after they expire.</summary>
     public const int PendingAuthorizations = 100;
+
+    /// <summary>
+    /// Pending authorizations one caller may hold (keyed as the rate limits are, IPv6 by /64), so a single
+    /// address cannot take every slot and block sign-ins for everyone else.
+    /// </summary>
+    public const int PendingAuthorizationsPerCaller = 10;
 }
