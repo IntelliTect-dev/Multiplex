@@ -378,6 +378,37 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         await AssertTokenError(new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["client_id"] = "x", ["refresh_token"] = "nope" }, "invalid_grant");
     }
 
+    [Theory]
+    [InlineData("/oauth/token")]
+    [InlineData("/oauth/revoke")]
+    public async Task FormEndpoints_RefuseAnOversizedBodySentWithoutAContentLength(string path)
+    {
+        var padding = new string('a', 20 * 1024);
+        var response = await _driver.Http.SendAsync(ChunkedFormContent.Post(path, new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["client_id"] = "chunked-client",
+            ["refresh_token"] = padding,
+            ["token"] = padding,
+        }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("invalid_request", body.GetProperty("error").GetString());
+        Assert.Equal("The request is too large.", body.GetProperty("error_description").GetString());
+    }
+
+    [Fact]
+    public async Task FormEndpoints_AcceptASmallBodySentWithoutAContentLength()
+    {
+        var tokens = await _driver.ConnectAsync();
+
+        var response = await _driver.Http.SendAsync(ChunkedFormContent.Post("/oauth/token", Refresh(tokens.ClientId, tokens.RefreshToken)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(string.IsNullOrEmpty((await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("access_token").GetString()));
+    }
+
     [Fact]
     public async Task Revoke_RefreshToken_EndsTheGrant()
     {
@@ -534,4 +565,31 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
 
     private static string[] Strings(JsonElement json, string property) =>
         json.GetProperty(property).EnumerateArray().Select(e => e.GetString()!).ToArray();
+
+    /// <summary>A form body of unknown length, so it is sent chunked with no Content-Length header.</summary>
+    private sealed class ChunkedFormContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        private ChunkedFormContent(IDictionary<string, string> form)
+        {
+            _bytes = new FormUrlEncodedContent(form).ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            Headers.ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded");
+        }
+
+        public static HttpRequestMessage Post(string path, IDictionary<string, string> form)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = new ChunkedFormContent(form) };
+            request.Headers.TransferEncodingChunked = true;
+            return request;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => stream.WriteAsync(_bytes).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
 }
