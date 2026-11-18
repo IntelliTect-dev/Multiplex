@@ -3280,6 +3280,16 @@ function agentStartRefusal(session, recordingEndedBy) {
 }
 
 /**
+ * Is an -AI agent driving the browser right now: launched, and neither
+ * finished nor stopped? Before launch the page loads are the recorder's own
+ * first navigation -- or, when the start page was refused, a person's -- and
+ * neither is the agent's to be warned about or stopped.
+ */
+function agentDriving({ ai, agentLaunched, session }) {
+    return !!ai && !!agentLaunched && session.agentExitCode === undefined && !session.agentStopped;
+}
+
+/**
  * Let the recording go quiet before an agent-driven ending tears it down (#98).
  *
  * TWO DIFFERENT WAITS, because two different things are unknown.
@@ -4993,12 +5003,12 @@ async function start(args) {
         // Who is driving decides what a signal MEANS. An agent running is
         // stopped on a hand-over; one not launched yet never will be; anything
         // else is a person's browser, and gets advice.
-        const agentDriving = ai && agentLaunched && session.agentExitCode === undefined && !session.agentStopped;
+        const driving = agentDriving({ ai, agentLaunched, session });
         const agentPending = ai && !agentLaunched;
         if (decision.action === 'pause') {
             pacer.pauseFor(decision.waitMs);
-            log.lines(pacing.throttleLines(decision, agentDriving ? 'agent' : agentPending ? 'script' : 'you'));
-        } else if (agentDriving) {
+            log.lines(pacing.throttleLines(decision, driving ? 'agent' : agentPending ? 'script' : 'you'));
+        } else if (driving) {
             session.handOver = Object.assign({}, record, { by: 'agent-stopped' });
             session.agentStopped = 'hand-over';
             if (agentControl.stop) agentControl.stop('hand-over');
@@ -5016,8 +5026,7 @@ async function start(args) {
     };
     attachRecorder(context, recorder, scope, {
         onResponse: (info) => {
-            if (agentRate && info.isDocument && session.agentExitCode === undefined &&
-                !session.agentStopped && agentRate.note()) {
+            if (agentRate && info.isDocument && agentDriving({ ai, agentLaunched, session }) && agentRate.note()) {
                 log.warn(`capture-har: the agent is navigating faster than the pace allows (more than ` +
                     `${pace.perMinute} pages in a minute).\n  It is told to keep to the pace; the ` +
                     'recorder can watch it, not slow it down.');
@@ -5940,6 +5949,7 @@ module.exports = {
     agentStillDrivingLines,
     agentExitEnding,
     agentStartRefusal,
+    agentDriving,
     claudeOnPath,
     driveWithAgent,
     settleRecorder,
