@@ -31,6 +31,7 @@
 //   G10 who is driving: without -AI it is a person, terminal or not (advice,
 //       never a hold); under -AI an agent whose input is closed is not told,
 //       and one that has exited is not driving
+//   G11 a multi-byte character split across two chunks of output arrives whole
 
 'use strict';
 
@@ -319,6 +320,23 @@ test('G10: who is driving -- without -AI it is a person, terminal or not; an age
         'an agent whose input has closed is not "told to wait"');
     assert.strictEqual(d({ ai: true, agentLaunched: true, agentRunning: false }), 'agent-gone',
         'an agent that has exited is not driving');
+});
+
+test('G11: a character split across two chunks of the agent\'s output arrives whole', () => {
+    // A pipe hands output over in chunks of bytes, and a chunk can end in the
+    // middle of a multi-byte character. Decoding each chunk alone turns both
+    // halves into U+FFFD, in the step log and in the raw log.
+    const written = [];
+    const raws = [];
+    const renderer = agentStream.createStreamRenderer({ write: (t) => written.push(t), raw: (l) => raws.push(l) });
+    const bytes = Buffer.from(JSON.stringify({ type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Zürich → Genève, 5 €' }] } }) + '\n', 'utf8');
+    const cut = bytes.indexOf(Buffer.from('→', 'utf8')) + 1;   // inside the arrow's three bytes
+    renderer.push(bytes.subarray(0, cut));
+    renderer.push(bytes.subarray(cut));
+    const text = written.join('');
+    assert.match(text, /Zürich → Genève, 5 €/, `whole: ${JSON.stringify(text)}`);
+    assert.ok(!text.includes('�') && !raws.join('').includes('�'), 'no replacement characters anywhere');
 });
 
 test('G7: a child gone from under its stdin does not take the recorder down', async () => {
