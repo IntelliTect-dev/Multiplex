@@ -161,8 +161,9 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
     /// <summary>
     /// Reads the account from a <c>/api/v2/get/profile</c> response. Id: the profile's
     /// <c>@attributes.ref</c>, else <c>screen_name</c>. Emails: every
-    /// <c>ProfileEmailAddresses.ProfileEmailAddress</c> address (one object or an array) except
-    /// those TripIt marks unconfirmed, so nobody can claim an allowlisted address by adding it.
+    /// <c>ProfileEmailAddresses.ProfileEmailAddress</c> address (one object or an array) whose
+    /// <c>is_confirmed</c> is exactly true (TripIt sends the string <c>"true"</c>), so nobody can
+    /// claim an allowlisted address by adding it.
     /// </summary>
     internal static SiteAccount? ParseAccount(string json)
     {
@@ -184,7 +185,8 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
             {
                 foreach (var entry in TripItJson.AsList(addresses, "ProfileEmailAddress"))
                 {
-                    if (TripItJson.Bool(entry, "is_confirmed") == false) continue;
+                    // Fail closed: a missing or odd flag ("1", "no", null) is not a confirmation.
+                    if (TripItJson.Bool(entry, "is_confirmed") != true) continue;
                     if (TripItJson.Str(entry, "address") is { } address && !emails.Contains(address, StringComparer.OrdinalIgnoreCase))
                         emails.Add(address.Trim());
                 }
