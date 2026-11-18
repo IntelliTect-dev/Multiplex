@@ -86,6 +86,49 @@ public sealed class StorageTests : IDisposable
         Assert.Equal(["r1"], (await index.ListAsync("tripit", CancellationToken.None)).Select(a => a.AccountId));
     }
 
+    /// <summary>
+    /// An account list that cannot be read (a lost key, a damaged file) is kept beside the new
+    /// one rather than silently overwritten by the next change, so nothing is lost for good.
+    /// </summary>
+    [Theory]
+    [InlineData(false)] // not something this server's key ring encrypted
+    [InlineData(true)]  // decrypts, but is not an account list
+    public async Task Unreadable_account_index_is_moved_aside_before_a_new_one_is_written(bool decryptable)
+    {
+        var index = new SiteAccountIndex(_protection, _paths);
+        var file = _paths.AccountIndexFile("tripit");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        var unreadable = decryptable
+            ? _protection.CreateProtector("Multiplex.SignIn.AccountIndex.v1").Protect("not json"u8.ToArray())
+            : "encrypted under a key this server no longer has"u8.ToArray();
+        await File.WriteAllBytesAsync(file, unreadable);
+
+        // Reading changes nothing.
+        Assert.Empty(await index.ListAsync("tripit", CancellationToken.None));
+        Assert.Equal(unreadable, await File.ReadAllBytesAsync(file));
+
+        await index.UpsertAsync(new SiteAccount("tripit", "r1", ["one@example.test"], "One"), CancellationToken.None);
+
+        var aside = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file)!, "accounts.bin.unreadable-*"));
+        Assert.Equal(unreadable, await File.ReadAllBytesAsync(aside));
+        Assert.Equal(["r1"], (await index.ListAsync("tripit", CancellationToken.None)).Select(a => a.AccountId));
+    }
+
+    [Fact]
+    public async Task Removing_from_an_unreadable_account_index_also_keeps_the_old_file()
+    {
+        var index = new SiteAccountIndex(_protection, _paths);
+        var file = _paths.AccountIndexFile("tripit");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        await File.WriteAllTextAsync(file, "garbage");
+
+        await index.RemoveAsync("tripit", "r1", CancellationToken.None);
+
+        var aside = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file)!, "accounts.bin.unreadable-*"));
+        Assert.Equal("garbage", await File.ReadAllTextAsync(aside));
+        Assert.Empty(await index.ListAsync("tripit", CancellationToken.None));
+    }
+
     [Theory]
     [InlineData("../evil")]
     [InlineData("a/b")]
