@@ -768,16 +768,18 @@ document counts wherever it is hosted).
 
 | Observed | Means | What happens |
 |---|---|---|
-| `429`, or `503` with `Retry-After` | throttled, and the site named its wait | **pause** the whole capture for exactly that `Retry-After` (seconds or an HTTP-date), however long, up to a sanity ceiling of **24 hours** -- then carry on by itself |
+| `429`, or `503` with `Retry-After` | throttled, and the site named its wait | **pause** the whole capture for exactly that `Retry-After` (seconds or an HTTP-date), however long, up to a sanity ceiling of **24 hours** -- then carry on by itself. A `Retry-After` of 0, or a date already past, is a 2 s pause (the burst window), never a zero-length one |
 | `429` naming no wait | throttled | **pause** for a backoff of about **1, 2, 4, 8, then 15 minutes** (capped at 15, up to a fifth taken off at random), carrying on by itself after each |
 | the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, a vendor's block or challenge interstitial on the site, recognised by a marker only that page carries (Cloudflare's "Just a moment..." challenge, DataDome's or PerimeterX's CAPTCHA, Imperva's incident page, Akamai's "Access Denied", Amazon's "Check the box to continue" checkpoint), a site request refused with a `403` carrying `x-datadome` or a vendor's block in any content type (DataDome's or PerimeterX's JSON answer to an XHR), or a `403` or `503` page that says "Press & Hold", "unusual traffic" or "verify you are human", or names a CAPTCHA | blocked / challenged | **hand over** at once |
-| throttling with no wait named that goes on for **an hour** without one page of the site loading in between, or a `Retry-After` beyond **24 hours** | the site means it | **hand over** |
+| throttling with no wait named that goes on for **an hour** without one page of the site loading in between, a `Retry-After` of 0 (or already past) for the **third time in ten minutes** (distinct episodes -- one page load's burst counts once), or a `Retry-After` beyond **24 hours** | the site means it | **hand over** |
 
 The numbers are constants in `pacing.js` (`RETRY_AFTER_CEILING_MS`,
-`BACKOFF_BASE_MS`, `BACKOFF_MAX_MS`, `BACKOFF_JITTER`, `THROTTLE_GIVE_UP_MS`),
-pinned by its tests. A page of the site that loads ends a run of throttling, so
-the backoff and the hour start again after one. A site that **names** its wait
-is taken at its word every time; the hour is for a site that only says no.
+`BACKOFF_BASE_MS`, `BACKOFF_MAX_MS`, `BACKOFF_JITTER`, `THROTTLE_GIVE_UP_MS`,
+`SHORT_WAIT_MIN_MS`, `SHORT_WAIT_LIMIT`, `SHORT_WAIT_WINDOW_MS`), pinned by its
+tests. A page of the site that loads ends a run of throttling, so the backoff
+and the hour start again after one. A site that **names** its wait is taken at
+its word every time; the hour is for a site that only says no, and counts only
+that: time spent honouring a named wait in between is not part of it.
 
 **What a pause holds -- everything, at the browser.** While a pause runs, this
 capture's requests to the site (its host and subdomains, and any page load)
