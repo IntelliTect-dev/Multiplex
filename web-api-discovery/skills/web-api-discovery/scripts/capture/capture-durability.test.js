@@ -85,6 +85,7 @@ const { execFileSync, spawnSync } = require('child_process');
 
 const captureJs = path.join(__dirname, 'capture-har.js');
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+const gates = require(path.join(__dirname, 'capture-start-gates.test-support.js'));
 
 const CAPTURES_DIR = '.har-captures';
 /**
@@ -98,6 +99,20 @@ function real(p) {
 }
 
 const tmpRoot = real(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-durability-')));
+
+// A MACHINE THE CHECK-ONLY START PASSES ON (#25). `--validate-only` is how these
+// cases ask the recorder where a capture would land, and since #25 it exits 1
+// when a real start would be refused -- no browser driver, no operator profile.
+// The cases are about paths, so they stand on a machine where neither is
+// missing, whatever the one running the suite has.
+//
+// The operator profile sits at the suite's own root, above every fixture, and
+// NOT in the folders the recorder runs from: D1 removes a worktree with an
+// ordinary `git worktree remove`, which refuses a worktree holding an untracked
+// file -- and that refusal would be the fixture's doing, not the recorder's. No
+// case in this file is about a missing profile, so one ancestor serves them all.
+gates.plantOperatorProfile(tmpRoot);
+const passingGates = gates.childEnv(gates.gateVars(tmpRoot));
 
 const queued = [];
 function test(name, fn) { queued.push({ name, fn }); }
@@ -154,7 +169,7 @@ function resolveViaRecorder(cwd, args) {
     const r = spawnSync(process.execPath, [
         captureJs, 'start', '--uri', 'https://example.com',
         '--describe', 'durability fixture', '--validate-only', ...(args || [])
-    ], { cwd, encoding: 'utf8', windowsHide: true });
+    ], { cwd, encoding: 'utf8', windowsHide: true, env: passingGates });
     return {
         status: r.status,
         stderr: r.stderr || '',
@@ -164,7 +179,7 @@ function resolveViaRecorder(cwd, args) {
 
 function runCapture(cwd, argv) {
     const r = spawnSync(process.execPath, [captureJs, ...argv],
-        { cwd, encoding: 'utf8', windowsHide: true });
+        { cwd, encoding: 'utf8', windowsHide: true, env: passingGates });
     return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 

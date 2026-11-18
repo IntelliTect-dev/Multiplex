@@ -298,7 +298,39 @@
  *                    traffic.
  *   --no-wait        do not read ENTER from stdin (for non-interactive use;
  *                    the session then ends via `stop`, SIGINT, or the window).
- *   --validate-only  resolve and print paths without launching a browser.
+ *   --validate-only  THE CHECK-ONLY START. Resolves the session and prints it
+ *                    as JSON without launching a browser -- and says whether a
+ *                    real start WITH THESE ARGUMENTS would be refused (#25), so
+ *                    a caller about to start the recorder where its errors
+ *                    cannot be seen can ask first. It asks the gates a real
+ *                    start runs before any browser exists:
+ *                      agent             with --ai: a `claude` that can be
+ *                                        spawned
+ *                      browser-driver    the playwright module -- and its
+ *                                        Chromium build, unless --browser
+ *                                        native, --attach or --ai, which drive
+ *                                        the Chrome the machine already has
+ *                      operator-profile  a usable .har-profile.json at or above
+ *                                        the working directory (--profile is
+ *                                        the BROWSER profile and does not move
+ *                                        it)
+ *                    The JSON gains one key, and every other key is unchanged:
+ *                      "validation": { "ok": false, "checks": [
+ *                        { "name": "browser-driver", "ok": false,
+ *                          "reason": "the playwright module was not found. ..." },
+ *                        { "name": "operator-profile", "ok": true,
+ *                          "reason": null } ] }
+ *                    `checks` is in the order a start asks, so the first
+ *                    failure is the message a real start would have ended on;
+ *                    each reason is the start's own message, also printed on
+ *                    stderr. All failures are reported in one run.
+ *                    It answers as an UNATTENDED start would: at a terminal or
+ *                    not, it never prompts, installs, scaffolds or writes.
+ *                    Exit 0 when every check passes, 1 when any fails.
+ *                    NOT ASKED, so still possible after a pass: a capture store
+ *                    that is not gitignored, a capture profile that is already
+ *                    recording, no Chrome for --browser native, and nothing
+ *                    answering at an --attach endpoint.
  *   --log-level      `normal` (default) says what is being recorded, how to
  *                    end it, and which artifacts it produced. `verbose` adds
  *                    the resolved paths, the profile and the CDP endpoint.
@@ -326,6 +358,13 @@
  *        to start one (#115). The raw is kept and not post-processed. A
  *        person signs in once from a terminal and the saved session carries
  *        the unattended runs after it.
+ *
+ * `start --validate-only` records nothing and uses three of these: 0 -- every
+ * check passed; 1 -- a real start with these arguments would be refused; 2 --
+ * usage error, with no JSON. 1 rather than a new code because it is what the
+ * real start itself exits with for each of those refusals (a missing driver,
+ * operator profile or agent), so the check and the start it stands in for
+ * give a caller the same answer.
  */
 
 'use strict';
@@ -4538,6 +4577,77 @@ function preflightProfile(isTty) {
     }
 }
 
+/**
+ * `npm root -g`, asked without leaving anything behind (#25).
+ *
+ * The resolver's own lookup -- dropping it would fail the check on a machine
+ * whose npm prefix was moved, where a real start finds the module -- with
+ * four habits of npm's switched off for this one run. Measured: an ordinary
+ * `npm root -g` writes a debug log into npm's cache, creates that cache folder
+ * if the machine has none yet, may ask the registry whether npm is out of
+ * date, and leaves a compile cache in the temp directory. Each has its own
+ * documented setting, read from the environment npm and Node already read,
+ * and none of them changes the answer.
+ *
+ * The cache is pointed at the temp directory because it is a folder that is
+ * already there: npm makes sure its cache folder exists before it does
+ * anything, and with the log switched off it puts nothing in it.
+ *
+ * Only the check-only start asks this way. A real start is about to write a
+ * capture, and an npm log somewhere else is nobody's surprise.
+ */
+function quietNpmGlobalRoot(opts) {
+    const env = Object.assign({}, process.env, {
+        npm_config_logs_max: '0',
+        npm_config_update_notifier: 'false',
+        npm_config_cache: os.tmpdir(),
+        NODE_DISABLE_COMPILE_CACHE: '1'
+    });
+    return nodeDep.npmGlobalRoot(Object.assign({}, opts, {
+        spawn: (command, args, settings) =>
+            spawnSync(command, args, Object.assign({}, settings, { env }))
+    }));
+}
+
+/**
+ * WOULD A REAL START BE REFUSED -- asked, without starting one (#25).
+ *
+ * `--validate-only` is what a caller runs before it starts the recorder where
+ * its errors cannot be seen. It used to skip every gate below, so a folder with
+ * no operator profile validated, exit 0, and the start that followed ended at
+ * once in a place nobody was reading.
+ *
+ * THE SAME GATES, NOT A COPY OF THEM. These are the three calls `start` makes
+ * before a browser exists, given what `start` derives from its own command
+ * line, in the order it makes them -- so the first failure listed is the
+ * message a real start would have ended on. A gate added to `start` belongs
+ * here too.
+ *
+ * `isTty` IS FALSE WHOEVER IS ASKING. That is what keeps this free of side
+ * effects -- no install offer, no scaffold prompt -- and it makes the verdict
+ * the one an UNATTENDED start gets, which is the caller this exists for. At a
+ * terminal a real start would offer to fix either; the fact is the same.
+ *
+ * Every reason is the real start's own message for that refusal, without the
+ * `capture-har: ` it is printed under.
+ */
+async function startGateVerdict(run) {
+    const checks = [];
+    const record = (name, refusal) => checks.push(refusal
+        ? { name, ok: false, reason: String(refusal).replace(/^capture-har: /, '') }
+        : { name, ok: true, reason: null });
+
+    if (run.ai) record('agent', resolveAgent({ ai: true, claudeOnPath: claudeOnPath() }).error);
+    const deps = await preflightDependencies({
+        isTty: false, requireBrowser: run.requireBrowser, npmGlobalRoot: quietNpmGlobalRoot
+    });
+    record('browser-driver', deps.ok ? null : deps.message);
+    const profile = preflightProfile(false);
+    record('operator-profile', profile.ok ? null : profile.message);
+
+    return { ok: checks.every((c) => c.ok), checks };
+}
+
 function scaffoldProfile(targetDir) {
     const file = path.join(targetDir, harProfile.PROFILE_FILENAME);
     writeJson(file, { salt: require('crypto').randomBytes(24).toString('hex'), literals: {} });
@@ -4733,10 +4843,11 @@ async function start(args) {
     // then a missing module -- everything before the failure being work to
     // undo, and the printed remedy being one that could not work.
     //
-    // NOT under --validate-only. That flag resolves paths and opens nothing,
-    // and several suites use it to ask the recorder questions on machines
-    // where no browser is installed; gating it on a browser would break the
-    // one command that exists to have no side effects.
+    // NOT ENFORCED under --validate-only. That flag resolves paths and opens
+    // nothing, so nothing stops it here -- but it no longer skips the question
+    // (#25): startGateVerdict asks it, unattended, and the answer is reported
+    // beside the resolved paths with exit 1. A check that passed on a machine
+    // the real start was about to refuse was the defect.
     // AND CAN ANYTHING DRIVE IT (#98) -- asked above the dependency preflight for
     // the same reason the preflight itself sits above everything else: this is
     // the other gate whose answer makes the rest pointless. An operator left with
@@ -4744,9 +4855,8 @@ async function start(args) {
     // that could never have worked -- and on the protected sites this mode exists
     // for, that browser was the expensive part.
     //
-    // NOT under --validate-only, exactly as the preflight is not: that flag
-    // resolves paths and starts nothing, and suites use it to ask the recorder
-    // questions on machines where neither a browser nor a CLI is installed.
+    // Not enforced under --validate-only either, and for the same reason asked
+    // there by startGateVerdict rather than skipped.
     if (ai && !args['validate-only']) {
         const agent = resolveAgent({ ai, claudeOnPath: claudeOnPath() });
         if (agent.error) {
@@ -4836,10 +4946,15 @@ async function start(args) {
     // Null when attached, and null is the honest value: the browser is running
     // on a profile this run did not choose and cannot name. Guessing one would
     // put a path in session.json that nothing verified.
+    // NAMED, NOT CREATED, under --validate-only (#25): that flag writes nothing,
+    // so it reports the template a real start makes a folder from rather than
+    // leaving a folder of its own behind on every check.
     const profileDir = attached
         ? null
         : isolated
-            ? fs.mkdtempSync(path.join(os.tmpdir(), 'har-capture-'))
+            ? (args['validate-only']
+                ? path.join(os.tmpdir(), 'har-capture-XXXXXX')
+                : fs.mkdtempSync(path.join(os.tmpdir(), 'har-capture-')))
             : resolveProfileDir(args.profile);
     const externalProfile = !!profileDir && !isolated && !profileDir.startsWith(captureProfileRoot());
     const storageState = isolated ? discoverStorageState(process.cwd()) : null;
@@ -4930,9 +5045,23 @@ async function start(args) {
     if (args['validate-only']) {
         // stdout stays pure JSON so a caller can parse it; the human note goes
         // to stderr rather than corrupting that.
-        process.stdout.write(JSON.stringify(session, null, 2) + '\n');
-        log.info('capture-har: --validate-only OK (no browser launched)');
-        return 0;
+        //
+        // THE VERDICT RIDES ON THE PRINTED JSON, NOT ON THE SESSION (#25): one
+        // new top-level key, added here, so every key that was there is where
+        // it was and none of this reaches session.json.
+        const validation = await startGateVerdict({ ai, requireBrowser: ownsRecordHar });
+        process.stdout.write(
+            JSON.stringify(Object.assign({}, session, { validation }), null, 2) + '\n');
+        const refused = validation.checks.filter((c) => !c.ok);
+        if (refused.length === 0) {
+            log.info('capture-har: --validate-only OK (no browser launched)');
+            return 0;
+        }
+        // Said the way the real start says each one, and never behind a level.
+        for (const c of refused) process.stderr.write(`capture-har: ${c.reason}\n`);
+        process.stderr.write('capture-har: --validate-only FAILED (no browser launched) -- a start ' +
+            `with these arguments would be refused: ${refused.map((c) => c.name).join(', ')}\n`);
+        return 1;
     }
 
     // THE CAPTURE STORE MUST BE GITIGNORED BEFORE ANYTHING IS RECORDED (#377).

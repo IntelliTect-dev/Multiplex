@@ -89,6 +89,7 @@ const { execFileSync, spawn, spawnSync } = require('child_process');
 
 const captureJs = path.join(__dirname, 'capture-har.js');
 const capture = require(captureJs);
+const gates = require(path.join(__dirname, 'capture-start-gates.test-support.js'));
 
 /**
  * `fs.realpathSync` does not expand a Windows 8.3 short name and os.tmpdir()
@@ -149,12 +150,20 @@ function plantOperatorProfile(dir) {
     }, null, 2) + '\n', 'utf8');
 }
 
+// A MACHINE THE CHECK-ONLY START PASSES ON (#25). `--validate-only` exits 1 when
+// a real start would be refused -- no browser driver, or with --ai no agent that
+// can be spawned -- so the cases that ask it how `--ai` RESOLVES stand on a
+// machine that has both: stand-ins, reached the way the recorder itself looks
+// (NODE_PATH and PATH), and only for these runs. What a MISSING agent does is
+// A7's and A13's, on a PATH pruned of every agent.
+const passingGates = gates.childEnv(gates.gateVars(tmpRoot, { agent: true }));
+
 /** `start --validate-only`: the recorder's own resolution, not a copy of it. */
 function resolveViaRecorder(cwd, args) {
     const r = spawnSync(process.execPath, [
         captureJs, 'start', '--uri', 'https://example.com',
         '--describe', 'ai fixture', '--validate-only', ...(args || [])
-    ], { cwd, encoding: 'utf8', windowsHide: true });
+    ], { cwd, encoding: 'utf8', windowsHide: true, env: passingGates });
     return {
         status: r.status,
         stderr: r.stderr || '',
