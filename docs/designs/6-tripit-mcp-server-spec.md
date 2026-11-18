@@ -35,7 +35,7 @@ Two consequences shape everything below:
 |---|---|
 | Hosting | Runs on the owner's PC now, reachable over HTTPS through a tunnel; a real host later. Base URL is configuration, never derived from the request. |
 | Tunnel | Tailscale Funnel preferred (stable `https://<machine>.<tailnet>.ts.net`, already installed); Cloudflare quick tunnel for overnight testing because Funnel is not yet enabled on the tailnet. |
-| Who may connect | Owner passcode on the connect page (stored as a salted hash) **and** an allowlist of TripIt accounts. Checked before any browser launches. |
+| Who may connect | Owner passcode on the connect page (stored as a salted hash), checked before any browser launches. Each connection is bound to the TripIt account signed in while it is added; there is no list of accounts (#52 replaced the original allowlist). |
 | TripIt sign-in UX | Live mirrored TripIt page in the connect flow. No Multiplex password form. TripIt password never stored. |
 | Tools | All read and write tools; deletes, merges, participant removal and invitations (which email people) need an explicit confirm step. |
 | Clients | Claude Desktop chat, claude.ai web and mobile, ChatGPT web and mobile. Claude Code also works (it reaches localhost directly). |
@@ -222,10 +222,10 @@ metadata and the 401 challenge).
    over a WebSocket) into the page. Taps become pointer events; typing goes through a text
    field and is inserted into the focused element. Navigation is limited to TripIt and the
    identity providers its own sign-in page links to; anything else is blocked.
-4. The server watches for the session cookies and confirms with `v2/get/profile`. It reads
-   the account's email addresses and checks them against the allowlist. Not allowed → the
-   temporary profile is wiped and the person sees "this TripIt account is not allowed".
-5. Allowed → the temporary profile becomes the account's profile (replacing an older one),
+4. The server watches for the session cookies and confirms with `v2/get/profile`, which names
+   the account. The connection being added is bound to that account: the same connector can be
+   added several times, each with a different TripIt account (#52).
+5. The temporary profile becomes the account's profile (replacing an older one),
    the session snapshot is saved, and the browser redirects back to Claude/ChatGPT with the
    authorization code. The whole flow times out after 10 minutes.
 
@@ -237,9 +237,10 @@ human (re-sign-in, a challenge), the person is sent to it.
 - Passcode: set by the owner, stored as PBKDF2-SHA256 (≥ 210 000 iterations) with salt in
   user secrets / the encrypted store; compared in constant time. Generated at install if
   absent, and its location (never its value) printed.
-- Allowlist: `Multiplex:Sites:TripIt:AllowedAccounts` (emails), in local configuration only.
-  Only addresses TripIt marks `is_confirmed` exactly true count; a missing or odd flag does
-  not (fail closed).
+- No account list (#52): the passcode is the gate. A `Multiplex:Sites:{slug}:AllowedAccounts`
+  left by an earlier install is ignored, with one log line when the server starts. Only
+  addresses TripIt marks `is_confirmed` exactly true are kept on the account, for display; a
+  missing or odd flag does not count.
 - Passcode tries are reserved before they are checked, so a burst of concurrent guesses
   never gets more than the limit; a right passcode clears that caller's count.
 - Sign-in browser profiles left behind by a crash (`temp-*`, `*.old-*`) are deleted when the
@@ -291,8 +292,8 @@ still part of it.
 `Install-Multiplex.ps1` (repo root, idempotent, `-WhatIf` aware):
 
 1. Builds and publishes `Multiplex.Web` to `%USERPROFILE%\.multiplex\app`.
-2. Ensures configuration: public base URL, TripIt allowlist, passcode (generated if absent;
-   location printed), Data Protection key folder.
+2. Ensures configuration: public base URL, passcode (generated if absent; location printed),
+   Data Protection key folder. No TripIt account is asked for (#52).
 3. Registers a per-user scheduled task "Multiplex" that starts the server at logon and
    restarts it on failure (no admin rights needed).
 4. Optionally starts the tunnel: `tailscale funnel --bg 5190` (when Funnel is enabled), else
@@ -333,7 +334,7 @@ whether a server added on the web appears in the mobile apps. See section 12.
 - Integration tests (in-process, `WebApplicationFactory`): discovery → registration →
   authorize (gate + a fake sign-in provider) → token → `tools/list` → a read tool against a
   fake TripIt → refresh → revoke → 401. Plus negative cases: wrong PKCE, wrong resource,
-  wrong redirect URI, expired code, reused refresh token, disallowed account.
+  wrong redirect URI, expired code, reused refresh token.
 - Live end to end (opt-in, owner's machine): the real server, the **test account's** already
   signed-in profile adopted as the account's session, MCP Inspector CLI or a scripted client
   doing the full OAuth flow, then real TripIt reads and a create-then-delete of a throwaway
@@ -465,8 +466,8 @@ built on the official MCP C# SDK (`scripts/McpSdkConnect.cs`, its own OAuth hand
 
 **Verified with a stub sign-in site** (automated tests, real Chrome): the live mirrored
 sign-in end to end from a simulated touch phone (passcode, taps, typing, redirect back with a
-code), allowlist rejection, gate lockout, the navigation lock, timeouts and the refresher's
-signed-out path.
+code), two connections bound to two different accounts (#52), gate lockout, the navigation
+lock, timeouts and the refresher's signed-out path.
 
 **Found while building, now part of the design:**
 
@@ -478,11 +479,12 @@ signed-out path.
   cookies (section 9), so to TripIt they look like the browser's own requests.
 - TripIt's only third-party sign-in is Google; allowed navigation hosts default to
   `www.tripit.com`, `tripit.com`, `accounts.google.com`.
-- Allowlist matching uses only email addresses TripIt marks confirmed.
+- Only email addresses TripIt marks confirmed are kept on an account.
 - "Keep me signed in" must be ticked during the mirrored sign-in, or the session ends when
   the browser closes; the page says so.
 - **Continue as** lets a reconnect (an expired Claude/ChatGPT grant) skip retyping the TripIt
-  password while the server's TripIt session is still valid; it is behind the passcode.
+  password while the server's TripIt session is still valid; it is behind the passcode, and
+  offers every account the server holds a session for (with no account list, #52).
 - The server listens on `localhost` (both 127.0.0.1 and ::1); listening only on 127.0.0.1
   cost every `localhost` request about 2 s, against Claude's ~10 s discovery limit.
 - Loopback redirect URIs match on any port (RFC 8252): Claude Code and `mcp-remote` register
