@@ -717,8 +717,10 @@ is honoured even with `--pace off`: that is not pacing, and turning pacing off
 for a test must not turn it off.
 
 **Who it applies to.** Every action the tooling takes itself is paced in code:
-the recorder's first navigation, the sign-in fills (see **Signing in**), and
-`capture-cdp.js`. An `-AI` agent's actions are the agent's, so the same numbers
+the recorder's first navigation and the sign-in fills (see **Signing in**).
+`capture-cdp.js` reads `--pace` the same way, but it makes one navigation of its
+own, so it has nothing to space out; headed, the person browsing its window is
+told what the site did. An `-AI` agent's actions are the agent's, so the same numbers
 are written into its prompt (**Pace** under **This capture**) and the rules
 tell it to keep them -- the recorder can observe the agent, not slow it down.
 If the agent navigates faster than the per-minute ceiling, the recorder says so.
