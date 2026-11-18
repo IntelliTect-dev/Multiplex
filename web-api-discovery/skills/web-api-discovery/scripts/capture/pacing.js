@@ -266,11 +266,26 @@ const THROTTLE_GIVE_UP_MS = 60 * 60 * 1000;
 
 /**
  * THE BURST WINDOW. A throttle that arrives while a pause is already running,
- * or within this of its start, and names a wait that ends no more than this
- * after the pause does, is the same pause: the spread of one page's requests
- * being refused together, not news.
+ * naming a wait that ends no more than this after the pause does, is the same
+ * pause: the spread of one page's requests being refused together, not news.
  */
 const PAUSE_EXTEND_TOLERANCE_MS = 2000;
+
+/**
+ * A NAMED WAIT TOO SHORT TO BE ONE. `Retry-After: 0`, or an HTTP-date already
+ * past by this PC's clock, names a wait of nothing. It is still the site
+ * saying "slow down": the pause is SHORT_WAIT_MIN_MS at least, never zero, and
+ * the SHORT_WAIT_LIMIT-th inside SHORT_WAIT_WINDOW_MS hands over -- a site that
+ * keeps asking and never says for how long is a site a person should look at.
+ *
+ * The floor IS the burst window, and that is the one burst rule: every pause
+ * lasts at least as long as one page load's refusals take to arrive, so the
+ * rest of them land inside it and are the same pause -- and what the
+ * hand-over counts is distinct episodes, never one burst three times.
+ */
+const SHORT_WAIT_MIN_MS = PAUSE_EXTEND_TOLERANCE_MS;
+const SHORT_WAIT_LIMIT = 3;
+const SHORT_WAIT_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * A response header, from either shape the recorder sees: Playwright's
@@ -574,7 +589,13 @@ function isPageLoad(r, nowMs = Date.now()) {
  *   - the site names a wait longer than RETRY_AFTER_CEILING_MS (a day);
  *   - the site names NO wait, and has gone on throttling for
  *     THROTTLE_GIVE_UP_MS (an hour) with no page loading in between
- *     (`progress()` is told of every page that loads).
+ *     (`progress()` is told of every page that loads). The hour counts only
+ *     time the site named no wait: a named wait honoured in between is taken
+ *     off it;
+ *   - the site names a wait too short to be one (under SHORT_WAIT_MIN_MS: a
+ *     Retry-After of 0, or a date already past) for the SHORT_WAIT_LIMIT-th
+ *     time inside SHORT_WAIT_WINDOW_MS. Before that, each is a short pause of
+ *     SHORT_WAIT_MIN_MS -- never a zero-length one.
  * A block or a challenge hands over at once. Nothing here ever retries them.
  *
  * A THROTTLE DURING A PAUSE IS THE SAME PAUSE. The browser holds the site's
@@ -595,9 +616,18 @@ function createThrottleMonitor(opts = {}) {
     const giveUpMs = opts.giveUpMs === undefined ? THROTTLE_GIVE_UP_MS : opts.giveUpMs;
     const toleranceMs = opts.extendToleranceMs === undefined ? PAUSE_EXTEND_TOLERANCE_MS : opts.extendToleranceMs;
     const backoff = { baseMs: opts.backoffBaseMs, maxMs: opts.backoffMaxMs, jitter: opts.backoffJitter, rng };
+    const shortMinMs = opts.shortWaitMinMs === undefined ? SHORT_WAIT_MIN_MS : opts.shortWaitMinMs;
+    const shortLimit = opts.shortWaitLimit === undefined ? SHORT_WAIT_LIMIT : opts.shortWaitLimit;
+    const shortWindowMs = opts.shortWaitWindowMs === undefined ? SHORT_WAIT_WINDOW_MS : opts.shortWaitWindowMs;
     let episodes = 0;
     let attempt = 0;
+    // The hour is counted from the first throttle that named NO wait since a
+    // page last loaded, and the named waits honoured since then are taken off
+    // it: time spent doing what the site asked is not time it refused us.
     let throttledSince = null;
+    let namedMs = 0;
+    // When the site named a wait too short to be one (SHORT_WAIT_MIN_MS).
+    let shortWaits = [];
     let current = null;
     let handedOver = null;
     const signals = [];
@@ -622,22 +652,33 @@ function createThrottleMonitor(opts = {}) {
         const t = now();
         const named = signal.retryAfterMs !== null;
         if (named && signal.retryAfterMs > ceilingMs) return handOver(signal, 'retry-after-too-long');
-        // THE SAME PAUSE: one that is still running, or -- the burst rule --
-        // one that began within the burst window. A burst is one episode
-        // whether or not its pause is still running: a Retry-After of 0 names a
-        // pause that is over the moment it starts, and the rest of that page
-        // load's refusals are still the same burst.
-        if (current && (t < current.pausedUntil || t - current.startedAt <= toleranceMs)) {
+        // THE SAME PAUSE: one that is still running. That is the burst rule
+        // too: no pause is shorter than the burst window (SHORT_WAIT_MIN_MS),
+        // so even after a Retry-After of 0 the rest of that page load's
+        // refusals land inside it, and a burst is one episode.
+        if (current && t < current.pausedUntil) {
             // A longer named wait is what the site wants now.
             if (named && t + signal.retryAfterMs > current.pausedUntil + toleranceMs) {
+                if (throttledSince !== null) namedMs += t + signal.retryAfterMs - current.pausedUntil;
                 return pause(signal, t, signal.retryAfterMs, true);
             }
             return { action: 'none', signal };
         }
-        if (throttledSince === null) throttledSince = t;
         episodes++;
-        if (named) return pause(signal, t, signal.retryAfterMs, false);
-        if (t - throttledSince >= giveUpMs) return handOver(signal, 'persistent');
+        if (named) {
+            // A wait of nothing is still "slow down": a short real pause, and
+            // the third inside the window is a person's to look at.
+            if (signal.retryAfterMs < shortMinMs) {
+                shortWaits = shortWaits.filter((at) => at > t - shortWindowMs);
+                shortWaits.push(t);
+                if (shortWaits.length >= shortLimit) return handOver(signal, 'zero-wait');
+            }
+            const waitMs = Math.max(shortMinMs, signal.retryAfterMs);
+            if (throttledSince !== null) namedMs += waitMs;
+            return pause(signal, t, waitMs, false);
+        }
+        if (throttledSince === null) { throttledSince = t; namedMs = 0; }
+        if (t - throttledSince - namedMs >= giveUpMs) return handOver(signal, 'persistent');
         attempt++;
         return pause(signal, t, backoffMs(attempt, backoff), false);
     }
@@ -654,6 +695,8 @@ function createThrottleMonitor(opts = {}) {
             handedOver = null;
             current = null;
             throttledSince = null;
+            namedMs = 0;
+            shortWaits = [];
             attempt = 0;
         },
         /** The pause ended early (the recording is ending, or a person took over). */
@@ -735,6 +778,7 @@ const WHY = {
     challenge: 'the site put up a bot check (a "prove you\'re human" page)',
     blocked: 'the site refused the visitor',
     persistent: 'the site has gone on throttling for an hour without one page loading',
+    'zero-wait': 'the site kept throttling while naming no wait to keep to (a Retry-After of 0, or already over)',
     'retry-after-too-long': 'the site asked for a wait of more than a day'
 };
 
@@ -867,6 +911,9 @@ module.exports = {
     BACKOFF_MAX_MS,
     BACKOFF_JITTER,
     THROTTLE_GIVE_UP_MS,
+    SHORT_WAIT_MIN_MS,
+    SHORT_WAIT_LIMIT,
+    SHORT_WAIT_WINDOW_MS,
     PAUSE_EXTEND_TOLERANCE_MS,
     CHALLENGE_BODY_MAX,
     INTERSTITIAL_BODY_MAX,

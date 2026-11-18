@@ -294,6 +294,11 @@ test('G8: the messages say what the owner asked them to say', () => {
         /^The site showed a block page .* A person is taking over the browser\. Don't use the browser; end your turn and wait\./);
     assert.strictEqual(m.handBack(), 'The person has finished. Re-check the page and continue where you left off.');
     assert.match(m.ended(), /^The capture has ended; stop\./);
+    // Every reason a hand-over can have is said as itself, not as the catch-all.
+    for (const why of ['challenge', 'blocked', 'persistent', 'zero-wait', 'retry-after-too-long']) {
+        assert.notStrictEqual(agentStream.handOverPhrase({ why }), agentStream.handOverPhrase({ why: 'unknown' }),
+            `'${why}' has its own phrase`);
+    }
 });
 
 (async () => {
