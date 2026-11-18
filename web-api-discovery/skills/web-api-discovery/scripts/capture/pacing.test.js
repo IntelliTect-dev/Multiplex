@@ -31,6 +31,7 @@
 //   M3  throttling through a pause hands over (the agent case)
 //   M4  a block or a challenge hands over at once, and only once
 //   M5  a Retry-After longer than the cap hands over rather than cutting it short
+//   M6  a burst is one episode even with Retry-After: 0
 //   L1  the hand-over tells the human the browser is theirs, and that nothing
 //       evades -- and a hand-driven run gets advice, not a hand-over
 //   D1  capture-cdp.js: --throttle-ms 0 means zero, and --pace is validated
@@ -532,6 +533,25 @@ test('M3: throttling THROUGH a pause hands over -- the driver did not wait', () 
     const next = monitor.observe(throttle(30000));
     assert.strictEqual(next.action, 'hand-over');
     assert.strictEqual(next.why, 'ignored-pause');
+});
+
+test('M6: a burst is one episode even when the site asks for no wait at all', () => {
+    // Three requests of one page load refused together with Retry-After: 0.
+    // The pause they name ends the moment it starts, so "inside the pause" is
+    // never true -- and each used to count as a new episode: pause, pause,
+    // hand-over "persistent".
+    const time = fakeTime();
+    const monitor = pacing.createThrottleMonitor({ now: time.now, rng: fixed(0.5) });
+    const decisions = [];
+    for (let i = 0; i < 3; i++) {
+        decisions.push(monitor.observe(throttle(0)).action);
+        time.advance(100);
+    }
+    assert.deepStrictEqual(decisions, ['pause', 'none', 'none'], 'one page load\'s burst is one episode');
+    assert.strictEqual(monitor.handedOver(), null);
+    // After the burst window, the site refusing again IS a new episode.
+    time.advance(5000);
+    assert.strictEqual(monitor.observe(throttle(0)).action, 'pause');
 });
 
 test('M4: a block or a challenge hands over at once, and only once', () => {
