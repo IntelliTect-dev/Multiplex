@@ -133,8 +133,9 @@ const REASONS = Object.freeze({
     FAILED: 'the process ancestry could not be read',
     NO_INVOKER: 'no invoking process could be identified',
     // What a recording that started before its lookup finished says in the
-    // meantime. It is replaced when the lookup settles; it is what stays only
-    // if the recording ended first.
+    // meantime. The session carries the real answer from the moment it
+    // arrives and writes it with its next write; this is what stays on disk
+    // only if the recorder died, or ended, before that.
     NOT_YET: 'the process ancestry had not been read when this was written'
 });
 
@@ -435,7 +436,7 @@ function beginRunIdentity(options = {}) {
  * within the grace period, that is the answer and `onLate` is never called. If
  * it has not, the answer for now is `{ id: null, reason: NOT_YET }` and
  * `onLate` is called ONCE with the real one when it arrives -- which is where
- * the caller writes it into the record it has already started.
+ * the caller puts it into the record it has already started.
  *
  * WHY NOT SIMPLY WAIT. The first version did, for ten seconds, and then gave
  * up: on a busy machine two real recordings of four were written with no run
@@ -443,7 +444,7 @@ function beginRunIdentity(options = {}) {
  * had opened and not navigated. A run that arrives a few seconds into a
  * recording is worth exactly as much as one that was there at the start.
  *
- * `onLate` THROWING IS SWALLOWED. It writes a file; a full disk at that moment
+ * `onLate` THROWING IS SWALLOWED. Whatever the caller does with a late answer
  * must not become an unhandled rejection that ends a recording in progress.
  */
 function settleRunIdentity(pending, onLate, options = {}) {

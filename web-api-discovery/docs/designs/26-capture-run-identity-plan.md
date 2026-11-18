@@ -141,8 +141,12 @@ first implementation awaited the lookup for ten seconds and then recorded
 recordings by two sessions while a test suite ran) left two of the four with no
 run. So recording now waits five seconds at most, writes
 `run: { id: null, reason: "...had not been read when this was written" }`, and
-the run is written into `session.json` when the lookup answers; the lookup
-itself is given a minute. Two things came out of the same finding:
+the run joins the session when the lookup answers; the lookup itself is given a
+minute. It is written with the session's next write -- the ending at the
+latest -- and not by a write of its own: `session.json` is not written
+atomically, the driving agent reads it as it starts, and a write at a moment
+nothing chose is one more chance of it reading half a file. Two more things
+came out of the same finding:
 
 - the lookup starts in the call that asks for it, not a microtask later;
 - a time limit is not final until the event loop has turned a few times after

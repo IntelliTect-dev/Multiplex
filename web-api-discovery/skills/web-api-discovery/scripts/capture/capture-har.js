@@ -5529,14 +5529,16 @@ async function start(args) {
     // time window separates them. See capture-run.js.
     //
     // A LOOKUP THAT IS STILL RUNNING DOES NOT HOLD THE RECORDING UP. After a
-    // short grace the session is written saying so, and the run is written in
-    // when it arrives -- found by recording on a busy machine, where waiting
-    // for it and then giving up left two recordings of four with no run.
+    // short grace the session is written saying so, and the run joins it when
+    // it arrives -- found by recording on a busy machine, where waiting for it
+    // and then giving up left two recordings of four with no run.
+    //
+    // IT JOINS THE SESSION, AND IS WRITTEN WITH THE NEXT WRITE -- the ending
+    // at the latest. Not by a write of its own: this file is not written
+    // atomically, the driving agent reads it as it starts, and a write at a
+    // moment nothing chose is one more chance of it reading half a file.
     session.captureId = captureRun.newCaptureId();
-    session.run = await captureRun.settleRunIdentity(runIdentity, (run) => {
-        session.run = run;
-        writeSession();
-    });
+    session.run = await captureRun.settleRunIdentity(runIdentity, (run) => { session.run = run; });
 
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();

@@ -266,10 +266,12 @@ operating system reuses the process id. No clock is involved, and it records
   doors already require. Other platforms record no run yet.
 * **A slow lookup does not hold a recording up.** It starts before the browser
   is launched and has usually answered by the time recording starts. If it has
-  not, recording waits five seconds at most and then starts, the session says
-  the ancestry `had not been read when this was written`, and the run is
-  written into `session.json` when it arrives -- typically a few seconds in. A
-  lookup that has not answered after a minute is given up on, and says so.
+  not, recording waits five seconds at most and then starts, and the session
+  says the ancestry `had not been read when this was written`. The run joins
+  the session when it arrives and is written with the session's next write --
+  when the recording ends, at the latest -- so until then `status` and the
+  listing show that capture without a run. A lookup that has not answered
+  after a minute is given up on, and says so.
 * **A capture recorded before this existed has neither field**, and every
   listing says so.
 
