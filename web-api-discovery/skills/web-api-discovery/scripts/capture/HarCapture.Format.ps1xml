@@ -19,6 +19,10 @@
     described this capture", and only one of those is the operator's problem.
     The booleans the Stage column summarises are all still on the object, and
     the list view below shows every one of them.
+
+    The Run column (issue #26) says which run made each capture, and says so
+    when none was recorded. The list view adds the capture's own id and how the
+    run was recognised.
 -->
 <Configuration>
   <ViewDefinitions>
@@ -193,6 +197,18 @@
             <Alignment>Right</Alignment>
             <Width>6</Width>
           </TableColumnHeader>
+          <!--
+              Which run made the capture (issue #26). The store is shared and
+              the stamps of concurrent sessions interleave, so this is the only
+              column that says whose recording a row is. Fifteen wide: the id
+              is twelve characters and is printed whole, because a shortened
+              one could only be matched with a wildcard, and substring matching
+              is what over-selected before this column existed.
+          -->
+          <TableColumnHeader>
+            <Label>Run</Label>
+            <Width>15</Width>
+          </TableColumnHeader>
           <TableColumnHeader>
             <Label>Description</Label>
           </TableColumnHeader>
@@ -231,6 +247,17 @@
                 <ScriptBlock>if ($_.Errors -and $_.Errors.Count) { $_.Errors.Count } else { '' }</ScriptBlock>
               </TableColumnItem>
               <!--
+                  THREE WAYS OF HAVING NO RUN, AND THEY ARE NOT THE SAME. A
+                  capture this recorder did not make has a dash, as it does
+                  under Ended. One recorded before runs existed says none was
+                  recorded. One recorded since, whose recorder could not read
+                  its own process ancestry, says it is unidentified. Nothing is
+                  inferred from the stamp or the description for any of them.
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if (-not $_.RecorderOutput) { '--' } elseif ($_.RunId) { $_.RunId } elseif ($_.CaptureId) { '(unidentified)' } else { '(none recorded)' }</ScriptBlock>
+              </TableColumnItem>
+              <!--
                   THE FLAG. A blank cell is ambiguous between "nobody described
                   this" and "this column did not render", and an operator
                   deciding what to keep needs to know which. The object keeps
@@ -265,6 +292,17 @@
               <ListItem>
                 <Label>Description</Label>
                 <ScriptBlock>if ([string]::IsNullOrWhiteSpace($_.Description)) { '(no description)' } else { $_.Description }</ScriptBlock>
+              </ListItem>
+              <ListItem>
+                <Label>RunId</Label>
+                <ScriptBlock>if (-not $_.RecorderOutput) { '--' } elseif ($_.RunId) { $_.RunId } elseif ($_.CaptureId) { '(unidentified)' } else { '(none recorded)' }</ScriptBlock>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RunBasis</PropertyName>
+              </ListItem>
+              <ListItem>
+                <Label>CaptureId</Label>
+                <ScriptBlock>if (-not $_.RecorderOutput) { '--' } elseif ($_.CaptureId) { $_.CaptureId } else { '(none recorded)' }</ScriptBlock>
               </ListItem>
               <ListItem>
                 <PropertyName>Bytes</PropertyName>

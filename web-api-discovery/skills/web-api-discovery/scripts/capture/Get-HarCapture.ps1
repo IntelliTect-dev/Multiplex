@@ -31,9 +31,24 @@
     render" just as readily as "nobody described this capture", and only one of
     those is the operator's problem.
 
-    NOT ONE CAPTURED VALUE IS PRINTED. Site, stamp, size, stage, and a
+    EVERY CAPTURE SAYS WHICH RUN MADE IT (#26). The store is shared, several
+    sessions record into it at once, and their stamps interleave -- so neither
+    a time window nor a description picks out one session's captures. `RunId`
+    is shared by everything one invoking session started, and `CaptureId` is
+    one recording. A capture recorded before either existed shows
+    `(none recorded)`; nothing is inferred for it.
+
+    SELECT A RUN WITH A PIPELINE FILTER, written with its guard:
+
+        Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run }
+
+    `RunId -eq $run` on its own is true, when `$run` is empty, for every
+    capture that has no run -- every recording made before this change.
+
+    NOT ONE CAPTURED VALUE IS PRINTED. Site, stamp, size, stage, the run, and a
     description the operator wrote themselves. Nothing here opens a HAR -- the
-    walk it calls never does either.
+    walk it calls never does either. A run id is a hash of a process id and its
+    start time: it names no program, user or machine.
 
     THE DESCRIPTION IS THAT ONE EXCEPTION, AND IT IS WORTH KNOWING WHEN WRITING
     ONE. It is whatever was typed into `Invoke-HarCapture -Describe`, or the
@@ -68,6 +83,12 @@
     Get-HarCapture -Path .har-captures/app.example.com | Format-List
 
     One site, in full.
+
+.EXAMPLE
+    Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq '3f9c2a71d0b4' }
+
+    One run's recordings and nobody else's. The run id is printed when a
+    recording ends, and is in the Run column here.
 
 .EXAMPLE
     Get-HarCapture | Where-Object Stage -eq raw | Sort-Object Bytes -Descending
@@ -190,6 +211,15 @@ foreach ($capture in $inventory) {
         Stamp          = $capture.stamp
         StartedUtc     = Get-StartedUtc -Value $capture.startedUtc
         Description    = $capture.describe
+        # WHICH RUN MADE IT, AND WHICH CAPTURE IT IS (#26). RunId is shared by
+        # every capture one invoking session started; CaptureId is this one
+        # recording. Both are $null for a capture recorded before they existed
+        # -- the honest datum, as with a missing description -- and the views
+        # print `(none recorded)` rather than a guess. RunId alone is $null when
+        # the recorder could not read its own process ancestry.
+        RunId          = $capture.runId
+        RunBasis       = $capture.runBasis
+        CaptureId      = $capture.captureId
         Bytes          = $capture.rawBytes
         # Reported, never refused: `assembleFromLog` exists precisely so an
         # interrupted recording still yields a raw.

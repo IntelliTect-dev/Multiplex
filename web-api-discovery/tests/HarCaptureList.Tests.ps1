@@ -247,6 +247,170 @@ Describe 'Get-HarCapture lists the store' {
     }
 }
 
+Describe 'Get-HarCapture tells one run from another' {
+
+    # Issue #26. The store is shared and several sessions record into it at
+    # once. Nothing in a capture said which of them made it, so the only ways
+    # to pick out "mine" were a time window -- which the sessions interleave
+    # across -- and the description, which over-matched on its first real use
+    # and could not separate three attempts that all read the same.
+    #
+    # THE FIXTURE IS THAT CASE: two runs, interleaved by stamp, on one site,
+    # with ONE description between them. Plus the three kinds of capture that
+    # have no run to show, each for a different reason.
+
+    BeforeAll {
+        $script:RunA = 'aaaaaaaaaaaa'
+        $script:RunB = 'bbbbbbbbbbbb'
+        $script:SameDescription = 'create a step with one video, then delete it'
+
+        $root = Join-Path $TestDrive 'runs/.har-captures'
+        $hostDir = Join-Path $root 'app.example.test'
+        $record = {
+            param($stamp, [hashtable]$Identity)
+            $dir = Join-Path $hostDir $stamp
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $dir 'raw.har') -Encoding utf8 -Value '{"log":{"entries":[]}}'
+            $body = [ordered]@{
+                uri        = 'https://app.example.test/'
+                sessionDir = $dir
+                describe   = $script:SameDescription
+                startedUtc = '2026-03-01T00:00:00.000Z'
+                endedUtc   = '2026-03-01T00:05:00.000Z'
+            }
+            foreach ($key in $Identity.Keys) { $body[$key] = $Identity[$key] }
+            Set-Content -LiteralPath (Join-Path $dir 'session.json') -Encoding utf8 `
+                -Value ($body | ConvertTo-Json -Depth 6)
+        }
+        $runA = @{ id = $script:RunA; basis = 'process'; lineage = @('111111111111', $script:RunA) }
+        $runB = @{ id = $script:RunB; basis = 'terminal'; lineage = @($script:RunB, '222222222222') }
+
+        & $record '2026-03-01-000001' @{ captureId = 'capture-a1'; run = $runA }
+        & $record '2026-03-01-000002' @{ captureId = 'capture-b1'; run = $runB }
+        & $record '2026-03-01-000003' @{ captureId = 'capture-a2'; run = $runA }
+        & $record '2026-03-01-000004' @{ captureId = 'capture-b2'; run = $runB }
+        # Recorded before any capture carried a run.
+        & $record '2026-03-01-000005' @{}
+        # Recorded since, where the recorder could not read its own ancestry.
+        & $record '2026-03-01-000006' @{
+            captureId = 'capture-unread'
+            run       = @{ id = $null; reason = 'process ancestry is not read on this platform' }
+        }
+        # And one this recorder did not make.
+        $phone = Join-Path $root 'phone.example.test' | Join-Path -ChildPath '2026-03-01-000007'
+        New-Item -ItemType Directory -Path $phone -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $phone 'raw.mitm') -Encoding utf8 -Value 'not-a-har'
+        Set-Content -LiteralPath (Join-Path $phone 'CAPTURE.md') -Encoding utf8 -Value '# A phone capture'
+
+        $script:RunStore = $root
+        $script:RunCaptures = @(& $script:ListPs1 -Path $root)
+        $script:RunTable = ($script:RunCaptures | Sort-Object Stamp | Format-Table | Out-String -Width 200)
+        $script:RowFor = {
+            param($stamp)
+            ($script:RunTable -split "`r?`n" | Where-Object { $_ -match [regex]::Escape($stamp) }) -join "`n"
+        }
+    }
+
+    It 'carries the run and the capture id on every object' {
+        $a1 = $script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000001'
+        $a1.RunId     | Should -Be $script:RunA
+        $a1.RunBasis  | Should -Be 'process'
+        $a1.CaptureId | Should -Be 'capture-a1'
+        ($script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000002').RunBasis | Should -Be 'terminal'
+    }
+
+    It 'selects one run with a pipeline filter, and never returns the other run''s captures' {
+        $mine = @($script:RunCaptures | Where-Object { $_.RunId -and $_.RunId -eq $script:RunA })
+        ($mine.Stamp | Sort-Object) | Should -Be @('2026-03-01-000001', '2026-03-01-000003')
+
+        $theirs = @($script:RunCaptures | Where-Object { $_.RunId -and $_.RunId -eq $script:RunB })
+        ($theirs.Stamp | Sort-Object) | Should -Be @('2026-03-01-000002', '2026-03-01-000004')
+
+        @($mine | Where-Object { $_.Stamp -in $theirs.Stamp }).Count | Should -Be 0
+    }
+
+    It 'separates what a time window and the description cannot' {
+        # THE STAMPS INTERLEAVE. Any window wide enough to hold run A's two
+        # captures also holds one of run B's.
+        $ordered = $script:RunCaptures | Where-Object RunId | Sort-Object Stamp
+        ($ordered.RunId -join ',') | Should -Be "$script:RunA,$script:RunB,$script:RunA,$script:RunB"
+
+        # AND THEY ALL READ THE SAME, so the description selects every one of
+        # them -- along with the two that have no run.
+        @($script:RunCaptures | Where-Object Description -eq $script:SameDescription).Count | Should -Be 6
+
+        # Within a run, each attempt is still its own capture.
+        $ids = @($script:RunCaptures | Where-Object { $_.RunId -eq $script:RunA }).CaptureId
+        ($ids | Sort-Object -Unique).Count | Should -Be 2
+    }
+
+    It 'lists a capture recorded before runs existed, and says it has none' {
+        $old = $script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000005'
+        $old | Should -Not -BeNullOrEmpty -Because 'a capture with no run is still a capture'
+        # The OBJECT keeps the honest datum, as it does for a missing
+        # description: nothing was recorded, so the properties are null.
+        $old.RunId     | Should -BeNullOrEmpty
+        $old.CaptureId | Should -BeNullOrEmpty
+        $old.RunBasis  | Should -BeNullOrEmpty
+        # The TABLE says so, rather than guessing a run from the stamp or
+        # leaving a cell that reads as "the column did not render".
+        (& $script:RowFor '2026-03-01-000005') | Should -Match '\(none recorded\)'
+    }
+
+    It 'says so when the run could not be read, which is not the same as none recorded' {
+        $unread = $script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000006'
+        $unread.CaptureId | Should -Be 'capture-unread' -Because 'it is still its own capture'
+        $unread.RunId     | Should -BeNullOrEmpty
+        (& $script:RowFor '2026-03-01-000006') | Should -Match '\(unidentified\)'
+        (& $script:RowFor '2026-03-01-000006') | Should -Not -Match 'none recorded'
+    }
+
+    It 'claims no run for a capture this recorder did not make' {
+        $phone = $script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000007'
+        $phone.RunId | Should -BeNullOrEmpty
+        # A dash, as the Ended column does: "none recorded" would say a
+        # recording of ours is missing something, and it is not ours.
+        (& $script:RowFor '2026-03-01-000007') | Should -Match 'imported\s+--\s'
+        (& $script:RowFor '2026-03-01-000007') | Should -Not -Match 'none recorded|unidentified'
+    }
+
+    It 'prints the whole run id, because a shortened one could only be matched by guessing' {
+        # A table that showed eight characters of twelve would teach `-like`,
+        # and substring matching is what over-selected in the first place.
+        (& $script:RowFor '2026-03-01-000001') | Should -Match "\s$script:RunA\s"
+        (& $script:RowFor '2026-03-01-000002') | Should -Match "\s$script:RunB\s"
+
+        # And it still fits beside the description on an ordinary console.
+        $narrow = ($script:RunCaptures | Sort-Object Stamp | Format-Table | Out-String -Width 120)
+        $narrow | Should -Match "\s$script:RunA\s"
+        $narrow | Should -Match 'Description' -Because 'the run column must not push the description off the table'
+        $narrow | Should -Match 'create a step'
+    }
+
+    It 'shows the run and the capture id in the list view' {
+        $list = ($script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000001' | Format-List | Out-String -Width 200)
+        $list | Should -Match "RunId\s+:\s+$script:RunA"
+        $list | Should -Match 'RunBasis\s+:\s+process'
+        $list | Should -Match 'CaptureId\s+:\s+capture-a1'
+
+        $old = ($script:RunCaptures | Where-Object Stamp -eq '2026-03-01-000005' | Format-List | Out-String -Width 200)
+        $old | Should -Match 'RunId\s+:\s+\(none recorded\)'
+        $old | Should -Match 'CaptureId\s+:\s+\(none recorded\)'
+    }
+
+    It 'selects nothing when the run asked for is empty' {
+        # THE HAZARD THE DOCUMENTED FILTER GUARDS AGAINST. `RunId -eq $run` with
+        # an unset $run is true for every capture that has no run -- every
+        # recording made before this change, in one stroke.
+        $unset = $null
+        @($script:RunCaptures | Where-Object { $_.RunId -eq $unset }).Count |
+            Should -BeGreaterThan 0 -Because 'which is why the filter is never written that way'
+
+        @($script:RunCaptures | Where-Object { $_.RunId -and $_.RunId -eq $unset }).Count | Should -Be 0
+        @($script:RunCaptures | Where-Object { $_.RunId -and $_.RunId -eq '' }).Count | Should -Be 0
+    }
+}
+
 Describe 'Get-HarCapture over an empty or absent store' {
 
     It 'returns nothing for a store with no captures in it, rather than failing' {
@@ -287,6 +451,7 @@ Describe 'HarCapture.Format.ps1xml renders the store entry' {
         @{ Needle = 'Size' }
         @{ Needle = 'Ended' }
         @{ Needle = 'Stage' }
+        @{ Needle = 'Run' }
         @{ Needle = 'Description' }
     ) {
         # The issue's list, column by column: site, start time, description,

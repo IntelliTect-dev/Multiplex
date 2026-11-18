@@ -33,7 +33,8 @@
     at some other store is an option nobody asked for, and a delete command is
     the last place to start accumulating them.
 
-    WHAT IT PRINTS is the capture it is about to delete: host, stamp, size, and
+    WHAT IT PRINTS is the capture it is about to delete: host, stamp, size, the
+    run that made it (#26) -- or that none was recorded -- and
     the description -- the operator's own `-Describe` text, or the first line of
     the `CAPTURE.md` they wrote beside an imported capture. That is the point of
     a confirmation prompt, and it is also worth knowing when writing those: a
@@ -94,6 +95,15 @@
     The scripted form. Note the `ForEach-Object`: this command takes one
     capture, so a pipeline of several is something the caller writes out
     deliberately rather than something it accepts quietly.
+
+.EXAMPLE
+    Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run } | ForEach-Object {
+        Remove-HarCapture -Capture $_
+    }
+
+    One run's recordings, each confirmed. The `$_.RunId -and` guard is not
+    decoration: with an empty `$run`, `RunId -eq $run` alone is true for every
+    capture that has no run.
 #>
 
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
@@ -283,18 +293,28 @@ $described = if ($resolved.describe) { $resolved.describe } else { 'no descripti
 # worth keeping. Get-HarCapture's table rounds because it is scanned; a
 # confirmation prompt is read.
 $size = if ($resolved.rawBytes) { '{0:N0} bytes' -f $resolved.rawBytes } else { 'no raw' }
+# WHOSE RECORDING THIS IS (#26). Two captures in a shared store can carry the
+# same description and stamps a second apart, and be two sessions' work; the
+# run is what tells them apart at the moment it matters. A capture recorded
+# before runs existed says so -- an absent clause would read as "nothing to
+# check". A capture this recorder did not make has no run to speak of.
+$run = if (-not $resolved.recorderOutput) { $null }
+elseif ($resolved.runId) { "run $($resolved.runId)" }
+elseif ($resolved.captureId) { 'run unidentified' }
+else { 'no run recorded' }
+$what = (@($described, $size, $run) | Where-Object { $_ }) -join ', '
 
 # The ShouldProcess line names the capture AND what it is, because the
 # confirmation prompt is where the decision actually gets made and "Remove a
 # capture?" is not something anybody can answer. ConfirmImpact is High, so this
 # prompt appears without -Confirm being typed.
-$operation = "Delete this recording permanently -- $described, $size"
+$operation = "Delete this recording permanently -- $what"
 if (-not $PSCmdlet.ShouldProcess($target, $operation)) {
     # Said in the script's own voice as well, so a dry run reads as a plan
     # rather than only as PowerShell's stock preview line.
-    Write-Information "Remove-HarCapture: nothing was deleted. $label would be removed ($described, $size)."
+    Write-Information "Remove-HarCapture: nothing was deleted. $label would be removed ($what)."
     return
 }
 
 Remove-Item -LiteralPath $target -Recurse -Force
-Write-Information "Remove-HarCapture: deleted $label ($described, $size)."
+Write-Information "Remove-HarCapture: deleted $label ($what)."

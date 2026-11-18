@@ -759,6 +759,57 @@ Describe 'Invoke-HarCapture.ps1' {
         $info | Should -Match 'pauses. in session\.json'
     }
 
+    It 'says which capture this was and which run it belongs to: <Name>' -ForEach @(
+        @{
+            Name   = 'both known'
+            Json   = '{"capture":"complete","sessionDir":"x","captureId":"0f6b3a52-9a0e-4c1c-8d64-0c1d2f4a7b11","runId":"3f9c2a71d0b4","outputPath":"x","cataloguePath":null}'
+            Expect = @('0f6b3a52-9a0e-4c1c-8d64-0c1d2f4a7b11', 'run 3f9c2a71d0b4')
+            Never  = @('no run')
+        }
+        @{
+            Name   = 'the run could not be read'
+            Json   = '{"capture":"complete","sessionDir":"x","captureId":"0f6b3a52-9a0e-4c1c-8d64-0c1d2f4a7b11","runId":null,"outputPath":"x","cataloguePath":null}'
+            Expect = @('0f6b3a52-9a0e-4c1c-8d64-0c1d2f4a7b11', 'no run could be identified')
+            Never  = @('run 3f9c')
+        }
+        @{
+            Name   = 'a recorder that reports neither'
+            Json   = '{"capture":"complete","sessionDir":"x","outputPath":"x","cataloguePath":null}'
+            Expect = @()
+            Never  = @('This capture is', 'no run')
+        }
+    ) {
+        # Issue #26. A session selects its own captures by run, so it has to be
+        # able to LEARN its run -- from its own recording, not by picking a row
+        # out of a shared listing by description or time, which is the guess
+        # the run exists to replace. The recorder prints both ids on its one
+        # machine-readable line; that line is swallowed here, so this is where
+        # they have to be said.
+        $stubDir = Join-Path $script:Tmp ('run-stub-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+        if ($IsWindows) {
+            Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
+                '@echo off', "echo $Json", 'exit /b 0')
+        }
+        else {
+            $stub = Join-Path $stubDir 'node'
+            [System.IO.File]::WriteAllText($stub, "#!/bin/sh`necho '$Json'`nexit 0`n", [System.Text.UTF8Encoding]::new($false))
+            & chmod +x $stub
+        }
+        $infoFile = Join-Path $stubDir 'info.txt'
+        $savedPath = $env:PATH
+        $env:PATH = $stubDir + [System.IO.Path]::PathSeparator + $savedPath
+        try {
+            & $script:InvokePs1 -Uri 'https://example.com' -Describe 'pester fixture' 6> $infoFile 3> $null 2> $null | Out-Null
+        }
+        finally {
+            $env:PATH = $savedPath
+        }
+        $info = [string](Get-Content -LiteralPath $infoFile -Raw)
+        foreach ($text in $Expect) { $info | Should -Match ([regex]::Escape($text)) }
+        foreach ($text in $Never) { $info | Should -Not -Match ([regex]::Escape($text)) }
+    }
+
     It 'forwards -AI to the recorder, and nothing when it is absent' {
         # The front door forwards and the recorder decides -- the rule this file
         # already holds for -Attach and -Browser. So what is pinned here is only
