@@ -25,7 +25,8 @@
 //       challenge -- nor is AWS WAF's 202 script check
 //   C7  Amazon's checkpoint is found deep in a 300 KB page
 //   C8  a block delivered to an XHR is seen whatever its content type:
-//       Akamai's encoded page, DataDome's and PerimeterX's JSON, x-datadome
+//       Akamai's encoded page, DataDome's and PerimeterX's JSON -- but the
+//       x-datadome header alone, on every response of a DataDome site, is not one
 //   M1  a throttle pauses for Retry-After, a burst is one episode
 //   M2  a throttle that persists hands over
 //   M3  throttling through a pause hands over (the agent case)
@@ -485,11 +486,21 @@ test('C8: a block delivered to an XHR is seen, whatever its content type', () =>
     assert.strictEqual(xhr({ mimeType: 'text/html', body: akamai.replace(/&#32;/, ' ').replace(/&#35;/, '#')
         .replace(/https&#58;.*<\/P>/, '') }).kind, 'blocked', 'and the plain spelling');
 
-    const dd = xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' },
-        body: '{"url":"https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMAexample&cid=example&t=fe"}' });
+    const ddBlock = '{"url":"https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMAexample&cid=example&t=fe"}';
+    const dd = xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: ddBlock });
     assert.ok(dd && dd.kind === 'blocked', `DataDome's JSON block: ${JSON.stringify(dd)}`);
-    assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: '' }).kind,
-        'blocked', 'x-datadome on a 403 is DataDome refusing, even with no body to read');
+    const ddBare = xhr({ mimeType: 'application/json', body: ddBlock });
+    assert.ok(ddBare && ddBare.kind === 'blocked', `DataDome's JSON block with no header is still one: ${JSON.stringify(ddBare)}`);
+    // X-DATADOME IS ON EVERY RESPONSE of a DataDome site, the ones it lets
+    // through included, like cf-ray. A 403 carrying it is the application's
+    // unless the body is DataDome's.
+    assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' },
+        body: '{"error":"sign in required"}' }), null, 'a signed-out account call is the application refusing it');
+    assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: '' }), null,
+        'x-datadome with nothing of DataDome\'s in the body says nothing');
+    assert.strictEqual(xhr({ url: 'https://www.example.com/img/avatar.png', mimeType: 'image/png',
+        headers: { 'x-datadome': 'protected' }, body: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }), null,
+    'an image the site refused is not DataDome refusing the visitor');
     const px = xhr({ mimeType: 'application/json', body: '{"appId":"PXabc123","jsClientSrc":"/abc123/init.js",' +
         '"firstPartyEnabled":true,"vid":"","uuid":"0000","hostUrl":"/abc123/xhr","blockScript":"/abc123/captcha/captcha.js?a=c"}' });
     assert.ok(px && px.kind === 'blocked', `PerimeterX's JSON block: ${JSON.stringify(px)}`);
