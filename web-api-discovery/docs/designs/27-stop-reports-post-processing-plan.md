@@ -72,6 +72,16 @@ command line with no test-only switch.
 and 30 minutes during the AI catalogue pass, which prints nothing until it
 ends. It is printed in the message and carried in the JSON.
 
+**Running `stop` again does not start the clock again.** Because the state is
+read from what is on disk, a second `stop` waits only if something has moved
+since, and otherwise gives the same answer at once.
+
+**Two things only a watcher knows** also count, in `stop`'s wait and not in a
+single `status`: a file that grew between two polls where its modification time
+did not move, and that the waiting process itself was not running (two polls
+more than 10 seconds apart: a laptop asleep, and its recorder with it). The
+allowance starts again from the first poll after such a gap.
+
 ### 3. Exit codes
 
 - `stop` no longer returns while post-processing is progressing, so a healthy
@@ -86,8 +96,12 @@ ends. It is printed in the message and carried in the JSON.
 ### 4. Machine-readable output
 
 - `status` JSON gains `ending`, the evaluation above.
-- `stop` prints one JSON line on stdout whenever it reports on a recording:
+- `stop` prints one JSON line on stdout once it has found the recording --
+  every exit except 3 (no capture session found):
   `{ "stop": <state>, "sessionDir", "exitCode", "ending": {...} }`.
+- The recorder's own writes of the `ending` record go beside session.json and
+  are renamed over it, so a `stop` or `status` reading while it works never
+  finds the file truncated.
 
 ### 5. Three defects closed on the way
 
@@ -115,14 +129,28 @@ ends. It is printed in the message and carried in the JSON.
 
 ## Implementation checklist
 
-- [ ] `capture/capture-ending.js`: `notePhase`, `readEvidence`, `evaluate`,
+- [x] `capture/capture-ending.js`: `notePhase`, `readEvidence`, `evaluate`,
       `waitForEnding`, the message lines. Tests in `capture-ending.test.js`.
-- [ ] `capture-har.js` recorder side: acknowledge the ending after the race,
+- [x] `capture-har.js` recorder side: acknowledge the ending after the race,
       `onPhase` through `postProcess` / `catalogueScrubbed` / `runCatalogue`
       (injected only at the recorder's call site), `complete` at the end.
-- [ ] `capture-har.js` `stop`: replace both deadline loops with the wait,
+- [x] `capture-har.js` `stop`: replace both deadline loops with the wait,
       return before assembling when the recorder is alive, print the JSON line.
-- [ ] `capture-har.js` `status`: `ending`.
-- [ ] Usage header and exit-code table; `SKILL.md`; `Stop-HarRecording.ps1`.
-- [ ] Pester: `Stop-HarRecording.ps1` against fixtures in each state.
-- [ ] Evidence under `.evidence/`.
+- [x] `capture-har.js` `status`: `ending`.
+- [x] Usage header and exit-code table; `SKILL.md`; `Stop-HarRecording.ps1`.
+- [x] Pester: `Stop-HarRecording.ps1` against fixtures in each state.
+- [x] Evidence under `.evidence/` (not committed: the directory is ignored).
+
+## Left for the owner
+
+- **An exit code of its own for "returned before post-processing finished".**
+  `stalled` and `not-registered` share exit 1 with runtime errors, because the
+  brief allowed changing which EXISTING code is returned and nothing more. The
+  JSON tells them apart; a dedicated code would let a caller branch without
+  parsing it.
+- **Should `stop` post-process a capture that ended `sign-in-needed` (exit 8)?**
+  It does today, before and after this change, once the recorder has exited --
+  while the recorder itself deliberately does not. Unchanged here.
+- **Should `stop` post-process a CANCELLED capture?** The recorder's cancel
+  message says "Re-run post-processing by stopping this session again"; `stop`
+  has never done that. This change only stops it crashing.

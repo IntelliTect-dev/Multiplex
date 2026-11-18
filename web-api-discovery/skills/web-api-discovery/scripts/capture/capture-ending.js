@@ -79,6 +79,10 @@ const QUIET_MS_PER_MB = 15 * 1000;
 const AI_CATALOGUE_QUIET_MS = 30 * 60 * 1000;
 // How often a wait says where it is: the cadence run-with-heartbeat.js uses.
 const REPORT_EVERY_MS = 30 * 1000;
+// Two polls this far apart mean the waiting process was not running in between
+// -- a laptop asleep, most likely -- and then neither was the recorder. Polls
+// are 200 ms apart, so nothing ordinary comes near it.
+const SUSPENDED_GAP_MS = 10 * 1000;
 
 const STATE_RECORDING = 'recording';
 const STATE_STOP_PENDING = 'stop-pending';
@@ -234,7 +238,9 @@ function readEvidence(sessionDir, deps = {}) {
         stopRequestedMs: stop ? stop.mtimeMs : null,
         artifacts,
         captureBytes: Math.max(summarized, ...sizes),
-        observedChangeMs: null
+        // The two things only a WATCHER knows; `waitForEnding` fills them in.
+        observedChangeMs: null,
+        watchingSinceMs: null
     };
 }
 
@@ -256,15 +262,28 @@ function timeOf(utc) {
 const utcOf = (ms) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
 /**
+ * The latest of `times` that is not ahead of the clock -- and when none is
+ * usable, when the watcher started watching, or failing that, now.
+ *
+ * A TIME IN THE FUTURE IS NEVER A SIGN OF PROGRESS. A clock set back, or a
+ * file on a share with its own idea of the time, would otherwise hold the
+ * silence at zero and nothing could stall. With nothing usable at all, a
+ * watcher counts from when it began; a single look has nothing to count from,
+ * and says "now" rather than inventing a silence.
+ */
+function lastSign(times, evidence, nowMs) {
+    const usable = times.filter((ms) => typeof ms === 'number' && Number.isFinite(ms) && ms <= nowMs);
+    if (usable.length) return Math.max(...usable);
+    const since = evidence.watchingSinceMs;
+    return typeof since === 'number' && since <= nowMs ? since : nowMs;
+}
+
+/**
  * The state of a capture's ending at `nowMs`.
  *
- * Pure: `evidence` is what `readEvidence` returns, plus `observedChangeMs` when
- * the caller has itself watched something move (`waitForEnding`). The result is
- * what `status` and `stop` print as `ending`.
- *
- * A time in the future is never counted as a sign of progress. A clock that
- * jumped, or a file on a share with its own idea of the time, would otherwise
- * hold the silence at zero for ever, and nothing could stall.
+ * Pure: `evidence` is what `readEvidence` returns, plus what only a watcher
+ * knows (`waitForEnding`): when it last SAW something move, and when it began
+ * watching. The result is what `status` and `stop` print as `ending`.
  */
 function evaluate(evidence, nowMs) {
     const session = evidence.session || {};
@@ -305,16 +324,13 @@ function evaluate(evidence, nowMs) {
         if (evidence.stopRequestedMs === null || evidence.stopRequestedMs === undefined) {
             return settle(STATE_RECORDING);
         }
-        return settle(silentSince(evidence.stopRequestedMs, REGISTER_LIMIT_MS)
-            ? STATE_NOT_REGISTERED : STATE_STOP_PENDING);
+        const askedMs = lastSign([evidence.stopRequestedMs, evidence.observedChangeMs], evidence, nowMs);
+        return settle(silentSince(askedMs, REGISTER_LIMIT_MS) ? STATE_NOT_REGISTERED : STATE_STOP_PENDING);
     }
 
-    const signs = [registeredMs, timeOf(verdict.phaseStartedUtc), timeOf(session.endedUtc),
-        evidence.observedChangeMs, ...(evidence.artifacts || []).map((a) => a.mtimeMs)]
-        .filter((ms) => typeof ms === 'number' && Number.isFinite(ms) && ms <= nowMs);
-    // Nothing usable at all means every time on disk is ahead of this clock;
-    // the silence is then counted from now, until something is seen to move.
-    const lastProgressMs = signs.length ? Math.max(...signs) : nowMs;
+    const lastProgressMs = lastSign([registeredMs, timeOf(verdict.phaseStartedUtc),
+        timeOf(session.endedUtc), evidence.observedChangeMs,
+        ...(evidence.artifacts || []).map((a) => a.mtimeMs)], evidence, nowMs);
     verdict.lastProgressUtc = utcOf(lastProgressMs);
     return settle(silentSince(lastProgressMs, quietLimitMs(phase, verdict.captureBytes))
         ? STATE_STALLED : STATE_PROGRESSING);
@@ -346,42 +362,58 @@ function progressKey(evidence) {
  * has moved for the allowance -- and a capture cannot go on showing progress
  * for ever without finishing.
  *
- * It watches as well as reads. A file that grew since the last poll is a sign
- * of progress even where its modification time did not move, which is what some
- * filesystems do with a file still open for writing.
+ * It watches as well as reads, and two things only a watcher can know count:
+ *
+ *   - A file that GREW since the last poll, even where its modification time
+ *     did not move -- which is what some filesystems do with a file still open
+ *     for writing.
+ *   - That the watcher itself was not running. A laptop that slept through ten
+ *     minutes of this wait has a recorder that slept through them too; by the
+ *     clock alone that is ten minutes of silence, and a healthy capture would be
+ *     told it had stalled the moment the lid opened. The allowance starts again
+ *     from the first poll after such a gap.
  *
  *   deps.now, deps.sleep         the clock, injected for tests
  *   deps.isRecorderAlive         asked on every poll: a recorder that exits is
  *                                not waited on
  *   deps.onWaiting(verdict, why) called when the state or phase changes
- *                                ('change') and otherwise every thirty seconds
- *                                ('interval')
+ *                                ('change'), and every thirty seconds of
+ *                                waiting whether or not it has ('interval')
  */
 async function waitForEnding(sessionDir, deps = {}) {
     const now = deps.now || Date.now;
     const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const watchingSinceMs = now();
     let session = deps.session || null;
     let lastKey = null;
+    let lastPollMs = null;
     let observedChangeMs = null;
     let said = null;
-    let saidAt = null;
+    let intervalSaidMs = watchingSinceMs;
     for (;;) {
         const evidence = readEvidence(sessionDir, { isRecorderAlive: deps.isRecorderAlive, session });
         session = evidence.session;
         const at = now();
         const key = progressKey(evidence);
-        if (lastKey !== null && key !== lastKey) observedChangeMs = at;
+        const moved = lastKey !== null && key !== lastKey;
+        const suspended = lastPollMs !== null && at - lastPollMs > SUSPENDED_GAP_MS;
+        if (moved || suspended) observedChangeMs = at;
         lastKey = key;
-        evidence.observedChangeMs = observedChangeMs;
+        lastPollMs = at;
+        Object.assign(evidence, { observedChangeMs, watchingSinceMs });
         const verdict = evaluate(evidence, at);
         if (!WAITING_STATES.has(verdict.state)) return { verdict, session, evidence };
         if (deps.onWaiting) {
             const where = `${verdict.state}/${verdict.phase}`;
-            const why = where !== said ? 'change' : (at - saidAt >= REPORT_EVERY_MS ? 'interval' : null);
-            if (why) {
+            if (where !== said) {
                 said = where;
-                saidAt = at;
-                deps.onWaiting(verdict, why);
+                deps.onWaiting(verdict, 'change');
+            }
+            // Its own clock, not "since anything was last said": phases that
+            // change faster than the interval would otherwise starve it.
+            if (at - intervalSaidMs >= REPORT_EVERY_MS) {
+                intervalSaidMs = at;
+                deps.onWaiting(verdict, 'interval');
             }
         }
         await sleep(POLL_MS);
@@ -428,13 +460,18 @@ function stalledLines(verdict, session) {
             'rather than a hung one;',
         '  the scrubbed capture and the digest are already complete.');
     }
+    if (verdict.phase === PHASES.FINALIZING && verdict.endedBy === 'ctrl-c') {
+        // The one ending that waits on a person before it goes any further.
+        lines.push('  It was ended with Ctrl+C, so its own terminal may be asking whether to finish or cancel.');
+    }
     lines.push(
         `  The recording process (pid ${verdict.recorderPid}) is still running and still owns the work, so ` +
             'nothing was taken over here.',
         saved
             ? `  raw:       ${session.harPath}  (saved and kept)`
             : '  The recording itself is still being saved; nothing was assembled here.',
-        '  Look at that process. `status` reports this same state; running stop again waits again.');
+        '  Look at that process. `status` reports this same state at any time; stop, run again, waits only',
+        '  if something has moved since, and says this again at once if nothing has.');
     return lines;
 }
 
@@ -445,9 +482,29 @@ function notRegisteredLines(verdict) {
             `running, and has not taken up the stop asked for ${seconds(verdict.quietSeconds)} ago.`,
         '  Nothing was stopped, assembled or post-processed: the recording is still going.',
         '  The request -- the STOP file in the session directory -- is left in place, so the recording ends',
-        '  as soon as that process next looks for it. Run stop again to wait for that; otherwise end the',
-        '  recording at its own terminal (ENTER) or by closing its browser window.'
+        '  as soon as that process next looks for it. `status` shows whether it has; stop, run again, waits',
+        '  only once it has, and says this again at once until then. To end the recording another way, press',
+        '  ENTER at its own terminal or close its browser window.'
     ];
+}
+
+/**
+ * What to say when a wait ended with the recording process still running and
+ * its work unfinished -- or null when it did not: the ending is finished, or
+ * the recorder has exited and `stop` has work of its own to do.
+ */
+function unfinishedLines(verdict, session) {
+    if (verdict.state === STATE_STALLED) return stalledLines(verdict, session);
+    if (verdict.state === STATE_NOT_REGISTERED) return notRegisteredLines(verdict);
+    if (verdict.state === STATE_RECORDING) {
+        // Only reachable if something removed the STOP file `stop` had written.
+        return [
+            `capture-har: the stop request is gone -- the STOP file was removed before the recording process ` +
+                `(pid ${verdict.recorderPid}) took it up.`,
+            '  Nothing was stopped: the recording is still going. Run stop again to ask again.'
+        ];
+    }
+    return null;
 }
 
 module.exports = {
@@ -459,8 +516,7 @@ module.exports = {
     quietLimitMs,
     isEndingArtifact,
     waitingLine,
-    stalledLines,
-    notRegisteredLines,
+    unfinishedLines,
     WAITING_STATES,
     PHASES,
     STATE_RECORDING,

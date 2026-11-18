@@ -44,7 +44,11 @@
                        request stays in place.
 
     Both exit 1 and leave everything as it is -- the recording process still
-    owns the raw capture and the scrub. Run this again to wait again.
+    owns the raw capture and the scrub.
+
+    Running this again does not start the clock again. The state is read from
+    what is on disk, so a second run waits only if something has moved since,
+    and otherwise gives the same answer at once.
 
     It never kills a browser process: killing one discards the entire
     recording, and a developer's machine may hold real signed-in windows whose
@@ -86,11 +90,16 @@
         { "stop": "complete", "sessionDir": "...", "exitCode": 0, "ending": { ... } }
 
     "stop" is one of: complete, not-processed (the capture was cancelled; the
-    raw is kept), stalled, not-registered. "ending" carries the phase, when the
-    stop registered, the last sign of progress, how long nothing has moved
-    (quietSeconds) and how long it is allowed to (quietLimitSeconds).
-    `node capture-har.js status` reports the same "ending" at any time,
-    including "progressing" while post-processing is still under way.
+    raw is kept), stalled, not-registered, and -- only with exit 4 --
+    recorder-gone (the recording process exited and left nothing usable).
+    "ending" carries the phase, when the stop registered, the last sign of
+    progress, how long nothing has moved (quietSeconds) and how long it is
+    allowed to (quietLimitSeconds). `node capture-har.js status` reports the
+    same "ending" at any time, including "progressing" while post-processing is
+    still under way.
+
+    Nothing is printed when no capture session is found (exit 3), and
+    -ValidateOnly prints what it resolved instead.
 
     Everything a person reads is on the error stream, as it always was.
 
