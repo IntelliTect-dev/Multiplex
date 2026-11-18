@@ -1060,6 +1060,9 @@ What is guaranteed:
 once from a terminal; the saved session carries the unattended runs that
 follow. When it expires, the next unattended run ends with exit 8 instead of
 recording a login page, and whoever started it tells you to sign in again.
+Whether the start would be refused before it opens a browser -- no driver, no
+operator profile, no agent -- can be asked beforehand: see **Check first**,
+under Preflight below.
 
 **Every ending is safe.** ENTER, closing the browser window, and
 `Stop-HarRecording` all produce a full HAR and all run the same
@@ -1094,14 +1097,52 @@ to install into the machine default — **`[Y/n]`, so ENTER installs**: nothing 
 lost by saying yes, and the run cannot continue on no. The Chromium binary is
 reported separately, because `npm install` does not fetch one. There is no option or environment
 variable to configure any of this -- every location above is a mechanism Node or
-npm already provides. `--validate-only` skips the whole check: it resolves paths
-and opens nothing.
+npm already provides. `--validate-only` asks the same question without
+enforcing it -- see **Check first**, below.
 
 Then `.har-profile.json` is resolved, still before the browser launches. On a
 TTY the recorder offers to scaffold one; without a TTY it fails with the
 `HOWTO`. Discovering an absent profile after a browsing session is spent costs
 the session; here it costs seconds. A `.har-storage-state.json` at or above the
 working directory is discovered the same way, and its absence is not an error.
+
+**Check first, when the start's errors will not be seen** -- a detached
+process, a hidden console, a schedule, an agent. Run
+`node capture-har.js start ... --validate-only` with the same arguments the
+real start will get. It launches no browser, asks nothing and writes nothing,
+and it answers the gates above: would this start be refused? Its JSON on stdout
+is the resolved session, as before, plus one key:
+
+```json
+"validation": {
+  "ok": false,
+  "checks": [
+    { "name": "browser-driver",   "ok": true,  "reason": null },
+    { "name": "operator-profile", "ok": false,
+      "reason": "No .har-profile.json found at or above C:\\work\\site. Create ..." }
+  ]
+}
+```
+
+| Check | Passes when | Asked |
+|---|---|---|
+| `agent` | a `claude` CLI can be spawned | only with `--ai` |
+| `browser-driver` | `playwright` resolves from one of the four places above -- and a Chromium build is installed, unless `--browser native`, `--attach` or `--ai`, which drive the Chrome the machine already has | always |
+| `operator-profile` | a `.har-profile.json` at or above the working directory loads, with a salt. `--profile` is the *browser* profile and does not move it | always |
+
+Exit **0** when every check passes, **1** when any fails -- the code the real
+start itself ends with for the same refusal -- and **2** for a usage error,
+which prints no JSON. Each `reason` is the real start's own message (also on
+stderr), the checks are in the order a start asks them, and every failure is
+reported in one run. The answer is the one an **unattended** start gets: at a
+terminal the real start would offer to install the driver or scaffold a
+profile, and the check reports them missing rather than asking.
+
+A pass covers these gates and no others. A capture store that is not
+gitignored, a capture profile that is already recording, no Chrome for
+`--browser native`, and nothing answering at an `--attach` endpoint can still
+refuse the start. `Invoke-HarCapture` has no check-only switch; this is asked
+of `capture-har.js` directly.
 
 **Is a git repository required to record?** **No.** Nothing in the recorder
 needs one, and a capture is gitignored state rather than something to commit.
