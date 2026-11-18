@@ -74,7 +74,9 @@ public sealed class TripItToolContext(
     /// <summary>
     /// Runs a risky tool with the confirm step. Without <paramref name="confirmToken"/> it only
     /// previews (changes nothing) and returns a token bound to account, tool and
-    /// <paramref name="arguments"/>; with a valid token for the same request it performs it.
+    /// <paramref name="arguments"/>; with a valid, unused token for the same request it performs
+    /// it. The token is used up before the change is attempted, so even a failed attempt needs
+    /// a fresh preview: a change whose outcome is unknown is never replayed with the same token.
     /// </summary>
     public Task<string> RunConfirmedAsync(string tool, string? confirmToken, IReadOnlyDictionary<string, string?> arguments,
         Func<TripItOperations, Task<string>> preview, Func<TripItOperations, Task<string>> perform, CancellationToken ct)
@@ -95,7 +97,7 @@ public sealed class TripItToolContext(
                                 "again with exactly the same arguments plus this confirm_token.",
                 });
             }
-            confirmTokens.Verify(confirmToken, accountId, tool, arguments);
+            confirmTokens.Redeem(confirmToken, accountId, tool, arguments);
             var result = await perform(ops).ConfigureAwait(false);
             _log.LogInformation("TripIt {Tool} performed for account {Account} (client {ClientId}).", tool, accountId, ClientId);
             return result;
