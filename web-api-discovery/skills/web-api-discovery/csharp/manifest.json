@@ -68,6 +68,14 @@
       ]
     },
     {
+      "file": "ToolSession.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace",
+        "BaseUrl"
+      ]
+    },
+    {
       "file": "OAuthPkceAuthenticator.cs.tmpl",
       "requiredTokens": [
         "ProjectName",
