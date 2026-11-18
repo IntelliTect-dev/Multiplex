@@ -140,7 +140,8 @@ public sealed partial class ClientMetadataDocuments(
             // not start working on the next request; anything else (a refused or reset
             // connection) may.
             var definite = ex.HttpRequestError is HttpRequestError.NameResolutionError or HttpRequestError.SecureConnectionError
-                || ex.InnerException is NotPublicAddressException;
+                || Causes(ex).Any(e => e is NotPublicAddressException
+                    || e is SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData });
             return (Failed(clientId, $"could not be fetched ({ex.HttpRequestError})"), !definite);
         }
         catch (IOException)
@@ -148,6 +149,12 @@ public sealed partial class ClientMetadataDocuments(
             // The connection dropped while the document was being read.
             return (Failed(clientId, "could not be read (the connection dropped)"), true);
         }
+    }
+
+    /// <summary>The exception and everything it wraps: the handler wraps what the connect callback throws.</summary>
+    private static IEnumerable<Exception> Causes(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException) yield return e;
     }
 
     /// <summary>The document's host resolves only to addresses this server must not connect to.</summary>
