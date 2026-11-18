@@ -101,6 +101,90 @@ public sealed class PasscodeGateTests
         Assert.Equal(GateResult.NotConfigured, Gate(null).Check("p1", "10.0.0.1", "anything"));
         Assert.Equal(GateResult.NotConfigured, Gate("plaintext-passcode").Check("p1", "10.0.0.1", "plaintext-passcode"));
     }
+
+    /// <summary>
+    /// A burst of guesses sent at once must not all slip past the lock check while the first
+    /// ones are still being hashed: at most <see cref="PasscodeGate.MaxFailures"/> are ever checked.
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_wrong_guesses_never_get_more_checks_than_the_limit()
+    {
+        const int burst = 20;
+        var checks = 0;
+        using var release = new ManualResetEventSlim(false);
+        var gate = new PasscodeGate(Config(PasscodeHasher.Hash("right passcode")), _time, NullLogger<PasscodeGate>.Instance, (passcode, _) =>
+        {
+            Interlocked.Increment(ref checks);
+            release.Wait(TimeSpan.FromSeconds(60)); // hold every checked guess "mid-hash"
+            return passcode == "right passcode";
+        });
+
+        // Real threads, so every guess is in flight at the same time.
+        var guesses = Enumerable.Range(0, burst)
+            .Select(i => Task.Factory.StartNew(() => gate.Check("p1", "10.0.0.1", "wrong-" + i),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default))
+            .ToArray();
+        try
+        {
+            // While the checked ones are held, every other guess is already refused, unchecked.
+            await WaitUntilAsync(() => guesses.Count(g => g.IsCompleted) == burst - PasscodeGate.MaxFailures
+                                       && Volatile.Read(ref checks) == PasscodeGate.MaxFailures);
+            Assert.All(guesses.Where(g => g.IsCompleted), g => Assert.Equal(GateResult.LockedOut, g.Result));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        var results = await Task.WhenAll(guesses);
+
+        Assert.Equal(PasscodeGate.MaxFailures, Volatile.Read(ref checks));
+        Assert.Equal(PasscodeGate.MaxFailures - 1, results.Count(r => r == GateResult.Wrong));
+        // Now locked: even the right passcode is refused without being checked.
+        Assert.Equal(GateResult.LockedOut, gate.Check("p1", "10.0.0.1", "right passcode"));
+        Assert.Equal(GateResult.LockedOut, gate.Check("p2", "10.0.0.1", "right passcode"));
+        Assert.Equal(PasscodeGate.MaxFailures, Volatile.Read(ref checks));
+    }
+
+    [Fact]
+    public void Right_passcode_clears_the_callers_earlier_wrong_tries()
+    {
+        var gate = Gate(PasscodeHasher.Hash("right passcode"));
+        for (var i = 0; i < PasscodeGate.MaxFailures - 1; i++)
+            Assert.Equal(GateResult.Wrong, gate.Check("p" + i, "10.0.0.1", "wrong"));
+
+        Assert.Equal(GateResult.Passed, gate.Check("owner", "10.0.0.1", "right passcode"));
+
+        // A later typo from the same address does not lock the owner out on the strength of the old tries.
+        for (var i = 0; i < PasscodeGate.MaxFailures - 1; i++)
+            Assert.Equal(GateResult.Wrong, gate.Check("q" + i, "10.0.0.1", "wrong"));
+    }
+
+    [Fact]
+    public void A_check_that_throws_does_not_use_up_a_try()
+    {
+        var calls = 0;
+        var gate = new PasscodeGate(Config(PasscodeHasher.Hash("right passcode")), _time, NullLogger<PasscodeGate>.Instance, (passcode, stored) =>
+            ++calls <= PasscodeGate.MaxFailures ? throw new InvalidOperationException("boom") : PasscodeHasher.Verify(passcode, stored));
+
+        for (var i = 0; i < PasscodeGate.MaxFailures; i++)
+            Assert.Throws<InvalidOperationException>(() => gate.Check("p1", "10.0.0.1", "right passcode"));
+
+        Assert.Equal(GateResult.Passed, gate.Check("p1", "10.0.0.1", "right passcode"));
+    }
+
+    private static IConfiguration Config(string? hash) =>
+        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { [PasscodeGate.HashKey] = hash }).Build();
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("Condition not met in time.");
+            await Task.Delay(50);
+        }
+    }
 }
 
 /// <summary>A clock the test moves by hand.</summary>
