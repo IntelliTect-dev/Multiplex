@@ -169,6 +169,8 @@ Describe "Codegen integration: emits test project" {
             'A_write_that_times_out_is_not_reported_as_not_having_happened',
             'A_call_the_caller_cancelled_is_not_reported_as_a_timeout',
             'A_cookie_in_the_sites_error_text_does_not_reach_the_model',
+            'The_sessions_own_cookie_values_and_csrf_token_do_not_reach_the_model',
+            'A_new_sign_in_is_scrubbed_by_its_own_values_not_the_old_ones',
             'A_refusal_from_the_site_reaches_the_caller_and_keeps_the_session',
             'An_answer_that_is_not_the_expected_json_does_not_claim_nothing_happened',
             'Any_other_failure_is_left_for_the_server_to_report_without_its_detail',
