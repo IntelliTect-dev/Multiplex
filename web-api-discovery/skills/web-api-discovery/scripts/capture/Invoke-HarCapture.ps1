@@ -105,16 +105,17 @@
     the refusal to replace a catalogue somebody worked on are all exactly what
     they are when those are run directly.
 
-    THE OPERATOR PROFILE THAT APPLIES IS THE ONE BESIDE THE CAPTURE. Both
+    THE OPERATOR PROFILE THAT APPLIES IS THE ONE THE RECORDING USED. Both
     phases are run from the folder that holds the capture's .har-captures,
-    whatever directory the command was typed in, so the .har-profile.json found
-    from there -- your own identifiers, and the salt every pseudonym is derived
-    from -- is the one the scrub and the leak gate use. A capture named by its
-    directory from inside another repository is not scrubbed with that other
-    repository's profile. You are returned to where you were. It is the profile
-    the recording used whenever the recording was run from that folder; one run
-    from a subfolder with a .har-profile.json of its own used that one instead,
-    so keep the profile beside the store.
+    whatever directory the command was typed in, and you are returned to where
+    you were. -Scrub uses the .har-profile.json -- your own identifiers, and
+    the salt every pseudonym is derived from -- that the recording itself
+    scrubbed with, which the recorder writes into session.json
+    (scrubProfilePath), and says which file that is. It refuses when that file
+    no longer exists. A capture recorded before the recorder wrote it is
+    scrubbed with the profile found from the store root, and only when it has
+    no scrubbed.har to replace: nothing says that profile made the one there.
+    -Catalogue asks the leak gate with the profile found from the store root.
 
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
@@ -1059,6 +1060,9 @@ function Resolve-HarCaptureSelection {
     A phase run in that window races it for the same files -- so both phases
     are refused while the recorder's process is alive and has not said it
     finished (see Get-HarCaptureSessionFact for how that is told).
+
+    AND NOT WITH A DIFFERENT OPERATOR PROFILE THAN THE RECORDING USED -- see
+    Get-HarScrubProfileBlocker.
 #>
 function Get-HarCapturePhaseBlocker {
     [CmdletBinding()]
@@ -1081,8 +1085,8 @@ function Get-HarCapturePhaseBlocker {
             return [pscustomobject]@{ Code = 3; Line = @(
                     "Invoke-HarCapture: $label has no raw.har, so there is nothing to scrub.") }
         }
-        if (-not ($Fact.SignedIn -or $Fact.Unreadable)) { return $null }
-        if (-not ($Capture.scrubbed -or $Capture.rejected)) { return $null }
+        if (-not ($Fact.SignedIn -or $Fact.Unreadable)) { return (Get-HarScrubProfileBlocker -Capture $Capture -Fact $Fact) }
+        if (-not ($Capture.scrubbed -or $Capture.rejected)) { return (Get-HarScrubProfileBlocker -Capture $Capture -Fact $Fact) }
 
         $who = if ($Fact.Unreadable) {
             @(
@@ -1127,6 +1131,91 @@ function Get-HarCapturePhaseBlocker {
             "Invoke-HarCapture: $label has not been scrubbed -- there is no scrubbed.har to catalogue."
             '  A catalogue is only ever derived from a scrubbed, verified capture. To do both, run'
             '  this with -Scrub -Catalogue.') }
+}
+
+<#
+.SYNOPSIS
+    Why a re-scrub cannot use the operator profile the recording scrubbed with,
+    or $null when it can (#24 N1).
+
+.DESCRIPTION
+    The operator profile -- .har-profile.json, the operator's own identifiers
+    and the salt every pseudonym is derived from -- is found by walking up from
+    the WORKING DIRECTORY. A recording scrubs with the one found from where it
+    was started; a re-scrub runs from the store root, and a recording started
+    in a subfolder or a linked worktree with a profile of its own found a
+    different file. Re-scrubbed with the root's, the identifiers the recording
+    replaced came back, the gate (same wrong profile) passed them, and the run
+    said "clean". So the recorder records the path it resolved, and the
+    re-scrub uses exactly that file:
+
+      * Recorded, and still there: no blocker; the scrub is handed that path.
+      * Recorded, and gone: refused. Any other profile could be the wrong one,
+        and a deleted profile is not a reason to guess.
+      * Not recorded (a capture made before the recorder said which profile it
+        used) and a scrubbed.har is already there: refused. That file was
+        checked against a profile nothing names, and the only one available
+        here may not be it; replacing it could swap a verified scrub for one
+        that carries the operator's identifiers. Moving scrubbed.har aside is
+        the way through, as for a capture that signed in.
+      * Not recorded and nothing to replace: no blocker. The scrub uses the
+        profile found from the store root, as before, and the run says so.
+#>
+function Get-HarScrubProfileBlocker {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Capture,
+        [Parameter(Mandatory)][object]$Fact
+    )
+
+    $label = Get-HarCaptureLabel -Capture $Capture
+    if ($Fact.ScrubProfilePath) {
+        if (Test-Path -LiteralPath $Fact.ScrubProfilePath -PathType Leaf) { return $null }
+        return [pscustomobject]@{ Code = 3; Line = @(
+                "Invoke-HarCapture: $label was scrubbed with the operator profile $($Fact.ScrubProfilePath),"
+                '  which no longer exists. A scrub with any other profile could put back identifiers that'
+                '  one replaced -- and its leak gate, given the same other profile, would pass them.'
+                '  Nothing was run. Put that profile back where it was and run this again.') }
+    }
+    if (-not $Capture.scrubbed) { return $null }
+    return [pscustomobject]@{ Code = 3; Line = @(
+            "Invoke-HarCapture: $label does not record which operator profile its recording scrubbed with,"
+            '  and already has a scrubbed.har. It was recorded before the recorder said so, and the'
+            '  profile found from the store root may not be the one that made that file: scrubbing with'
+            '  it could replace a verified scrub with one that carries your identifiers. Nothing was run.'
+            '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.') }
+}
+
+<#
+.SYNOPSIS
+    One spelling for a folder, so two paths can be compared as folders.
+
+.DESCRIPTION
+    Full (no `..`, no 8.3 short names -- GetFullPath expands those on Windows),
+    without a trailing separator, and with every link on the way resolved to
+    its target: a junction or symbolic link to a folder is that folder. A
+    segment that cannot be read is kept as it is spelled.
+#>
+function Get-HarCanonicalPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $resolved = $root
+    $segments = $full.Substring($root.Length).Split(
+        [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar),
+        [System.StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($segment in $segments) {
+        $resolved = [System.IO.Path]::Combine($resolved, $segment)
+        try {
+            $target = [System.IO.Directory]::ResolveLinkTarget($resolved, $true)
+            if ($target) { $resolved = [System.IO.Path]::GetFullPath($target.FullName) }
+        }
+        catch { Write-Verbose "$resolved could not be read as a link; kept as spelled." }
+    }
+    return $resolved.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 }
 
 <#
@@ -1180,12 +1269,19 @@ function Get-HarCapturePhaseBlocker {
     capture is the one these switches exist for. What separates the two is
     whether the recorder is still running, so that is what is asked -- see
     Get-HarLiveRecorderId.
+
+    ScrubProfilePath -- the operator profile (.har-profile.json) the recording
+    scrubbed with, as the recorder resolved it from its own working directory
+    (#24 N1), or $null for a capture recorded before the recorder said so. A
+    re-scrub uses that file, never whichever one the store root finds.
 #>
 function Get-HarCaptureSessionFact {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Directory)
 
-    $fact = [pscustomobject]@{ SignedIn = $false; OutsideRepository = $false; Unreadable = $true; RecorderId = 0 }
+    $fact = [pscustomobject]@{
+        SignedIn = $false; OutsideRepository = $false; Unreadable = $true; RecorderId = 0; ScrubProfilePath = $null
+    }
     try {
         $session = Get-Content -LiteralPath (Join-Path -Path $Directory -ChildPath 'session.json') -Raw -ErrorAction Stop |
             ConvertFrom-Json -AsHashtable -ErrorAction Stop
@@ -1194,6 +1290,9 @@ function Get-HarCaptureSessionFact {
             $source = if ($signIn -is [System.Collections.IDictionary]) { "$($signIn['source'])" }
             $fact.SignedIn = ($null -ne $signIn) -and ($source -ne 'none')
             $fact.OutsideRepository = [bool]$session['unprotectedTables']
+            if ($session['scrubProfilePath'] -is [string] -and $session['scrubProfilePath']) {
+                $fact.ScrubProfilePath = $session['scrubProfilePath']
+            }
             if ($null -eq $session['postProcess']) { $fact.RecorderId = Get-HarLiveRecorderId -Session $session }
             $fact.Unreadable = $false
         }
@@ -1270,7 +1369,11 @@ if ($reentering) {
         exit 2
     }
 
-    $harScripts = Join-Path -Path $PSScriptRoot -ChildPath '..' -AdditionalChildPath 'har'
+    # Built and resolved by .NET, not Join-Path (#24 N2): Join-Path goes
+    # through the provider of the current LOCATION, and from Env:\ or a
+    # registry drive it dropped the `..`, so the module was looked for under
+    # capture\har and not found.
+    $harScripts = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, '..', 'har'))
     Import-Module (Join-Path -Path $harScripts -ChildPath 'HarStoreBatch.psm1') -Force
 
     $selection = Resolve-HarCaptureSelection -Spec $Uri -Describe $Describe `
@@ -1300,8 +1403,9 @@ if ($reentering) {
     # in another repository scrubbed and gated with THAT repository's profile:
     # the operator's identifiers went back into scrubbed.har, the gate passed
     # it, and the run said "clean". So both re-entry calls are made from the
-    # capture's own store root, where the profile beside the capture is the one
-    # found, and the caller is put back where they were afterwards.
+    # capture's own store root, and the caller is put back where they were
+    # afterwards -- and the scrub is handed the profile the RECORDING used,
+    # which may not be the root's (#24 N1; see Get-HarScrubProfileBlocker).
     #
     # It also has to EXIST, which is the shared guard: the walk decides what a
     # capture is by the files in a directory and anchors to nothing, so a stray
@@ -1316,8 +1420,15 @@ if ($reentering) {
                 '  capture is found. A capture-shaped folder anywhere else has neither. Nothing was run.') }
         exit 3
     }
-    if ($storeRoot.TrimEnd('\', '/') -ne (Get-Location).ProviderPath.TrimEnd('\', '/')) {
-        Write-Information "  from $storeRoot -- the operator profile found there is the one that applies, not this folder's"
+    # Said only when it is news: compared as FOLDERS, not as spellings (#24 N3)
+    # -- a short name, a `..`, or a link to the store folder is still the store
+    # folder. A location that is not a folder at all (Env:\, a registry drive)
+    # is never it.
+    $here = Get-Location
+    $atStoreRoot = $here.Provider.Name -eq 'FileSystem' -and
+        (Get-HarCanonicalPath -Path $here.ProviderPath) -eq (Get-HarCanonicalPath -Path $storeRoot)
+    if (-not $atStoreRoot) {
+        Write-Information "  from $storeRoot -- the folder that holds its capture store"
     }
 
     $fact = Get-HarCaptureSessionFact -Directory $capture.dir
@@ -1392,9 +1503,24 @@ if ($reentering) {
         $findingsPath = Join-Path -Path $capture.dir -ChildPath 'scrub-findings.json'
         $findingsBefore = if (Test-Path -LiteralPath $findingsPath) { (Get-Item -LiteralPath $findingsPath).LastWriteTimeUtc.Ticks }
 
+        # WITH THE PROFILE THE RECORDING SCRUBBED WITH (#24 N1), named
+        # explicitly, so the scrub and its leak gate both use that file and not
+        # whichever one is found from the store root. The blocker has already
+        # refused a recorded profile that is gone, and a capture that records
+        # none while a scrubbed.har is there to replace.
+        $profileArgs = @{}
+        if ($fact.ScrubProfilePath) {
+            $profileArgs.ProfilePath = $fact.ScrubProfilePath
+            Write-Information "  scrubbing with the operator profile $($fact.ScrubProfilePath), the one its recording used"
+        }
+        else {
+            Write-Information ("  this capture does not record which operator profile its recording scrubbed with; " +
+                "scrubbing with the one found from $storeRoot")
+        }
+
         Push-Location -LiteralPath $storeRoot
         try {
-            $said = & (Join-Path -Path $harScripts -ChildPath 'Invoke-SanitizeHar.ps1') -InputHar $capture.dir -Force -WhatIf:$false -Confirm:$false -InformationAction Continue 6>&1
+            $said = & (Join-Path -Path $harScripts -ChildPath 'Invoke-SanitizeHar.ps1') -InputHar $capture.dir @profileArgs -Force -WhatIf:$false -Confirm:$false -InformationAction Continue 6>&1
             $scrubExit = $LASTEXITCODE
         }
         finally { Pop-Location }

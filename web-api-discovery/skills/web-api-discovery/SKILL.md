@@ -320,18 +320,19 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   echoed, because it may carry a token. A wildcard is refused by its
   spelling, and a directory has to be inside a capture store (under a
   `.har-captures` directory).
-* **The scrub and the leak gate always use the operator profile beside the
-  capture.** Both phases run from the folder that holds the capture's
-  `.har-captures`, wherever the command was typed, so the `.har-profile.json`
-  found from there -- the operator's own identifiers, and the salt every
-  pseudonym is derived from -- is the one that applies. Naming a capture by
-  its directory from another repository does not scrub it with that other
-  repository's profile. You are returned to the directory you ran it from.
-  That is the profile the recording used whenever the recording was run from
-  that folder, which is the ordinary case. A recording run from a subfolder
-  that had a `.har-profile.json` of its own used that one: a re-scrub then
-  uses a different profile (so different pseudonyms), or fails for want of one
-  -- keep the profile beside the store.
+* **`-Scrub` uses the operator profile the recording scrubbed with.** The
+  recorder writes the `.har-profile.json` it resolved -- the operator's own
+  identifiers, and the salt every pseudonym is derived from -- into
+  `session.json` as `scrubProfilePath`, and `-Scrub` hands that file to the
+  scrub and the leak gate, wherever the command was typed, and says which file
+  it used. A recording run from a subfolder with a profile of its own is
+  re-scrubbed with that one, not the store root's. When that file no longer
+  exists the scrub is refused (exit 3). A capture recorded before the field
+  existed is refused (exit 3) when it already has a `scrubbed.har` -- nothing
+  says which profile made it; move it aside to scrub anyway -- and otherwise
+  scrubbed with the profile found from the store root, said so. Both phases run
+  from the folder that holds the capture's `.har-captures`, and you are
+  returned to the directory you ran it from.
 * **A capture its recorder is still working on is refused.** A recorder goes
   on writing `scrubbed.har`, the digest and the catalogue for minutes after a
   recording stops; while its process is alive and it has not recorded that it

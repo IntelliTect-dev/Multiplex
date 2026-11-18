@@ -87,8 +87,8 @@ Invoke-HarCapture example.com/2026-01-02-143000 -Scrub         # one capture, by
 
 It says which capture it selected. When the site has been recorded more than
 once it lists them and stops, rather than guessing which one you meant. The
-scrub always uses the operator profile (`.har-profile.json`) beside the
-capture, wherever you run it from, and a scrub the leak gate kept with
+scrub uses the operator profile (`.har-profile.json`) the recording itself
+scrubbed with, wherever you run it from, and a scrub the leak gate kept with
 advisory findings is a warning and exit code 7, never a quiet success.
 
 **In a folder that isn't a git repository**, the recorder first asks whether

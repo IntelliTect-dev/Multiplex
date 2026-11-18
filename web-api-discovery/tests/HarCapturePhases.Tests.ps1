@@ -154,7 +154,14 @@ BeforeAll {
             [switch]$PostProcessed,
             # Where the recording published its scrubbed artifacts, when that
             # was somewhere other than the capture's own directory.
-            [string]$OutputPath
+            [string]$OutputPath,
+            # The operator profile the recording scrubbed with, as the recorder
+            # records it (#24 N1). By default the store's own, which is where a
+            # recording started in the store's folder finds it.
+            [string]$ScrubProfilePath,
+            # A capture recorded before the recorder said which profile it
+            # used: session.json has no scrubProfilePath at all.
+            [switch]$NoProfileRecord
         )
 
         $dir = Join-Path (Join-Path $Store.Captures $Site) $Stamp
@@ -181,6 +188,10 @@ BeforeAll {
         }
         if ($SignIn) { $session.signIn = @{ source = $SignIn; signedIn = $true } }
         if ($UnprotectedTables) { $session.unprotectedTables = $true }
+        if (-not $NoProfileRecord) {
+            $session.scrubProfilePath = if ($ScrubProfilePath) { $ScrubProfilePath }
+            else { Join-Path $Store.Base '.har-profile.json' }
+        }
         $session | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'session.json') -Encoding utf8
         if ($Scrubbed) { Write-FixtureHar -Path (Join-Path $dir 'scrubbed.har') }
         if ($Rejected) { Write-FixtureHar -Path (Join-Path $dir 'scrubbed.rejected.har') }
@@ -1312,6 +1323,44 @@ Describe 'the phases run where the capture lives, not where the command was type
         finally { Pop-Location }
     }
 
+    It 'runs from a location that is not a folder at all (#24 N2)' {
+        # Its module was imported by a path with `..` in it, which PowerShell
+        # resolved against the CURRENT location: from Env:\ or a registry drive
+        # that is no folder, and the run ended at exit 1 before selecting
+        # anything.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+
+        Push-Location -LiteralPath 'Env:\'
+        try {
+            & $script:InvokePs1 -Uri $capture -Scrub -InformationAction Ignore 3> $null | Out-Null
+            $code = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+
+        $code | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
+    }
+
+    It 'does not say it is running from the store root when the caller is already there (#24 N3)' {
+        # The comparison was of two spellings, not two folders: the store root
+        # as the store walk names it, and the caller's location as it was
+        # typed -- an 8.3 short name on Windows, a trailing separator, a
+        # different letter case, a link to the folder. Stood in the store's own
+        # folder reached through a link (a junction on Windows, which needs no
+        # privilege), with the capture named by its real path.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+        $link = Join-Path ([IO.Path]::GetTempPath()) ('har-phases-link-' + [guid]::NewGuid().ToString('n'))
+        $kind = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        New-Item -ItemType $kind -Path $link -Target $script:Store.Base | Out-Null
+        try {
+            $run = Invoke-PhaseDoor -Store ([pscustomobject]@{ Base = $link }) -Arguments @($capture, '-Scrub')
+        }
+        finally { [IO.Directory]::Delete($link) }
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        $run.Text | Should -Not -Match '(?m)^\s*from \S.* -- ' -Because 'the caller is already in the folder the phases run from'
+    }
+
     It 'refuses a capture-shaped directory that is not inside a capture store' {
         # Remove-HarCapture's guard, shared rather than copied. The walk decides
         # what a capture is by the files in a directory and anchors to nothing;
@@ -1329,6 +1378,81 @@ Describe 'the phases run where the capture lives, not where the command was type
         $run.ExitCode | Should -Be 3 -Because $run.Text
         $run.Text | Should -Match 'not inside a capture store'
         Test-Path -LiteralPath (Join-Path $loose 'scrubbed.har') | Should -BeFalse
+    }
+}
+
+Describe 'a re-scrub uses the operator profile the recording scrubbed with (#24 N1)' {
+
+    BeforeEach {
+        # The store root's profile maps NOTHING; a subfolder the recording was
+        # started in has its own, which maps the operator's account id. The
+        # recording scrubbed with the subfolder's, because a scrub finds the
+        # profile from its working directory -- and the store is anchored at the
+        # root, so a re-scrub from there found the root's.
+        $script:Store = New-PhaseStore
+        $script:Literal = 'acct-zqx-55190-operator'
+        $script:Sub = Join-Path $script:Store.Base 'team-a'
+        New-Item -ItemType Directory -Path $script:Sub -Force | Out-Null
+        $script:SubProfile = Join-Path $script:Sub '.har-profile.json'
+        Set-Content -LiteralPath $script:SubProfile -Encoding utf8 -Value (
+            @{ salt = 'har-capture-phases-fixture-salt'; literals = @{ $script:Literal = '<AccountId>' } } | ConvertTo-Json)
+    }
+
+    AfterEach { Remove-PhaseStore -Store $script:Store }
+
+    It 'does not put back an identifier the recording''s profile replaced (the reviewer''s reproduction)' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' `
+            -Body ('{"account":"' + $script:Literal + '"}') -ScrubProfilePath $script:SubProfile
+        # What the recording's own scrub left: the id replaced by its sentinel.
+        Write-FixtureHar -Path (Join-Path $capture 'scrubbed.har') -Body '{"account":"<AccountId>"}'
+        (Get-Content -LiteralPath (Join-Path $capture 'raw.har') -Raw) | Should -Match $script:Literal `
+            -Because 'the raw has to carry the id, or nothing below is being tested'
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        $scrubbed = Get-Content -LiteralPath (Join-Path $capture 'scrubbed.har') -Raw
+        $scrubbed | Should -Not -Match $script:Literal -Because 'the re-scrub has to use the profile the recording used'
+        $scrubbed | Should -Match '<AccountId>'
+        $run.Text | Should -Match ([regex]::Escape($script:SubProfile)) `
+            -Because 'it says which operator profile it scrubbed with'
+    }
+
+    It 'refuses when the profile the recording used no longer exists, and replaces nothing' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
+            -Body ('{"account":"' + $script:Literal + '"}') -ScrubProfilePath $script:SubProfile
+        $before = (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash
+        Remove-Item -LiteralPath $script:SubProfile
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'no longer exists'
+        $run.Text | Should -Match ([regex]::Escape($script:SubProfile))
+        (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash | Should -Be $before
+    }
+
+    It 'refuses to replace the scrub of a capture that does not record its profile' {
+        # Recorded before the recorder said which profile it used: nothing says
+        # the store root's profile is the one that made the scrubbed.har there.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed -NoProfileRecord
+        $before = (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'does not record which operator profile'
+        (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash | Should -Be $before
+    }
+
+    It 'still scrubs such a capture when there is no scrub to replace, and says which profile it used' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -NoProfileRecord
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
+        $run.Text | Should -Match 'does not record which operator profile'
     }
 }
 
