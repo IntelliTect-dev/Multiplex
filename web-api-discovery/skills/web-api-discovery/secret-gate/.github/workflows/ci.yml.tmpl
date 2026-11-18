@@ -29,3 +29,16 @@ jobs:
         run: dotnet build --configuration Release --no-restore
       - name: Test
         run: dotnet test --configuration Release --no-build --verbosity normal
+      - name: MCP smoke test
+        # Starts the wrapper's MCP server over stdio and checks the tools it
+        # lists (tests/<Name>.Tests/pester/Mcp.Tests.ps1). `dotnet test` above
+        # does not run it: it is a Pester suite. With CI set, as it is here,
+        # the suite fails rather than skips when it cannot start the server.
+        shell: pwsh
+        run: |
+          $runners = @(Get-ChildItem tests -Recurse -Filter run-pester.ps1)
+          if ($runners.Count -eq 0) { throw 'No tests/**/pester/run-pester.ps1 found: the MCP smoke test is missing.' }
+          foreach ($runner in $runners) {
+            & $runner.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

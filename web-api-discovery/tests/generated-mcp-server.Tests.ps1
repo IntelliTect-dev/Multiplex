@@ -69,7 +69,7 @@ BeforeAll {
             --auth-model cookie 2>&1 | Out-String
         $generateExit = $LASTEXITCODE
 
-        $project = Join-Path $out "src/$name/$name.csproj"
+        $project = (Get-WrapperLayout -Name $name -Out $out).Project
         $buildOutput = ''
         $buildExit = $null
         if ($generateExit -eq 0) {
@@ -77,19 +77,44 @@ BeforeAll {
             $buildExit = $LASTEXITCODE
         }
 
-        [pscustomobject]@{
-            Name           = $name
-            Out            = $out
-            Project        = $project
-            Server         = Join-Path $out "src/$name/bin/Debug/net10.0/$name.dll"
-            Smoke          = Join-Path $out "tests/$name.Tests/pester/Mcp.Tests.ps1"
-            Stdio          = Join-Path $out "tests/$name.Tests/pester/McpStdio.ps1"
-            ToolsSource    = Join-Path $out "src/$name/${name}Tools.Generated.cs"
+        Get-WrapperLayout -Name $name -Out $out | Add-Member -PassThru -NotePropertyMembers @{
             GenerateExit   = $generateExit
             GenerateOutput = $generateOutput
             BuildExit      = $buildExit
             BuildOutput    = $buildOutput
         }
+    }
+
+    function Get-WrapperLayout {
+        # Where things are in a generated wrapper.
+        param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Out)
+
+        [pscustomobject]@{
+            Name        = $Name
+            Out         = $Out
+            Project     = Join-Path $Out "src/$Name/$Name.csproj"
+            Server      = Join-Path $Out "src/$Name/bin/Debug/net10.0/$Name.dll"
+            Smoke       = Join-Path $Out "tests/$Name.Tests/pester/Mcp.Tests.ps1"
+            Stdio       = Join-Path $Out "tests/$Name.Tests/pester/McpStdio.ps1"
+            ToolsSource = Join-Path $Out "src/$Name/${Name}Tools.Generated.cs"
+        }
+    }
+
+    function Copy-GeneratedWrapper {
+        # A wrapper's sources in a folder of their own, without its build output.
+        # A falsifier breaks its copy and lets the smoke test build it, so no
+        # falsifier sees what another did and none depends on running last.
+        param([Parameter(Mandatory)]$Wrapper)
+
+        $copy = Join-Path ([IO.Path]::GetTempPath()) ("mcpserver-" + [guid]::NewGuid())
+        foreach ($file in Get-ChildItem -LiteralPath $Wrapper.Out -Recurse -File -Force) {
+            $relative = [IO.Path]::GetRelativePath($Wrapper.Out, $file.FullName)
+            if ($relative -match '(^|[\\/])(bin|obj)[\\/]') { continue }
+            $target = Join-Path $copy $relative
+            New-Item -ItemType Directory -Force (Split-Path $target -Parent) | Out-Null
+            Copy-Item -LiteralPath $file.FullName -Destination $target
+        }
+        Get-WrapperLayout -Name $Wrapper.Name -Out $copy
     }
 
     function Invoke-ServerSession {
@@ -102,14 +127,27 @@ BeforeAll {
 
     function Invoke-EmittedSmoke {
         # Out of process, as agent-e2e runs it: the emitted suite is the
-        # wrapper's, and must pass or fail on its own.
-        param([Parameter(Mandatory)]$Wrapper)
+        # wrapper's, and must pass or fail on its own. Which cases passed and
+        # which failed come back by NAME: "something failed" is also what a
+        # suite that could not even start reports.
+        #
+        # -Environment sets variables in that process only, before the suite
+        # runs -- how a machine without the .NET SDK, or a CI run, is stood in for.
+        param([Parameter(Mandatory)]$Wrapper, [hashtable]$Environment = @{})
 
-        $command = "`$r = Invoke-Pester -Path '$($Wrapper.Smoke)' -PassThru -Output None; " +
-            "'{0},{1},{2}' -f `$r.PassedCount, `$r.FailedCount, `$r.TotalCount"
-        $line = & pwsh -NoProfile -Command $command | Select-Object -Last 1
-        $passed, $failed, $total = "$line".Trim() -split ','
-        [pscustomobject]@{ Passed = [int]$passed; Failed = [int]$failed; Total = [int]$total }
+        $set = ($Environment.GetEnumerator() | ForEach-Object { "`$env:$($_.Key) = '$($_.Value)'; " }) -join ''
+        $command = $set + "`$r = Invoke-Pester -Path '$($Wrapper.Smoke)' -PassThru -Output None; " +
+            "[pscustomobject]@{ Passed = `$r.PassedCount; Failed = `$r.FailedCount; Skipped = `$r.SkippedCount; " +
+            "FailedNames = @(`$r.Failed | ForEach-Object { `$_.Name }); " +
+            "PassedNames = @(`$r.Passed | ForEach-Object { `$_.Name }) } | ConvertTo-Json -Compress"
+        $result = "$(& pwsh -NoProfile -Command $command | Select-Object -Last 1)" | ConvertFrom-Json
+        [pscustomobject]@{
+            Passed      = [int]$result.Passed
+            Failed      = [int]$result.Failed
+            Skipped     = [int]$result.Skipped
+            FailedNames = @($result.FailedNames)
+            PassedNames = @($result.PassedNames)
+        }
     }
 
     function Remove-GeneratedWrapper {
@@ -298,23 +336,59 @@ Describe 'a server generated from a REST capture' -Skip:$script:NoDotnet {
         }
 
         # FALSIFIERS. The emitted smoke test passed for years over a server with
-        # no tools. These change the generated wrapper the way a regression in
-        # the generator would, and require the smoke test to notice. They run
-        # last: each leaves the wrapper broken.
-        It 'FALSIFIER: fails when one tool''s hint is wrong' {
-            $source = Get-Content -LiteralPath $script:Crud.ToolsSource -Raw
-            $wrong = $source.Replace('Name = "delete_items_by_id", ReadOnly = false, Destructive = true',
-                'Name = "delete_items_by_id", ReadOnly = true, Destructive = false')
-            $wrong | Should -Not -Be $source -Because 'the falsifier must actually change the tool'
-            Set-Content -LiteralPath $script:Crud.ToolsSource -Value $wrong -NoNewline
+        # no tools. Each of these breaks a COPY of the generated wrapper the way a
+        # regression in the generator would, and requires the smoke test to fail
+        # in the case that is about that break -- by name. "Something failed" is
+        # not enough: a suite that cannot start at all fails too.
+        It 'FALSIFIER: a tool with the wrong hint fails the hints case, and no other' {
+            $copy = Copy-GeneratedWrapper -Wrapper $script:Crud
+            try {
+                $source = Get-Content -LiteralPath $copy.ToolsSource -Raw
+                $wrong = $source.Replace('Name = "delete_items_by_id", ReadOnly = false, Destructive = true',
+                    'Name = "delete_items_by_id", ReadOnly = true, Destructive = false')
+                $wrong | Should -Not -Be $source -Because 'the falsifier must actually change the tool'
+                Set-Content -LiteralPath $copy.ToolsSource -Value $wrong -NoNewline
 
-            (Invoke-EmittedSmoke -Wrapper $script:Crud).Failed | Should -BeGreaterThan 0
+                $result = Invoke-EmittedSmoke -Wrapper $copy
+
+                ($result.FailedNames -join ' | ') |
+                    Should -Be 'gives every tool the read-only, destructive and idempotent hints of its endpoint'
+                $result.PassedNames | Should -Contain 'lists every tool the generator made' -Because 'the tool is still listed; only its hint is wrong'
+            }
+            finally { Remove-GeneratedWrapper $copy }
         }
-        It 'FALSIFIER: fails when the generated tool class is gone' {
-            Test-Path -LiteralPath $script:Crud.ToolsSource | Should -BeTrue -Because 'there must be a tool class to take away'
-            Remove-Item -LiteralPath $script:Crud.ToolsSource -Force
+        It 'FALSIFIER: with the generated tool class gone, the cases about the server''s tools fail' {
+            $copy = Copy-GeneratedWrapper -Wrapper $script:Crud
+            try {
+                Test-Path -LiteralPath $copy.ToolsSource | Should -BeTrue -Because 'there must be a tool class to take away'
+                Remove-Item -LiteralPath $copy.ToolsSource -Force
 
-            (Invoke-EmittedSmoke -Wrapper $script:Crud).Failed | Should -BeGreaterThan 0
+                $result = Invoke-EmittedSmoke -Wrapper $copy
+
+                # Not a build break: the wrapper compiles without the class, as
+                # it did for as long as the generator did not emit one.
+                $result.PassedNames | Should -Contain 'the wrapper builds'
+                foreach ($case in @(
+                    'the server starts over stdio and answers tools/list'
+                    'lists at least one tool'
+                    'lists every tool the generator made')) {
+                    $result.FailedNames | Should -Contain $case
+                }
+            }
+            finally { Remove-GeneratedWrapper $copy }
+        }
+        It 'FALSIFIER: with no .NET SDK the smoke test fails under CI, and only skips anywhere else' {
+            # An empty PATH, in the process the suite runs in, is a machine with
+            # no dotnet. Nothing is built or started, so the wrapper is not touched.
+            $case = 'has the .NET SDK to start the server with, whenever CI is set'
+
+            $underCi = Invoke-EmittedSmoke -Wrapper $script:Crud -Environment @{ PATH = ''; CI = 'true' }
+            ($underCi.FailedNames -join ' | ') | Should -Be $case
+
+            $elsewhere = Invoke-EmittedSmoke -Wrapper $script:Crud -Environment @{ PATH = ''; CI = '' }
+            $elsewhere.Failed | Should -Be 0
+            $elsewhere.Skipped | Should -BeGreaterThan 0 -Because 'the cases that need a server are skipped, and say so'
+            $elsewhere.PassedNames | Should -Not -Contain $case
         }
     }
 }

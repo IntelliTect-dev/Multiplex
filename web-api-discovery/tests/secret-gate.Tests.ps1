@@ -180,6 +180,53 @@ Describe "ci workflow YAML" {
         $script:CiBody | Should -Match 'dotnet\s+build'
         $script:CiBody | Should -Match 'dotnet\s+test'
     }
+
+    Context "the MCP smoke test step (issue #17)" {
+        # `dotnet test` does not run tests/<Name>.Tests/pester/Mcp.Tests.ps1: it
+        # is a Pester suite. Until the workflow ran it, the one check that a
+        # generated server lists its tools ran nowhere but on a developer's
+        # machine. The step's own script is taken out of the YAML and RUN here,
+        # against a throwaway tree: a step that cannot fail is not a check.
+        BeforeAll {
+            $step = [regex]::Match($script:CiBody, '(?ms)^      - name: MCP smoke test\b.*?(?=^      - name: |\z)').Value
+            $script:SmokeStep = $step
+            $run = [regex]::Match($step, '(?ms)^        run: \|[ \t]*\r?\n(?<body>(?:(?:          .*)?\r?\n?)+)').Groups['body'].Value
+            $script:SmokeScript = (($run -split "\r?\n") | ForEach-Object { if ($_.Length -ge 10) { $_.Substring(10) } else { '' } }) -join "`n"
+
+            function Invoke-SmokeStep {
+                # Runs the step's script in a tree whose only runner exits with $RunnerExit;
+                # with no $RunnerExit there is no runner at all.
+                param([Nullable[int]]$RunnerExit)
+                $tree = Join-Path $TestDrive ('ci-' + [guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Force (Join-Path $tree 'tests') | Out-Null
+                if ($null -ne $RunnerExit) {
+                    $pester = Join-Path $tree 'tests/Example.Tests/pester'
+                    New-Item -ItemType Directory -Force $pester | Out-Null
+                    Set-Content -LiteralPath (Join-Path $pester 'run-pester.ps1') -Value "exit $RunnerExit"
+                }
+                $file = Join-Path $tree 'step.ps1'
+                Set-Content -LiteralPath $file -Value $script:SmokeScript
+                Push-Location $tree
+                try { & pwsh -NoProfile -File $file 2>&1 | Out-Null; return $LASTEXITCODE }
+                finally { Pop-Location }
+            }
+        }
+        It "is a pwsh step that comes after the build" {
+            $script:SmokeStep | Should -Not -BeNullOrEmpty -Because 'the generated workflow must run the MCP smoke test'
+            $script:SmokeStep | Should -Match '(?m)^        shell: pwsh\s*$'
+            $script:SmokeScript | Should -Match 'run-pester\.ps1'
+            $script:CiBody.IndexOf('- name: MCP smoke test') | Should -BeGreaterThan $script:CiBody.IndexOf('- name: Build')
+        }
+        It "passes when the wrapper's smoke suite passes" {
+            Invoke-SmokeStep -RunnerExit 0 | Should -Be 0
+        }
+        It "fails with the suite's exit code when the smoke suite fails" {
+            Invoke-SmokeStep -RunnerExit 3 | Should -Be 3
+        }
+        It "fails when there is no smoke suite to run, rather than passing over nothing" {
+            Invoke-SmokeStep | Should -Not -Be 0
+        }
+    }
 }
 
 Describe "Codegen integration: emits secret-gate files into wrapper output" {
