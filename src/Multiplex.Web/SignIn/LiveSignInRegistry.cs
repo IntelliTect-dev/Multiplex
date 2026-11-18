@@ -43,12 +43,22 @@ public sealed class LiveSignInRegistry(
                 return null;
             }
 
-            var attempt = new LiveSignInAttempt(definition, pendingId, new LiveSignInServices(
-                manager, store, index, allowlist, options.Value,
-                services.GetService<IAuthorizationCompleter>, time, logger));
+            LiveSignInAttempt attempt;
+            try
+            {
+                attempt = new LiveSignInAttempt(definition, pendingId, new LiveSignInServices(
+                    manager, store, index, allowlist, options.Value,
+                    services.GetService<IAuthorizationCompleter>, time, logger));
+                attempt.Start(slot);
+            }
+            catch
+            {
+                // Never set up, so nothing else will give the slot back.
+                slot.Dispose();
+                throw;
+            }
             _attempts[attempt.Id] = attempt;
             _byPending[pendingId] = attempt.Id;
-            attempt.Start(slot);
             return attempt;
         }
     }
