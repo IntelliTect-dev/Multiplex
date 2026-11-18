@@ -2196,8 +2196,16 @@ Generated rules:
   `/// <summary>TODO</summary>` where it can't infer better).
 - POST / PUT / DELETE wrappers are decorated `[Experimental]` until the
   user marks them stable.
-- MCP tool descriptions are first-drafted from `(method, path-template,
-  response keys, query params)` with `// TODO: refine`.
+- **Every client method is an MCP tool.** The generator emits
+  `<Name>Tools.Generated.cs`: a class marked `[McpServerToolType]` with one
+  `[McpServerTool]` method per endpoint, each calling the client method it is
+  named after. The server registers tools with `WithToolsFromAssembly()`,
+  which finds a class by that attribute and by nothing else -- without it the
+  server starts and lists no tools. See **The MCP server and its tools** below.
+- MCP tool descriptions are first-drafted from the operation: what it does,
+  the HTTP method and path template, the site, the field names of the captured
+  response, and -- for a write -- what calling it does to the site. They are a
+  draft; refine them where the capture could not know what an endpoint is for.
 - **Send only the headers the API needs, under the client's own name.** A
   generated request carries the session (cookie or bearer), the CSRF token
   when there is one, `Accept` / `Content-Type`, the `Origin` /
@@ -2312,6 +2320,60 @@ the `(session, pacing, innerHandler, log)` constructor; the
 `(session, HttpClient)` overload stays a bring-your-own pipeline, which is what
 the per-endpoint fixture tests use. It reads only `_USER_AGENT`, once per
 process: no other pacing variable is its concern.
+
+**The MCP server and its tools.** The generated project is also an MCP server
+over stdio (`McpProgram.cs`), on the same SDK version line as the Multiplex host:
+`ModelContextProtocol` 2.4.0, the package that carries the stdio transport.
+`tests/codegen-pipeline.Tests.ps1` reads the host's version and fails when the
+generated one differs.
+
+- **One tool per client method**, in `<Name>Tools.Generated.cs`, GraphQL
+  included (one `graphql` tool). The name on the wire is set explicitly --
+  the client method without `Async`, in `snake_case`: `GetUsersByIdAsync` is
+  `get_users_by_id`.
+- **Hints from the HTTP method and the operation.** A client reads these to
+  decide whether a call needs confirming, so every tool sets all of them
+  rather than inheriting the SDK's defaults (`Destructive` true, the others
+  false):
+
+  | Operation | ReadOnly | Destructive | Idempotent |
+  |---|---|---|---|
+  | `GET`, `HEAD`, `OPTIONS` | true | false | true |
+  | `POST` | false | false | false |
+  | `POST` whose path names a change or removal (`/delete`, `/cancel`, `/update`, ...) | false | true | false |
+  | `PUT` | false | true | true |
+  | `PATCH` | false | true | false |
+  | `DELETE` | false | true | true |
+  | GraphQL (a query or a mutation; not known when the tool is listed) | false | true | false |
+  | any other method | false | true | false |
+
+  They are a first draft. Nothing in a capture says what a site does with a
+  `POST`, and one the word list does not recognise is reported as additive.
+  The generated README sets the tools and their hints out in one table:
+  review it before relying on a client that acts on hints without asking.
+- **The session is read at the first tool call, not at server start.** Every
+  tool goes through `<Name>ToolSession` (`ToolSession.cs`), which reads
+  `ISessionStore` when the first call arrives and remembers only a session it
+  found. So the server starts, and lists its tools, with nobody signed in; and
+  a session saved while it runs is picked up by the next call without a
+  restart.
+- **The server never signs in and never prompts.** Over stdio its stdout is
+  the protocol stream and its stdin is the client's; `<Name>Authenticator`
+  writes to one and reads the other, so the server must not call it. A tool
+  called with no session, or an expired one, fails with an error that says so.
+- **Only a failure the model can act on is put in words.** A missing or
+  expired session, a throttle, a block, an error status and a reply that is
+  not the expected JSON are thrown as `McpException`, whose message the SDK
+  sends to the client. Any other exception is reported without its detail.
+  The message never carries a cookie, or the session store's path.
+- **The wrapper's own smoke test starts the server.**
+  `tests/<Name>.Tests/pester/Mcp.Tests.ps1` builds the wrapper, starts the
+  built assembly over stdio (`McpStdio.ps1`, beside it), sends `initialize`
+  and `tools/list`, and asserts the server lists exactly the tools baked in
+  from the captured endpoints, each with a description and its hints, and that
+  stdout carried only protocol messages. It lists tools and never calls one:
+  a call would go to the real site. `ToolsTests.cs` and
+  `ToolSessionTests.cs` cover the calls, against fixtures.
 
 **Authenticator contract (issue #97).** The generated
 `<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
@@ -2531,16 +2593,28 @@ It runs `run-agent.js` against the synthetic HAR fixtures
 `tests/fixtures/har/e2e-rest.har` and `tests/fixtures/har/e2e-graphql.har`,
 then asserts the emitted project:
 
-- contains the canonical file tree (Client.cs, *.Generated.cs, Authenticator,
-  session stores, McpProgram.cs, secret-gate files, tests project),
+- contains the canonical file tree (Client.cs, *.Generated.cs including the
+  MCP tool class, Authenticator, session stores, McpProgram.cs, ToolSession.cs,
+  secret-gate files, tests project),
 - builds with `dotnet build` -- 0 warnings, 0 errors,
 - passes `dotnet test` -- every emitted `[Fact]` green,
 - passes the emitted Pester smoke (`tests/<Name>.Tests/pester/Mcp.Tests.ps1`),
+  which starts the generated MCP server and checks the tools it lists,
 - is byte-identical on a second run (determinism),
 - has `GraphQLAsync<T>` (not REST methods) when the input HAR is GraphQL.
 
 A regression in any prior pipeline script causes this single test to fail
 with a clear stage banner -- treat it as the skill's regression detector.
+
+`web-api-discovery/tests/generated-mcp-server.Tests.ps1` is the executable spec
+for the generated MCP server. It generates a wrapper from
+`tests/fixtures/har/rest-crud.har` (GET, POST, PUT, PATCH and DELETE) and from
+`graphql.har`, builds each, starts the server over stdio, and asserts against
+what the server answers: the tool names, the hints of each, the descriptions and
+argument schemas, that a tool called with no session saved says so, and that
+stdout carried only protocol messages. Two falsifiers change the generated
+wrapper the way a generator regression would -- a wrong hint, and no tool class
+at all -- and require the wrapper's own smoke test to fail.
 
 ### Phase 9 -- Capture Helper
 
