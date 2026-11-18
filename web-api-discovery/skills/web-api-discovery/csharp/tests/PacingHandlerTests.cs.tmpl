@@ -385,6 +385,33 @@ public class PacingHandlerTests
         Assert.Equal(2, outage.Site.Calls);
     }
 
+    /// <summary>A body whose length is not known up front, as a streamed or chunked response's is not.</summary>
+    private sealed class UnknownLengthStream : MemoryStream
+    {
+        public UnknownLengthStream(byte[] bytes) : base(bytes) { }
+        public override bool CanSeek => false;
+    }
+
+    [Fact]
+    public async Task A_503_body_is_read_only_up_to_the_challenge_bound()
+    {
+        // A challenge page is a few kilobytes. A 503 page past the bound is not
+        // one, and is not read in full to find out -- even with no Content-Length.
+        var big = System.Text.Encoding.UTF8.GetBytes(
+            "<html><head><title>Just a moment...</title></head><body>" + new string('x', 70 * 1024) + "</body></html>");
+        Func<HttpRequestMessage, HttpResponseMessage> streamed = _ =>
+        {
+            var content = new StreamContent(new UnknownLengthStream(big));
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
+            var response = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = content };
+            response.Headers.TryAddWithoutValidation("server", "cloudflare");
+            return response;
+        };
+        var rig = Build(Unspaced, 0.5, streamed, Succeed);
+        Assert.Equal(HttpStatusCode.OK, (await rig.Http.GetAsync(Url)).StatusCode);
+        Assert.Equal(2, rig.Site.Calls);
+    }
+
     [Fact]
     public async Task A_403_carrying_x_datadome_is_a_block_whatever_its_content_type()
     {
