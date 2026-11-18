@@ -24,6 +24,8 @@
 //   C6  an ordinary page carrying a vendor's tag or the wording is not a
 //       challenge -- nor is AWS WAF's 202 script check
 //   C7  Amazon's checkpoint is found deep in a 300 KB page
+//   C8  a block delivered to an XHR is seen whatever its content type:
+//       Akamai's encoded page, DataDome's and PerimeterX's JSON, x-datadome
 //   M1  a throttle pauses for Retry-After, a burst is one episode
 //   M2  a throttle that persists hands over
 //   M3  throttling through a pause hands over (the agent case)
@@ -32,6 +34,7 @@
 //   L1  the hand-over tells the human the browser is theirs, and that nothing
 //       evades -- and a hand-driven run gets advice, not a hand-over
 //   D1  capture-cdp.js: --throttle-ms 0 means zero, and --pace is validated
+//   D2  capture-cdp.js reads the body of a JSON refusal, so C8 can see it
 
 'use strict';
 
@@ -438,6 +441,40 @@ test('C7: Amazon\'s checkpoint is a challenge, though its form sits deep in a fu
     'a form to /checkpoint/validate with no checkbox wording is not this interstitial');
 });
 
+test('C8: a block delivered to an XHR is seen, whatever its content type', () => {
+    // HAND-WRITTEN, like VENDOR_PAGES: Akamai's "Access Denied" entity-encodes
+    // its reference, and DataDome and PerimeterX answer a refused XHR in JSON.
+    const akamai = '<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD><BODY>\n<H1>Access Denied</H1>\n \n' +
+        'You don\'t have permission to access "http&#58;&#47;&#47;www&#46;example&#46;com&#47;api&#47;search" ' +
+        'on this server.<P>\nReference&#32;&#35;18&#46;2f3c1002&#46;1700000000&#46;1a2b3c4d\n' +
+        '<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;2f3c1002&#46;1700000000&#46;1a2b3c4d</P>\n' +
+        '</BODY>\n</HTML>\n';
+    const xhr = (over) => pacing.classifyResponse(onSite(Object.assign({ status: 403 }, over)));
+    const ak = xhr({ mimeType: 'text/html', headers: { server: 'AkamaiGHost' }, body: akamai });
+    assert.ok(ak && ak.kind === 'blocked', `Akamai's real page, encoded reference and all: ${JSON.stringify(ak)}`);
+    assert.match(ak.signature, /Akamai/);
+    assert.strictEqual(xhr({ mimeType: 'text/html', body: akamai.replace(/&#32;/, ' ').replace(/&#35;/, '#')
+        .replace(/https&#58;.*<\/P>/, '') }).kind, 'blocked', 'and the plain spelling');
+
+    const dd = xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' },
+        body: '{"url":"https://geo.captcha-delivery.com/captcha/?initialCid=AHrlqAAAAAMAexample&cid=example&t=fe"}' });
+    assert.ok(dd && dd.kind === 'blocked', `DataDome's JSON block: ${JSON.stringify(dd)}`);
+    assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: '' }).kind,
+        'blocked', 'x-datadome on a 403 is DataDome refusing, even with no body to read');
+    const px = xhr({ mimeType: 'application/json', body: '{"appId":"PXabc123","jsClientSrc":"/abc123/init.js",' +
+        '"firstPartyEnabled":true,"vid":"","uuid":"0000","hostUrl":"/abc123/xhr","blockScript":"/abc123/captcha/captcha.js?a=c"}' });
+    assert.ok(px && px.kind === 'blocked', `PerimeterX's JSON block: ${JSON.stringify(px)}`);
+
+    // CONTENT TYPE IS NOT WHAT DECIDES; vendor evidence is.
+    assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'cf-ray': 'x', server: 'cloudflare' },
+        body: '{"error":"forbidden"}' }), null, 'a CDN\'s headers alone are on every response, an app\'s 403 included');
+    assert.strictEqual(pacing.classifyResponse({ url: 'https://collector.tracker.example.net/t', onSite: false,
+        isDocument: false, status: 403, mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: '' }),
+    null, 'a tracker\'s refusal is not the site\'s');
+    assert.strictEqual(xhr({ status: 200, mimeType: 'application/json',
+        body: '{"url":"https://geo.captcha-delivery.com/captcha/?x"}' }), null, 'a 200 is not a refusal');
+});
+
 test('C4: only the site counts -- a tracker\'s 429 on another host is ignored', () => {
     const tracker = { url: 'https://collector.tracker.example.net/t', status: 429, onSite: false, isDocument: false,
         headers: { 'retry-after': '60' } };
@@ -573,6 +610,20 @@ test('D1: capture-cdp takes --throttle-ms 0 as zero and refuses a --pace it cann
         assert.strictEqual(r.status, 1, `${bad.join(' ')} must be refused, got ${r.status}`);
         assert.match(r.stderr, /--pace|--throttle-ms/);
     }
+});
+
+test('D2: capture-cdp reads the body of any refusal from the site, JSON included', () => {
+    const { readsBodyFor } = require(path.join(__dirname, 'capture-cdp.js'));
+    const xhr = { isDocument: false, onSite: true };
+    assert.strictEqual(readsBodyFor(Object.assign({ status: 403, contentType: 'application/json' }, xhr)), true,
+        'an edge refusing an XHR answers in JSON as often as in HTML');
+    assert.strictEqual(readsBodyFor(Object.assign({ status: 503, contentType: 'text/html' }, xhr)), true);
+    assert.strictEqual(readsBodyFor({ status: 200, contentType: 'text/html', isDocument: true, onSite: true }), true,
+        'a page that answered 200 can be an interstitial');
+    assert.strictEqual(readsBodyFor(Object.assign({ status: 200, contentType: 'application/json' }, xhr)), false,
+        'an ordinary API answer is not read twice');
+    assert.strictEqual(readsBodyFor({ status: 403, contentType: 'application/json', isDocument: false, onSite: false }),
+        false, 'nor a tracker\'s refusal');
 });
 
 (async () => {
