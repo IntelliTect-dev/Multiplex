@@ -14,8 +14,8 @@ public static class RequestOrigin
     /// The key rate limits and lockouts count a caller under: the connection's address or, when the
     /// connection is from loopback (a tunnel on this PC), the last <c>X-Forwarded-For</c> entry if it is
     /// an IP address. Tailscale Funnel and Serve overwrite <c>X-Forwarded-For</c> with the real caller's
-    /// address, and a proxy that appends instead (cloudflared) puts what it saw last, so a remote caller
-    /// cannot choose the entry used. IPv6 addresses are counted by their /64, since one host commonly
+    /// address (measured), so a remote caller cannot choose the entry used; a proxy that appends instead
+    /// also puts what it saw last. IPv6 addresses are counted by their /64, since one host commonly
     /// holds a whole /64; IPv4-mapped IPv6 addresses count as the IPv4 address.
     /// </summary>
     public static string ClientAddress(HttpContext context)

@@ -125,8 +125,8 @@ public static class MultiplexAuthExtensions
     /// <summary>
     /// The rate-limit key for the caller. Behind a local tunnel every request arrives from loopback, so
     /// the last <c>X-Forwarded-For</c> entry is used when it is an IP address: Tailscale Funnel and Serve
-    /// overwrite that header with the real caller's address, and an appending proxy (cloudflared) puts
-    /// what it saw last. IPv6 callers are counted by /64. See <see cref="Sites.RequestOrigin.ClientAddress"/>.
+    /// overwrite that header with the real caller's address, and an appending proxy puts what it saw
+    /// last. IPv6 callers are counted by /64. See <see cref="Sites.RequestOrigin.ClientAddress"/>.
     /// </summary>
     internal static string ClientAddress(HttpContext context) => Sites.RequestOrigin.ClientAddress(context);
 }
