@@ -149,9 +149,22 @@ since, and otherwise gives the same answer at once.
 - [x] Pester: `Stop-HarRecording.ps1` against fixtures in each state.
 - [x] Evidence under `.evidence/` (not committed: the directory is ignored).
 
+## Decided by the owner, 2026-11-18
+
+Recorded on #27 ("your call", settled by the session):
+
+- **The waiting allowance is approved** as stated above: `stop` keeps waiting
+  while post-processing shows progress, and calls a stall only after nothing
+  has moved for the greater of 60 s or 15 s per MB of capture (30 minutes
+  during the AI catalogue pass). It returns exit 1 only on a stall, or when the
+  stop never registered.
+- **No new exit code** for an early return. `stalled` and `not-registered`
+  stay on exit 1; the JSON says which.
+
 ## Left for the owner
 
-- **An exit code of its own for "returned before post-processing finished".**
+- ~~**An exit code of its own for "returned before post-processing finished".**~~
+  Decided: no (see above).
   `stalled` and `not-registered` share exit 1 with runtime errors, because the
   brief allowed changing which EXISTING code is returned and nothing more. The
   JSON tells them apart; a dedicated code would let a caller branch without
