@@ -65,6 +65,25 @@ function ConvertTo-MultiplexAccountList {
         Where-Object { $_ } | Sort-Object -Unique)
 }
 
+function Get-MultiplexAllowlistChange {
+    <#
+    What replacing the allowlist with -Current does, so the installer can say it: the accounts
+    allowed afterwards and the ones that are no longer allowed. Both lists are normalised as
+    ConvertTo-MultiplexAccountList does, so case and spacing are not reported as changes.
+    #>
+    [CmdletBinding()]
+    param([AllowEmptyCollection()] [string[]] $Previous = @(), [AllowEmptyCollection()] [string[]] $Current = @())
+    $before = @(ConvertTo-MultiplexAccountList -Account $Previous)
+    $after = @(ConvertTo-MultiplexAccountList -Account $Current)
+    $removed = @($before | Where-Object { $_ -notin $after })
+    [pscustomobject]@{
+        Allowed       = $after
+        Removed       = $removed
+        Summary       = "TripIt accounts allowed to connect: $(if ($after) { $after -join ', ' } else { '(none)' })"
+        RemovedNotice = if ($removed) { "No longer allowed to connect: $($removed -join ', ')" } else { $null }
+    }
+}
+
 function New-MultiplexPasscode {
     <# A random passcode that is easy to type on a phone: 4 groups of 4 lowercase letters/digits. #>
     [CmdletBinding()] [OutputType([string])] param()
@@ -163,7 +182,9 @@ function Set-ClaudeDesktopBridge {
     <#
     Adds (or updates) a stdio bridge entry for a Multiplex endpoint in Claude Desktop's config,
     keeping every other entry. mcp-remote opens the system browser for the same sign-in page.
-    Claude Desktop must be restarted to pick it up.
+    Claude Desktop must be restarted to pick it up. The first change keeps the original file as
+    <config>.bak (a later change never overwrites it), and the new file is written beside the
+    old one and then moved over it, so a failed write never leaves a half-written config.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -189,8 +210,17 @@ function Set-ClaudeDesktopBridge {
     $config.mcpServers[$Name] = $entry
     if ($PSCmdlet.ShouldProcess($ConfigPath, "Add Claude Desktop MCP entry '$Name'")) {
         New-Item -ItemType Directory -Force -Path (Split-Path $ConfigPath) | Out-Null
-        if (Test-Path -LiteralPath $ConfigPath) { Copy-Item -LiteralPath $ConfigPath -Destination "$ConfigPath.bak" -Force }
-        $config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ConfigPath
+        $backup = "$ConfigPath.bak"
+        if ((Test-Path -LiteralPath $ConfigPath) -and -not (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $ConfigPath -Destination $backup
+        }
+        $full = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($ConfigPath)
+        $tmp = "$full.tmp"
+        try {
+            $config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tmp -ErrorAction Stop
+            [IO.File]::Move($tmp, $full, $true)   # one replace: the config is old or new, never partial
+        }
+        finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
     return $true
 }
@@ -202,6 +232,167 @@ function Get-QuickTunnelUrl {
         if ($line -match '(https://[a-z0-9-]+\.trycloudflare\.com)') { return $Matches[1] }
     }
     return $null
+}
+
+function Invoke-TailscaleFunnel {
+    <#
+    Runs `tailscale funnel --bg` for -Port. When Funnel is not enabled for the tailnet, the
+    command prints an enable link and waits indefinitely, so it runs in a job with a timeout.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)] [string] $Tailscale, [Parameter(Mandatory)] [int] $Port)
+    $job = Start-Job { param($exe, $p) & $exe funnel --bg --yes "$p" 2>&1 } -ArgumentList $Tailscale, $Port
+    $finished = Wait-Job $job -Timeout 20
+    $output = (Receive-Job $job) -join "`n"
+    Remove-Job $job -Force
+    [pscustomobject]@{ Started = [bool]$finished -and $output -notmatch 'not enabled'; Output = $output }
+}
+
+function Get-TailscaleDnsName {
+    [CmdletBinding()] [OutputType([string])] param([Parameter(Mandatory)] [string] $Tailscale)
+    (& $Tailscale status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
+}
+
+function Start-MultiplexTunnel {
+    <#
+    Starts the configured tunnel and records its public address in the config. The recorded
+    address is cleared (and the config written) first, so only a tunnel that actually came up
+    sets it: a stale address would point every OAuth discovery document at a dead host.
+    Returns the tunnel process when this function owns one (Cloudflare), else nothing.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Config,
+        [Parameter(Mandatory)] [string] $ConfigPath,
+        [Parameter(Mandatory)] [string] $LogDir)
+    if ($Config.PublicBaseUrl) {
+        $Config.PublicBaseUrl = $null
+        Write-MultiplexConfig -Config $Config -Path $ConfigPath
+    }
+    switch ($Config.Tunnel) {
+        'Cloudflare' {
+            $log = Join-Path $LogDir 'cloudflared.log'
+            Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
+            $tunnel = Start-Process -FilePath 'cloudflared' -PassThru -WindowStyle Hidden `
+                -ArgumentList @('tunnel', '--no-autoupdate', '--url', "http://127.0.0.1:$($Config.Port)", '--logfile', $log)
+            $deadline = (Get-Date).AddSeconds(60)
+            $url = $null
+            while (-not $url -and (Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 500
+                if (Test-Path -LiteralPath $log) { $url = Get-QuickTunnelUrl -Lines (Get-Content -LiteralPath $log) }
+            }
+            if (-not $url) {
+                Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue
+                throw "cloudflared did not report a public address within 60 s; see $log"
+            }
+            $Config.PublicBaseUrl = $url
+            Write-MultiplexConfig -Config $Config -Path $ConfigPath
+            Write-Host "Public address (changes on every start): $url"
+            return $tunnel
+        }
+        'Tailscale' {
+            $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
+            # Never let an unavailable Funnel keep the server from starting.
+            $funnel = Invoke-TailscaleFunnel -Tailscale $ts -Port $Config.Port
+            if (-not $funnel.Started) {
+                Add-Content -LiteralPath (Join-Path $LogDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available: $($funnel.Output)"
+                Write-Warning "Tailscale Funnel is not enabled for this tailnet; serving locally only. $($funnel.Output)"
+                return
+            }
+            $Config.PublicBaseUrl = "https://$(Get-TailscaleDnsName -Tailscale $ts)"
+            Write-MultiplexConfig -Config $Config -Path $ConfigPath
+            Write-Host "Public address: $($Config.PublicBaseUrl)"
+        }
+    }
+}
+
+function Clear-MultiplexStalePublicAddress {
+    <#
+    The installer's half of keeping the public address honest: with no tunnel there is no public
+    address, so a value left from an earlier tunnel is dropped.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)] [System.Collections.IDictionary] $Config)
+    if ($Config.Tunnel -eq 'None' -and $Config.PublicBaseUrl) { $Config.PublicBaseUrl = $null }
+}
+
+function Limit-MultiplexLog {
+    <#
+    Rotates a log at server start: when it is larger than -MaxBytes it becomes <log>.1 (replacing
+    the previous one), so at most one earlier log is kept. A failure only warns: rotating must
+    never keep the server from starting.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Path, [long] $MaxBytes = 10MB)
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+        if (-not $item -or $item.Length -le $MaxBytes) { return }
+        Move-Item -LiteralPath $Path -Destination "$Path.1" -Force -ErrorAction Stop
+    }
+    catch { Write-Warning "Could not rotate $Path ($($_.Exception.Message)); it keeps growing for now." }
+}
+
+function Test-MultiplexPathUnder {
+    <# Whether -Path is inside -Folder (not merely a sibling whose name starts the same, like app.new). #>
+    [CmdletBinding()] [OutputType([bool])]
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Folder)
+    $Path.StartsWith($Folder.TrimEnd('\', '/') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Update-MultiplexApp {
+    <#
+    Replaces the published server in -AppDir without leaving it broken. -Publish (given the
+    staging folder) builds beside it first, so a failed build changes nothing and leaves the
+    running server alone; only then does -StopServer run and the folders swap. An earlier run
+    that was interrupted mid-swap is repaired first, so re-running is always safe.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)] [string] $AppDir,
+        [Parameter(Mandatory)] [scriptblock] $Publish,
+        [scriptblock] $StopServer = {})
+    $AppDir = $AppDir.TrimEnd('\', '/')
+    $staging = "$AppDir.new"
+    $previous = "$AppDir.old"
+    if (-not $PSCmdlet.ShouldProcess($AppDir, 'Publish Multiplex.Web and replace the installed server')) { return }
+
+    if (-not (Test-Path -LiteralPath $AppDir) -and (Test-Path -LiteralPath $previous)) {
+        Move-Item -LiteralPath $previous -Destination $AppDir -ErrorAction Stop   # an interrupted swap: restore the last good install
+    }
+    foreach ($leftover in $staging, $previous) {
+        if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force -ErrorAction Stop }
+    }
+
+    try { & $Publish $staging }
+    catch {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    if (-not (Test-Path -LiteralPath $staging)) { throw "Publishing produced no $staging; the installed server was left as it was." }
+
+    & $StopServer
+    if (Test-Path -LiteralPath $AppDir) {
+        # A stopped process can hold its files for a moment after it exits.
+        for ($attempt = 1; ; $attempt++) {
+            try { Move-Item -LiteralPath $AppDir -Destination $previous -ErrorAction Stop; break }
+            catch { if ($attempt -ge 10) { throw }; Start-Sleep -Milliseconds 500 }
+        }
+    }
+    try { Move-Item -LiteralPath $staging -Destination $AppDir -ErrorAction Stop }
+    catch {
+        if (Test-Path -LiteralPath $previous) { Move-Item -LiteralPath $previous -Destination $AppDir -ErrorAction Stop }
+        throw
+    }
+    Remove-Item -LiteralPath $previous -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Resolve-MultiplexPasscode {
+    <#
+    The owner passcode for a connect check: -Passcode when given, else $env:MULTIPLEX_PASSCODE, so
+    it need not appear on a command line (process lists, shell history). Never prints it.
+    #>
+    [CmdletBinding()] [OutputType([string])] param([string] $Passcode)
+    if ($Passcode) { return $Passcode }
+    if ($env:MULTIPLEX_PASSCODE) { return $env:MULTIPLEX_PASSCODE }
+    throw 'No owner passcode: set $env:MULTIPLEX_PASSCODE (for example to the output of ./scripts/Install-Multiplex.ps1 -ShowPasscode) or pass -Passcode.'
 }
 
 function Test-MultiplexEndpoint {
