@@ -98,7 +98,8 @@ scripts/capture/Invoke-HarCapture.ps1 https://example.com `
     -Describe 'sign in, create a post, then delete it'
 
 # -Describe is MANDATORY: a shared, append-only capture store keyed on start
-# times is one where the description is the only way to tell captures apart.
+# times is one where the description is the only thing that says what a capture
+# was FOR. (Which run made it is recorded for you, and printed when it ends.)
 # -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
 # agent attaches to. Warnings and errors print at either level.
 scripts/capture/Invoke-HarCapture.ps1 https://example.com `
@@ -216,6 +217,77 @@ The mechanical phases -- scrub via `sanitize-har.js`, gate via
 every ending. **Cataloguing is a required phase, not an optional flourish**,
 and it is AI work: see Phase 3.5.
 
+### Which run made a capture
+
+The stamp says *when*. It does not say *who*: several sessions record into the
+same store at once and their stamps interleave, so no time window is one
+session's captures, and a description is whatever each of them typed. Measured
+in a real store: a selection by description matched 72 files where the run was
+69, and three attempts by one session all read the same.
+
+So `session.json` carries two identities from the moment recording starts, and
+they answer two different questions:
+
+| Field | One per | Answers |
+|---|---|---|
+| `captureId` | recorder invocation | *Which attempt is this?* Three captures with one description are three ids |
+| `run.id` | invoking session | *Which captures are mine?* Everything one terminal, one agent session or one driving script started |
+
+**`run.id` groups and `captureId` identifies.** Anything that acts on a capture
+-- a re-scrub, an audit, a delete -- acts on one capture at a time, named by
+its `captureId` or its path. (An earlier write-up of this problem called one
+recorder invocation a "run"; that is `captureId` here.)
+
+**Nobody passes either in.** The recorder reads its own process ancestry: it
+walks up through the command shells that launched it (`pwsh`, `cmd`, `bash`,
+...) to the first program that is not a shell, and that program is the run --
+the agent session, the driving script, the CI job. At a terminal, where stdin
+is a terminal, the run is the terminal's own shell instead. The id is a hash of
+that process's id and its start time, so it is the same for every capture the
+session makes, different for a concurrent session, and different again if the
+operating system reuses the process id. No clock is involved, and it records
+**no program name, command line, user name, host name or environment content**.
+
+```json
+"captureId": "0f6b3a52-9a0e-4c1c-8d64-0c1d2f4a7b11",
+"run": { "id": "3f9c2a71d0b4", "basis": "process", "lineage": ["a81e07c2d95b", "3f9c2a71d0b4"] }
+```
+
+* **`basis`** says how the run was recognised: `process` (the program that
+  launched the shells), `terminal` (the terminal's own shell), or `shell` (the
+  outermost shell, when nothing above it could be read).
+* **`lineage`** is every ancestor that was read, nearest first. It is in
+  `session.json` and nowhere else. It is what lets a run that was drawn too
+  finely be regrouped later; it is kept out of the listing because the top of
+  it is shared by every session on the machine, so filtering on it over-selects.
+* **When the ancestry cannot be read**, the capture still has its `captureId`
+  and records `"run": { "id": null, "reason": "..." }`. A run is never guessed.
+  Linux reads `/proc`. Windows asks PowerShell 7 (`pwsh`), which the front
+  doors already require. Other platforms record no run yet.
+* **A slow lookup does not hold a recording up.** It starts before the browser
+  is launched and has usually answered by the time recording starts. If it has
+  not, recording waits five seconds at most and then starts, the session says
+  the ancestry `had not been read when this was written`, and the run is
+  written into `session.json` when it arrives -- typically a few seconds in. A
+  lookup that has not answered after a minute is given up on, and says so.
+* **A capture recorded before this existed has neither field**, and every
+  listing says so.
+
+**It errs towards a run that is too small, on purpose.** A run drawn too finely
+selects too little; one drawn too coarsely hands a bulk action somebody else's
+captures. The known exceptions, each way:
+
+* *Too coarse.* A capture started with no terminal on stdin from inside an
+  interactive terminal -- a background job, redirected input -- belongs to the
+  terminal application, which every tab shares. One started by a scheduler or a
+  service through shells alone belongs to the scheduler. One whose launcher had
+  already exited belongs to whatever adopted it.
+* *Too fine.* An agent harness that gives its command shells a terminal makes
+  every capture its own run, and so does a wrapper that is not a shell (`npm`,
+  `sudo`) standing between the session and the recorder.
+
+So list a run and read the rows before acting on them.
+
 ### Processing a STORE: point an entry point at a folder
 
 A store accumulates faster than anyone will drive a per-capture tool by hand.
@@ -241,9 +313,12 @@ Get-HarCapture                                    # every recording, as objects
 Get-HarCapture | Where-Object Stage -eq raw        # recorded, never processed
 Get-HarCapture | Where-Object { -not $_.Description }   # the undescribed ones
 Get-HarCapture -Path .har-captures/app.example.com | Format-List
+Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run }   # one run's recordings
 
 Remove-HarCapture app.example.com/2026-01-02-143000 -WhatIf   # say, delete nothing
 Remove-HarCapture app.example.com/2026-01-02-143000           # ask, then delete
+Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run } |
+    ForEach-Object { Remove-HarCapture -Capture $_ }          # one run, each one asked
 ```
 
 * **`Get-HarCapture` emits objects, not text.** The default table is
@@ -253,6 +328,21 @@ Remove-HarCapture app.example.com/2026-01-02-143000           # ask, then delete
 * **A recording nobody described is flagged**, not left blank: the table prints
   `(no description)`. An empty cell reads as "the column did not render" just
   as readily as "nobody described this", and only one of those is yours to fix.
+* **The `Run` column says which run made each recording** (see *Which run made
+  a capture*), and the objects carry `RunId`, `RunBasis` and `CaptureId`. A
+  recording made before runs were recorded prints `(none recorded)`; one whose
+  recorder could not read its own ancestry prints `(unidentified)`; one this
+  recorder did not make prints `--`. None of them is given a run by guessing.
+  The id is printed whole, so it is matched with `-eq` and never a wildcard.
+* **Select a run with the guard: `$_.RunId -and $_.RunId -eq $run`.** On its
+  own, `RunId -eq $run` is true -- when `$run` is empty or misspelled -- for
+  every recording that has no run, which is every one made before this existed.
+* **You learn your run from your own recording, not from the list.**
+  `Invoke-HarCapture` ends by saying `This capture is <captureId>, in run
+  <runId>`; the recorder's final machine-readable line carries `captureId` and
+  `runId`; and `node capture-har.js status` reports both for the capture it
+  names. Picking "the newest row" out of a shared store is how one session
+  takes another's run for its own.
 * **A phone capture you imported by hand is a described capture.** Drop a
   `CAPTURE.md` beside the `raw.mitm` with a one-line heading saying what it is,
   and it lists with that description under the class `imported`. It is still
@@ -261,7 +351,8 @@ Remove-HarCapture app.example.com/2026-01-02-143000           # ask, then delete
 * **`Remove-HarCapture` takes exactly one recording**, by path or by the
   `host/stamp` the list prints. It refuses a wildcard, refuses more than one,
   refuses a label that matches more than one, asks before it acts, and takes
-  the whole session directory including the substitution tables.
+  the whole session directory including the substitution tables. What it asks
+  about names the run that made the recording, or says that none was recorded.
 * **Nothing deletes a recording by itself.** There is no age sweep, no count or
   size cap, and no bulk delete: every recording is kept until you delete that
   one on purpose.
@@ -422,7 +513,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 |---|---|
 | `-Uri` | positional, mandatory |
 | `-OutputPath` | default: **this run's own session directory** under `.har-captures/` -- gitignored and stamped. Passing a path appends the host folder, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`; a destination inside a work tree that is not gitignored is warned about, not refused. Receives the **scrubbed** artifacts and the catalogue |
-| `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
+| `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only thing that says what a capture was for, and the only part that cannot be reconstructed afterwards. Who made it is recorded for you: see *Which run made a capture*. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one. Refused with `-Attach`, whose endpoint already names one |
 | `-Browser` | `Playwright` (default) launches the browser here; `Native` starts an ordinary Chrome instead, for a site that refuses the default. See below |

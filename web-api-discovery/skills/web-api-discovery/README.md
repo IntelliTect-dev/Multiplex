@@ -21,6 +21,9 @@ skills/web-api-discovery/
 │   │   ├── capture-store.js         # the ONE walk over a capture store; classifies
 │   │   │                            #   current / legacy / imported / not-recorder-output
 │   │   ├── capture-store.test.js    # zero-dep behavior suite for the walk
+│   │   ├── capture-run.js           # which run made a capture, read from the recorder's
+│   │   │                            #   own process ancestry; and each capture's own id
+│   │   ├── capture-run.test.js      # zero-dep behavior suite for the above
 │   │   ├── pacing.js                # human-scale pacing; reads throttling / blocks
 │   │   │                            #   in responses and decides pause or hand-over
 │   │   ├── pacing.test.js           # zero-dep behavior suite for the above
