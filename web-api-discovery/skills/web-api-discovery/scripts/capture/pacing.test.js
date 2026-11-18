@@ -469,6 +469,15 @@ test('C7: Amazon\'s checkpoint is a challenge, though its form sits deep in a fu
     assert.strictEqual(at('https://www.amazon.com/s?k=usb+hub', page.replace('Check the box to continue.', '')
         .replace('<span>I am human</span>', '<span>Continue</span>')), null,
     'a form to /checkpoint/validate with no checkbox wording is not this interstitial');
+    // THE FORM IS WHAT SAYS SO, never the path: any site can have a /checkpoint/.
+    assert.strictEqual(at('https://game.example.org/checkpoint/3', '<html><head><title>Level 3</title></head><body>' +
+        '<h1>Checkpoint 3</h1><p>Tell the guard "I am human" to pass.</p></body></html>'), null,
+    'another site\'s /checkpoint/ page saying "I am human" is its own page');
+    const formless = page.replace('<form method="POST" action="/checkpoint/validate" id="checkpointForm">',
+        '<div id="checkpointForm">').replace('</form>', '</div>');
+    assert.ok(!formless.includes('/checkpoint/validate'), 'the form is gone, its wording kept');
+    assert.strictEqual(at('https://www.amazon.com/checkpoint/continue', formless), null,
+        'Amazon\'s checkpoint path without the form is not the checkpoint');
 });
 
 test('C8: a block delivered to an XHR is seen, whatever its content type', () => {
