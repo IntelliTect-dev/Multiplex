@@ -28,6 +28,10 @@ skills/web-api-discovery/
 │   │   │                            #   in responses and decides pause or hand-over
 │   │   ├── pacing.test.js           # zero-dep behavior suite for the above
 │   │   ├── sign-in.js               # the recorder signs in (Bitwarden / prompt), paced
+│   │   ├── capture-ending.js        # where a capture's ending has got to: what `stop`
+│   │   │                            #   waits on and `status` reports (progressing,
+│   │   │                            #   stalled, or a stop that never registered)
+│   │   ├── capture-ending.test.js   # zero-dep behavior suite for the above
 │   │   ├── Invoke-HarCatalogue.ps1  # digest + catalogue; a folder means all of them
 │   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
 │   │   ├── Get-HarCapture.ps1       # list the recordings in the store, as objects

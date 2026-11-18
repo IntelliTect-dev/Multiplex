@@ -1,0 +1,480 @@
+'use strict';
+
+/**
+ * capture-ending.js -- where the END of a capture has got to, and whether it is
+ * still getting anywhere (#27).
+ *
+ * A recording ends in the recording process: it closes or detaches from the
+ * browser, writes `raw.har`, then scrubs, verifies, digests and catalogues.
+ * `stop` runs in ANOTHER process and can only wait for that. It used to wait a
+ * fixed 60 seconds and then say "post-processing is still running", exit 6 --
+ * on a 22 MB capture whose recording process finished normally a little later.
+ * The caller could not tell three different things apart:
+ *
+ *   progressing     the ending registered and the work is getting somewhere
+ *   stalled         the ending registered and nothing has moved for a stated time
+ *   not-registered  the stop was asked for and the recorder never took it up
+ *
+ * This file is the one place that tells them apart. `stop` waits on it and
+ * `status` asks it once, so the two cannot disagree.
+ *
+ * WHAT COUNTS AS A SIGN OF PROGRESS, and it is only these two:
+ *
+ *   1. THE ENDING RECORD in session.json, which the recording process writes
+ *      when its ending is settled and again as each phase STARTS (`notePhase`).
+ *      Post-processing is synchronous, so a phase is entered only when the one
+ *      before it returned.
+ *   2. THE FILES POST-PROCESSING ITSELF WRITES, by size and modification time
+ *      (`isEndingArtifact`): the raw being written, the scrub's partial output
+ *      growing, the scrubbed capture, the findings, the digest, the catalogue.
+ *
+ * WHAT DOES NOT, because each of these goes on advancing while the work is
+ * hung: the record log (`raw.ndjson` grows for as long as the browser makes
+ * requests), the agent's own logs (an agent can outlive the recording), the
+ * heartbeat of run-with-heartbeat.js (a timer), the recorder's CPU time, and
+ * the recorder merely being alive.
+ *
+ * HOW LONG NOTHING MAY MOVE is not one number. Measured on a 22.9 MB capture,
+ * the scrub wrote nothing for its first 53 seconds (it reads the capture once
+ * before it writes a byte) and the verify wrote nothing at all for its 12 -- so
+ * a healthy capture is silent for stretches that grow with its size, and any
+ * fixed window is the old defect again. The allowance is a floor plus a rate
+ * per megabyte (`quietLimitMs`), stated in every message and in the JSON.
+ *
+ * EVERYTHING IS DERIVED FROM WHAT IS ON DISK -- the record's timestamps, the
+ * files' modification times, the STOP file's time -- and the clock. So the
+ * single-shot `status` gives the same answer `stop` does, and a capture that
+ * stalled an hour before anybody asked is reported as stalled at once.
+ *
+ * Zero dependencies beyond Node. Time, sleeping and "is the recorder running"
+ * are injected, so all of it is testable without a clock or a process.
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const { formatElapsed } = require(path.join(__dirname, 'run-with-heartbeat.js'));
+
+const SESSION_FILE = 'session.json';
+const STOP_SENTINEL = 'STOP';
+const MB = 1024 * 1024;
+
+const POLL_MS = 200;
+// How long a running recorder gets to take up a stop. It looks for the STOP
+// file five times a second once it is recording, so this is generous: the one
+// stretch in which it is not looking is its own start-up, and that ends.
+const REGISTER_LIMIT_MS = 60 * 1000;
+// The least time nothing may move before it is called a stall. Sixty seconds is
+// what `stop` always allowed, and for a small capture it was never the problem.
+const QUIET_FLOOR_MS = 60 * 1000;
+// And what a larger capture is allowed on top: fifteen seconds for each
+// megabyte. Measured, the longest stretch with nothing to see was 2.3 s/MB (the
+// scrub's first pass) on a development laptop; a whole scrub was 5 s/MB. The
+// margin is deliberately wide. Calling a stall late costs somebody a wait they
+// can watch counting up; calling one early reports a good capture as stuck.
+const QUIET_MS_PER_MB = 15 * 1000;
+// The AI catalogue pass prints nothing until it ends -- fifteen silent minutes
+// on one measured capture -- and how long it takes follows the number of
+// actions in the capture, not its size.
+const AI_CATALOGUE_QUIET_MS = 30 * 60 * 1000;
+// How often a wait says where it is: the cadence run-with-heartbeat.js uses.
+const REPORT_EVERY_MS = 30 * 1000;
+
+const STATE_RECORDING = 'recording';
+const STATE_STOP_PENDING = 'stop-pending';
+const STATE_NOT_REGISTERED = 'not-registered';
+const STATE_PROGRESSING = 'progressing';
+const STATE_STALLED = 'stalled';
+const STATE_COMPLETE = 'complete';
+const STATE_NOT_PROCESSED = 'not-processed';
+const STATE_RECORDER_GONE = 'recorder-gone';
+
+// The two states there is something to wait for in.
+const WAITING_STATES = new Set([STATE_STOP_PENDING, STATE_PROGRESSING]);
+
+// The phases of an ending, in the order the recorder enters them. The names are
+// what session.json and the JSON carry; the recorder takes them from here.
+const PHASES = Object.freeze({
+    FINALIZING: 'finalizing',
+    SCRUB: 'scrub',
+    VERIFY: 'verify',
+    PUBLISH: 'publish',
+    DIGEST: 'digest',
+    CATALOGUE: 'catalogue',
+    AI_CATALOGUE: 'ai-catalogue',
+    COMPLETE: 'complete'
+});
+// What each phase is, in the words a message uses.
+const PHASE_LABELS = {
+    [PHASES.FINALIZING]: 'saving the recording',
+    [PHASES.SCRUB]: 'scrubbing',
+    [PHASES.VERIFY]: 'verifying the scrub',
+    [PHASES.PUBLISH]: 'publishing the scrubbed capture',
+    [PHASES.DIGEST]: 'building the digest',
+    [PHASES.CATALOGUE]: 'writing the catalogue',
+    [PHASES.AI_CATALOGUE]: 'the AI catalogue pass'
+};
+
+// The files a sign of progress is read from. Exact names and prefixes, never
+// "whatever is in the directory" -- see the header for what must stay out.
+//
+// These repeat names capture-har.js and sanitize-har.js own, the way
+// capture-store.js repeats them, rather than importing the recorder into a file
+// the recorder imports. A name that drifts costs a sign of progress, not
+// correctness: the phase record still moves, and the allowance covers a whole
+// phase with nothing else to see.
+const SESSION_ARTIFACTS = [
+    (name) => name === 'raw.har',
+    (name) => name === 'raw.har.annotating',
+    (name) => name === 'scrubbed.har',
+    (name) => name.startsWith('.scrubbed.har.partial-'),
+    (name) => name.startsWith('scrub-findings') && name.endsWith('.json'),
+    (name) => name.startsWith('scrubbed.rejected') && name.endsWith('.har')
+];
+const OUTPUT_ARTIFACTS = [
+    (name) => name === 'scrubbed.har',
+    (name) => name === 'scrub-findings.json',
+    (name) => name === 'digest.json',
+    (name) => name === 'catalogue.json',
+    (name) => name.startsWith('.publishing-')
+];
+
+/** Is `name`, in the session directory or the output path, a file post-processing writes? */
+function isEndingArtifact(name, where) {
+    return (where === 'output' ? OUTPUT_ARTIFACTS : SESSION_ARTIFACTS).some((matches) => matches(name));
+}
+
+// ---------------------------------------------------------------------------
+// The recorder's side
+// ---------------------------------------------------------------------------
+
+/**
+ * Record on `session` that the ending has reached `phase`.
+ *
+ * The first call is the acknowledgement: it sets when the ending registered and
+ * what ended the recording (`opts.by`), and those never move again. Every call
+ * moves the phase and when it started.
+ *
+ * Only the object is changed. Writing it to session.json is the caller's, so
+ * the phases themselves stay free of any knowledge of where a session lives --
+ * `stop` runs them too, and `catalogue` runs the last of them on a capture that
+ * has no session at all.
+ */
+function notePhase(session, phase, opts = {}) {
+    const at = new Date(opts.now === undefined ? Date.now() : opts.now).toISOString();
+    if (!session.ending) session.ending = { by: opts.by || null, registeredUtc: at };
+    else if (opts.by && !session.ending.by) session.ending.by = opts.by;
+    session.ending.phase = phase;
+    session.ending.phaseStartedUtc = at;
+    return session.ending;
+}
+
+// ---------------------------------------------------------------------------
+// What is on disk
+// ---------------------------------------------------------------------------
+
+/**
+ * session.json, or null. Read up to three times: the recorder rewrites the file
+ * in place, so a reader can land in the instant between truncate and write.
+ */
+function readSession(sessionDir) {
+    const file = path.join(sessionDir, SESSION_FILE);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* mid-write, or absent */ }
+    }
+    return null;
+}
+
+function statOrNull(file) {
+    try { return fs.statSync(file); } catch (e) { return null; }
+}
+
+function artifactsIn(dir, where) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch (e) { return []; }
+    const found = [];
+    for (const name of names.sort()) {
+        if (!isEndingArtifact(name, where)) continue;
+        const stat = statOrNull(path.join(dir, name));
+        if (stat && stat.isFile()) found.push({ name: `${where}:${name}`, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+    return found;
+}
+
+/**
+ * Everything the evaluation is derived from, read once.
+ *
+ *   deps.isRecorderAlive(session)  is the recording process still running?
+ *   deps.session                   the last session read, used when the file
+ *                                  cannot be read this instant
+ */
+function readEvidence(sessionDir, deps = {}) {
+    let session = readSession(sessionDir) || deps.session || null;
+    const recorderAlive = !!(deps.isRecorderAlive && deps.isRecorderAlive(session));
+    // A recorder that has exited wrote its last word before it went. Read
+    // again, or one that finished between the read above and the question just
+    // asked is taken for one that died with the work undone.
+    if (!recorderAlive) session = readSession(sessionDir) || session;
+    const stop = statOrNull(path.join(sessionDir, STOP_SENTINEL));
+    const artifacts = artifactsIn(sessionDir, 'session');
+    const outputPath = session && session.outputPath;
+    if (outputPath && path.resolve(outputPath) !== path.resolve(sessionDir)) {
+        artifacts.push(...artifactsIn(outputPath, 'output'));
+    }
+    // How much there is to chew through. The record log stands in for the raw
+    // until the raw is written: it holds the same entries.
+    const sizes = [session && session.harPath, session && session.recordLog]
+        .map((file) => (file ? statOrNull(file) : null))
+        .map((stat) => (stat ? stat.size : 0));
+    const summarized = (session && session.summary && Number(session.summary.bytes)) || 0;
+    return {
+        session,
+        recorderAlive,
+        recorderPid: (session && session.pid) || null,
+        stopRequestedMs: stop ? stop.mtimeMs : null,
+        artifacts,
+        captureBytes: Math.max(summarized, ...sizes),
+        observedChangeMs: null
+    };
+}
+
+// ---------------------------------------------------------------------------
+// The evaluation
+// ---------------------------------------------------------------------------
+
+/** How long nothing may move, in `phase`, on a capture of `bytes`, before it is a stall. */
+function quietLimitMs(phase, bytes) {
+    const scaled = Math.max(QUIET_FLOOR_MS, Math.ceil((bytes || 0) / MB) * QUIET_MS_PER_MB);
+    return phase === PHASES.AI_CATALOGUE ? Math.max(scaled, AI_CATALOGUE_QUIET_MS) : scaled;
+}
+
+function timeOf(utc) {
+    const ms = utc ? Date.parse(utc) : NaN;
+    return Number.isFinite(ms) ? ms : null;
+}
+
+const utcOf = (ms) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
+
+/**
+ * The state of a capture's ending at `nowMs`.
+ *
+ * Pure: `evidence` is what `readEvidence` returns, plus `observedChangeMs` when
+ * the caller has itself watched something move (`waitForEnding`). The result is
+ * what `status` and `stop` print as `ending`.
+ *
+ * A time in the future is never counted as a sign of progress. A clock that
+ * jumped, or a file on a share with its own idea of the time, would otherwise
+ * hold the silence at zero for ever, and nothing could stall.
+ */
+function evaluate(evidence, nowMs) {
+    const session = evidence.session || {};
+    const record = session.ending || null;
+    const phase = (record && record.phase) || null;
+    const registeredMs = timeOf(record && record.registeredUtc) || timeOf(session.endedUtc);
+    const verdict = {
+        state: null,
+        phase,
+        endedBy: (record && record.by) || session.endedBy || null,
+        stopRequestedUtc: utcOf(evidence.stopRequestedMs),
+        registeredUtc: utcOf(registeredMs),
+        phaseStartedUtc: (record && record.phaseStartedUtc) || null,
+        lastProgressUtc: null,
+        quietSeconds: null,
+        quietLimitSeconds: null,
+        captureBytes: evidence.captureBytes || 0,
+        recorderAlive: !!evidence.recorderAlive,
+        recorderPid: evidence.recorderPid || null
+    };
+    const settle = (state) => Object.assign(verdict, { state });
+    const silentSince = (sinceMs, limitMs) => {
+        verdict.quietSeconds = Math.max(0, Math.floor((nowMs - sinceMs) / 1000));
+        verdict.quietLimitSeconds = Math.round(limitMs / 1000);
+        return nowMs - sinceMs >= limitMs;
+    };
+
+    if (session.postProcess) {
+        // Finished, whoever finished it: `stop` runs the phases itself when the
+        // recorder died part-way, and the record still names where it died.
+        verdict.phase = PHASES.COMPLETE;
+        return settle(STATE_COMPLETE);
+    }
+    if (session.endedUtc && session.cancelled) return settle(STATE_NOT_PROCESSED);
+    if (!evidence.recorderAlive) return settle(STATE_RECORDER_GONE);
+
+    if (registeredMs === null) {
+        if (evidence.stopRequestedMs === null || evidence.stopRequestedMs === undefined) {
+            return settle(STATE_RECORDING);
+        }
+        return settle(silentSince(evidence.stopRequestedMs, REGISTER_LIMIT_MS)
+            ? STATE_NOT_REGISTERED : STATE_STOP_PENDING);
+    }
+
+    const signs = [registeredMs, timeOf(verdict.phaseStartedUtc), timeOf(session.endedUtc),
+        evidence.observedChangeMs, ...(evidence.artifacts || []).map((a) => a.mtimeMs)]
+        .filter((ms) => typeof ms === 'number' && Number.isFinite(ms) && ms <= nowMs);
+    // Nothing usable at all means every time on disk is ahead of this clock;
+    // the silence is then counted from now, until something is seen to move.
+    const lastProgressMs = signs.length ? Math.max(...signs) : nowMs;
+    verdict.lastProgressUtc = utcOf(lastProgressMs);
+    return settle(silentSince(lastProgressMs, quietLimitMs(phase, verdict.captureBytes))
+        ? STATE_STALLED : STATE_PROGRESSING);
+}
+
+/** One reading of a session directory: the evidence, and what it adds up to. */
+function look(sessionDir, deps = {}) {
+    const evidence = readEvidence(sessionDir, deps);
+    return { evidence, session: evidence.session, verdict: evaluate(evidence, (deps.now || Date.now)()) };
+}
+
+// ---------------------------------------------------------------------------
+// The wait
+// ---------------------------------------------------------------------------
+
+/** What has to differ between two polls for something to have moved. */
+function progressKey(evidence) {
+    const session = evidence.session || {};
+    const record = session.ending || {};
+    return JSON.stringify([record.phase, record.phaseStartedUtc, session.endedUtc,
+        evidence.artifacts.map((a) => [a.name, a.size, a.mtimeMs])]);
+}
+
+/**
+ * Wait for as long as there is something to wait for, and return the state it
+ * ended in: complete, not-processed, recorder-gone, stalled or not-registered.
+ *
+ * There is no overall limit. The wait ends when the work does, or when nothing
+ * has moved for the allowance -- and a capture cannot go on showing progress
+ * for ever without finishing.
+ *
+ * It watches as well as reads. A file that grew since the last poll is a sign
+ * of progress even where its modification time did not move, which is what some
+ * filesystems do with a file still open for writing.
+ *
+ *   deps.now, deps.sleep         the clock, injected for tests
+ *   deps.isRecorderAlive         asked on every poll: a recorder that exits is
+ *                                not waited on
+ *   deps.onWaiting(verdict, why) called when the state or phase changes
+ *                                ('change') and otherwise every thirty seconds
+ *                                ('interval')
+ */
+async function waitForEnding(sessionDir, deps = {}) {
+    const now = deps.now || Date.now;
+    const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let session = deps.session || null;
+    let lastKey = null;
+    let observedChangeMs = null;
+    let said = null;
+    let saidAt = null;
+    for (;;) {
+        const evidence = readEvidence(sessionDir, { isRecorderAlive: deps.isRecorderAlive, session });
+        session = evidence.session;
+        const at = now();
+        const key = progressKey(evidence);
+        if (lastKey !== null && key !== lastKey) observedChangeMs = at;
+        lastKey = key;
+        evidence.observedChangeMs = observedChangeMs;
+        const verdict = evaluate(evidence, at);
+        if (!WAITING_STATES.has(verdict.state)) return { verdict, session, evidence };
+        if (deps.onWaiting) {
+            const where = `${verdict.state}/${verdict.phase}`;
+            const why = where !== said ? 'change' : (at - saidAt >= REPORT_EVERY_MS ? 'interval' : null);
+            if (why) {
+                said = where;
+                saidAt = at;
+                deps.onWaiting(verdict, why);
+            }
+        }
+        await sleep(POLL_MS);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What is said
+// ---------------------------------------------------------------------------
+
+const seconds = (n) => formatElapsed((n || 0) * 1000);
+
+function megabytes(bytes) {
+    return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function phaseLabel(verdict) {
+    return PHASE_LABELS[verdict.phase] || 'post-processing';
+}
+
+/** One line for a wait that is still going. */
+function waitingLine(verdict) {
+    if (verdict.state === STATE_STOP_PENDING) {
+        return `capture-har: stop requested -- waiting for the recording process (pid ${verdict.recorderPid}) ` +
+            `to take it up (${seconds(verdict.quietSeconds)} so far)`;
+    }
+    return `capture-har: the stop registered and post-processing is progressing -- ${phaseLabel(verdict)}; ` +
+        `last sign of progress ${seconds(verdict.quietSeconds)} ago ` +
+        `(a stall is called at ${seconds(verdict.quietLimitSeconds)}). Still waiting.`;
+}
+
+/** The lines for a wait that ended with post-processing stalled. */
+function stalledLines(verdict, session) {
+    const saved = session && session.endedUtc;
+    const lines = [
+        `capture-har: post-processing has STALLED -- no sign of progress for ${seconds(verdict.quietSeconds)}.`,
+        `  The stop registered (${verdict.endedBy || 'ending'}, ${verdict.registeredUtc}); the last phase entered ` +
+            `was ${phaseLabel(verdict)}.`,
+        `  A capture of ${megabytes(verdict.captureBytes)} is allowed ${seconds(verdict.quietLimitSeconds)} ` +
+            'between signs of progress.'
+    ];
+    if (verdict.phase === PHASES.AI_CATALOGUE) {
+        lines.push('  The AI catalogue pass prints nothing until it ends, so this may be a very long pass ' +
+            'rather than a hung one;',
+        '  the scrubbed capture and the digest are already complete.');
+    }
+    lines.push(
+        `  The recording process (pid ${verdict.recorderPid}) is still running and still owns the work, so ` +
+            'nothing was taken over here.',
+        saved
+            ? `  raw:       ${session.harPath}  (saved and kept)`
+            : '  The recording itself is still being saved; nothing was assembled here.',
+        '  Look at that process. `status` reports this same state; running stop again waits again.');
+    return lines;
+}
+
+/** The lines for a stop the recorder never took up. */
+function notRegisteredLines(verdict) {
+    return [
+        `capture-har: the stop NEVER REGISTERED -- the recording process (pid ${verdict.recorderPid}) is ` +
+            `running, and has not taken up the stop asked for ${seconds(verdict.quietSeconds)} ago.`,
+        '  Nothing was stopped, assembled or post-processed: the recording is still going.',
+        '  The request -- the STOP file in the session directory -- is left in place, so the recording ends',
+        '  as soon as that process next looks for it. Run stop again to wait for that; otherwise end the',
+        '  recording at its own terminal (ENTER) or by closing its browser window.'
+    ];
+}
+
+module.exports = {
+    notePhase,
+    readEvidence,
+    evaluate,
+    look,
+    waitForEnding,
+    quietLimitMs,
+    isEndingArtifact,
+    waitingLine,
+    stalledLines,
+    notRegisteredLines,
+    WAITING_STATES,
+    PHASES,
+    STATE_RECORDING,
+    STATE_STOP_PENDING,
+    STATE_NOT_REGISTERED,
+    STATE_PROGRESSING,
+    STATE_STALLED,
+    STATE_COMPLETE,
+    STATE_NOT_PROCESSED,
+    STATE_RECORDER_GONE,
+    REGISTER_LIMIT_MS,
+    QUIET_FLOOR_MS,
+    QUIET_MS_PER_MB,
+    AI_CATALOGUE_QUIET_MS,
+    REPORT_EVERY_MS,
+    POLL_MS
+};

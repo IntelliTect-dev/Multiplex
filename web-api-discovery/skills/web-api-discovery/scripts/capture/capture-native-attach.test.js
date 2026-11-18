@@ -957,6 +957,26 @@ test('I1: a native capture records a local page and LEAVES THE BROWSER RUNNING',
         assert.strictEqual(finalSession.assembledFromLog, true,
             'there is no recordHar in this mode, so the log is the only source');
         assert.strictEqual(finalSession.endedBy, 'stop-command');
+
+        // THE RECORDER WROTE DOWN HOW ITS ENDING WENT, AND `stop` WAITED ON THAT
+        // (#27). Asserted here because this is a REAL recorder ending a real
+        // recording: capture-ending.test.js pins what `stop` does with the
+        // record, and only this proves the recorder writes one. The stop is
+        // acknowledged BEFORE the recording is saved -- acknowledging it only
+        // with `endedUtc` is what left a large capture's stop looking as though
+        // it had never registered.
+        assert.ok(finalSession.ending, 'the recorder wrote no ending record into session.json');
+        assert.strictEqual(finalSession.ending.by, 'stop-command');
+        assert.strictEqual(finalSession.ending.phase, 'complete');
+        assert.ok(Date.parse(finalSession.ending.registeredUtc) <= Date.parse(finalSession.endedUtc),
+            'the stop must be acknowledged before the recording is saved, not after');
+        const stopLine = stopped.stdout.split('\n').filter((l) => l.trim().startsWith('{')).pop();
+        assert.ok(stopLine, `stop printed no state on stdout:\n${stopped.stdout}\n${stopped.stderr}`);
+        const stopState = JSON.parse(stopLine);
+        assert.strictEqual(stopState.stop, 'complete',
+            `stop returned before post-processing had finished:\n${stopped.stderr}`);
+        assert.strictEqual(stopState.exitCode, stopped.status);
+        assert.strictEqual(stopState.ending.endedBy, 'stop-command');
     } finally {
         server.close();
         // The test cleans up what the recorder deliberately does not. Killing a
