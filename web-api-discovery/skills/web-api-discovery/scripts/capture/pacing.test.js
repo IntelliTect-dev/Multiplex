@@ -14,6 +14,8 @@
 //   P5  `--pace off` waits for nothing -- but a throttle pause still holds
 //   P6  `--pace` parses, and refuses what it cannot parse instead of guessing
 //   P7  a pause that arrives while a step is already waiting holds that step
+//   P8  a pause ended early (resumeNow) wakes a step asleep in it; the pace's
+//       own gap is not cut short
 //   R1  Retry-After: delay-seconds, an HTTP-date, a date in the past, junk
 //   R2  the backoff schedule: about 1, 2, 4, 8, then 15 minutes, never above
 //       15, jittered downwards only -- and its numbers are named constants
@@ -164,6 +166,48 @@ test('P5: --pace off waits for nothing, and a throttle pause still holds', async
         'honouring a site\'s Retry-After is not pacing; turning pacing off must not turn it off');
     await pacer.act(async () => {});
     assert.deepStrictEqual(time.slept, [30000], 'the pause is over once waited');
+});
+
+test('P8: a pause ended early wakes a step asleep in it -- it does not sleep on to the original end', async () => {
+    // A person took over, or handed back: resumeNow(). A step already asleep
+    // in the pause (a held request's turn in the drain, a sign-in keystroke)
+    // must go now, not when the cancelled pause would have ended -- which,
+    // for a named wait, can be hours away.
+    let t = 1_700_000_000_000;
+    const pending = [];
+    const sleep = (ms) => new Promise((resolve) => pending.push({ ms, resolve }));   // never ends by itself
+    // A step that is never woken would leave nothing for Node to wait on, and
+    // the run would end quietly as if it had passed: fail it, loudly, instead.
+    const within = (p, what) => {
+        let timer;
+        return Promise.race([p, new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(`${what} did not happen within 2 s`)), 2000);
+        })]).finally(() => clearTimeout(timer));
+    };
+    const pacer = pacing.createPacer(pacing.PACE_OFF, { now: () => t, sleep });
+    pacer.pauseFor(5 * 60 * 60 * 1000);   // a five-hour Retry-After
+    let ran = false;
+    const step = pacer.act(async () => { ran = true; });
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(ran, false, 'the step waits in the pause');
+    assert.deepStrictEqual(pending.map((p) => p.ms), [5 * 60 * 60 * 1000]);
+    pacer.resumeNow();
+    await within(step, 'the step asleep in the ended pause going on');
+    assert.strictEqual(ran, true, 'and goes the moment the pause is ended, not five hours later');
+    // The pace's own gap is NOT cut short: only a pause is.
+    t += 1;
+    const gapped = pacing.createPacer({ navigation: [0, 0], action: [500, 500], perMinute: 0 }, { now: () => t, sleep });
+    await Promise.race([gapped.act(async () => {}), new Promise((r) => setImmediate(r))]);
+    pending.length = 0;
+    let second = false;
+    const next = gapped.act(async () => { second = true; });
+    await new Promise((r) => setImmediate(r));
+    gapped.resumeNow();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(second, false, 'a person between two actions is not hurried by resumeNow()');
+    pending.shift().resolve();
+    await within(next, 'the second action after its gap');
+    assert.strictEqual(second, true);
 });
 
 test('P7: a pause that arrives while a step is already waiting holds that step too', async () => {
