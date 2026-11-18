@@ -22,6 +22,8 @@
 
 'use strict';
 
+const crypto = require('crypto');
+
 const GRAPHQL_TOOL_NAME = 'graphql';
 const GRAPHQL_METHOD_NAME = 'GraphQLAsync';
 
@@ -88,6 +90,11 @@ const SIGN_IN_COMPANIONS = new Set([
 const ADDING_WORDS = new Set(['create', 'add', 'new']);
 
 const MAX_FIELDS_IN_DESCRIPTION = 10;
+
+// Many MCP clients refuse, or cut, a tool name longer than this, and a deep
+// path makes a longer one: /a/{id}/b/{id2}/c/{id3}/d is already a mouthful.
+const MAX_TOOL_NAME_LENGTH = 64;
+const NAME_HASH_LENGTH = 8;
 
 /** Words of a path segment: `cancelOrder`, `cancel-order`, `cancel_order` -> cancel, order. */
 function wordsOf(segment) {
@@ -239,13 +246,25 @@ function graphQLHints() {
     return { readOnly: false, destructive: true, idempotent: false };
 }
 
-/** GetUsersByIdTripsAsync -> get_users_by_id_trips. */
+/**
+ * A name that is too long, cut to fit with a short hash of the WHOLE name in
+ * place of what was cut -- so two names that differ only past the cut stay
+ * different, and the same endpoint gets the same name on every run.
+ */
+function capToolName(name) {
+    if (name.length <= MAX_TOOL_NAME_LENGTH) return name;
+    const hash = crypto.createHash('sha256').update(name).digest('hex').slice(0, NAME_HASH_LENGTH);
+    const kept = name.slice(0, MAX_TOOL_NAME_LENGTH - NAME_HASH_LENGTH - 1).replace(/_+$/, '');
+    return kept + '_' + hash;
+}
+
+/** GetUsersByIdTripsAsync -> get_users_by_id_trips, capped at MAX_TOOL_NAME_LENGTH. */
 function toolNameFor(methodName) {
-    return String(methodName)
+    return capToolName(String(methodName)
         .replace(/Async$/, '')
         .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
         .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
-        .toLowerCase();
+        .toLowerCase());
 }
 
 /**
@@ -273,11 +292,16 @@ function listTools(args) {
     }
     // A tool name must be unique on the wire. Two client methods that differ
     // only in casing (GetHTMLAsync, GetHtmlAsync) would otherwise share one.
-    const seen = new Map();
+    // The number that tells them apart has to fit inside the cap as well.
+    const taken = new Set();
     for (const t of tools) {
-        const count = (seen.get(t.name) || 0) + 1;
-        seen.set(t.name, count);
-        if (count > 1) t.name = t.name + '_' + count;
+        let name = t.name;
+        for (let n = 2; taken.has(name); n++) {
+            const suffix = '_' + n;
+            name = t.name.slice(0, MAX_TOOL_NAME_LENGTH - suffix.length) + suffix;
+        }
+        taken.add(name);
+        t.name = name;
     }
     return tools;
 }
@@ -303,8 +327,20 @@ function listLeftOut(args) {
 
 // -------------------- Descriptions --------------------
 
+// What a response key has to look like to be put in front of a model as a
+// field name. A description is text the model reads, and a key is whatever the
+// site sent: an object keyed by DATA (e-mail addresses, titles, free text) would
+// otherwise put that data, verbatim, into the description.
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
+const MAX_FIELDS_OF_A_RECORD = 40;
+
 function fieldList(shape) {
-    const names = Object.keys(shape.fields).sort();
+    const keys = Object.keys(shape.fields);
+    const names = keys.filter((k) => FIELD_NAME.test(k)).sort();
+    // A map, not a record: more keys than a record has, or keys that are mostly
+    // not field names. Nothing is said about its fields, including the few keys
+    // that happen to read as names.
+    if (keys.length > MAX_FIELDS_OF_A_RECORD || names.length * 2 < keys.length) return '';
     if (names.length === 0) return '';
     const shown = names.slice(0, MAX_FIELDS_IN_DESCRIPTION).join(', ');
     const rest = names.length - MAX_FIELDS_IN_DESCRIPTION;
