@@ -173,42 +173,14 @@ if ([System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($
 # instead of on whether a host exists, and printed `/2020-01-01-mitmdump` into
 # the one output an operator reads to decide what to triage. A copy of the rule
 # here would be a copy of that bug waiting to be reintroduced.
-# The store directory name. A LITERAL, and `capture-store.js`'s CAPTURES_DIR is
-# still the definition: shelling out to node for a constant would add a
-# subprocess and a failure path to every delete, and reading it at runtime would
-# make this check agree with whatever that file says, including a typo. The two
-# are pinned to each other by a test instead -- the same trade
-# `node-test-coverage.Tests.ps1` already makes for the runner's default root.
-$script:CapturesDirName = '.har-captures'
-
-<#
-.SYNOPSIS
-    Does this path sit anywhere under a capture-store directory?
-
-.DESCRIPTION
-    Walked SEGMENT BY SEGMENT rather than matched as a substring: a sibling
-    called `.har-captures-archive` starts with the store name and is not one,
-    and a path component merely containing it is not one either. Compared with
-    PowerShell's default string comparison, which is case-insensitive, because
-    the filesystem this runs on is.
-
-    A NAME, not an identity -- see the note in this file's own .DESCRIPTION. It
-    answers "is this spelled like somewhere recordings live", which is the
-    question that stops a capture-shaped folder elsewhere on disk from being
-    deleted. It does not answer "is this the store `resolveCaptureRoot` would
-    name", and asking that would refuse a capture tree reached through a
-    junction, which is an ordinary setup rather than an attack.
-#>
-function Test-HarCaptureStorePath {
-    param([Parameter(Mandatory)][string]$Path)
-
-    $dir = [System.IO.Directory]::GetParent($Path)
-    while ($dir) {
-        if ($dir.Name -eq $script:CapturesDirName) { return $true }
-        $dir = $dir.Parent
-    }
-    return $false
-}
+#
+# WHETHER A PATH IS INSIDE A CAPTURE STORE is HarStoreBatch.psm1's answer too
+# (Test-HarCaptureStorePath), and for the same reason. It was written here, for
+# this command; `Invoke-HarCapture -Scrub / -Catalogue` then needed the same
+# question answered, and a second copy of the guard that stands between a
+# stray folder and a recursive delete is not something to have two of. The
+# store's directory name, and the note on what the check is and is not, moved
+# with it.
 
 $resolved = $null
 
@@ -233,7 +205,7 @@ if (Test-Path -LiteralPath $spec -PathType Container) {
         # what makes it a usable anchor.
         if (-not (Test-HarCaptureStorePath -Path $full)) {
             Write-Error ("$spec is not inside a capture store. Recordings live under a " +
-                "$script:CapturesDirName directory, and Remove-HarCapture deletes " +
+                '.har-captures directory, and Remove-HarCapture deletes ' +
                 'nothing outside one.')
             return
         }
