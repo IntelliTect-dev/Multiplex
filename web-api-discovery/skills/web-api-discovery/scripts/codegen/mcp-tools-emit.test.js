@@ -13,7 +13,8 @@ const assert = require('assert');
 const path = require('path');
 const { dedupePatterns, methodNameFor } = require(path.join(__dirname, 'generate-wrapper.js'));
 const {
-    listTools, toolNameFor, toolHintsFor, graphQLHints, toolDescriptionFor, emitToolsFile, csString,
+    listTools, listLeftOut, isSignInSegment, toolNameFor, toolHintsFor, graphQLHints, toolDescriptionFor,
+    emitToolsFile, csString,
 } = require(path.join(__dirname, 'mcp-tools-emit.js'));
 
 function har(method, url) {
@@ -210,6 +211,103 @@ const inACollection = { isCollection: true };
     assert.strictEqual(byName.update_items_by_id.hints.idempotent, true);
     assert.strictEqual(byName.delete_items_by_id.hints.destructive, true);
     console.log('PASS: every endpoint of the capture is one tool, with the hints of its method.');
+}
+
+// ---- Left out: which path segments are about signing in ----
+{
+    // The segment IS one of the words (a plural, or a version digit, aside) ...
+    for (const segment of ['auth', 'login', 'logout', 'signin', 'signout', 'token', 'session', 'oauth', 'sso',
+        'csrf', 'password', 'mfa', 'otp', 'tokens', 'sessions', 'oauth2', 'OAuth', 'SSO', 'Login',
+        'authenticate', 'authorize', 'xsrf', 'credentials']) {
+        assert.strictEqual(isSignInSegment(segment), true, segment + ' is a sign-in segment');
+    }
+    // ... or spells one in two words ...
+    for (const segment of ['sign-in', 'sign_out', 'signIn', 'log-in', 'logOut']) {
+        assert.strictEqual(isSignInSegment(segment), true, segment + ' is a sign-in segment');
+    }
+    // ... or is one of them with the words that go with signing in.
+    for (const segment of ['refresh-token', 'csrfToken', 'reset_password', 'change-password', 'user-session',
+        'access_token', 'verify-otp', 'auth-callback', 'current-session', 'forgot-password', 'mfa-challenge']) {
+        assert.strictEqual(isSignInSegment(segment), true, segment + ' is a sign-in segment');
+    }
+
+    // A NAME that happens to contain one of the words is not about signing in:
+    // some other word in the segment says what it is about.
+    for (const segment of ['sessions-of-a-conference', 'training-sessions', 'token-usage', 'password-policy',
+        'session-recordings', 'tokenized-assets']) {
+        assert.strictEqual(isSignInSegment(segment), false, segment + ' is an ordinary name');
+    }
+    // And whole words only: these merely contain the letters.
+    for (const segment of ['authors', 'authority', 'tokenizer', 'laptops', 'lottery', 'items', 'loginsight',
+        'passwordless-doors', 'compassion']) {
+        assert.strictEqual(isSignInSegment(segment), false, segment + ' is an ordinary word');
+    }
+    console.log('PASS: a path segment is about signing in when it is one of the words, alone or with its usual company.');
+}
+
+// ---- Left out: sign-in endpoints, preflights, and what does not answer in JSON ----
+{
+    const patterns = dedupePatterns([
+        // What the reviewer crafted: these three became get_auth_session
+        // (read-only, advertising accessToken and refreshToken),
+        // options_payments_send and create_login.
+        har('GET', 'https://api.example.com/api/auth/session'),
+        har('OPTIONS', 'https://api.example.com/api/payments/send'),
+        har('POST', 'https://api.example.com/login'),
+        // An ordinary endpoint beside each of them.
+        har('POST', 'https://api.example.com/api/payments/send'),
+        har('GET', 'https://api.example.com/api/reports'),
+        har('HEAD', 'https://api.example.com/api/reports'),
+        har('GET', 'https://api.example.com/api/reports/42/download'),
+        har('GET', 'https://api.example.com/api/sessions-of-a-conference/7/talks'),
+        har('GET', 'https://api.example.com/api/sessions-of-a-conference/8/talks'),
+        har('DELETE', 'https://api.example.com/api/users/42/sessions/9'),
+    ]);
+    // generate-wrapper.js records whether any captured response parsed as JSON.
+    for (const p of patterns) p.hasJsonResponse = !p.segments.some((s) => s.literal === 'download');
+
+    const tools = listTools({ patterns, hasGraphQL: false, methodNameFor });
+    assert.deepStrictEqual(tools.map((t) => t.name).sort(),
+        ['create_payments_send', 'get_reports', 'get_sessions_of_a_conference_by_id_talks'],
+        'the ordinary endpoints, and only those, are tools');
+
+    const leftOut = listLeftOut({ patterns, methodNameFor });
+    const why = Object.fromEntries(leftOut.map((o) => [o.methodName, o.reason]));
+    assert.deepStrictEqual(Object.keys(why).sort(), [
+        'CreateLoginAsync', 'DeleteUsersByIdSessionsById2Async', 'GetAuthSessionAsync',
+        'GetReportsByIdDownloadAsync', 'HeadReportsAsync', 'OptionsPaymentsSendAsync',
+    ], 'every endpoint is either a tool or accounted for: ' + JSON.stringify(why));
+    assert.ok(/sign-in or credentials \(auth\)/.test(why.GetAuthSessionAsync), why.GetAuthSessionAsync);
+    assert.ok(/sign-in or credentials \(login\)/.test(why.CreateLoginAsync), why.CreateLoginAsync);
+    assert.ok(/sign-in or credentials \(sessions\)/.test(why.DeleteUsersByIdSessionsById2Async));
+    assert.ok(/^OPTIONS /.test(why.OptionsPaymentsSendAsync), why.OptionsPaymentsSendAsync);
+    assert.ok(/^HEAD /.test(why.HeadReportsAsync), why.HeadReportsAsync);
+    assert.ok(/no JSON/.test(why.GetReportsByIdDownloadAsync), why.GetReportsByIdDownloadAsync);
+
+    assert.strictEqual(tools.length + leftOut.length, patterns.length, 'nothing is dropped without a reason');
+
+    // A pattern nobody has said anything about -- a caller that does not record
+    // it -- is not treated as "no JSON".
+    for (const p of patterns) delete p.hasJsonResponse;
+    assert.ok(listTools({ patterns, hasGraphQL: false, methodNameFor }).some((t) => t.name === 'get_reports_by_id_download'));
+
+    // GraphQL is one endpoint and one tool; nothing about it is left out here.
+    assert.deepStrictEqual(listLeftOut({ patterns: [], methodNameFor }), []);
+
+    // The path matcher can fold a NAME into a path parameter: captured beside
+    // /api/sessions-of-a-conference/7, the sign-in endpoint /api/auth/session
+    // becomes one more value of /api/{id}/{id2}. What the endpoint was captured
+    // with still counts, or folding would hide the very segment being looked for.
+    const folded = dedupePatterns([
+        har('GET', 'https://api.example.com/api/auth/session'),
+        har('GET', 'https://api.example.com/api/sessions-of-a-conference/7'),
+        har('GET', 'https://api.example.com/api/sessions-of-a-conference/8'),
+    ]);
+    assert.strictEqual(folded.length, 1, 'the precondition: the three were folded into one endpoint');
+    assert.ok(folded[0].segments.every((s, i) => i === 0 || s.param), 'with /auth as a parameter value');
+    assert.deepStrictEqual(listTools({ patterns: folded, hasGraphQL: false, methodNameFor }), []);
+    assert.ok(/\(auth\)/.test(listLeftOut({ patterns: folded, methodNameFor })[0].reason));
+    console.log('PASS: sign-in endpoints, OPTIONS, HEAD and non-JSON endpoints get no tool, and each is accounted for.');
 }
 
 // ---- The tool surface: GraphQL, and a capture with nothing in it ----
