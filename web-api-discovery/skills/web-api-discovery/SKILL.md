@@ -1104,7 +1104,13 @@ capture session found, prints none: there is nothing to report on.)
   capture where that is longer, and 30 minutes during the AI catalogue pass. A
   scrub reads the whole capture before it writes a byte, so how long a healthy
   one is silent grows with its size. The JSON carries both numbers:
-  `quietSeconds` and `quietLimitSeconds`.
+  `quietSeconds` (how long the allowance has been running) and
+  `quietLimitSeconds`.
+- **`lastProgressUtc` is evidence and nothing else**: a time the recording
+  process wrote, or a file post-processing wrote. If the machine running `stop`
+  slept through part of the wait, the allowance is counted again from when it
+  woke -- its recording process slept too -- and `waitResumedUtc` says so;
+  `lastProgressUtc` does not move, because nothing did.
 - **Exit 1 is not a verdict on the capture.** Both early returns happen with the
   recording process still running and still owning the work. Exit 6 means what
   it says -- the scrub or the catalogue *failed* -- and is never returned for

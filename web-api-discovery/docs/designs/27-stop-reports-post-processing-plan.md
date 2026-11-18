@@ -76,11 +76,18 @@ ends. It is printed in the message and carried in the JSON.
 read from what is on disk, a second `stop` waits only if something has moved
 since, and otherwise gives the same answer at once.
 
-**Two things only a watcher knows** also count, in `stop`'s wait and not in a
-single `status`: a file that grew between two polls where its modification time
-did not move, and that the waiting process itself was not running (two polls
-more than 10 seconds apart: a laptop asleep, and its recorder with it). The
-allowance starts again from the first poll after such a gap.
+**Two things only a watcher knows**, in `stop`'s wait and not in a single
+`status`, and they are kept apart because only the first is evidence:
+
+- A file that grew between two polls where its modification time did not move
+  is a sign of progress like any other.
+- That the waiting process itself was not running (two polls more than 10
+  seconds apart: a laptop asleep, and its recorder with it) restarts the
+  ALLOWANCE from the first poll after the gap -- and nothing more. It is not a
+  sign of progress: `lastProgressUtc` does not move, `waitResumedUtc` says the
+  wait was interrupted, and the message says so too. The same goes for a clock
+  set back so that no time on disk is usable: the allowance is counted from
+  when the wait began, and `lastProgressUtc` is null.
 
 ### 3. Exit codes
 

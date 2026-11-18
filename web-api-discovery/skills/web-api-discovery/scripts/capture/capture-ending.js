@@ -46,6 +46,13 @@
  * single-shot `status` gives the same answer `stop` does, and a capture that
  * stalled an hour before anybody asked is reported as stalled at once.
  *
+ * WHEN THE ALLOWANCE IS COUNTED FROM is a separate question from when anything
+ * last moved, and the two are kept apart. A `stop` whose own machine slept
+ * through part of its wait counts the allowance again from when it woke -- its
+ * recorder slept too -- but that is NOT a sign of progress and is never
+ * reported as one: `lastProgressUtc` is evidence from the list above and
+ * nothing else, and an interrupted wait says it was interrupted.
+ *
  * Zero dependencies beyond Node. Time, sleeping and "is the recorder running"
  * are injected, so all of it is testable without a clock or a process.
  */
@@ -238,9 +245,12 @@ function readEvidence(sessionDir, deps = {}) {
         stopRequestedMs: stop ? stop.mtimeMs : null,
         artifacts,
         captureBytes: Math.max(summarized, ...sizes),
-        // The two things only a WATCHER knows; `waitForEnding` fills them in.
+        // What only a WATCHER knows; `waitForEnding` fills these in. The first
+        // is evidence -- it SAW something move. The other two are only where
+        // to count from, and are never reported as progress.
         observedChangeMs: null,
-        watchingSinceMs: null
+        watchingSinceMs: null,
+        resumedMs: null
     };
 }
 
@@ -262,28 +272,34 @@ function timeOf(utc) {
 const utcOf = (ms) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
 /**
- * The latest of `times` that is not ahead of the clock -- and when none is
- * usable, when the watcher started watching, or failing that, now.
+ * The latest of `times` that is not ahead of the clock, or null.
  *
- * A TIME IN THE FUTURE IS NEVER A SIGN OF PROGRESS. A clock set back, or a
- * file on a share with its own idea of the time, would otherwise hold the
- * silence at zero and nothing could stall. With nothing usable at all, a
- * watcher counts from when it began; a single look has nothing to count from,
- * and says "now" rather than inventing a silence.
+ * A TIME IN THE FUTURE IS NEVER USED. A clock set back, or a file on a share
+ * with its own idea of the time, would otherwise hold the silence at zero and
+ * nothing could stall.
  */
-function lastSign(times, evidence, nowMs) {
+function latest(times, nowMs) {
     const usable = times.filter((ms) => typeof ms === 'number' && Number.isFinite(ms) && ms <= nowMs);
-    if (usable.length) return Math.max(...usable);
-    const since = evidence.watchingSinceMs;
-    return typeof since === 'number' && since <= nowMs ? since : nowMs;
+    return usable.length ? Math.max(...usable) : null;
 }
 
 /**
  * The state of a capture's ending at `nowMs`.
  *
  * Pure: `evidence` is what `readEvidence` returns, plus what only a watcher
- * knows (`waitForEnding`): when it last SAW something move, and when it began
- * watching. The result is what `status` and `stop` print as `ending`.
+ * knows (`waitForEnding`). The result is what `status` and `stop` print as
+ * `ending`:
+ *
+ *   lastProgressUtc    the last SIGN OF PROGRESS, and only that: a time the
+ *                      recorder wrote, a file post-processing wrote, a file the
+ *                      watcher saw grow. Null when nothing usable exists.
+ *   quietSeconds       how long the allowance has been running, and
+ *   quietLimitSeconds  how long it may: stalled (or not-registered) is exactly
+ *                      quietSeconds >= quietLimitSeconds.
+ *   waitResumedUtc     set when the two differ for a reason that is NOT
+ *                      progress -- the watcher itself was interrupted after the
+ *                      last sign, and the allowance is counted from there.
+ *   asOfUtc            the clock all of it was read against.
  */
 function evaluate(evidence, nowMs) {
     const session = evidence.session || {};
@@ -294,10 +310,12 @@ function evaluate(evidence, nowMs) {
         state: null,
         phase,
         endedBy: (record && record.by) || session.endedBy || null,
+        asOfUtc: utcOf(nowMs),
         stopRequestedUtc: utcOf(evidence.stopRequestedMs),
         registeredUtc: utcOf(registeredMs),
         phaseStartedUtc: (record && record.phaseStartedUtc) || null,
         lastProgressUtc: null,
+        waitResumedUtc: null,
         quietSeconds: null,
         quietLimitSeconds: null,
         captureBytes: evidence.captureBytes || 0,
@@ -305,10 +323,26 @@ function evaluate(evidence, nowMs) {
         recorderPid: evidence.recorderPid || null
     };
     const settle = (state) => Object.assign(verdict, { state });
-    const silentSince = (sinceMs, limitMs) => {
-        verdict.quietSeconds = Math.max(0, Math.floor((nowMs - sinceMs) / 1000));
+    // WHERE THE ALLOWANCE IS COUNTED FROM: the last thing that really happened
+    // (`sinceMs`) -- unless the watcher was itself interrupted after it, or
+    // nothing on disk is usable at all. Neither exception is evidence of
+    // anything, so neither is written into `lastProgressUtc`.
+    const countedFrom = (sinceMs) => {
+        const resumedMs = latest([evidence.resumedMs], nowMs);
+        if (resumedMs !== null && (sinceMs === null || resumedMs > sinceMs)) {
+            verdict.waitResumedUtc = utcOf(resumedMs);
+            return resumedMs;
+        }
+        if (sinceMs !== null) return sinceMs;
+        const began = latest([evidence.watchingSinceMs], nowMs);
+        // A single look has nothing to count from, and says so rather than
+        // inventing a silence.
+        return began === null ? nowMs : began;
+    };
+    const overdue = (fromMs, limitMs) => {
+        verdict.quietSeconds = Math.max(0, Math.floor((nowMs - fromMs) / 1000));
         verdict.quietLimitSeconds = Math.round(limitMs / 1000);
-        return nowMs - sinceMs >= limitMs;
+        return nowMs - fromMs >= limitMs;
     };
 
     if (session.postProcess) {
@@ -324,15 +358,16 @@ function evaluate(evidence, nowMs) {
         if (evidence.stopRequestedMs === null || evidence.stopRequestedMs === undefined) {
             return settle(STATE_RECORDING);
         }
-        const askedMs = lastSign([evidence.stopRequestedMs, evidence.observedChangeMs], evidence, nowMs);
-        return settle(silentSince(askedMs, REGISTER_LIMIT_MS) ? STATE_NOT_REGISTERED : STATE_STOP_PENDING);
+        const askedMs = latest([evidence.stopRequestedMs], nowMs);
+        return settle(overdue(countedFrom(askedMs), REGISTER_LIMIT_MS)
+            ? STATE_NOT_REGISTERED : STATE_STOP_PENDING);
     }
 
-    const lastProgressMs = lastSign([registeredMs, timeOf(verdict.phaseStartedUtc),
+    const lastProgressMs = latest([registeredMs, timeOf(verdict.phaseStartedUtc),
         timeOf(session.endedUtc), evidence.observedChangeMs,
-        ...(evidence.artifacts || []).map((a) => a.mtimeMs)], evidence, nowMs);
+        ...(evidence.artifacts || []).map((a) => a.mtimeMs)], nowMs);
     verdict.lastProgressUtc = utcOf(lastProgressMs);
-    return settle(silentSince(lastProgressMs, quietLimitMs(phase, verdict.captureBytes))
+    return settle(overdue(countedFrom(lastProgressMs), quietLimitMs(phase, verdict.captureBytes))
         ? STATE_STALLED : STATE_PROGRESSING);
 }
 
@@ -362,16 +397,19 @@ function progressKey(evidence) {
  * has moved for the allowance -- and a capture cannot go on showing progress
  * for ever without finishing.
  *
- * It watches as well as reads, and two things only a watcher can know count:
+ * It watches as well as reads, and a watcher knows two things a single look
+ * cannot. They are kept apart, because only the first is evidence:
  *
  *   - A file that GREW since the last poll, even where its modification time
  *     did not move -- which is what some filesystems do with a file still open
- *     for writing.
+ *     for writing. That is a sign of progress like any other.
  *   - That the watcher itself was not running. A laptop that slept through ten
  *     minutes of this wait has a recorder that slept through them too; by the
  *     clock alone that is ten minutes of silence, and a healthy capture would be
- *     told it had stalled the moment the lid opened. The allowance starts again
- *     from the first poll after such a gap.
+ *     told it had stalled the moment the lid opened. The ALLOWANCE is counted
+ *     again from the first poll after such a gap -- and nothing more: it is not
+ *     a sign of progress, `lastProgressUtc` does not move, and the verdict says
+ *     the wait was interrupted (`waitResumedUtc`).
  *
  *   deps.now, deps.sleep         the clock, injected for tests
  *   deps.isRecorderAlive         asked on every poll: a recorder that exits is
@@ -388,6 +426,7 @@ async function waitForEnding(sessionDir, deps = {}) {
     let lastKey = null;
     let lastPollMs = null;
     let observedChangeMs = null;
+    let resumedMs = null;
     let said = null;
     let intervalSaidMs = watchingSinceMs;
     for (;;) {
@@ -395,12 +434,11 @@ async function waitForEnding(sessionDir, deps = {}) {
         session = evidence.session;
         const at = now();
         const key = progressKey(evidence);
-        const moved = lastKey !== null && key !== lastKey;
-        const suspended = lastPollMs !== null && at - lastPollMs > SUSPENDED_GAP_MS;
-        if (moved || suspended) observedChangeMs = at;
+        if (lastKey !== null && key !== lastKey) observedChangeMs = at;
+        if (lastPollMs !== null && at - lastPollMs > SUSPENDED_GAP_MS) resumedMs = at;
         lastKey = key;
         lastPollMs = at;
-        Object.assign(evidence, { observedChangeMs, watchingSinceMs });
+        Object.assign(evidence, { observedChangeMs, watchingSinceMs, resumedMs });
         const verdict = evaluate(evidence, at);
         if (!WAITING_STATES.has(verdict.state)) return { verdict, session, evidence };
         if (deps.onWaiting) {
@@ -434,27 +472,57 @@ function phaseLabel(verdict) {
     return PHASE_LABELS[verdict.phase] || 'post-processing';
 }
 
+/** How long before the verdict was reached `utc` was -- "45s", "4m30s" -- or null. */
+function ago(verdict, utc) {
+    const then = timeOf(utc);
+    const asOf = timeOf(verdict.asOfUtc);
+    return then === null || asOf === null || then > asOf ? null : seconds(Math.floor((asOf - then) / 1000));
+}
+
+// Said wherever the allowance was counted from somewhere other than the last
+// sign of progress, so nobody reads the shorter time as something having moved.
+const INTERRUPTED = 'this wait was interrupted (the machine slept?)';
+
 /** One line for a wait that is still going. */
 function waitingLine(verdict) {
+    const counted = seconds(verdict.quietSeconds);
+    const limit = seconds(verdict.quietLimitSeconds);
     if (verdict.state === STATE_STOP_PENDING) {
         return `capture-har: stop requested -- waiting for the recording process (pid ${verdict.recorderPid}) ` +
-            `to take it up (${seconds(verdict.quietSeconds)} so far)`;
+            `to take it up (${counted} so far${verdict.waitResumedUtc ? `, counted from when ${INTERRUPTED} and resumed` : ''})`;
     }
-    return `capture-har: the stop registered and post-processing is progressing -- ${phaseLabel(verdict)}; ` +
-        `last sign of progress ${seconds(verdict.quietSeconds)} ago ` +
-        `(a stall is called at ${seconds(verdict.quietLimitSeconds)}). Still waiting.`;
+    const head = `capture-har: the stop registered and post-processing is progressing -- ${phaseLabel(verdict)}; `;
+    const since = ago(verdict, verdict.lastProgressUtc);
+    if (verdict.waitResumedUtc) {
+        return `${head}${since ? `last sign of progress ${since} ago, but ` : ''}${INTERRUPTED} and resumed ` +
+            `${counted} ago: a stall is called ${limit} after that. Still waiting.`;
+    }
+    if (!since) {
+        return `${head}no time on disk is usable against this clock, so the silence is counted from when ` +
+            `this wait began ${counted} ago (a stall is called at ${limit}). Still waiting.`;
+    }
+    return `${head}last sign of progress ${since} ago (a stall is called at ${limit}). Still waiting.`;
 }
 
 /** The lines for a wait that ended with post-processing stalled. */
 function stalledLines(verdict, session) {
     const saved = session && session.endedUtc;
+    const since = ago(verdict, verdict.lastProgressUtc);
     const lines = [
-        `capture-har: post-processing has STALLED -- no sign of progress for ${seconds(verdict.quietSeconds)}.`,
+        `capture-har: post-processing has STALLED -- ${since
+            ? `no sign of progress for ${since}.`
+            : `no sign of progress since this wait began ${seconds(verdict.quietSeconds)} ago.`}`,
         `  The stop registered (${verdict.endedBy || 'ending'}, ${verdict.registeredUtc}); the last phase entered ` +
             `was ${phaseLabel(verdict)}.`,
         `  A capture of ${megabytes(verdict.captureBytes)} is allowed ${seconds(verdict.quietLimitSeconds)} ` +
             'between signs of progress.'
     ];
+    if (verdict.waitResumedUtc) {
+        lines.push(`  The allowance was counted from ${verdict.waitResumedUtc}: ${INTERRUPTED} and resumed then.`);
+    } else if (!since) {
+        lines.push('  No time on disk is usable against this clock (it may have been set back), so the allowance ' +
+            'was counted from when this wait began.');
+    }
     if (verdict.phase === PHASES.AI_CATALOGUE) {
         lines.push('  The AI catalogue pass prints nothing until it ends, so this may be a very long pass ' +
             'rather than a hung one;',
@@ -470,21 +538,25 @@ function stalledLines(verdict, session) {
         saved
             ? `  raw:       ${session.harPath}  (saved and kept)`
             : '  The recording itself is still being saved; nothing was assembled here.',
-        '  Look at that process. `status` reports this same state at any time; stop, run again, waits only',
-        '  if something has moved since, and says this again at once if nothing has.');
+        '  Look at that process. `status` reports this same state at any time. Running stop again waits',
+        '  only if something has moved since; if nothing has, it says this again at once.');
     return lines;
 }
 
 /** The lines for a stop the recorder never took up. */
 function notRegisteredLines(verdict) {
+    const asked = ago(verdict, verdict.stopRequestedUtc) || seconds(verdict.quietSeconds);
     return [
         `capture-har: the stop NEVER REGISTERED -- the recording process (pid ${verdict.recorderPid}) is ` +
-            `running, and has not taken up the stop asked for ${seconds(verdict.quietSeconds)} ago.`,
+            `running, and has not taken up the stop asked for ${asked} ago.`,
+        ...(verdict.waitResumedUtc
+            ? [`  It was given ${seconds(verdict.quietLimitSeconds)} from ${verdict.waitResumedUtc}: ${INTERRUPTED} and resumed then.`]
+            : []),
         '  Nothing was stopped, assembled or post-processed: the recording is still going.',
         '  The request -- the STOP file in the session directory -- is left in place, so the recording ends',
-        '  as soon as that process next looks for it. `status` shows whether it has; stop, run again, waits',
-        '  only once it has, and says this again at once until then. To end the recording another way, press',
-        '  ENTER at its own terminal or close its browser window.'
+        '  as soon as that process next looks for it. `status` shows whether it has. Running stop again waits',
+        '  only once it has; until then it says this again at once.',
+        '  To end the recording another way, press ENTER at its own terminal or close its browser window.'
     ];
 }
 
