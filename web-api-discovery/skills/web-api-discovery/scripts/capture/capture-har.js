@@ -4971,9 +4971,9 @@ async function start(args) {
 
     // WHICH RUN THIS CAPTURE BELONGS TO (#26) -- asked now, answered later.
     // Reading the process ancestry costs a subprocess on Windows, so it is
-    // started here, past every check that can refuse the run, and awaited where
-    // session.json is first written: by then a browser has been launched and
-    // the answer is waiting. It never rejects and never outlasts its own limit.
+    // started here, past every check that can refuse the run, and collected
+    // where session.json is first written: by then a browser has been launched
+    // and the answer is usually waiting. It never rejects.
     const runIdentity = captureRun.beginRunIdentity();
 
     // And the other half: an EXPLICIT --output-path into a committable
@@ -5521,14 +5521,22 @@ async function start(args) {
         }
     });
 
-    // WHO MADE THIS, written with the first session.json and never changed
-    // (#26). `captureId` is this recorder invocation and nothing else; `run` is
-    // what every capture started by the same invoking session shares, or
-    // `{ id: null, reason }` when the ancestry could not be read. Nothing in
-    // the store said either before: stamps are start times, several sessions
-    // record at once, and no time window separates them. See capture-run.js.
+    // WHO MADE THIS, written with the first session.json (#26). `captureId` is
+    // this recorder invocation and nothing else; `run` is what every capture
+    // started by the same invoking session shares, or `{ id: null, reason }`
+    // when the ancestry could not be read. Nothing in the store said either
+    // before: stamps are start times, several sessions record at once, and no
+    // time window separates them. See capture-run.js.
+    //
+    // A LOOKUP THAT IS STILL RUNNING DOES NOT HOLD THE RECORDING UP. After a
+    // short grace the session is written saying so, and the run is written in
+    // when it arrives -- found by recording on a busy machine, where waiting
+    // for it and then giving up left two recordings of four with no run.
     session.captureId = captureRun.newCaptureId();
-    session.run = await runIdentity;
+    session.run = await captureRun.settleRunIdentity(runIdentity, (run) => {
+        session.run = run;
+        writeSession();
+    });
 
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();

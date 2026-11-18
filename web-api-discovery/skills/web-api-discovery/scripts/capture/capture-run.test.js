@@ -41,15 +41,24 @@
 //   C2  the /proc reader survives a process name with spaces and brackets
 //   C3  the Linux chain stops below process 1, and a reboot is a different run
 //   C4  a lookup that fails, hangs or is not available says so and never throws
+//   C5  a lookup that finished while the recorder was busy is not called slow
+//   C5b the lookup is running before the caller does anything else
+//   C6  recording does not wait long for a slow lookup, and the run is filled
+//       in when it arrives
 //   S1  nothing that was read is recorded: no name, no process id, no start time
 //   I1  a capture id is a new one every time
 //   P1  two real invoking processes, interleaved, are told apart -- and a
 //       shell between one of them and its capture changes nothing
 //   P2  what a real lookup records is tokens and nothing else
+//
+// A GUARD (passes today on the runtime it was written on; pinned, not proven
+// by a failure):
+//   P3  on Windows, a pwsh.exe in the working directory is not what answers
 
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
@@ -330,6 +339,106 @@ test('C4: a lookup that fails, hangs or is not available says so and never throw
     assert.strictEqual(found.id, captureRun.tokenFor(SESSION_A));
 });
 
+/** A reader that answers when a real child process has exited -- an I/O event, as the real one is. */
+function readerAnsweredByAChild(chain) {
+    return () => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true });
+        child.on('error', reject);
+        child.on('close', () => resolve(chain));
+    });
+}
+
+/**
+ * Hold this process's event loop for a while, the way synchronous work does --
+ * from the phase of the loop that is followed by TIMERS, which is the one
+ * where it matters: the next thing the loop does on coming back is serve any
+ * timer that expired meanwhile, before it looks at what finished.
+ */
+function blockFor(ms) {
+    return new Promise((resolve) => setImmediate(() => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+        resolve();
+    }));
+}
+
+test('C5: a lookup that finished while the recorder was busy is not called too slow', async () => {
+    // A limit raced against the work it limits is wrong for a process that
+    // does synchronous work. An expired timer and a child that exited seconds
+    // ago are both waiting when a busy process comes back to its event loop,
+    // and the timer is served first -- so the limit "expires before" an answer
+    // that had been sitting there. The record then says the lookup took too
+    // long, about a lookup that did not.
+    const chain = [proc(71016, 'pwsh', 9001), SESSION_A, HOST];
+    const pending = captureRun.beginRunIdentity({
+        readChain: readerAnsweredByAChild(chain), timeoutMs: 400, stdinIsTty: false
+    });
+    // Long past the limit, and long enough for the child to have exited.
+    await blockFor(3000);
+    const run = await pending;
+    assert.strictEqual(run.id, captureRun.tokenFor(SESSION_A),
+        `the answer was there and was passed over: ${JSON.stringify(run)}`);
+});
+
+test('C5b: the lookup is running before the caller does anything else', async () => {
+    // "Asked now" has to mean now. Started a moment later instead, a caller
+    // that goes straight on to synchronous work has asked nothing until that
+    // work is over -- and the limit has been counting the whole time.
+    let started = false;
+    const pending = captureRun.beginRunIdentity({
+        readChain: async () => { started = true; return [SESSION_A]; }
+    });
+    assert.strictEqual(started, true, 'the reader was not called by the time beginRunIdentity returned');
+    assert.strictEqual((await pending).id, captureRun.tokenFor(SESSION_A));
+
+    // And a reader that throws on the spot is a failure to read, not a throw.
+    const thrown = await captureRun.beginRunIdentity({ readChain: () => { throw new Error('no such reader'); } });
+    assert.deepStrictEqual(thrown, { id: null, reason: captureRun.REASONS.FAILED });
+});
+
+test('C6: recording does not wait long for a slow lookup, and the run is filled in when it arrives', async () => {
+    const real = { id: 'aaaaaaaaaaaa', basis: 'process', lineage: ['aaaaaaaaaaaa'] };
+
+    // ALREADY THERE: it is what is written, and nothing arrives later.
+    let late = [];
+    const prompt = await captureRun.settleRunIdentity(Promise.resolve(real), (run) => late.push(run), { graceMs: 200 });
+    assert.deepStrictEqual(prompt, real);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepStrictEqual(late, [], 'an answer that was on time is not delivered twice');
+
+    // SLOW: the recording goes ahead after the grace period saying so, and the
+    // real answer is handed over when it comes -- once.
+    late = [];
+    let arrive;
+    const slow = new Promise((resolve) => { arrive = resolve; });
+    const started = Date.now();
+    const first = await captureRun.settleRunIdentity(slow, (run) => late.push(run), { graceMs: 100 });
+    assert.deepStrictEqual(first, { id: null, reason: captureRun.REASONS.NOT_YET });
+    assert.ok(Date.now() - started < 3000, 'the wait is the grace period, not the lookup');
+    assert.deepStrictEqual(late, []);
+    arrive(real);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepStrictEqual(late, [real], 'the run arrives after all, and is written then');
+
+    // SLOW AND THEN NOTHING: what arrives is the reason there is no run.
+    late = [];
+    const failing = new Promise((resolve) => setTimeout(() => resolve({ id: null, reason: captureRun.REASONS.TIMED_OUT }), 150));
+    await captureRun.settleRunIdentity(failing, (run) => late.push(run), { graceMs: 20 });
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepStrictEqual(late, [{ id: null, reason: captureRun.REASONS.TIMED_OUT }]);
+
+    // A writer that throws must not take the recording down with it.
+    const thrown = new Promise((resolve) => setTimeout(() => resolve(real), 60));
+    await captureRun.settleRunIdentity(thrown, () => { throw new Error('disk full'); }, { graceMs: 10 });
+    await new Promise((r) => setTimeout(r, 150));
+
+    // BUSY, NOT SLOW: the same trap as C5, one layer up. The answer arrived
+    // while the recorder was busy, so it is the answer -- not "not yet".
+    const busy = captureRun.settleRunIdentity(
+        readerAnsweredByAChild(real)(), () => assert.fail('it was on time'), { graceMs: 400 });
+    await blockFor(3000);
+    assert.deepStrictEqual(await busy, real);
+});
+
 // ---------------------------------------------------------------------------
 // What is recorded
 // ---------------------------------------------------------------------------
@@ -457,10 +566,49 @@ test('P1: two real invoking processes, interleaved, are told apart', async () =>
     }
 });
 
+test('P3: a pwsh.exe in the working directory is not what answers', async () => {
+    // Windows only, because only there does starting a program by bare name
+    // look in the working directory before the PATH -- and the recorder's
+    // working directory is whatever project the operator is standing in. A
+    // file called pwsh.exe at the root of a cloned repository must not be run
+    // because a recording started there.
+    //
+    // Node 26 does not look there, so this passes with no special handling in
+    // capture-run.js. It is here so that a runtime which does is noticed.
+    if (process.platform !== 'win32') return;
+    const decoy = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-run-cwd-'));
+    try {
+        // Any real program will do: run as `pwsh` it prints no ancestry, so if
+        // it were the one started the lookup would come back empty-handed.
+        fs.copyFileSync(decoy, path.join(dir, 'pwsh.exe'));
+        const leaf = await new Promise((resolve, reject) => {
+            const child = spawn(process.execPath, [SUPPORT, 'leaf'], {
+                cwd: dir, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true
+            });
+            let out = '';
+            child.stdout.on('data', (d) => { out += d; });
+            child.on('error', reject);
+            child.on('close', () => resolve(out));
+        });
+        const answer = JSON.parse(leaf);
+        assert.ok(answer.run && answer.run.id,
+            `the lookup was answered by the working directory's pwsh.exe: ${leaf}`);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('P2: what a real lookup records is tokens and nothing else', async () => {
     const run = await captureRun.beginRunIdentity();
     assertRunShape(run);
-    if (READ_HERE) assert.ok(run.id, `this platform is read, so there is a run: ${JSON.stringify(run)}`);
+    if (READ_HERE) {
+        // A run, or the one honest way of having none here: this process was
+        // started by nothing that can be an invoker (it is process 1's child in
+        // a bare container). "Could not be read" is a failure of the reader.
+        assert.ok(run.id || run.reason === captureRun.REASONS.NO_INVOKER,
+            `this platform is read, so the lookup must have worked: ${JSON.stringify(run)}`);
+    }
 
     const text = JSON.stringify(run).toLowerCase();
     const mustNotAppear = [os.userInfo().username, os.hostname(), path.basename(os.homedir())]
