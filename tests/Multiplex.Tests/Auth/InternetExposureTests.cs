@@ -122,6 +122,9 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
     [InlineData("127.0.0.1", "203.0.113.7", "localhost", true)]
     [InlineData("127.0.0.1", null, "box.example.ts.net", true)]
     [InlineData("198.51.100.4", null, "localhost", true)]
+    [InlineData("::ffff:127.0.0.1", null, "localhost", false)]
+    [InlineData("::ffff:198.51.100.4", null, "localhost", true)]
+    [InlineData("127.0.0.1", "not-an-address", "localhost", true)]
     public void IsFromOutsideThisPc(string remote, string? forwardedFor, string host, bool expected)
     {
         var context = new DefaultHttpContext();
@@ -138,5 +141,29 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
         context.Connection.RemoteIpAddress = IPAddress.Loopback;
         context.Request.Headers["X-Forwarded-For"] = "10.0.0.1, 203.0.113.7";
         Assert.Equal("203.0.113.7", RequestOrigin.ClientAddress(context));
+    }
+
+    [Theory]
+    // Behind a tunnel on this PC: the last X-Forwarded-For entry, if it is an address.
+    [InlineData("127.0.0.1", "203.0.113.7", "203.0.113.7")]
+    [InlineData("::ffff:127.0.0.1", "203.0.113.7", "203.0.113.7")]
+    [InlineData("127.0.0.1", "::ffff:203.0.113.7", "203.0.113.7")]
+    [InlineData("127.0.0.1", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64")]
+    [InlineData("127.0.0.1", "unknown", "127.0.0.1")]
+    [InlineData("127.0.0.1", "203.0.113.7, not-an-address", "127.0.0.1")]
+    // A direct connection: its own address, never a header the caller sent.
+    [InlineData("198.51.100.4", "203.0.113.7", "198.51.100.4")]
+    [InlineData("::ffff:198.51.100.4", null, "198.51.100.4")]
+    // IPv6 callers are counted by /64, since one host commonly holds a whole /64.
+    [InlineData("2001:db8:1:2:aaaa:bbbb:cccc:dddd", null, "2001:db8:1:2::/64")]
+    [InlineData("2001:db8:1:2::1", null, "2001:db8:1:2::/64")]
+    [InlineData("fe80::1:2:3:4%12", null, "fe80::/64")]
+    [InlineData("::1", null, "::1")]
+    public void ClientAddress_IsTheKeyRateLimitsAndLockoutsCountACallerUnder(string remote, string? forwardedFor, string expected)
+    {
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Parse(remote);
+        if (forwardedFor is not null) context.Request.Headers["X-Forwarded-For"] = forwardedFor;
+        Assert.Equal(expected, RequestOrigin.ClientAddress(context));
     }
 }
