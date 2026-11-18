@@ -285,6 +285,77 @@ const inACollection = { isCollection: true };
     console.log('PASS: a path segment is about signing in when it is one of the words, alone or with its usual company.');
 }
 
+// ---- Left out: the sign-in and credential endpoints the re-review still found as tools ----
+{
+    // Each of these was offered to the model after the first round of fixes. Two
+    // causes: a file extension (`session.json`, `login.php`) was a word that is
+    // not a companion, so the segment read as a name; and the word list had none
+    // of the nouns a credential STORE is called by (keys, secrets, cookies).
+    // Each path is its own capture here, so none can hide behind another.
+    const reviewerPaths = [
+        ['GET', '/api/session.json', 'session.json'],
+        ['POST', '/login.php', 'login.php'],
+        ['POST', '/signin.aspx', 'signin.aspx'],
+        ['POST', '/j_security_check', 'j_security_check'],
+        ['POST', '/api/authn/verify', 'authn'],
+        ['POST', '/saml/acs', 'saml'],
+        ['POST', '/api/signup', 'signup'],
+        ['POST', '/api/register', 'register'],
+        ['POST', '/api/2fa/verify', '2fa'],
+        ['POST', '/api/change-pwd', 'change-pwd'],
+        ['GET', '/api/user/personal-access-tokens', 'personal-access-tokens'],
+        ['GET', '/api/api-keys', 'api-keys'],
+        ['GET', '/api/apikeys', 'apikeys'],
+        ['GET', '/api/secrets', 'secrets'],
+        ['GET', '/api/client-secret', 'client-secret'],
+        ['GET', '/api/jwt', 'jwt'],
+        ['GET', '/api/cookies', 'cookies'],
+        ['POST', '/api/accessKey', 'accessKey'],
+    ];
+    for (const [method, route, segment] of reviewerPaths) {
+        const patterns = dedupePatterns([har(method, 'https://api.example.com' + route)]);
+        assert.deepStrictEqual(listTools({ patterns, hasGraphQL: false, methodNameFor }).map((x) => x.name), [],
+            method + ' ' + route + ' must get no tool');
+        const leftOut = listLeftOut({ patterns, methodNameFor });
+        assert.strictEqual(leftOut.length, 1);
+        assert.strictEqual(leftOut[0].reason, 'its path names sign-in or credentials (' + segment + ')', method + ' ' + route);
+    }
+
+    // The same things under more of their names, and in the shapes sites use.
+    for (const segment of ['authn', 'authz', 'signup', 'sign-up', 'signUp', 'register', 'saml', 'oidc', 'openid',
+        '2fa', 'pwd', 'passwd', 'passcode', 'secret', 'secrets', 'apikey', 'api_key', 'apiKeys', 'access-keys',
+        'jwt', 'jwks', 'cookie', 'cookies', 'j_security_check', 'J_SECURITY_CHECK',
+        'login.do', 'logout.action', 'token.json', 'session.xml', 'auth.cgi', 'signin.html', 'jwks.json',
+        'client-secret', 'secret-key', 'session-key', 'personal-access-token']) {
+        assert.strictEqual(isSignInSegment(segment), true, segment + ' is a sign-in segment');
+    }
+
+    // What stays a tool, and why.
+    for (const [segment, why] of [
+        // the cases from before: a name that merely contains one of the words
+        ['sessions-of-a-conference', 'conference says what it is about'],
+        ['training-sessions', 'training is not a word that goes with signing in'],
+        ['token-usage', 'usage is not'],
+        ['password-policy', 'policy is not'],
+        ['authors', 'not the word auth'],
+        ['tokenizer', 'not the word token'],
+        // and for the words added now
+        ['keyboard-layouts', 'keyboard is not the word key, and key alone is only a companion'],
+        ['key-results', 'key is a companion: it makes nothing a credential by itself'],
+        ['keys', 'the same: keys alone names no credential'],
+        ['registered-devices', 'registered is not the word register'],
+        ['cookie-recipes', 'recipes says what it is about'],
+        ['secret-santa', 'santa does'],
+        ['personal-notes', 'personal is a companion, and there is no sign-in word'],
+        ['client-list', 'client is a companion, and there is no sign-in word'],
+        ['report.json', 'an extension is a companion, and there is no sign-in word'],
+        ['openid-configuration', 'configuration says what it is about'],
+    ]) {
+        assert.strictEqual(isSignInSegment(segment), false, segment + ' stays a tool: ' + why);
+    }
+    console.log('PASS: the credential endpoints the re-review found get no tool, and names that only contain a word still do.');
+}
+
 // ---- Left out: sign-in endpoints, preflights, and what does not answer in JSON ----
 {
     const patterns = dedupePatterns([
