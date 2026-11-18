@@ -233,9 +233,11 @@ function emitTestScaffold(args) {
     // and ToolsTests.cs one per tool. Written only when some endpoint takes a
     // query parameter, and removed when none does, so regenerating from a
     // capture that lost its queries does not leave facts for methods that no
-    // longer take the arguments.
+    // longer take the arguments. It is given the endpoints as well as the
+    // tools: an endpoint left out of the tools still has a client method that
+    // takes its query, and gets the client's facts without the tool's.
     const queryTestsPath = path.join(testProjDir, 'QueryStringTests.cs');
-    const queryTests = emitQueryTestsFile({ opts, tools });
+    const queryTests = emitQueryTestsFile({ opts, patterns, tools, methodNameFor });
     if (queryTests === null) fs.rmSync(queryTestsPath, { force: true });
     else fs.writeFileSync(queryTestsPath, queryTests);
 
