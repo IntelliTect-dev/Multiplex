@@ -123,6 +123,20 @@ public sealed class PacingOptions
         return options;
     }
 
+    /// <summary>
+    /// The User-Agent <see cref="FromEnvironment"/> would choose, reading ONLY
+    /// <c>{PREFIX}USER_AGENT</c>: for a caller that uses no other pacing setting,
+    /// so a malformed variable it does not use is not its error. A User-Agent
+    /// that is not one is still refused.
+    /// </summary>
+    public static string UserAgentFromEnvironment(Func<string, string?>? read = null)
+    {
+        read ??= Environment.GetEnvironmentVariable;
+        var options = new PacingOptions { UserAgent = Raw(read, "USER_AGENT") ?? DefaultUserAgent };
+        options.Validate();
+        return options.UserAgent;
+    }
+
     /// <summary>Throws an <see cref="ArgumentException"/> for a value that cannot work.</summary>
     public void Validate()
     {

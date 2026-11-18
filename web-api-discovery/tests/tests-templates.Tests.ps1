@@ -139,7 +139,8 @@ Describe "Codegen integration: emits test project" {
             'The_client_sends_through_the_pacing_handler',
             'The_client_names_itself_and_sends_no_browser_fingerprint',
             'The_User_Agent_is_whatever_the_options_say',
-            'A_User_Agent_that_is_not_one_is_refused')) {
+            'A_User_Agent_that_is_not_one_is_refused',
+            'A_bring_your_own_HttpClient_reads_only_the_User_Agent_from_the_environment')) {
             $body | Should -Match ([regex]::Escape($fact)) -Because "PacingHandlerTests must keep the fact $fact"
         }
         $body | Should -Match 'ExampleExThrottledException' -Because 'the exception carries the project name'

@@ -493,6 +493,25 @@ public class PacingHandlerTests
     }
 
     [Fact]
+    public void A_bring_your_own_HttpClient_reads_only_the_User_Agent_from_the_environment()
+    {
+        // That constructor uses one pacing variable. A malformed one it does not
+        // use is not its error -- the everyday constructor, which uses them
+        // all, is where it is refused.
+        var prefix = PacingOptions.EnvironmentPrefix;
+        var env = new Dictionary<string, string> { [prefix + "MAX_ATTEMPTS"] = "lots", [prefix + "MIN_SPACING_MS"] = "soon" };
+        Func<string, string?> read = name => env.TryGetValue(name, out var v) ? v : null;
+        Assert.Throws<FormatException>(() => PacingOptions.FromEnvironment(read));
+        Assert.Equal(PacingOptions.DefaultUserAgent, PacingOptions.UserAgentFromEnvironment(read));
+
+        const string mine = "AcmeTripSync/2.1 (+https://acme.example/about-this-client)";
+        env[prefix + "USER_AGENT"] = mine;
+        Assert.Equal(mine, PacingOptions.UserAgentFromEnvironment(read));
+        env[prefix + "USER_AGENT"] = "(unclosed comment";
+        Assert.Throws<ArgumentException>(() => PacingOptions.UserAgentFromEnvironment(read));
+    }
+
+    [Fact]
     public void A_User_Agent_that_is_not_one_is_refused()
     {
         // Refused once, where it is set -- not on every request.
