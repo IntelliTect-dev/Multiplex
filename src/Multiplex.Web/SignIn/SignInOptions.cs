@@ -77,7 +77,22 @@ public sealed partial class SignInPaths(IConfiguration config)
 
     /// <summary>A fresh, empty profile for one sign-in attempt.</summary>
     public string NewTempProfile(string site) =>
-        Path.Combine(ProfilesDirectory(site), "temp-" + Guid.NewGuid().ToString("N"));
+        Path.Combine(ProfilesDirectory(site), TempProfilePrefix + Guid.NewGuid().ToString("N"));
+
+    /// <summary>Where an account's replaced profile is moved, beside it, until it is deleted.</summary>
+    public static string OldProfile(string accountProfile) =>
+        accountProfile + OldProfileMarker + Guid.NewGuid().ToString("N")[..8];
+
+    /// <summary>
+    /// True for a profile folder that only exists while a sign-in or a profile replacement is
+    /// under way (<c>temp-*</c>, <c>{account}.old-xxxxxxxx</c>). <see cref="ProfileName"/> never
+    /// gives an account such a name, so a folder found like this after a restart is a leftover.
+    /// </summary>
+    public static bool IsTransientProfileName(string folderName) =>
+        folderName.StartsWith(TempProfilePrefix, StringComparison.OrdinalIgnoreCase) || OldProfileSuffix().IsMatch(folderName);
+
+    private const string TempProfilePrefix = "temp-";
+    private const string OldProfileMarker = ".old-";
 
     /// <summary>
     /// Throws unless <paramref name="path"/> is strictly inside the data folder. Every browser
@@ -104,7 +119,7 @@ public sealed partial class SignInPaths(IConfiguration config)
     {
         ArgumentException.ThrowIfNullOrEmpty(accountId);
         return SafeNamePattern().IsMatch(accountId)
-               && !accountId.StartsWith("temp-", StringComparison.OrdinalIgnoreCase)
+               && !IsTransientProfileName(accountId)
                && !accountId.StartsWith("h-", StringComparison.OrdinalIgnoreCase)
                && !ReservedWindowsName().IsMatch(accountId)
             ? accountId
@@ -123,4 +138,8 @@ public sealed partial class SignInPaths(IConfiguration config)
 
     [GeneratedRegex(@"^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\..*)?$", RegexOptions.IgnoreCase)]
     private static partial Regex ReservedWindowsName();
+
+    // What OldProfile appends: ".old-" and 8 hex digits, at the very end.
+    [GeneratedRegex(@"\.old-[0-9a-f]{8}$", RegexOptions.IgnoreCase)]
+    private static partial Regex OldProfileSuffix();
 }

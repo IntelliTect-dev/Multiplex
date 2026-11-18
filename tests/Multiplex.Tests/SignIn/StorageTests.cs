@@ -110,6 +110,8 @@ public sealed class StorageTests : IDisposable
     [InlineData("trailing.")]
     [InlineData("temp-123")]
     [InlineData("someone@example.test")]
+    [InlineData("someone.old-1a2b3c4d")] // would look like a replaced profile left behind, and be swept
+    [InlineData("SOMEONE.OLD-1A2B3C4D")]
     public void Unsafe_account_ids_get_a_hashed_profile_folder(string accountId)
     {
         var name = SignInPaths.ProfileName(accountId);

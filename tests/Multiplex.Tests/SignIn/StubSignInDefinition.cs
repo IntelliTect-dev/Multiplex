@@ -51,3 +51,17 @@ public sealed class StubSignInDefinition(Uri baseUrl) : ISiteSignInDefinition
         [JsonPropertyName("body")] public string? Body { get; set; }
     }
 }
+
+/// <summary>A definition that is nothing but a slug (any string, even an invalid one); no browser ever reaches it.</summary>
+public sealed class SlugOnlyDefinition(string slug) : ISiteSignInDefinition
+{
+    public string Slug => slug;
+    public string DisplayName => "Slug " + slug;
+    public Uri SignInStartUrl => new("http://127.0.0.1:9/login");
+    public Uri RefreshUrl => new("http://127.0.0.1:9/app");
+    public IReadOnlyCollection<string> AllowedNavigationHosts => ["127.0.0.1"];
+
+    public Task<SiteAccount?> TryGetSignedInAccountAsync(IPage page, CancellationToken ct) => Task.FromResult<SiteAccount?>(null);
+    public Task<string> CaptureSnapshotAsync(IPage page, CancellationToken ct) => throw new NotSupportedException();
+    public Task<bool> IsSignedOutAsync(IPage page) => Task.FromResult(false);
+}

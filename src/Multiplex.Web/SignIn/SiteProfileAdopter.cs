@@ -42,7 +42,7 @@ public sealed class SiteProfileAdopter(
         var profilesRoot = manager.Paths.ProfilesDirectory(definition.Slug);
         if (source.StartsWith(Path.GetFullPath(profilesRoot), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("That folder is already one of the server's own profiles.");
-        if (IsInUse(source))
+        if (SiteBrowserManager.IsProfileInUse(source))
             throw new InvalidOperationException("Chrome is still running on that profile. Close it first.");
 
         var copy = manager.Paths.NewTempProfile(definition.Slug);
@@ -79,26 +79,6 @@ public sealed class SiteProfileAdopter(
             await manager.CloseAsync(browser);
             if (!kept) await manager.DeleteProfileAsync(copy);
         }
-    }
-
-    /// <summary>Chrome holds <c>lockfile</c> open (Windows) or keeps a <c>SingletonLock</c> link (Linux/macOS) while running.</summary>
-    private static bool IsInUse(string dir)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            var lockFile = Path.Combine(dir, "lockfile");
-            if (!File.Exists(lockFile)) return false;
-            try
-            {
-                using var _ = new FileStream(lockFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-                return false;
-            }
-            catch (IOException)
-            {
-                return true;
-            }
-        }
-        return File.Exists(Path.Combine(dir, "SingletonLock")) || new FileInfo(Path.Combine(dir, "SingletonLock")).LinkTarget is not null;
     }
 
     private static void CopyDirectory(string source, string target, CancellationToken ct)

@@ -118,12 +118,32 @@ public sealed class SiteBrowserManager(
         var target = paths.EnsureInsideDataPath(paths.AccountProfile(site, accountId));
         if (Directory.Exists(target))
         {
-            var old = paths.EnsureInsideDataPath(target + ".old-" + Guid.NewGuid().ToString("N")[..8]);
+            var old = paths.EnsureInsideDataPath(SignInPaths.OldProfile(target));
             await RetryAsync(() => Directory.Move(target, old));
             await DeleteProfileAsync(old);
         }
         await RetryAsync(() => Directory.Move(source, target));
         return target;
+    }
+
+    /// <summary>Chrome holds <c>lockfile</c> open (Windows) or keeps a <c>SingletonLock</c> link (Linux/macOS) while it runs on a profile.</summary>
+    internal static bool IsProfileInUse(string dir)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var lockFile = Path.Combine(dir, "lockfile");
+            if (!File.Exists(lockFile)) return false;
+            try
+            {
+                using var _ = new FileStream(lockFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                return false;
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+        }
+        return File.Exists(Path.Combine(dir, "SingletonLock")) || new FileInfo(Path.Combine(dir, "SingletonLock")).LinkTarget is not null;
     }
 
     private static async Task RetryAsync(Action action)
