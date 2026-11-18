@@ -193,6 +193,22 @@ follow them. The full review and its triage are on the issue.
   test skips, with its reason, where no host project is present. **S10** a
   POST that is not additive no longer carries the client's "Creates ..."
   summary.
+- **Second round (re-review, approve with suggestions).** Four more were
+  accepted. *N1*: sign-in pages with a file extension (`session.json`,
+  `login.php`) and credential stores (`api-keys`, `secrets`, `cookies`,
+  `jwt`, `client-secret`) still became tools; extensions are now companions,
+  the word list has the nouns a credential store is called by, and
+  `j_security_check` is matched whole. *N2*: the capture no longer vouches
+  for a POST that pays, orders or removes under another name -- money and
+  commitment nouns are vetoes, and the changing, acting and committing words
+  are matched by stem (the word without a final `e`, four letters or more;
+  `pay` as well). *N3*: the tool session takes its own cookie values and
+  CSRF token out of error text by value. *N4*: the generator says on its
+  console when endpoints are left out of the tools. *N5*: the wrapper's
+  smoke test fails if the server lists a tool under a left-out endpoint's
+  name. The exact lists and the stem rule are in `SKILL.md`. Not in this
+  round: a wrapper whose capture has HEAD, OPTIONS or non-JSON endpoints
+  fails three of its own generated tests, as the base generator does (#35).
 - **Not changed: S6.** A replaced client is still not disposed: another call
   may be using it, and one is left behind per sign-in, not per failed call.
 - **Not here:** an empty 2xx body failing in the client's deserialization
