@@ -319,11 +319,12 @@ function precededBy(text, literal, reach, opens) {
 }
 
 // A <form> tag still open -- no `>` since its `<form` -- whose action is the
-// checkpoint's validator.
+// checkpoint's validator. The attribute is `action` itself, after whitespace:
+// a hyphen is a word boundary, so `\baction` would take data-action= too.
 const checkpointForm = (page) => precededBy(page, '/checkpoint/validate', FORM_TAG_REACH, (before, next) => {
     const open = before.lastIndexOf('<form');
     return !/\w/.test(next) && open !== -1 &&
-        /^<form\b[^>]*\baction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?$/.test(before.slice(open));
+        /^<form\b[^>]*\saction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?$/.test(before.slice(open));
 });
 
 // DataDome's `dd` object, still open -- no `}` since its `{` -- naming its CAPTCHA host.
