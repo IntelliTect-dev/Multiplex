@@ -6,7 +6,7 @@
     "Namespace": "Root .NET namespace of the wrapper, e.g. Example. Test code lives under {Namespace}.Tests.",
     "TestProjectName": "PascalCase test-project name. Default is '<ProjectName>.Tests'.",
     "Facts": "Pre-rendered block of [Fact] methods (emitted by tests-emit.js: per resource group for ClientTests, one per MCP tool for ToolsTests). Empty string in manifest-parity tests.",
-    "ExpectedTools": "One PowerShell hashtable per MCP tool, one per line (e.g. '        @{ Name = \"get_me\"; Method = \"GetMeAsync\"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'). Built from the captured endpoints and baked into Mcp.Tests.ps1, which starts the server and compares them with its answer to tools/list.",
+    "ExpectedTools": "One PowerShell hashtable per MCP tool, one per line (e.g. '        @{ Name = \"get_me\"; Method = \"GetMeAsync\"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'). A tool whose endpoint was captured with a query string also carries '; Query = @(\"limit\", \"prefix\")' -- the query parameters its inputSchema must list. Built from the captured endpoints and baked into Mcp.Tests.ps1, which starts the server and compares them with its answer to tools/list.",
     "LeftOutTools": "One PowerShell hashtable per endpoint that was given no MCP tool, one per line (e.g. '        @{ Name = \"create_login\"; Method = \"CreateLoginAsync\" }'): the name its tool would have had, and its client method. Baked into Mcp.Tests.ps1, which fails if the server lists any of them. Empty when nothing was left out."
   },
   "templates": [

@@ -41,4 +41,27 @@ internal static class MockHandler
 
     public static HttpClient FromFixture(string fixtureFileName, HttpStatusCode status = HttpStatusCode.OK)
         => FromJson(FixtureLoader.ReadText(fixtureFileName), status);
+
+    /// <summary>
+    /// As <see cref="FromJson(string, HttpStatusCode)"/>, and the address of every
+    /// request that reaches the handler is added to <paramref name="sentTo"/> --
+    /// so a test can assert the exact path and query string a call put on the
+    /// wire. Read <see cref="Uri.PathAndQuery"/> or <see cref="Uri.AbsoluteUri"/>,
+    /// which are escaped as sent; <see cref="Uri.ToString"/> unescapes for display.
+    /// </summary>
+    public static HttpClient FromJson(string json, ICollection<Uri> sentTo, HttpStatusCode status = HttpStatusCode.OK)
+    {
+        var mock = new Mock<HttpMessageHandler>(MockBehavior.Loose);
+        mock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((request, _) => sentTo.Add(request.RequestUri!))
+            .ReturnsAsync(() => new HttpResponseMessage(status)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            });
+        return new HttpClient(mock.Object);
+    }
 }

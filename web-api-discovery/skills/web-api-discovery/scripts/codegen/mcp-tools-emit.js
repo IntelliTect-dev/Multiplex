@@ -491,10 +491,14 @@ function renderRestTool(tool, ctx) {
     if (acceptsBody) {
         parameters.push('[Description("The JSON request body, as text. Omit it to send no body.")] string? body = null');
     }
+    // The endpoint's query parameters (issue #34), described and declared by
+    // query-emit.js, in the order the client method declares them.
+    for (const q of p.queryParameters || []) parameters.push(q.toolDeclaration);
     parameters.push('CancellationToken ct = default');
 
     const callArgs = pathParams.map((s) => s.param);
     if (acceptsBody) callArgs.push('body');
+    for (const q of p.queryParameters || []) callArgs.push(q.csName);
     callArgs.push('ct');
 
     const lines = [
