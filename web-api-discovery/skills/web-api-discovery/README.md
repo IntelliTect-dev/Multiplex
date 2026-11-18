@@ -51,6 +51,7 @@ skills/web-api-discovery/
 │   └── codegen/         # optional continuation: emit a buildable wrapper
 │       ├── run-agent.js             # orchestrator: scrub -> verify -> detect -> generate
 │       ├── generate-wrapper.js      # typed client + PowerShell module + MCP server
+│       ├── mcp-tools-emit.js        # the MCP tool class: one tool per endpoint, with its hints
 │       ├── tests-emit.js            # xUnit + Pester scaffold
 │       ├── sln-emit.js              # deterministic .slnx
 │       ├── secret-gate-emit.js      # gitleaks hook + workflows
@@ -63,7 +64,9 @@ skills/web-api-discovery/
 │   ├── ISessionStore.cs.tmpl
 │   ├── DpapiSessionStore.cs.tmpl
 │   ├── UserSecretsSessionStore.cs.tmpl
-│   └── McpProgram.cs.tmpl
+│   ├── McpProgram.cs.tmpl       # the MCP server's entry point (stdio)
+│   ├── ToolSession.cs.tmpl      # reads the saved session at the first tool call (tests/ToolSessionTests.cs.tmpl)
+│   └── tests/pester/            # Mcp.Tests.ps1 starts the server and asks it for its tools; McpStdio.ps1 is its client
 ├── powershell/          # PowerShell module skeleton
 │   ├── Module.psm1.tmpl
 │   ├── Module.psd1.tmpl
