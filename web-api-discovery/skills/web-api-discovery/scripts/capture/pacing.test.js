@@ -36,6 +36,7 @@
 //       evades -- and a hand-driven run gets advice, not a hand-over
 //   D1  capture-cdp.js: --throttle-ms 0 means zero, and --pace is validated
 //   D2  capture-cdp.js reads the body of a JSON refusal, so C8 can see it
+//   D3  headed, capture-cdp.js advises the person browsing; it claims no pause
 
 'use strict';
 
@@ -656,6 +657,26 @@ test('D1: capture-cdp takes --throttle-ms 0 as zero and refuses a --pace it cann
     const clamped = run(['--pace', 'nav=3000000000']);
     assert.strictEqual(clamped.status, 0, clamped.stderr);
     assert.match(clamped.stderr, /capture-cdp: .*nav=3000000000.*10 minutes/);
+});
+
+test('D3: headed, capture-cdp tells the person browsing what to do; it claims no pause it does not take', () => {
+    const { throttleAudience } = require(path.join(__dirname, 'capture-cdp.js'));
+    const pause = { action: 'pause', waitMs: 30000, signal: throttle(30000) };
+    const headed = throttleAudience({ headless: false });
+    const said = pacing.throttleLines(pause, headed.who, headed.say).map(([, t]) => t).join('\n');
+    // Headed, the script navigates once and the person drives from there:
+    // nothing of the script's is left to pause.
+    assert.doesNotMatch(said, /Pausing .* before the next step/, `a pause nothing takes:\n${said}`);
+    assert.match(said, /^capture-cdp: /);
+    assert.match(said, /Wait at least 30 s/);
+    const block = { action: 'hand-over', why: 'blocked', signal: { kind: 'blocked', status: 403,
+        url: 'https://www.example.com/', retryAfterMs: null, signature: '403 Imperva' } };
+    const handed = pacing.throttleLines(block, headed.who, headed.say).map(([, t]) => t).join('\n');
+    assert.doesNotMatch(handed, /Automated browsing has stopped/, 'the person was the one browsing');
+    assert.match(handed, /Answer it yourself in the browser if you choose/);
+    const headless = throttleAudience({ headless: true });
+    const ended = pacing.throttleLines(block, headless.who, headless.say).map(([, t]) => t).join('\n');
+    assert.match(ended, /Nobody can take over a headless browser, so this run ends \(exit 3\)/);
 });
 
 test('D2: capture-cdp reads the body of any refusal from the site, JSON included', () => {

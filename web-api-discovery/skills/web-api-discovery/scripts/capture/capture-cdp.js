@@ -7,11 +7,13 @@
  * network traffic to a HAR file. Polite-crawl defaults: descriptive
  * User-Agent and ~1 req/sec throttle on automated traversal.
  *
- * Its navigation is paced and its responses are read for throttling, by the
- * same pacing.js the recorder uses: a 429 or a 503 with Retry-After pauses; a
- * block, a challenge or throttling that persists stops automated browsing and
- * says so -- the browser is left to the person (headed), or the run ends with
- * exit 3 (headless, where there is nobody to hand it to). Nothing here works
+ * Its responses are read for throttling and blocks by the same pacing.js the
+ * recorder uses, and what the site did is said on stderr. It makes ONE
+ * navigation of its own -- to --url -- so there is no later step for a pause to
+ * hold, and nothing for --pace to space out. Headed, the person at the window
+ * browses from there and is told what the site did and how long it asked them
+ * to wait. Headless, a block, a challenge, or throttling it will not wait out
+ * ends the run with exit 3, the HAR holding what was recorded. Nothing here works
  * around a block.
  *
  * Usage:
@@ -20,8 +22,8 @@
  *
  *   --throttle-ms  a random delay of up to this many ms before every request;
  *                  0 turns it off (and with it the request interception).
- *   --pace         as capture-har.js: the wait between navigations; `off`
- *                  for tests.
+ *   --pace         read and refused as capture-har.js reads and refuses it;
+ *                  with one navigation it has no wait to space out today.
  *
  * Notes:
  *   - This is a template consumed by the web-api-discovery agent. The
@@ -55,6 +57,20 @@ function parseArgs(argv) {
         }
     }
     return out;
+}
+
+/**
+ * Who a throttle or block line is said to, and how. HEADED, this script
+ * navigates once, to the start page, and the person at the window browses from
+ * there: they get advice -- what the site did, how long it asked them to wait
+ * -- because nothing of the script's is left to pause or stop. HEADLESS,
+ * nobody is there, and a hand-over ends the run (exit 3).
+ */
+function throttleAudience(args) {
+    return args.headless
+        ? { who: 'script', say: { tool: 'capture-cdp',
+            noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' } }
+        : { who: 'you', say: { tool: 'capture-cdp' } };
 }
 
 /**
@@ -174,10 +190,8 @@ async function main() {
                 if (!decision || decision.action === 'none') return;
                 if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
                 if (decision.action === 'hand-over') handedOver = decision;
-                const say = args.headless
-                    ? { tool: 'capture-cdp', noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' }
-                    : { tool: 'capture-cdp', finish: 'close the window to finish' };
-                for (const [, line] of pacing.throttleLines(decision, 'script', say)) {
+                const { who, say } = throttleAudience(args);
+                for (const [, line] of pacing.throttleLines(decision, who, say)) {
                     console.error(line);
                 }
             } catch (e) {
@@ -216,4 +230,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main, parseArgs, readsBodyFor };
+module.exports = { main, parseArgs, readsBodyFor, throttleAudience };
