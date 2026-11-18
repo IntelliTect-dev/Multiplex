@@ -111,7 +111,10 @@
     from there -- your own identifiers, and the salt every pseudonym is derived
     from -- is the one the scrub and the leak gate use. A capture named by its
     directory from inside another repository is not scrubbed with that other
-    repository's profile. You are returned to where you were.
+    repository's profile. You are returned to where you were. It is the profile
+    the recording used whenever the recording was run from that folder; one run
+    from a subfolder with a .har-profile.json of its own used that one instead,
+    so keep the profile beside the store.
 
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
@@ -989,14 +992,21 @@ function Resolve-HarCaptureSelection {
     }
 
     if ($pool.Count -gt 1) {
+        # A COMMAND THAT CANNOT BE PASTED BACK IS NOT AN OFFER. The directory
+        # goes in single quotes, so an apostrophe in it is doubled -- and it is
+        # left out altogether when the path has a wildcard character in it,
+        # because this command would then refuse it as a pattern. The label
+        # always works.
+        $directory = $pool[0].dir
+        $byDirectory = if (-not [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($directory)) {
+            "    Invoke-HarCapture '$($directory.Replace("'", "''"))' $PhaseSwitch"
+        }
         return [pscustomobject]@{ Capture = $null; Code = 2; Line = @(
                 "Invoke-HarCapture: $($pool.Count) captures match $named -- say which one. Nothing was run."
                 Format-HarCaptureChoice -Capture $pool
-                '  Name it by its label, or by its directory:'
+                "  Name it by its label$(if ($byDirectory) { ', or by its directory' }):"
                 "    Invoke-HarCapture $(Get-HarCaptureLabel -Capture $pool[0]) $PhaseSwitch"
-                # In single quotes, so an apostrophe in the path is doubled: a
-                # command that cannot be pasted back is not an offer.
-                "    Invoke-HarCapture '$($pool[0].dir.Replace("'", "''"))' $PhaseSwitch"
+                if ($byDirectory) { $byDirectory }
                 "  -Describe '<text>' also narrows, to the capture recorded with that description.") }
     }
 
@@ -1094,14 +1104,17 @@ function Get-HarCapturePhaseBlocker {
                     '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.'
                     '  -Catalogue by itself catalogues the scrubbed.har that is already there.') }
         }
+        # "IF the rejected scrub was the recording's own": a scrub quarantined
+        # by an earlier run of this very phase was gated without the values
+        # too, and the quarantine does not say which gate made it.
         return [pscustomobject]@{ Code = 3; Line = @(
-                "Invoke-HarCapture: $label $($who[0]), and its scrub was REJECTED by the leak gate."
+                "Invoke-HarCapture: $label $($who[0]), and a scrub of it was REJECTED by the leak gate."
                 $who | Select-Object -Skip 1
-                '  nowhere else. The gate that rejected that scrub could see them; a scrub run now'
-                '  cannot, so it could pass -- and call scrubbed.har -- the very value that was refused.'
-                '  Nothing was run. Triage the quarantined scrub and its findings beside the raw first.'
-                '  To scrub again anyway, move the quarantined scrubbed.rejected file aside (rename it)'
-                '  and run this again.') }
+                "  nowhere else. If the rejected scrub was the recording's own, its gate could see them"
+                '  and may have refused it for one that survived; a scrub run now cannot, and could pass'
+                '  -- and call scrubbed.har -- that very value. Nothing was run. Triage the quarantined'
+                '  scrub and its findings beside the raw first. To scrub again anyway, move the'
+                '  quarantined scrubbed.rejected file aside (rename it) and run this again.') }
     }
     if ($Capture.scrubbed) { return $null }
     if ($Capture.rejected) {
