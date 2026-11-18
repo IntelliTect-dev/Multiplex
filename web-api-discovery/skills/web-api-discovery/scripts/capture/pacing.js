@@ -490,22 +490,24 @@ function createThrottleMonitor(opts = {}) {
         if (handedOver) return { action: 'none', signal };
         if (signal.kind === 'blocked' || signal.kind === 'challenge') return handOver(signal, signal.kind);
         const t = now();
-        if (current && t < current.pausedUntil) {
-            if (t - current.startedAt <= burstMs) {
-                if (signal.retryAfterMs !== null && signal.retryAfterMs > capMs) {
-                    return handOver(signal, 'retry-after-too-long');
-                }
-                // The same burst naming a LONGER wait than the episode's: the
-                // longer one is what the site wants, and it is news. One that
-                // only differs by the burst's own spread is not.
-                if (signal.retryAfterMs !== null && t + signal.retryAfterMs > current.pausedUntil + burstMs) {
-                    current.pausedUntil = t + signal.retryAfterMs;
-                    return { action: 'pause', waitMs: signal.retryAfterMs, signal, episode: episodes.length };
-                }
-                return { action: 'none', signal };
+        // THE BURST FIRST, the pause second: a burst is one episode whether or
+        // not its pause is still running. A Retry-After of 0 names a pause that
+        // is over the moment it starts, and the rest of that page load's
+        // refusals are still the same burst.
+        if (current && t - current.startedAt <= burstMs) {
+            if (signal.retryAfterMs !== null && signal.retryAfterMs > capMs) {
+                return handOver(signal, 'retry-after-too-long');
             }
-            return handOver(signal, 'ignored-pause');
+            // The same burst naming a LONGER wait than the episode's: the
+            // longer one is what the site wants, and it is news. One that
+            // only differs by the burst's own spread is not.
+            if (signal.retryAfterMs !== null && t + signal.retryAfterMs > current.pausedUntil + burstMs) {
+                current.pausedUntil = t + signal.retryAfterMs;
+                return { action: 'pause', waitMs: signal.retryAfterMs, signal, episode: episodes.length };
+            }
+            return { action: 'none', signal };
         }
+        if (current && t < current.pausedUntil) return handOver(signal, 'ignored-pause');
         while (episodes.length && episodes[0] <= t - windowMs) episodes.shift();
         episodes.push(t);
         if (episodes.length >= maxEpisodes) return handOver(signal, 'persistent');
