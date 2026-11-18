@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.DataProtection;
+using Multiplex.Web.Sites;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TripIt;
 using TripIt.Http;
@@ -37,7 +38,7 @@ public static class TripItServiceRegistration
         services.AddOptions<TripItServiceOptions>().Bind(configuration.GetSection(TripItServiceOptions.Section));
         services.AddHttpContextAccessor();
         services.TryAddSingleton(TimeProvider.System);
-        AddDataProtectionOnce(services, configuration);
+        services.AddMultiplexDataProtection();
 
         // Per-account pacing state is a singleton: clients are per request and handler chains are pooled.
         services.TryAddSingleton(sp =>
@@ -65,15 +66,4 @@ public static class TripItServiceRegistration
     /// name and key folder are the shared Multiplex ones (<c>Multiplex:DataPath</c>, default
     /// <c>%LOCALAPPDATA%\Multiplex\data</c>, keys under <c>keys</c>), so repeated registration agrees.
     /// </summary>
-    private static void AddDataProtectionOnce(IServiceCollection services, IConfiguration configuration)
-    {
-        var dataPath = configuration["Multiplex:DataPath"];
-        if (string.IsNullOrWhiteSpace(dataPath))
-        {
-            dataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Multiplex", "data");
-        }
-        services.AddDataProtection()
-            .SetApplicationName("Multiplex")
-            .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPath, "keys")));
-    }
 }
