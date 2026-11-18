@@ -268,6 +268,55 @@ public class {{ProjectName}}ToolSessionTests
         Assert.Contains("and then failed", error.Message);
     }
 
+    [Theory]
+    [InlineData("{\"cookies\":\"sid=SESSION-SECRET-1\"}")]
+    [InlineData("<table><tr><td>HTTP_COOKIE</td><td>sid=SESSION-SECRET-1; theme=dark</td></tr></table>")]
+    [InlineData("debug: cookie_value=SESSION-SECRET-1")]
+    [InlineData("rejected request header X-CSRF-Token: CSRF-SECRET-2")]
+    public async Task The_sessions_own_cookie_values_and_csrf_token_do_not_reach_the_model(string siteAnswer)
+    {
+        // None of these looks like a Cookie header, so a pattern lets each of
+        // them through. The session knows its own secrets, and takes them out
+        // of the site's error text by VALUE, wherever and however they appear.
+        var signedIn = new SessionCredentials("sid=SESSION-SECRET-1; theme=dark", "CSRF-SECRET-2");
+        var store = new CountingSessionStore { Saved = signedIn };
+        using var site = MockHandler.FromJson(siteAnswer + " -- dark mode failed", HttpStatusCode.InternalServerError);
+        using var session = new {{ProjectName}}ToolSession(store, credentials => new {{ProjectName}}Client(credentials, site));
+
+        var error = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/broken")));
+
+        Assert.DoesNotContain("SESSION-SECRET-1", error.Message);
+        Assert.DoesNotContain("CSRF-SECRET-2", error.Message);
+        Assert.Contains("[session value removed]", error.Message);
+        Assert.Contains("/broken -> 500", error.Message);
+        // A value too short to tell from ordinary text is left alone: the
+        // cookie theme=dark must not take the word "dark" out of the message.
+        Assert.Contains("dark mode failed", error.Message);
+    }
+
+    [Fact]
+    public async Task A_new_sign_in_is_scrubbed_by_its_own_values_not_the_old_ones()
+    {
+        // The values taken out are those of the session the failed call was
+        // made with -- after a new sign-in, the new session's.
+        var first = new SessionCredentials("sid=FIRST-SECRET-VALUE", string.Empty);
+        var second = new SessionCredentials("sid=SECOND-SECRET-VALUE", string.Empty);
+        var store = new CountingSessionStore { Saved = first };
+        using var session = new {{ProjectName}}ToolSession(
+            store,
+            credentials => new {{ProjectName}}Client(
+                credentials,
+                MockHandler.FromJson("echo: " + credentials.Cookie, HttpStatusCode.Forbidden)));
+        var before = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/echo")));
+
+        store.Save(second);
+        var after = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/echo")));
+
+        Assert.DoesNotContain("FIRST-SECRET-VALUE", before.Message);
+        Assert.DoesNotContain("SECOND-SECRET-VALUE", after.Message);
+        Assert.Contains("[session value removed]", after.Message);
+    }
+
     [Fact]
     public async Task A_refusal_from_the_site_reaches_the_caller_and_keeps_the_session()
     {
