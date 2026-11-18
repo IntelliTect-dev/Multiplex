@@ -156,7 +156,12 @@ It says which capture it selected. When the site has been recorded more than
 once it lists them and stops, rather than guessing which one you meant. The
 scrub uses the operator profile (`.har-profile.json`) the recording itself
 scrubbed with, wherever you run it from, and a scrub the leak gate kept with
-advisory findings is a warning and exit code 7, never a quiet success.
+advisory findings is a warning and exit code 7, never a quiet success. A
+capture recorded before the recorder noted that profile is refused if it
+already has a scrub (kept or rejected), and otherwise scrubbed with the
+profile found beside the capture store, with a warning to check the result
+for your own identifiers. `-Catalogue` on its own re-checks with that
+store-root profile, which may be weaker than the recording's.
 
 **In a folder that isn't a git repository**, the recorder first asks whether
 to create one (`[Y/n]`). A repository plus the `.gitignore` the recorder writes

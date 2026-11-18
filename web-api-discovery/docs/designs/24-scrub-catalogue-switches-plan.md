@@ -90,17 +90,41 @@ Read by VALUE: `-Scrub:$false` records as today.
     `-ProfilePath` (which passes it to the scrub and the leak gate), and says
     which file it used. No command-line surface is added.
   - When the recorded file no longer exists, `-Scrub` is refused (exit 3):
-    any other profile could be the wrong one.
+    any other profile could be the wrong one. The refusal says to copy the
+    profile back to that path, and that a recording made in a linked worktree
+    since removed is the usual cause (re-review S2).
   - A capture recorded before this field existed: `-Scrub` is refused (exit
     3) when a `scrubbed.har` is already there -- nothing says the store
     root's profile made it, and replacing it could swap a verified scrub for
     one carrying the operator's identifiers; move it aside to scrub anyway.
-    With nothing to replace, it scrubs with the profile found from the store
-    root, as before, and says so.
+    It is refused on the same terms when a quarantined, REJECTED scrub is
+    there instead (re-review I1): the gate that rejected it may have had a
+    profile the root's is not, and a re-scrub gated with the root's could
+    pass what it refused. With neither, it scrubs with the profile found from
+    the store root, as before, and says so on the WARNING stream, naming the
+    file and saying to check the result for your own identifiers -- nothing
+    says that profile is the recording's. It runs FROM the store root for
+    this, never the caller's folder (pinned by a test, re-review S5).
   - `-Catalogue` still asks the gate from the store root. Its re-check is then
     weaker for a capture recorded with another profile, never looser than the
     scrub it is checking: `-Scrub -Catalogue` is gated with the recorded
-    profile by the scrub first.
+    profile by the scrub first. The help says so (re-review S1).
+  - A re-scrub uses the profile file's CURRENT content: a literal removed
+    from it, or a changed salt, changes what the re-scrub produces. The path
+    is recorded, not the content. The help says so (re-review S3).
+
+### `$PSNativeCommandUseErrorActionPreference` is off for the whole script
+
+INTENTIONAL, and it reaches the recording path too (re-review S4). Every exit
+code this door reads from a native command is a non-zero that means something
+-- 5 a recording assembled from the log, 6 a failed phase, 7 a catalogue over
+advisory findings, 8 sign-in needed -- and the recording path reads 5, 7 and 8
+from `capture-har.js` exactly as the phases do. A caller who has turned that
+preference on (it is off by default) turned each of those into a terminating
+error under the script's `$ErrorActionPreference = 'Stop'`: exit 1, no rows,
+over a catalogue that was in fact written. Scoping it to the phase block would
+leave the recording path with that same defect. The preference is set in the
+script's own scope, so the caller's setting is unchanged once it returns.
 
 ### FOR THE OWNER: what changed meaning beyond the two switches
 
@@ -182,6 +206,8 @@ newest is never picked silently.
 | either phase, while the capture's recorder is still working on it (see below) | 3 |
 | `-Scrub` and the capture has no `raw.har` | 3 |
 | `-Scrub` and the capture signed in (or its `session.json` is unreadable) AND already has a `scrubbed.har` or a quarantined rejected scrub (see below) | 3 |
+| `-Scrub` and the operator profile the recording recorded no longer exists | 3 |
+| `-Scrub`, the capture records no operator profile, AND it already has a `scrubbed.har` or a quarantined rejected scrub | 3 |
 | `-Catalogue` alone and the capture has no `scrubbed.har` (never scrubbed, or its only scrub was REJECTED) | 3 |
 
 A first argument that is not a URL with a scheme, a directory or a label that
