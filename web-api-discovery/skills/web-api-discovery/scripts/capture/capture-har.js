@@ -3317,6 +3317,9 @@ function driveWithAgent(session, prompt, opts = {}) {
             if (ev.type === 'user' && ev.isReplay) {
                 replaySeen = true;
                 unacked = Math.max(0, unacked - 1);
+                // The message the grace was waiting for has been TAKEN IN: a
+                // turn is starting on it, however quiet. Not finished.
+                if (unacked === 0) clearAck();
                 return;
             }
             if (ev.type !== 'result') {
