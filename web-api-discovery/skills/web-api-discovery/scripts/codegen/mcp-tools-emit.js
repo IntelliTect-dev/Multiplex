@@ -71,14 +71,24 @@ const SIGN_IN_WORDS = new Set([
     'oauth', 'sso', 'csrf', 'password', 'mfa', 'otp',
     // the same things under their other names
     'authenticate', 'authentication', 'authorize', 'authorization', 'xsrf', 'totp', 'credential',
+    'authn', 'authz', 'signup', 'register', 'saml', 'oidc', 'openid', '2fa',
+    'pwd', 'passwd', 'passcode',
+    // and what a credential STORE is called by: GET /api/secrets hands its contents over
+    'secret', 'apikey', 'accesskey', 'jwt', 'jwks', 'cookie',
 ]);
+
+// Path segments that are about signing in without containing any of the words.
+const SIGN_IN_SEGMENTS = new Set(['j_security_check']);
 
 // The words a sign-in word keeps company with inside one path segment:
 // refresh-token, reset_password, userSession, auth-callback. A segment made of
 // sign-in words and these is about signing in. Any other word makes it a name
 // that merely contains one -- sessions-of-a-conference, token-usage.
 const SIGN_IN_COMPANIONS = new Set([
-    'access', 'refresh', 'id', 'bearer', 'jwt', 'api', 'user', 'account', 'current', 'my', 'me',
+    'access', 'refresh', 'id', 'bearer', 'api', 'user', 'account', 'current', 'my', 'me',
+    'key', 'personal', 'client',
+    // a file extension says nothing about what the segment is: session.json, login.php
+    'json', 'php', 'aspx', 'asp', 'jsp', 'html', 'htm', 'do', 'action', 'xml', 'cgi',
     'new', 'reset', 'change', 'forgot', 'forgotten', 'update', 'verify', 'validate', 'check',
     'renew', 'revoke', 'exchange', 'callback', 'redirect', 'start', 'begin', 'end', 'complete',
     'challenge', 'code', 'status', 'info', 'state', 'keepalive', 'extend', 'create', 'delete',
@@ -141,13 +151,18 @@ function isCollection(pattern, patterns) {
         pattern.segments.every((s, i) => !!s.literal && s.literal === q.segments[i].literal));
 }
 
-/** `sign-in`, `signIn` and `log_out` are one word each: signin, signin, logout. */
+/**
+ * `sign-in`, `signIn`, `log_out`, `sign-up`, `api-key` and `accessKeys` are one
+ * word each: signin, signin, logout, signup, apikey, accesskeys.
+ */
 function signInWordsOf(segment) {
     const words = wordsOf(segment);
     const joined = [];
     for (let i = 0; i < words.length; i++) {
-        const spelledInTwo = (words[i] === 'sign' || words[i] === 'log') &&
-            (words[i + 1] === 'in' || words[i + 1] === 'out');
+        const next = words[i + 1];
+        const spelledInTwo =
+            ((words[i] === 'sign' || words[i] === 'log') && (next === 'in' || next === 'out' || next === 'up')) ||
+            ((words[i] === 'api' || words[i] === 'access') && (next === 'key' || next === 'keys'));
         joined.push(spelledInTwo ? words[i] + words[++i] : words[i]);
     }
     return joined;
@@ -166,13 +181,17 @@ function isSignInWord(word) {
  *
  *   auth, login, sessions, oauth2, sign-in         the word itself
  *   refresh-token, reset_password, userSession     with its company
+ *   api-keys, client-secret, session.json          a credential store; an extension
  *
  * and is not when any other word says what the segment is about:
  *
  *   sessions-of-a-conference, token-usage          a name containing the word
- *   authors, tokenizer                             not the word at all
+ *   cookie-recipes, secret-santa                   likewise
+ *   authors, tokenizer, keyboard-layouts           not the word at all
+ *   keys, key-results                              `key` alone is only a companion
  */
 function isSignInSegment(segment) {
+    if (SIGN_IN_SEGMENTS.has(String(segment).toLowerCase())) return true;
     const words = signInWordsOf(segment);
     return words.some(isSignInWord) &&
         words.every((w) => isSignInWord(w) || SIGN_IN_COMPANIONS.has(w) || /^\d+$/.test(w));
