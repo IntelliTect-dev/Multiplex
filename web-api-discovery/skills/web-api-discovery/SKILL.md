@@ -290,6 +290,69 @@ captures. The known exceptions, each way:
 
 So list a run and read the rows before acting on them.
 
+### Re-running one phase on a capture that already exists
+
+`Invoke-HarCapture` normally runs record -> scrub -> catalogue. Two switches
+run **one phase on a capture that is already in the store, and record
+nothing** -- no browser, no new session directory. Use them when the scrubber
+improved, when a finding was waived, or when the AI cataloguing pass failed: a
+browser session somebody drove by hand is not something to repeat for that.
+
+```powershell
+Invoke-HarCapture https://example.com -Catalogue          # digest + catalogue
+Invoke-HarCapture https://example.com -Scrub              # scrub + leak gate
+Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogue
+```
+
+| Typed | Runs | Needs |
+|---|---|---|
+| neither | record -> scrub -> catalogue, as always | `-Describe` |
+| `-Scrub` | the scrub and its verification | a `raw.har` |
+| `-Catalogue` | the digest and the catalogue | a `scrubbed.har` that passes the gate |
+| both | the scrub, then the catalogue -- whatever order they are typed in | a `raw.har` |
+
+* **The first argument says which capture**, since there is no site to open:
+  the site's URL (only the host is used, and only the host is printed), the
+  capture's directory, or the `host/stamp` label `Remove-HarCapture` also
+  takes. The run **says which capture it selected** -- label, description and
+  directory -- before it does anything.
+* **A site recorded more than once is refused, with the list.** It is never
+  resolved to "the newest": several sessions record into one store. Paste a
+  label from the list, or add `-Describe` -- with a phase switch it is not
+  required, and narrows to the capture recorded with exactly that description.
+* **A capture in the wrong state is refused**, non-zero, saying why:
+  `-Catalogue` on a capture nobody scrubbed (or whose scrub the gate
+  rejected), `-Scrub` on one with no raw, either on a capture this recorder
+  did not make.
+* **The recording parameters are refused with them** -- `-OutputPath`,
+  `-Profile`, `-Isolated`, `-Port`, `-Browser`, `-Attach`, `-AI`, `-AITools`,
+  `-Pace`. They say how to record, and nothing is recorded.
+* **`-Scrub` scrubs again a capture that was already scrubbed** -- that is the
+  request. A scrub the gate rejects is quarantined as `scrubbed.rejected.har`
+  and replaces nothing; with `-Catalogue` alongside, nothing is catalogued
+  from it. After `-Scrub` alone the existing digest and catalogue describe the
+  scrub that was replaced, and the run says so.
+* **A capture the recorder signed in for is re-scrubbed with a warning.** The
+  values it filled were handed to the scrub at recording time and exist
+  nowhere else, so a later scrub removes them by field name and cannot prove
+  them gone. Check the new `scrubbed.har` for them before sharing it.
+* **`-Catalogue` returns the catalogue rows as objects**, as a recording does,
+  and the recorder still refuses to replace a catalogue that carries described
+  actions -- move that file aside to catalogue afresh.
+* **Both phases work in the capture's own directory** under `.har-captures/`.
+  A capture recorded with `-OutputPath` keeps whatever it published there; the
+  phases do not republish.
+* **They are the existing re-entry points, not a second pipeline.** `-Scrub`
+  is `Invoke-SanitizeHar` pointed at that one capture's directory, and
+  `-Catalogue` is the recorder's `catalogue` command. The gate, the quarantine
+  and the exit codes are theirs: `-Scrub` alone answers 0 or 1 (an ADVISORY
+  verdict is said in its summary and is still 0), and `-Catalogue` answers the
+  recorder's codes -- 7 for a catalogue produced over ADVISORY findings.
+
+Exit codes of a refusal: **2** when the invocation names several captures or
+carries a recording parameter; **3** when no capture matches or the one that
+does is not in the state the phase needs.
+
 ### Processing a STORE: point an entry point at a folder
 
 A store accumulates faster than anyone will drive a per-capture tool by hand.
@@ -513,7 +576,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 
 | Parameter | Notes |
 |---|---|
-| `-Uri` | positional, mandatory |
+| `-Uri` | positional, mandatory. The site to open -- or, with `-Scrub` / `-Catalogue`, which existing capture to run on: the site's URL, the capture's directory, or its `host/stamp` label |
 | `-OutputPath` | default: **this run's own session directory** under `.har-captures/` -- gitignored and stamped. Passing a path appends the host folder, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`; a destination inside a work tree that is not gitignored is warned about, not refused. Receives the **scrubbed** artifacts and the catalogue |
 | `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only thing that says what a capture was for, and the only part that cannot be reconstructed afterwards. Who made it is recorded for you: see *Which run made a capture*. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
@@ -522,6 +585,12 @@ holds live sessions this must not disturb -- and records every request. Pass
 | `-Attach` | record in a Chrome that is already running, given its debugging endpoint. Stopping **detaches** |
 | `-AI` | an **agent** does the browsing while the recorder records. Implies `-Browser Native`; `-Describe` is the goal; the prompt and its safety rules are generated. See below |
 | `-AITools` | with `-AI`: which tools the agent has. `Auto` (default) is auto permission mode, its classifier approves or blocks each action; `BrowserOnly` removes every built-in tool (`--tools ""`), leaving only MCP tools -- use it when signed into something sensitive, with only the browser MCP configured. Refused without `-AI`. See below |
+| `-Scrub` | **records nothing.** Scrub an existing capture again and put the result in front of the leak gate. Needs the capture's `raw.har`. See "Re-running one phase on a capture that already exists" |
+| `-Catalogue` | **records nothing.** Digest and catalogue an existing, already scrubbed capture, and return its rows. With `-Scrub`, the scrub runs first. Refused on a capture that was never scrubbed |
+
+With `-Scrub` or `-Catalogue`, `-Describe` is optional and narrows which
+existing capture is meant; every other parameter above except `-Uri` is
+refused, because each one says how to record.
 
 #### When the site refuses the browser: `-Browser Native`
 

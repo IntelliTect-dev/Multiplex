@@ -77,6 +77,17 @@ recorded and different for anyone else's. `Invoke-HarCapture` tells you your
 run when a recording ends, and
 `Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run }` lists it.
 
+To re-run one step on a capture you already have, without recording again:
+
+```powershell
+Invoke-HarCapture https://example.com -Catalogue               # catalogue it again
+Invoke-HarCapture https://example.com -Scrub -Catalogue        # scrub again, then catalogue
+Invoke-HarCapture example.com/2026-01-02-143000 -Scrub         # one capture, by its label
+```
+
+It says which capture it selected. When the site has been recorded more than
+once it lists them and stops, rather than guessing which one you meant.
+
 **In a folder that isn't a git repository**, the recorder first asks whether
 to create one (`[Y/n]`). A repository plus the `.gitignore` the recorder writes
 keeps raw captures and the scrub's substitution tables, which can reverse the
