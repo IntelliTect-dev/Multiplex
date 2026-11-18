@@ -229,6 +229,80 @@ const methodNameFor = (p) => p.methodName;
     console.log('PASS: the README says why each value was not baked in, and never shows it.');
 }
 
+// ---- A credential by NAME: said as that, with nothing of the value ----
+{
+    const url = SITE + '?limit=11&sig=plainvalue7&apiKey=AIzaNotARealKey0123';
+    const q = described([url, url]);
+    assert.strictEqual(q.sig.description,
+        'The "sig" query parameter. No captured value is baked in or shown: its name says it carries a credential ' +
+        '(a token, a key, a session id, a signature). Left out of the request unless you supply a current one.');
+    assert.strictEqual(q.sig.declaration, 'string? sig = null');
+    assert.strictEqual(q.apiKey.declaration, 'string? apiKey = null');
+    const search = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }], queryParameters: Object.values(q) };
+    const section = queryReadmeSection({ opts: OPTS, patterns: [search], tools: [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: search }], methodNameFor });
+    assert.ok(section.includes('| `get_search` | `sig` | `sig` | 2 of 2 | **left out, never baked in**: its name says it carries a credential |'), section);
+    // apiKey is also in the scrub policy's secret names, and the policy is the stronger reason.
+    assert.ok(section.includes('| `get_search` | `apiKey` | `apiKey` | 2 of 2 | **left out, never baked in**: its name is one the scrub policy treats as a secret |'), section);
+    assert.ok(!/plainvalue7|AIzaNotARealKey/.test(section + Object.values(q).map((p) => p.toolDeclaration).join('')), 'no value anywhere');
+    console.log('PASS: a parameter named like a credential is described as one, and its value is nowhere.');
+}
+
+// ---- Names that are not parameters: counted in the README, never printed ----
+{
+    const search = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }], samples: [{}, {}, {}],
+        queryParameters: Object.values(described([SITE + '?limit=11', SITE + '?limit=11'])),
+        droppedQueryNames: [{ reason: 'nonce-name', names: 3, calls: 3 }, { reason: 'secret-shape', names: 1, calls: 2 }] };
+    const onlyDropped = { methodName: 'GetPingAsync', method: 'GET', segments: [{ literal: 'ping' }], samples: [{}],
+        queryParameters: [], droppedQueryNames: [{ reason: 'scrub-marker', names: 1, calls: 1 }] };
+    const patterns = [search, onlyDropped];
+    const tools = [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: search }];
+    const section = queryReadmeSection({ opts: OPTS, patterns, tools, methodNameFor });
+    for (const row of [
+        '| `get_search` | a name that was a timestamp or a long number (a cache-buster written as `?1700000000000`) | 3 | 3 of 3 |',
+        '| `get_search` | a name with the shape of a token, an id, an email or other personal data | 1 | 2 of 3 |',
+        // An endpoint with no tool, whose only "parameter" was dropped, is still accounted for.
+        '| no tool (`GetPingAsync`) | a name the scrub had replaced | 1 | 1 of 1 |',
+    ]) {
+        assert.ok(section.includes(row), 'README row missing: ' + row + '\n' + section);
+    }
+    assert.ok(/are not parameters/.test(section) && /never sent/.test(section), section);
+    // Dropped names alone are worth the section.
+    const alone = queryReadmeSection({ opts: OPTS, patterns: [onlyDropped], tools: [], methodNameFor });
+    assert.ok(alone.includes('### Query parameters') && alone.includes('a name the scrub had replaced'), alone);
+    assert.ok(!alone.includes('| Tool | Parameter |'), 'with no parameter there is no parameter table:\n' + alone);
+    // And they change nothing else: no test is written for a name that is not a parameter.
+    assert.strictEqual(emitQueryTestsFile({ opts: OPTS, patterns: [onlyDropped], tools: [], methodNameFor }), null);
+    console.log('PASS: the README counts the captured names that were not emitted, by kind, without printing one.');
+}
+
+// ---- What the README owes the reader about fidelity and about examples ----
+{
+    const search = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }],
+        queryParameters: Object.values(described([SITE + '?q=red+shoes', SITE + '?q=blue+hat'])) };
+    const section = queryReadmeSection({ opts: OPTS, patterns: [search], tools: [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: search }], methodNameFor });
+    assert.ok(/sent with no value \(`\?debug`\) is sent back as `debug=`/.test(section), 'a valueless flag gains an = :\n' + section);
+    assert.ok(/`a=1&b=2&a=3`[^]*`a=1&a=3&b=2`/.test(section), 'interleaved repeats are regrouped:\n' + section);
+    assert.ok(/text someone typed/.test(section) && /every client of the tool/.test(section), 'examples are free text, shown to every client:\n' + section);
+    console.log('PASS: the README says what is not reproduced exactly, and that examples are text someone typed.');
+}
+
+// ---- A Markdown code span survives backticks in a value ----
+{
+    const cellFor = (value) => {
+        const url = SITE + '?v=' + encodeURIComponent(value);
+        const search = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }], queryParameters: Object.values(described([url, url])) };
+        const section = queryReadmeSection({ opts: OPTS, patterns: [search], tools: [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: search }], methodNameFor });
+        return section.split('\n').find((l) => l.startsWith('| `get_search` | `v` |'));
+    };
+    const T = '`';
+    // The fence is one backtick longer than the longest run inside, and padded.
+    assert.ok(cellFor('plain').includes('sends ' + T + '"plain"' + T + ' ('), cellFor('plain'));
+    assert.ok(cellFor('a' + T + 'b').includes('sends ' + T + T + ' "a' + T + 'b" ' + T + T + ' ('), cellFor('a' + T + 'b'));
+    assert.ok(cellFor('a' + T + T + 'b').includes('sends ' + T + T + T + ' "a' + T + T + 'b" ' + T + T + T + ' ('), cellFor('a' + T + T + 'b'));
+    assert.ok(cellFor(T + T + T + 'x' + T).includes('sends ' + T + T + T + T + ' "' + T + T + T + 'x' + T + '" ' + T + T + T + T + ' ('), cellFor(T + T + T + 'x' + T));
+    console.log('PASS: a code span is fenced one backtick longer than the longest run in its value.');
+}
+
 // ======================================================================
 // The generator, run on the fixture.
 // ======================================================================
@@ -269,8 +343,9 @@ function methodOf(source, methodName) {
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'query-emit-'));
 const outAgain = fs.mkdtempSync(path.join(os.tmpdir(), 'query-emit-'));
 const outPlain = fs.mkdtempSync(path.join(os.tmpdir(), 'query-emit-'));
+const outHostile = fs.mkdtempSync(path.join(os.tmpdir(), 'query-emit-'));
 try {
-    generate('rest-query.har', out);
+    const generated = generate('rest-query.har', out);
     const client = fs.readFileSync(path.join(out, 'src', 'QueryEx', 'QueryExClient.Generated.cs'), 'utf8');
     const toolsCs = fs.readFileSync(path.join(out, 'src', 'QueryEx', 'QueryExTools.Generated.cs'), 'utf8');
     const readme = fs.readFileSync(path.join(out, 'README.md'), 'utf8');
@@ -484,21 +559,54 @@ try {
         console.log('PASS: the smoke test is given each tool\'s query parameters to look for in its inputSchema.');
     }
 
+    // ---- Names that are not parameters are dropped, and accounted for ----
+    {
+        // Every search call also carried `&<its own timestamp>&alice%40example.org`:
+        // a different bare number each time, and an email, where a name goes.
+        // The signature, the tool, the smoke line and the wire strings asserted
+        // above are exact, so none of the six reached them. The README counts them.
+        for (const row of [
+            '| `get_search_suggestions` | a name that was a timestamp or a long number (a cache-buster written as `?1700000000000`) | 5 | 5 of 5 |',
+            '| `get_search_suggestions` | a name with the shape of a token, an id, an email or other personal data | 1 | 5 of 5 |',
+        ]) {
+            assert.ok(readme.includes(row), 'README row missing: ' + row);
+        }
+        assert.ok(/generate-wrapper: 6 captured query name\(s\) are not parameters and were not emitted/.test(generated.stdout),
+            'and the generator says so when it runs:\n' + generated.stdout);
+        console.log('PASS: a timestamp and an email used as parameter NAMES reach nothing, and the README counts them.');
+    }
+
+    // ---- With no substitution table to be found, the generator says so ----
+    {
+        // The fixture sits in tests/fixtures/har with no table near it, and it
+        // has defaults to bake in. A fake that carries no marker could be one
+        // of them, so the run says where it looked -- on stderr, paths only.
+        const fixtureDir = FIXTURES;
+        assert.ok(/generate-wrapper: NOTE -- no scrub substitution table was found for /.test(generated.stderr), generated.stderr);
+        assert.ok(generated.stderr.includes(path.join(fixtureDir, 'rest-query.har')), generated.stderr);
+        assert.ok(generated.stderr.includes(path.join(fixtureDir, '.har-captures')), 'the folders searched are named:\n' + generated.stderr);
+        assert.ok(/no marker[^]*may have become a default/.test(generated.stderr), 'and what that can mean:\n' + generated.stderr);
+        assert.strictEqual((generated.stderr.match(/NOTE -- no scrub substitution table/g) || []).length, 1, 'once per capture');
+        console.log('PASS: a run that finds no substitution table says where it looked and what that can mean.');
+    }
+
     // ---- What must not be baked in is nowhere in the output ----
     {
         const forbidden = {
-            'the scrubbed session id': 'redacted-3f9a1c0b7e2d4a68',
-            'the UUID': '7c9e6679-7425-40de-944b-e07fc1f90ae7',
-            'a per-call timestamp': '17949869931',
-            'the single call\'s timestamp': '1794987002162',
+            'the scrubbed session id': /redacted-3f9a1c0b7e2d4a68/,
+            'the UUID': /7c9e6679-7425-40de-944b-e07fc1f90ae7/,
+            // The `_` values AND the bare timestamps used as names, on every call.
+            'a per-call timestamp': /17949869\d{5}/,
+            'the single call\'s timestamp': /1794987002162/,
+            'the email used as a name': /alice(@|%40)example\.org/i,
         };
         for (const file of allFilesUnder(out)) {
             const text = fs.readFileSync(file, 'utf8');
-            for (const [what, value] of Object.entries(forbidden)) {
-                assert.ok(!text.includes(value), what + ' was written into ' + path.relative(out, file));
+            for (const [what, pattern] of Object.entries(forbidden)) {
+                assert.ok(!pattern.test(text), what + ' was written into ' + path.relative(out, file));
             }
         }
-        console.log('PASS: no scrubbed value and no timestamp from the capture is written anywhere in the wrapper.');
+        console.log('PASS: no scrubbed value, no timestamp and no junk name from the capture is written anywhere in the wrapper.');
     }
 
     // ---- Deterministic ----
@@ -514,9 +622,26 @@ try {
         console.log('PASS: two runs on the same capture give the same bytes.');
     }
 
+    // ---- A value that carries & and < reaches the source, escaped where it must be ----
+    {
+        // rest-query-hostile.har sends xml=<summary>&amp;</param>. It is markup,
+        // not a scrub sentinel, so it is a default like any other -- and it is
+        // written into a C# string, an attribute and an XML doc comment.
+        generate('rest-query-hostile.har', outHostile);
+        const hostile = fs.readFileSync(path.join(outHostile, 'src', 'QueryEx', 'QueryExClient.Generated.cs'), 'utf8');
+        assert.ok(hostile.includes('string? xml = "<summary>&amp;</param>"'), 'the value is the default, as captured');
+        assert.ok(hostile.includes('/// <param name="xml">The "xml" query parameter. Both captured calls sent "&lt;summary&gt;&amp;amp;&lt;/param&gt;", '),
+            'and in the doc comment every & and < of it is escaped');
+        assert.ok(!/\/\/\/ <param name="xml">[^\n]*<summary>/.test(hostile), 'no raw tag from the capture inside a doc comment');
+        const hostileTests = fs.readFileSync(path.join(outHostile, 'tests', 'QueryEx.Tests', 'QueryStringTests.cs'), 'utf8');
+        assert.ok(hostileTests.includes('&xml=%3Csummary%3E%26amp%3B%3C%2Fparam%3E&'), 'and it is expected on the wire, percent-encoded');
+        console.log('PASS: markup in a captured value is a default, escaped in the doc comment and encoded on the wire.');
+    }
+
     // ---- A capture with no query at all is emitted as before ----
     {
-        generate('rest-crud.har', outPlain);
+        const plain = generate('rest-crud.har', outPlain);
+        assert.ok(!/substitution table/.test(plain.stderr), 'with no default to bake in there is nothing to warn about:\n' + plain.stderr);
         const plainTests = path.join(outPlain, 'tests', 'QueryEx.Tests');
         assert.ok(!fs.existsSync(path.join(plainTests, 'QueryStringTests.cs')), 'no query, no query tests');
         const plainClient = fs.readFileSync(path.join(outPlain, 'src', 'QueryEx', 'QueryExClient.Generated.cs'), 'utf8');
@@ -531,7 +656,7 @@ try {
         console.log('PASS: a capture without query parameters produces no query code, tests or notes.');
     }
 } finally {
-    for (const dir of [out, outAgain, outPlain]) fs.rmSync(dir, { recursive: true, force: true });
+    for (const dir of [out, outAgain, outPlain, outHostile]) fs.rmSync(dir, { recursive: true, force: true });
 }
 
 console.log('All query-emit tests passed.');
