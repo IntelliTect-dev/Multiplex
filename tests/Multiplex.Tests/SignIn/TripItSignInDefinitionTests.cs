@@ -22,21 +22,53 @@ public sealed class TripItSignInDefinitionTests
     }
 
     [Fact]
-    public void Email_array_is_read_and_unconfirmed_addresses_are_left_out()
+    public void Email_array_is_read_and_only_confirmed_addresses_are_kept()
     {
         var account = TripItSignInDefinition.ParseAccount("""
             {"Profile":[{"@attributes":{"ref":"R1"},"display_name":"Shown Name",
               "ProfileEmailAddresses":{"ProfileEmailAddress":[
                 {"address":"first@example.test","is_confirmed":"true"},
-                {"address":"second@example.test"},
+                {"address":"unflagged@example.test"},
                 {"address":"claimed@example.test","is_confirmed":"false"},
+                {"address":"third@example.test","is_confirmed":"TRUE"},
                 {"address":"FIRST@example.test","is_confirmed":"true"}]}}]}
             """);
 
         Assert.NotNull(account);
         Assert.Equal("R1", account.AccountId);
-        Assert.Equal(["first@example.test", "second@example.test"], account.Emails);
+        Assert.Equal(["first@example.test", "third@example.test"], account.Emails);
         Assert.Equal("Shown Name", account.DisplayName);
+    }
+
+    /// <summary>
+    /// The allowlist matches on these addresses, so anything short of an explicit "true" must
+    /// keep an address out: an address someone added but never confirmed must not unlock the server.
+    /// </summary>
+    [Theory]
+    [InlineData("\"true\"", true)]
+    [InlineData("\"True\"", true)]
+    [InlineData("\"TRUE\"", true)]
+    [InlineData("true", true)]          // a JSON boolean
+    [InlineData(null, false)]            // no is_confirmed at all
+    [InlineData("null", false)]
+    [InlineData("\"\"", false)]
+    [InlineData("\"false\"", false)]
+    [InlineData("false", false)]
+    [InlineData("\"0\"", false)]
+    [InlineData("\"1\"", false)]
+    [InlineData("1", false)]
+    [InlineData("\"no\"", false)]
+    [InlineData("\"yes\"", false)]
+    [InlineData("{}", false)]
+    public void Address_counts_only_when_is_confirmed_is_exactly_true(string? isConfirmedJson, bool counted)
+    {
+        var flag = isConfirmedJson is null ? "" : "," + "\"is_confirmed\":" + isConfirmedJson;
+        var account = TripItSignInDefinition.ParseAccount(
+            """{"Profile":{"@attributes":{"ref":"R1"},"ProfileEmailAddresses":{"ProfileEmailAddress":{"address":"owner@example.test" """
+            + flag + "}}}}");
+
+        Assert.NotNull(account);
+        Assert.Equal(counted, account.Emails.Contains("owner@example.test"));
     }
 
     [Fact]
