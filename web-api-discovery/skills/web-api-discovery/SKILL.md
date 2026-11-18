@@ -1089,8 +1089,8 @@ capture session found, prints none: there is nothing to report on.)
 | `complete` | Post-processing finished. | 0, 5, 6 or 7 -- the capture's own result (4 if the capture is refused as too small) | Carry on with the artifacts it names. |
 | `progressing` | The stop registered and something has moved recently. **`stop` does not return in this state -- it keeps waiting.** `status` reports it. | -- | **Wait.** If your shell cut `stop` off, nothing is lost: run it again and it goes on waiting, or poll `status`. |
 | `stalled` | The stop registered, and nothing has moved for longer than a capture of that size is allowed. | 1 | **Escalate.** Look at the recording process (its pid is in the JSON). Nothing was taken over or removed. |
-| `not-registered` | The recording process is running and has not taken up the stop within 60 seconds. The recording is still going. | 1 | **Check `status` again shortly**: the request stays in place, so the recording ends the moment that process next looks for it. If it never does, end it at its terminal (ENTER) or by closing its browser window. |
-| `not-processed` | The capture was cancelled (Ctrl+C, then `c`): the raw is kept and nothing else was run. | 0 | Nothing. |
+| `not-registered` | The recording process is running and has not taken up the stop within 60 seconds. The recording is still going. | 1 | **Check `status` again shortly**: the request stays in place, so the recording ends the moment that process next looks for it. If it never does, end it at its terminal (ENTER) or by closing its browser window. (`recording`, also exit 1, is the same thing when the request itself has gone -- something removed the STOP file. Run `stop` again to ask again.) |
+| `not-processed` | The capture was cancelled (Ctrl+C, then `c`): the raw is kept and nothing else was run. | 0 (4 if the capture is refused as too small) | Nothing. |
 | `recorder-gone` | The recording process has exited and left nothing usable (exit 4). When it left a recording, `stop` post-processes it itself and the state is `complete`. | 4 | Record again. |
 
 - **Running `stop` again does not start the clock again.** The state is read
@@ -1110,7 +1110,10 @@ capture session found, prints none: there is nothing to report on.)
   process wrote, or a file post-processing wrote. If the machine running `stop`
   slept through part of the wait, the allowance is counted again from when it
   woke -- its recording process slept too -- and `waitResumedUtc` says so;
-  `lastProgressUtc` does not move, because nothing did.
+  `lastProgressUtc` does not move, because nothing did. Only a `stop` that was
+  already waiting knows that. One started (or a `status` asked) after the
+  machine wakes sees only the silence and says `stalled` until the recording
+  process writes again; run it again then and it waits.
 - **Exit 1 is not a verdict on the capture.** Both early returns happen with the
   recording process still running and still owning the work. Exit 6 means what
   it says -- the scrub or the catalogue *failed* -- and is never returned for

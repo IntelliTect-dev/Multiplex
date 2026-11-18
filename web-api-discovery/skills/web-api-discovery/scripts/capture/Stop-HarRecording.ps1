@@ -90,8 +90,10 @@
         { "stop": "complete", "sessionDir": "...", "exitCode": 0, "ending": { ... } }
 
     "stop" is one of: complete, not-processed (the capture was cancelled; the
-    raw is kept), stalled, not-registered, and -- only with exit 4 --
-    recorder-gone (the recording process exited and left nothing usable).
+    raw is kept), stalled, not-registered, recording (exit 1: the stop request
+    was removed before the recording process took it up -- run this again),
+    and -- only with exit 4 -- recorder-gone (the recording process exited and
+    left nothing usable).
     "ending" carries the phase, when the stop registered, the last sign of
     progress (lastProgressUtc), how long the allowance has been running
     (quietSeconds) and how long it may (quietLimitSeconds). When the machine

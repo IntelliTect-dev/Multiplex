@@ -508,20 +508,21 @@ function waitingLine(verdict) {
 function stalledLines(verdict, session) {
     const saved = session && session.endedUtc;
     const since = ago(verdict, verdict.lastProgressUtc);
+    // With no usable time on disk there is no "since anything moved" to state,
+    // only how long the allowance ran -- and from where it was counted.
+    const counted = `this wait ${verdict.waitResumedUtc ? 'resumed' : 'began'} ${seconds(verdict.quietSeconds)} ago`;
     const lines = [
-        `capture-har: post-processing has STALLED -- ${since
-            ? `no sign of progress for ${since}.`
-            : `no sign of progress since this wait began ${seconds(verdict.quietSeconds)} ago.`}`,
+        `capture-har: post-processing has STALLED -- no sign of progress ${since ? `for ${since}` : `since ${counted}`}.`,
         `  The stop registered (${verdict.endedBy || 'ending'}, ${verdict.registeredUtc}); the last phase entered ` +
             `was ${phaseLabel(verdict)}.`,
         `  A capture of ${megabytes(verdict.captureBytes)} is allowed ${seconds(verdict.quietLimitSeconds)} ` +
             'between signs of progress.'
     ];
+    if (!since) {
+        lines.push('  No time on disk is usable against this clock (it may have been set back).');
+    }
     if (verdict.waitResumedUtc) {
         lines.push(`  The allowance was counted from ${verdict.waitResumedUtc}: ${INTERRUPTED} and resumed then.`);
-    } else if (!since) {
-        lines.push('  No time on disk is usable against this clock (it may have been set back), so the allowance ' +
-            'was counted from when this wait began.');
     }
     if (verdict.phase === PHASES.AI_CATALOGUE) {
         lines.push('  The AI catalogue pass prints nothing until it ends, so this may be a very long pass ' +

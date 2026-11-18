@@ -6012,7 +6012,7 @@ async function start(args) {
     // came from -- the same keys-only-when-relevant rule as `ai` above.
     const signInResult = signInWatcher.result();
     if (signInResult.source) session.signIn = signInResult;
-    writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+    writeSessionWhole(session);
 
     if (!summary.exists) {
         process.stderr.write(
@@ -6065,7 +6065,7 @@ async function start(args) {
         onPhase: (phase) => noteEndingPhase(session, phase)
     });
     captureEnding.notePhase(session, captureEnding.PHASES.COMPLETE);
-    writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
+    writeSessionWhole(session);
     reportPostProcess(session);
 
     // ONE line of machine output, on stdout, naming what this run produced.
@@ -6242,29 +6242,40 @@ function resolveSession(args) {
  * The recorder's half of what `stop` waits on. `by` is what ended the
  * recording, and is given once, when the ending is acknowledged.
  *
- * WRITTEN BESIDE IT, THEN RENAMED. These writes exist to be read by another
- * process WHILE this one works, and a plain rewrite truncates first: a `stop`
- * or `status` reading in that instant finds an empty session.json and reports
- * no session at all. A rename puts the whole record there or leaves the old
- * one. If the rename cannot be made, the plain rewrite still lands the record.
- *
  * NEVER FATAL. This is a note about the work, not the work: a session.json
  * that cannot be rewritten this instant must not cost a capture its scrub.
  */
 function noteEndingPhase(session, phase, by) {
     try {
         captureEnding.notePhase(session, phase, { by });
-        const file = path.join(session.sessionDir, SESSION_FILE);
-        const staged = `${file}.writing`;
-        try {
-            writeJson(staged, session);
-            renameWithRetry(staged, file);
-        } catch (e) {
-            try { fs.unlinkSync(staged); } catch (_) { /* nothing more to do */ }
-            writeJson(file, session);
-        }
+        writeSessionWhole(session);
     } catch (e) {
         log.verbose(`capture-har: could not record the ${phase} phase: ${e.message}`);
+    }
+}
+
+/**
+ * Rewrite session.json so that a reader never finds it half-written (#27).
+ *
+ * WRITTEN BESIDE IT, THEN RENAMED. From the moment a recording starts to end,
+ * session.json is read by another process WHILE this one works -- `stop` polls
+ * it five times a second -- and a plain rewrite truncates first: a `stop` or
+ * `status` reading in that instant finds an empty file and reports no session
+ * at all. A rename puts the whole record there or leaves the old one. If the
+ * rename cannot be made, the plain rewrite still lands the record.
+ *
+ * Used for every write from the ending onwards. The writes made while the
+ * recording is still running are left as they were: nothing polls for those.
+ */
+function writeSessionWhole(session) {
+    const file = path.join(session.sessionDir, SESSION_FILE);
+    const staged = `${file}.writing`;
+    try {
+        writeJson(staged, session);
+        renameWithRetry(staged, file);
+    } catch (e) {
+        try { fs.unlinkSync(staged); } catch (_) { /* nothing more to do */ }
+        writeJson(file, session);
     }
 }
 
