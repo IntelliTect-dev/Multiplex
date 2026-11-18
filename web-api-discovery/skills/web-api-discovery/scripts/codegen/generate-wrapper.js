@@ -878,11 +878,18 @@ function emitCsproj(opts) {
         '    <RepositoryUrl>' + xmlEscape(repo) + '</RepositoryUrl>',
         '    <PackageTags>' + xmlEscape(tags) + '</PackageTags>',
         '  </PropertyGroup>',
+        // ModelContextProtocol is the package a stdio server needs: it carries
+        // AddMcpServer / WithStdioServerTransport / WithToolsFromAssembly. Its
+        // version is the host's (src/Multiplex.Web uses the same line through
+        // ModelContextProtocol.AspNetCore), and tests/codegen-pipeline.Tests.ps1
+        // fails when the two drift. That SDK needs the Microsoft.Extensions
+        // abstractions at 10.0.14 or later, so the two pins below move with it:
+        // an older one fails restore with NU1605 (package downgrade).
         '  <ItemGroup>',
-        '    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />',
-        '    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />',
+        '    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />',
+        '    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />',
         '    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />',
-        '    <PackageReference Include="ModelContextProtocol" Version="0.4.1-preview.1" />',
+        '    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />',
         '    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />',
         '  </ItemGroup>',
         '</Project>',

@@ -419,6 +419,40 @@ Describe 'nuget-metadata' {
     }
 }
 
+Describe 'MCP SDK version (issue #17)' {
+    # The generated server and the host that Multiplex runs are on one SDK
+    # version line. The host's csproj is the source of truth: read from it, not
+    # restated here, so raising the host's version fails this until the
+    # generator follows.
+    BeforeAll {
+        $script:SdkOut = New-OutDir
+        Invoke-Gen -Har @($script:RestHar) -Out $script:SdkOut | Out-Null
+        $script:SdkCsproj = Get-Content (Join-Path $script:SdkOut 'src/ExampleEx/ExampleEx.csproj') -Raw
+        $hostCsproj = Join-Path $script:RepoRoot '..' 'src/Multiplex.Web/Multiplex.Web.csproj'
+        $script:HostCsprojFound = Test-Path -LiteralPath $hostCsproj
+        $script:HostMcpVersion = if ($script:HostCsprojFound) {
+            [regex]::Match((Get-Content -LiteralPath $hostCsproj -Raw),
+                'PackageReference\s+Include="ModelContextProtocol\.AspNetCore"\s+Version="([^"]+)"').Groups[1].Value
+        }
+    }
+    AfterAll {
+        if (Test-Path $script:SdkOut) { Remove-Item -Recurse -Force $script:SdkOut }
+    }
+    It 'the host declares an MCP SDK version to match' {
+        $script:HostCsprojFound | Should -BeTrue -Because 'the host csproj is where the version line is set'
+        $script:HostMcpVersion | Should -Match '^\d+\.\d+\.\d+' -Because 'a version that could not be read would match anything'
+    }
+    It 'the generated csproj pins ModelContextProtocol to the host''s version' {
+        $generated = [regex]::Match($script:SdkCsproj,
+            'PackageReference\s+Include="ModelContextProtocol"\s+Version="([^"]+)"').Groups[1].Value
+        $generated | Should -Be $script:HostMcpVersion
+    }
+    It 'references the package a stdio server needs, not the HTTP transport' {
+        $script:SdkCsproj | Should -Match 'Include="ModelContextProtocol"\s'
+        $script:SdkCsproj | Should -Not -Match 'ModelContextProtocol\.AspNetCore'
+    }
+}
+
 Describe 'top-level solution file (issue #65)' {
     BeforeAll {
         $script:SlnOut = New-OutDir
