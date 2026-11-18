@@ -60,6 +60,50 @@ Read by VALUE: `-Scrub:$false` records as today.
   asks `decideCatalogueRunner`, and refuses to replace a catalogue that
   carries described actions -- all unchanged.
 - Nothing is added to `capture-har.js`, `capture-store.js` or either wrapper.
+- **Both calls are made from the capture's own store root** -- the folder that
+  holds its `.har-captures` -- and the caller's directory is restored
+  afterwards, even on failure. The scrub and the leak gate find the operator
+  profile (`.har-profile.json`: the operator's own identifiers and the salt
+  every pseudonym is derived from) by walking up from the working directory.
+  A capture named by its directory from another repository was therefore
+  scrubbed AND gated with that other repository's profile: the operator's
+  identifiers went back into `scrubbed.har`, the gate passed it, and the run
+  reported "clean". (Independent review, Critical.) Run from the store root,
+  the profile beside the capture is the one found; if none is found from
+  there, the scrub's existing hard failure applies.
+
+### FOR THE OWNER: what changed meaning beyond the two switches
+
+The two switches are the approved surface. To make them usable without a third
+parameter, three existing things mean something new WHEN A PHASE SWITCH IS
+TYPED. Each is an option-level change and none has been approved; the pull
+request is a draft until they are.
+
+| What | Before | With `-Scrub` / `-Catalogue` |
+|---|---|---|
+| The positional first argument (`-Uri`) | the site to open; must be a URL | which existing capture: the site's URL, **or the capture's directory, or its `host/stamp` label** |
+| `-Describe` | required; what the new recording is for | **optional**; when typed, narrows the selection to the capture recorded with that description |
+| Exit codes at this door | 2 only for the `-Describe` refusal and what the recorder refuses | **2** also for an ambiguous selection, a wildcard, or a recording parameter with a phase switch; **3** (new here) for no capture, a capture not in the state the phase needs, or one outside a capture store; **7** from `-Scrub` alone on an advisory verdict |
+
+Also new, and in the same spirit: the nine recording parameters are REFUSED
+with a phase switch rather than ignored.
+
+**The alternative, if overloading is not wanted** -- neither part was built,
+because each is new command-line surface:
+
+1. **A separate capture-naming parameter**, shaped like `Remove-HarCapture`'s
+   `-Capture`: one capture by directory, by `host/stamp` label, or as an object
+   from `Get-HarCapture`. The positional argument would go back to meaning
+   only a URL (the site), `-Describe` would go back to meaning only "what this
+   recording is for" and would simply be refused with a phase switch, and the
+   selection rules below would move behind the new parameter unchanged.
+2. **A `scrub` command on `capture-har.js`**, exposing `postProcess`'s phase A
+   as its `catalogue` command exposes phase B. It would let the scrub phase
+   answer the recorder's own 0 / 6 / 7 instead of this door reading a findings
+   report, publish to the output path a capture was recorded with, place the
+   substitution tables for a capture recorded outside a repository, and keep
+   the sign-in rule in the one place that owns it. #48 already names it as
+   the honest shape.
 
 ### Which capture (existing parameters only)
 
@@ -85,18 +129,76 @@ newest is never picked silently.
 |---|---|
 | a recording-only parameter with a phase switch (`-OutputPath`, `-Profile`, `-Isolated`, `-Port`, `-Browser`, `-Attach`, `-AI`, `-AITools`, `-Pace`) | 2 |
 | several captures match | 2 |
+| the first argument is a wildcard (and not a URL with a scheme) | 2 |
 | no capture matches / `-Describe` matches none | 3 |
 | the only match is not recorder output (foreign / imported) | 3 |
+| the capture is not inside a capture store (no `.har-captures` above it) | 3 |
+| either phase, while the capture's recorder is still working on it (see below) | 3 |
 | `-Scrub` and the capture has no `raw.har` | 3 |
-| `-Scrub` and the capture signed in AND already has a `scrubbed.har` (see below) | 3 |
+| `-Scrub` and the capture signed in (or its `session.json` is unreadable) AND already has a `scrubbed.har` or a quarantined rejected scrub (see below) | 3 |
 | `-Catalogue` alone and the capture has no `scrubbed.har` (never scrubbed, or its only scrub was REJECTED) | 3 |
 
 A first argument that is not a URL with a scheme, a directory or a label that
-matches is refused (3) without being echoed: a URL pasted without `https://`
+matches is refused without being echoed: a URL pasted without `https://`
 lands there and may carry a token.
 
 2 is the recorder's usage-error code; 3 is its "no capture / nothing to
-catalogue" code. A phase's own exit code is passed through whole.
+catalogue" code. The catalogue's exit code is passed through whole.
+
+### What `-Scrub` alone answers
+
+The scrub wrapper's folder form answers 0 for an artifact it KEPT, whatever
+the gate said of it, and says the verdict only in a summary on the information
+stream. So `-Scrub -InformationAction SilentlyContinue` replaced a clean
+`scrubbed.har` with an advisory one, exited 0 and said nothing. (Independent
+review.) Now:
+
+| Verdict of the scrub that just ran | Exit | Said |
+|---|---|---|
+| clean | 0 | the wrapper's summary (information stream) |
+| ADVISORY (artifact kept) | **7** | a warning, on the warning stream |
+| values BLUNTED (gate passed) | 0 | a warning, on the warning stream |
+| rejected, or the scrub failed | the wrapper's code (1) | a warning |
+
+**How the verdict is read, without a new option and without parsing wording:**
+
+- ADVISORY from the gate's own findings report. `verify-scrub.js` writes
+  `scrub-findings.json` beside the file it judged whenever a run is not clean,
+  with the verdict in it as data (`"verdict": "advisory"`), before it prints
+  anything. The report's last-write time is noted before the run, so one this
+  run wrote is told from one an earlier run left -- the gate writes none on a
+  clean run and nothing removes an old one.
+- "Anything else that is not clean" by COMPARISON. The wrapper's status lines
+  are collected (its `6>&1`), then re-emitted under the caller's preference.
+  `Get-HarScrubVerdictLine` -- the module function that writes the wrapper's
+  verdict line -- is asked what it says for one clean capture; if the wrapper
+  did not say exactly that, the scrub did not come back clean, and what it did
+  say is passed on in the warning. No format is restated here, and a missing
+  line fails closed.
+
+7 is the recorder's existing code for "produced, with advisory findings", and
+what `-Scrub -Catalogue` already answers because the recorder asks the gate
+again. BLUNTED stays 0: the gate passed that artifact, and the recorder's own
+`catalogue` answers 0 for it too.
+
+### A capture its recorder still has
+
+A recorder writes `endedUtc` when the recording stops and `postProcess` only
+when its own scrub and catalogue -- the AI pass included -- have finished. In
+between, for minutes, it is writing the files a phase run would write.
+
+Both phases are refused (3) when `session.json` has no `postProcess` AND the
+recorder's process (`pid`) is still running. The second half is what makes it
+usable: a recorder KILLED during its AI pass leaves "ended, no postProcess"
+for good, and that capture is the one `-Catalogue` exists for. A flag-only
+rule would refuse it, and every cancelled capture, forever.
+
+The recorder's own liveness test is a bare "does that process id exist", and
+says of itself that it cannot tell a recorder from an unrelated process that
+inherited the id. Here that would refuse a capture for as long as a stranger
+ran, so one more thing is asked: a recorder is older than the session it
+opened, and a process that started after `startedUtc` is not it. When the ages
+cannot be compared, the process is taken to be the recorder.
 
 ### Output
 
@@ -116,13 +218,20 @@ else, so a later scrub removes them by field name only and cannot prove them
 gone. `postProcess` already warns about exactly this when it scrubs for a
 recorder that has exited.
 
-- No `scrubbed.har` yet: `-Scrub` warns and runs. There is nothing to lose.
+- Neither a `scrubbed.har` nor a quarantined rejected scrub: `-Scrub` warns
+  and runs. There is nothing to lose.
 - A `scrubbed.har` already there: `-Scrub` **refuses** (3). That file was
   checked against the values and its replacement cannot be, and `-Force` would
   overwrite it with nothing able to put it back. The way through is to move
   the file aside -- the same deliberate act the recorder asks for before it
   replaces a catalogue somebody worked on. (Review finding; the first cut
   warned in both cases.)
+- A quarantined REJECTED scrub (`scrubbed.rejected*.har`): `-Scrub` **refuses**
+  (3) as well. The gate that rejected it had the sign-in values and may have
+  rejected it because one survived; a scrub run now is gated without them, so
+  it could pass -- and publish as `scrubbed.har`, and let a catalogue be
+  derived from -- the very value that was refused. Moving the quarantined file
+  aside is the way through. (Independent review.)
 
 Asked as "not `none`" rather than as the recorder's list of sources, so a
 source added later fails closed.
@@ -184,14 +293,18 @@ would send the operator away from the cause.
 
 ## Known gaps (reported, not built -- each needs an owner decision)
 
-- `-Scrub` alone exits 0 on an ADVISORY verdict: the folder form of the scrub
-  wrapper answers 0/1 and says the verdict in its summary. Mapping 4 -> 7 here
-  would restate the recorder's exit mapping, which #48 rules out. `-Scrub
-  -Catalogue` does answer 7, because the recorder asks the gate again.
+- A BLUNTED scrub is warned about and still exits 0, from `-Scrub` alone and
+  from `-Scrub -Catalogue` (where the code is the recorder's). In a full
+  recording the same scrub ends 7. Raising it here would be this door adding
+  to the recorder's exit mapping.
 - The honest long-term shape for the scrub phase is a `scrub` command on
   `capture-har.js` exposing `postProcess`'s phase A (publish to the session's
   output path, 0/6/7, the sign-in-literals notice in one place). That is new
-  command-line surface and was not added.
+  command-line surface and was not added. See "For the owner", above.
+- Because the phases run from the store root, a place the recorder SUGGESTS
+  for a committed reference is in that folder's work tree, not in a linked
+  worktree the operator may be standing in. Nothing is written there; it is a
+  printed suggestion.
 - A capture recorded with `-OutputPath` keeps the artifacts it published
   there; the phases work in the capture's own directory and do not republish.
 - The sign-in rule is applied by `-Scrub` only. `Invoke-SanitizeHar <folder>
@@ -200,9 +313,16 @@ would send the operator away from the cause.
 - A capture recorded outside a git repository cannot be re-scrubbed until its
   folder is one (above). Making the folder form place the tables as the
   recorder does would change the scrub wrapper for every store run.
-- A capture whose recorder is still post-processing it is not detected:
-  only the recorder can say whether its driver is alive. The same race exists
-  for both wrappers run directly.
+- "Its recorder still has it" is told from the recorder's process. Not
+  covered: `Stop-HarRecording` post-processing a capture whose recorder
+  crashed runs in ANOTHER process, which `session.json` does not name, so a
+  phase run at that moment is not refused. Both wrappers, run directly, check
+  nothing at all.
+- `Find-HarCaptureCandidate` and `Remove-HarCapture` still resolve "which
+  capture" separately. They now share the store guard
+  (`Get-HarCaptureStoreRoot` / `Test-HarCaptureStorePath` in
+  `HarStoreBatch.psm1`) and the wildcard rule; one resolver for both is
+  deferred.
 - `session.json`'s `postProcess` record is not refreshed by either phase, so a
   failure recorded at capture time is still listed after a successful re-run.
 - `-WhatIf` is not offered on `Invoke-HarCapture` (existing guard); #48's
