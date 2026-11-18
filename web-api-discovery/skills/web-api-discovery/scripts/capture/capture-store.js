@@ -344,6 +344,11 @@ function describeCaptureDir(dir) {
             // recording still yields a raw.
             ended: Boolean(session && session.endedUtc),
             describe: (session && session.describe) || null,
+            // WHICH RUN MADE THIS, AND WHICH CAPTURE IT IS (issue #26). Null
+            // for a capture recorded before either was written -- carried as
+            // absent, never inferred from the stamp or the description, which
+            // are the two proxies that issue exists to stop relying on.
+            ...recordedIdentity(session),
             scrubbed: exists(path.join(dir, SCRUBBED_HAR)),
             rejected: hasRejectedScrub(dir),
             digest: exists(path.join(dir, DIGEST_FILE)),
@@ -410,6 +415,8 @@ function describeCaptureDir(dir) {
         // stamp is the only time this capture carries, and it is above.
         startedUtc: null,
         describe: described,
+        // No session.json, so nothing recorded a run or a capture id here.
+        ...recordedIdentity(null),
         scrubbed: false,
         rejected: false,
         digest: false,
@@ -430,6 +437,37 @@ function describeCaptureDir(dir) {
         // null are the honest answers, not "no failures".
         postProcessErrors: [],
         summaryParseError: null
+    };
+}
+
+/**
+ * Which capture this is and which run made it, as `session.json` recorded them
+ * (issue #26; `capture-run.js` is where they come from).
+ *
+ * `captureId` is one recorder invocation. `runId` is what every capture the
+ * same invoking session started has in common, and `runBasis` is how that
+ * session was recognised. All three are null for a capture recorded before
+ * they existed; `runId` alone is null when the recorder could not read its own
+ * process ancestry, which is a different fact and stays distinguishable.
+ *
+ * A NON-EMPTY STRING OR NOTHING. This file is read from disk and may have been
+ * hand-edited, so a number, an array or an empty string is not an identity --
+ * and passing one through would hand a caller something to compare against
+ * that equals things it should not.
+ *
+ * THE LINEAGE IS DELIBERATELY NOT CARRIED. `session.json` keeps the token of
+ * every ancestor so a wrong anchor stays recoverable, but this walk is what
+ * the listing and every bulk driver read, and a containment filter on a high
+ * ancestor matches every session on the machine.
+ */
+function recordedIdentity(session) {
+    const text = (value) => (typeof value === 'string' && value.length > 0 ? value : null);
+    const run = session && session.run && typeof session.run === 'object' ? session.run : null;
+    const runId = text(run && run.id);
+    return {
+        captureId: text(session && session.captureId),
+        runId,
+        runBasis: runId ? text(run.basis) : null
     };
 }
 

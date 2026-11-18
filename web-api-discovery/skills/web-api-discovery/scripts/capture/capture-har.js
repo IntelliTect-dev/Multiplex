@@ -346,6 +346,8 @@ const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js')
 // this exact enumeration -- with its classification of legacy and foreign
 // captures intact -- instead of growing a second notion of what a capture is.
 const captureStore = require(path.join(__dirname, 'capture-store.js'));
+// Which run made a capture, and the id of the capture itself (#26).
+const captureRun = require(path.join(__dirname, 'capture-run.js'));
 // One place recognises a file as a capture, and refuses it when it is not
 // one (issue #423).
 const harDocument = require(path.join(__dirname, '..', 'har', 'har-document.js'));
@@ -4967,6 +4969,13 @@ async function start(args) {
             'becomes a repository without the .gitignore written here.');
     }
 
+    // WHICH RUN THIS CAPTURE BELONGS TO (#26) -- asked now, answered later.
+    // Reading the process ancestry costs a subprocess on Windows, so it is
+    // started here, past every check that can refuse the run, and awaited where
+    // session.json is first written: by then a browser has been launched and
+    // the answer is waiting. It never rejects and never outlasts its own limit.
+    const runIdentity = captureRun.beginRunIdentity();
+
     // And the other half: an EXPLICIT --output-path into a committable
     // directory is warned about, never refused. See outputDestinationWarning.
     const outputWarning = outputDestinationWarning(paths);
@@ -5512,6 +5521,15 @@ async function start(args) {
         }
     });
 
+    // WHO MADE THIS, written with the first session.json and never changed
+    // (#26). `captureId` is this recorder invocation and nothing else; `run` is
+    // what every capture started by the same invoking session shares, or
+    // `{ id: null, reason }` when the ancestry could not be read. Nothing in
+    // the store said either before: stamps are start times, several sessions
+    // record at once, and no time window separates them. See capture-run.js.
+    session.captureId = captureRun.newCaptureId();
+    session.run = await runIdentity;
+
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
@@ -5823,6 +5841,10 @@ async function start(args) {
     process.stdout.write(JSON.stringify({
         capture: 'complete',
         sessionDir: paths.sessionDir,
+        // Which capture this was and which run it belongs to (#26), so the
+        // caller learns its own ids from its own recording, not from a listing.
+        captureId: session.captureId,
+        runId: session.run.id,
         outputPath: session.outputPath,
         cataloguePath: (session.postProcess.catalogue && session.postProcess.catalogue.path) || null,
         // How often the capture paused or was handed over, and for how long
@@ -6298,6 +6320,10 @@ function status(args) {
     const session = readJson(path.join(sessionDir, SESSION_FILE)) || {};
     process.stdout.write(JSON.stringify({
         sessionDir,
+        // Null for a capture recorded before either existed (#26): reported as
+        // absent, never filled in from the stamp or the description.
+        captureId: session.captureId || null,
+        runId: (session.run && session.run.id) || null,
         uri: session.uri,
         mode: session.mode,
         // Reported so an agent reading this does not close a browser that is not
