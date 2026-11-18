@@ -153,7 +153,8 @@ public sealed partial class ClientMetadataDocuments(
 
     /// <summary>
     /// Production connect callback: the document's host must resolve to a public address, so a client id
-    /// cannot make this server probe its own network (loopback, private, link-local, CGNAT/tailnet).
+    /// cannot make this server probe its own network (loopback, private, link-local, CGNAT/tailnet). The
+    /// handler uses no proxy, so this callback connects to the document's host itself.
     /// </summary>
     internal static async ValueTask<Stream> ConnectToPublicAddressAsync(SocketsHttpConnectionContext context, CancellationToken ct)
     {
@@ -187,23 +188,37 @@ public sealed partial class ClientMetadataDocuments(
         throw new HttpRequestException(HttpRequestError.ConnectionError, "No public address of the host accepted a connection.", last);
     }
 
+    /// <summary>
+    /// False for loopback, private, link-local, CGNAT/tailnet, multicast and reserved ranges, the
+    /// documentation and benchmarking ranges, and IPv6 prefixes that carry an IPv4 address (NAT64
+    /// 64:ff9b::/96 and 6to4 2002::/16), which could lead back into a private network.
+    /// </summary>
     internal static bool IsPublic(IPAddress address)
     {
         if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
         if (IPAddress.IsLoopback(address) || IPAddress.Any.Equals(address) || IPAddress.IPv6Any.Equals(address)) return false;
 
+        var b = address.GetAddressBytes();
         if (address.AddressFamily == AddressFamily.InterNetwork)
         {
-            var b = address.GetAddressBytes();
             return !(b[0] is 0 or 10 or >= 224
                 || (b[0] == 172 && b[1] is >= 16 and <= 31)
                 || (b[0] == 192 && b[1] == 168)
                 || (b[0] == 169 && b[1] == 254)
-                || (b[0] == 100 && b[1] is >= 64 and <= 127));
+                || (b[0] == 100 && b[1] is >= 64 and <= 127)
+                || (b[0] == 192 && b[1] == 0 && b[2] is 0 or 2)   // IETF protocol assignments; TEST-NET-1
+                || (b[0] == 198 && b[1] is 18 or 19)              // benchmarking
+                || (b[0] == 198 && b[1] == 51 && b[2] == 100)     // TEST-NET-2
+                || (b[0] == 203 && b[1] == 0 && b[2] == 113));    // TEST-NET-3
         }
 
-        return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast);
+        return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast
+            || b.AsSpan(0, 12).SequenceEqual(Nat64Prefix)
+            || (b[0] == 0x20 && b[1] == 0x02));
     }
+
+    /// <summary>The NAT64 well-known prefix 64:ff9b::/96 (RFC 6052).</summary>
+    private static ReadOnlySpan<byte> Nat64Prefix => [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0];
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Client metadata document {ClientId} {Reason}.")]
     private static partial void LogFetchFailed(ILogger logger, string clientId, string reason);

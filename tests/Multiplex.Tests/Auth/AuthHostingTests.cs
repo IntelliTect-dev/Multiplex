@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Multiplex.Web.Auth;
 using Multiplex.Web.Auth.Clients;
 
@@ -175,10 +177,43 @@ public class AuthHostingTests
     [InlineData("100.100.1.1", false)]
     [InlineData("::1", false)]
     [InlineData("fd7a:115c:a1e0::1", false)]
+    [InlineData("192.0.0.9", false)]
+    [InlineData("192.0.2.10", false)]
+    [InlineData("198.18.0.1", false)]
+    [InlineData("198.19.255.254", false)]
+    [InlineData("198.51.100.7", false)]
+    [InlineData("203.0.113.7", false)]
+    [InlineData("64:ff9b::a00:1", false)]
+    [InlineData("64:ff9b::808:808", false)]
+    [InlineData("2002:a00:1::1", false)]
+    [InlineData("2002:808:808::1", false)]
     [InlineData("8.8.8.8", true)]
+    [InlineData("192.0.1.1", true)]
+    [InlineData("198.17.255.255", true)]
+    [InlineData("198.20.0.1", true)]
+    [InlineData("203.0.114.1", true)]
     [InlineData("2606:4700::1111", true)]
+    [InlineData("2003::1", true)]
     public void MetadataDocumentFetch_OnlyConnectsToPublicAddresses(string address, bool allowed)
     {
         Assert.Equal(allowed, ClientMetadataDocuments.IsPublic(IPAddress.Parse(address)));
+    }
+
+    [Fact]
+    public void MetadataDocumentFetch_ConnectsDirectly_NeverThroughAProxy()
+    {
+        var services = new ServiceCollection().AddLogging();
+        services.AddMultiplexAuth(new ConfigurationBuilder().Build());
+        using var provider = services.BuildServiceProvider();
+
+        HttpMessageHandler handler = provider.GetRequiredService<IHttpMessageHandlerFactory>()
+            .CreateHandler(ClientMetadataDocuments.HttpClientName);
+        while (handler is DelegatingHandler delegating) handler = delegating.InnerHandler!;
+
+        // Through a proxy, the public-address check would see the proxy rather than the document's host.
+        var sockets = Assert.IsType<SocketsHttpHandler>(handler);
+        Assert.False(sockets.UseProxy);
+        Assert.False(sockets.AllowAutoRedirect);
+        Assert.NotNull(sockets.ConnectCallback);
     }
 }
