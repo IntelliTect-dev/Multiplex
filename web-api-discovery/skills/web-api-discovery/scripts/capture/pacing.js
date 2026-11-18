@@ -311,8 +311,11 @@ const marker = (re) => (ctx) => re.test(ctx.text);
 // to test against. Amazon's checkpoint is the exception: it is derived from a
 // capture.
 const INTERSTITIALS = [
-    { name: 'Cloudflare challenge', test: marker(
-        /window\._cf_chl_opt\b|[?&]__cf_chl_(?:f_tk|jschl_tk__)=|\/cdn-cgi\/challenge-platform\/(?:h\/[a-z]\/)?orchestrate\//i) },
+    // Its exact title counts too: unlike the challenge-platform scripts a
+    // Cloudflare site serves on every page, it names the interstitial itself.
+    { name: 'Cloudflare challenge', test: marker(new RegExp('<title>\\s*just a moment\\.\\.\\.\\s*</title>|' +
+        'window\\._cf_chl_opt\\b|[?&]__cf_chl_(?:f_tk|jschl_tk__)=|' +
+        '/cdn-cgi/challenge-platform/(?:h/[a-z]/)?orchestrate/', 'i')) },
     { name: 'Cloudflare block', test: marker(
         /<title>\s*attention required! \| cloudflare\s*<\/title>|\bid\s*=\s*["']?cf-error-details\b/i) },
     // The block page hands its parameters to the CAPTCHA in a `dd` object.
@@ -350,12 +353,10 @@ const BLOCK_RESPONSES = [
 const BOT_VENDOR_HEADERS = ['x-datadome'];
 
 // WORDING an ordinary page can use too: a sign-up form's "verify you are
-// human", a help page's "are you a robot?", a title naming a CAPTCHA game, an
-// app shell titled "Just a moment...". It is never a challenge on its own. It
-// counts only on a refusal -- an HTML 403 or 503 -- where the site has already
-// said no and the wording says why.
+// human", a help page's "are you a robot?", a title naming a CAPTCHA game. It
+// is never a challenge on its own. It counts only on a refusal -- an HTML 403
+// or 503 -- where the site has already said no and the wording says why.
 const REFUSAL_WORDING = [
-    { name: 'a "Just a moment..." page', re: /<title>\s*just a moment\.\.\.\s*<\/title>/i },
     { name: 'a "Press & Hold" page', re: /press (?:&amp;|&) hold/i },
     { name: 'an "unusual traffic" page', re: /unusual traffic from your (?:computer|network)|are you a robot\?/i },
     { name: 'a "verify you are human" page', re: /verify (?:that )?you are (?:a )?human/i },

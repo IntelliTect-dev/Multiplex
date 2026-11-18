@@ -385,6 +385,9 @@ test('C3: challenge interstitials are recognised by markers only they carry', ()
     assert.strictEqual(doc('<html><title>Sign in</title><form><input type=password></form>' +
         '<script src="https://www.google.com/recaptcha/api.js?render=abc"></script></html>'), null,
     'reCAPTCHA v3 runs invisibly on ordinary sign-in pages; handing over on it would end every sign-in');
+    // Cloudflare's exact title is its own interstitial's, even with the script cut away.
+    const titled = doc('<html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>');
+    assert.ok(titled && titled.kind === 'challenge', `"Just a moment..." answering 200: ${JSON.stringify(titled)}`);
     // A PAGE THAT LOADED is judged inside a much tighter bound than a refusal.
     const padded = VENDOR_PAGES.Cloudflare.replace('</body>',
         `<div>${'x'.repeat(pacing.INTERSTITIAL_BODY_MAX)}</div></body>`);
@@ -419,8 +422,10 @@ test('C6: an ordinary page carrying a vendor\'s tag, or the wording, is not a ch
             '<p>If a page says it detected unusual traffic from your computer network, try again later.</p></html>',
         'a help page about Press & Hold': '<html><title>Help</title><p>If you see Press &amp; Hold, hold the button.</p></html>',
         'a title naming a CAPTCHA': '<html><head><title>How our CAPTCHA works</title></head><body><p>...</p></body></html>',
-        'an app shell titled "Just a moment..."': '<html><head><title>Just a moment...</title></head>' +
-            '<body><div id="root"></div><script src="/static/js/main.js"></script></body></html>',
+        'Akamai Bot Manager\'s sensor': '<html><head><title>Flights</title>' +
+            '<script type="text/javascript" src="/akam/13/7a3c8f2d" defer></script></head><body><main></main>' +
+            '<noscript><img src="/akam/13/pixel_7a3c8f2d?a=dD0x" style="visibility: hidden; position: absolute;" />' +
+            '</noscript></body></html>',
         'an Amazon page that says "I am human" and links to /checkpoint': '<html><head><title>Amazon.com</title></head>' +
             '<body><p>Seen "I am human"? <a href="/checkpoint/continue">Read about our checks</a>.</p>' +
             storefrontFiller(40 * 1024) + '</body></html>'
