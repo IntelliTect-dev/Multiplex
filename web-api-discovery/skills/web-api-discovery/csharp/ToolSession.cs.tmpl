@@ -66,6 +66,7 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
     private readonly Lock _gate = new();
     private {{ProjectName}}Client? _client;
     private SessionCredentials? _credentials;
+    private string[] _sessionValues = [];
     private bool _readStoreAgain;
     private bool _disposed;
 
@@ -94,7 +95,7 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
     public async Task<T> RunAsync<T>(Func<{{ProjectName}}Client, Task<T>> call)
     {
         ArgumentNullException.ThrowIfNull(call);
-        var client = GetClient();
+        var client = GetClient(out var sessionValues);
         try
         {
             return await call(client).ConfigureAwait(false);
@@ -104,15 +105,16 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
             // The saved session no longer works. Have the next call read the
             // store again, in case someone has signed in since.
             ReadStoreAgainNextTime();
-            throw new McpException(ex.Message + ReadAgain, ex);
+            throw new McpException(ForTheModel(ex.Message, sessionValues) + ReadAgain, ex);
         }
         catch (HttpRequestException ex)
         {
             // Throttled, blocked, or an error status: the client's message
             // already says which, in the site's own terms. Those terms include
-            // the start of what the site answered, so a cookie echoed into an
-            // error page is taken out before the model is shown it.
-            var said = s_cookieText.Replace(ex.Message, "[cookie removed]");
+            // the start of what the site answered, so the session's own values
+            // and anything that looks like a cookie are taken out before the
+            // model is shown it.
+            var said = ForTheModel(ex.Message, sessionValues);
             if (MayBeAboutTheSession(ex.StatusCode))
             {
                 // A site also says "that session is no good" with a redirect to
@@ -129,7 +131,7 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
             // have been acted on all the same; say so, or the model resends it.
             // (A call the caller cancelled is an OperationCanceledException and
             // is not caught here: the caller knows what it did.)
-            throw new McpException(ex.Message + NoAnswerInTime, ex);
+            throw new McpException(ForTheModel(ex.Message, sessionValues) + NoAnswerInTime, ex);
         }
         catch (JsonException ex)
         {
@@ -148,13 +150,52 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
         => status is { } code
             && ((int)code is >= 300 and < 400 || code == HttpStatusCode.Forbidden || (int)code is 419 or 440);
 
-    private {{ProjectName}}Client GetClient()
+    /// <summary>
+    /// Text from a failed call, made fit to show a model. First the session's
+    /// own cookie values and CSRF token are taken out wherever they appear: the
+    /// session knows them, so it does not have to recognise the shape they are
+    /// echoed in (a JSON member, a table of server variables, a query string).
+    /// Then anything that looks like a Cookie header, for a cookie that is not
+    /// this session's.
+    /// </summary>
+    private static string ForTheModel(string text, string[] sessionValues)
+    {
+        foreach (var value in sessionValues)
+        {
+            text = text.Replace(value, "[session value removed]", StringComparison.Ordinal);
+        }
+        return s_cookieText.Replace(text, "[cookie removed]");
+    }
+
+    /// <summary>
+    /// What a session holds that must not be repeated: the value of each cookie
+    /// and the CSRF token. Longest first, so a value that contains another is
+    /// taken out whole. A value under six characters is left alone: "1" or
+    /// "dark" cannot be told from ordinary text, and removing it everywhere
+    /// would mangle the message without protecting anything.
+    /// </summary>
+    private static string[] SessionValuesOf(SessionCredentials credentials)
+    {
+        var values = new List<string> { credentials.CsrfToken ?? string.Empty };
+        foreach (var pair in (credentials.Cookie ?? string.Empty).Split(';'))
+        {
+            var equals = pair.IndexOf('=');
+            if (equals >= 0)
+            {
+                values.Add(pair[(equals + 1)..].Trim().Trim('"'));
+            }
+        }
+        return values.Where(value => value.Length >= 6).Distinct().OrderByDescending(value => value.Length).ToArray();
+    }
+
+    private {{ProjectName}}Client GetClient(out string[] sessionValues)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_client is not null && !_readStoreAgain)
             {
+                sessionValues = _sessionValues;
                 return _client;
             }
             if (!_store.TryLoad(out var credentials))
@@ -180,8 +221,10 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
                 // which the runtime closes, and one is left behind per sign-in.
                 _client = _createClient(credentials);
                 _credentials = credentials;
+                _sessionValues = SessionValuesOf(credentials);
             }
             _readStoreAgain = false;
+            sessionValues = _sessionValues;
             return _client;
         }
     }
