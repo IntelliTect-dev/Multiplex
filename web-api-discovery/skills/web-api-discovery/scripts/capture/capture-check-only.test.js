@@ -53,7 +53,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const gates = require(path.join(__dirname, 'capture-start-gates.test-support.js'));
 
@@ -92,11 +92,22 @@ function dir(...parts) {
  * refusal, from leaving anything on the machine running the suite.
  *
  * `state.profile` is the operator profile: absent when false, the scaffold's
- * own shape by default, or the object given.
+ * own shape by default, or the object given. `state.repo` makes the folder a
+ * git repository with one commit and the capture store ignored -- the shape a
+ * consuming project has.
  *
  * The one thing outside the root is the agent, which every machine that has one
  * shares (see `gateVars`). It is an executable on PATH and nothing writes there.
  */
+function makeRepository(cwd) {
+    const git = (...args) => execFileSync('git', args, { cwd, stdio: 'ignore', windowsHide: true });
+    git('init', '--quiet', '-b', 'main');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), '.har-captures/\n.har-profile.json\n', 'utf8');
+    git('add', '-A');
+    git('-c', 'user.email=fixture@example.invalid', '-c', 'user.name=fixture',
+        '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'init');
+}
+
 let sharedAgent = null;
 function machine(name, state) {
     const want = Object.assign({ profile: true }, state || {});
@@ -112,6 +123,7 @@ function machine(name, state) {
     if (want.profile) {
         gates.plantOperatorProfile(cwd, want.profile === true ? undefined : want.profile);
     }
+    if (want.repo) makeRepository(cwd);
     const env = gates.childEnv(Object.assign({
         TEMP: tmp, TMP: tmp, TMPDIR: tmp,
         HOME: home, USERPROFILE: home,
@@ -267,7 +279,8 @@ function isAQuestion(spawned) {
     const line = [spawned.command, ...spawned.args].join(' ');
     if (base === 'git') {
         const sub = spawned.args.filter((a) => !a.startsWith('-'))[0];
-        return READ_ONLY_GIT.has(sub);
+        // `git config` reads only when it is asked to GET; anything else sets.
+        return READ_ONLY_GIT.has(sub) || (sub === 'config' && spawned.args.includes('--get'));
     }
     // "Is there an agent I can run" -- the same probe the real start makes.
     if (base === 'claude') return spawned.args.join(' ') === '--version';
@@ -561,6 +574,12 @@ test('C12: the check writes nothing, starts nothing but its own questions, and c
         { what: '--attach', state: {}, args: ['--attach', '9222'] },
         { what: '--ai', state: { agent: true }, args: ['--ai'], asks: [/claude(\.exe)? --version$/] },
         { what: 'an explicit --output-path', state: {}, args: ['--output-path', 'reference'] },
+        // INSIDE A REPOSITORY the recorder asks git a good deal more -- where
+        // the main working tree is, which branch, whether a destination is
+        // ignored -- and every one of those has to be a question too.
+        { what: 'inside a repository', state: { repo: true }, args: [] },
+        { what: 'inside a repository, with an explicit --output-path',
+            state: { repo: true }, args: ['--output-path', 'reference'] },
         { what: 'a failing check: no module, no profile, no agent',
             state: { driver: false, profile: false, agent: false }, args: ['--ai'],
             asks: [/claude(\.exe)? --version$/, /npm root -g/] },
