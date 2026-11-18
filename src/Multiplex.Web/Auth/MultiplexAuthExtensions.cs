@@ -65,6 +65,9 @@ public static class MultiplexAuthExtensions
             {
                 AllowAutoRedirect = false,
                 UseCookies = false,
+                // A proxy would make the connection, so the public-address check would judge the proxy
+                // rather than the document's host.
+                UseProxy = false,
                 AutomaticDecompression = DecompressionMethods.All,
                 ConnectTimeout = TimeSpan.FromSeconds(5),
                 ConnectCallback = ClientMetadataDocuments.ConnectToPublicAddressAsync,
