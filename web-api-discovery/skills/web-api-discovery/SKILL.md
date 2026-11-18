@@ -317,7 +317,22 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   `Remove-HarCapture` also takes. The run **says which capture it selected**
   -- label, description and directory -- before it does anything. Anything
   else -- a URL pasted without `https://`, say -- is refused without being
-  echoed, because it may carry a token.
+  echoed, because it may carry a token. A wildcard is refused by its
+  spelling, and a directory has to be inside a capture store (under a
+  `.har-captures` directory).
+* **The scrub and the leak gate always use the operator profile beside the
+  capture.** Both phases run from the folder that holds the capture's
+  `.har-captures`, wherever the command was typed, so the `.har-profile.json`
+  found from there -- the operator's own identifiers, and the salt every
+  pseudonym is derived from -- is the one that applies. Naming a capture by
+  its directory from another repository does not scrub it with that other
+  repository's profile. You are returned to the directory you ran it from.
+* **A capture its recorder is still working on is refused.** A recorder goes
+  on writing `scrubbed.har`, the digest and the catalogue for minutes after a
+  recording stops; while its process is alive and it has not recorded that it
+  finished, both phases are refused. A capture whose recorder was killed
+  midway -- during the AI pass, say -- is not: that is the case `-Catalogue`
+  is for.
 * **A site recorded more than once is refused, with the list.** It is never
   resolved to "the newest": several sessions record into one store. Paste a
   label from the list, or add `-Describe` -- with a phase switch it is not
@@ -341,10 +356,13 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   The values it filled were handed to the scrub at recording time and exist
   nowhere else, so a later scrub removes them by field name and cannot prove
   them gone. If that capture already has a `scrubbed.har`, `-Scrub` **refuses
-  to replace it**: move the file aside to say you mean it. If it has none,
-  the scrub runs with a warning -- check the result before sharing it. A
-  capture whose `session.json` cannot be read is treated the same way: that
-  file is the only record of whether the recorder signed in.
+  to replace it**: move the file aside to say you mean it. If its scrub was
+  **rejected** and quarantined, `-Scrub` refuses that too: the gate that
+  rejected it could see the sign-in values and a new one cannot, so a re-scrub
+  could pass the very value that was refused. With neither file there, the
+  scrub runs with a warning -- check the result before sharing it. A capture
+  whose `session.json` cannot be read is treated the same way: that file is
+  the only record of whether the recorder signed in.
 * **A capture recorded outside a git repository cannot be re-scrubbed until
   the folder is one.** The recorder placed that capture's substitution tables
   itself; the scrub re-entry point writes them only where git confirms they
@@ -359,14 +377,19 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   phases do not republish.
 * **They are the existing re-entry points, not a second pipeline.** `-Scrub`
   is `Invoke-SanitizeHar` pointed at that one capture's directory, and
-  `-Catalogue` is the recorder's `catalogue` command. The gate, the quarantine
-  and the exit codes are theirs: `-Scrub` alone answers 0 or 1 (an ADVISORY
-  verdict is said in its summary and is still 0), and `-Catalogue` answers the
-  recorder's codes -- 7 for a catalogue produced over ADVISORY findings.
+  `-Catalogue` is the recorder's `catalogue` command. The gate and the
+  quarantine are theirs, and `-Catalogue` answers the recorder's own exit
+  codes -- 7 for a catalogue produced over ADVISORY findings.
+* **`-Scrub` alone never ends quietly on a verdict that is not clean.** It
+  answers **0** for a clean scrub, **7** when the gate kept the artifact with
+  ADVISORY findings, and the scrub's own non-zero code when it failed or was
+  rejected. An ADVISORY verdict, and a scrub in which values were BLUNTED
+  (exit 0: the gate passed it), are each said on the **warning** stream, so
+  `-InformationAction SilentlyContinue` does not hide them.
 
-Exit codes of a refusal: **2** when the invocation names several captures or
-carries a recording parameter; **3** when no capture matches or the one that
-does is not in the state the phase needs.
+Exit codes of a refusal: **2** when the invocation names several captures, is
+a wildcard, or carries a recording parameter; **3** when no capture matches or
+the one that does is not in the state the phase needs.
 
 ### Processing a STORE: point an entry point at a folder
 
