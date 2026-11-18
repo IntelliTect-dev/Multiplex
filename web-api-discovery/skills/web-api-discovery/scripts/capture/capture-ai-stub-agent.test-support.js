@@ -116,6 +116,14 @@ childProcess.spawnSync = function spawnSync(command, args, options) {
     return realSpawnSync.call(this, command, args, options);
 };
 
+// THE PHONE ON THIS PC. The product's phone view listens only on a tailnet
+// address; a test that stands Tailscale up on LOOPBACK (above) switches
+// loopback on in-process -- here, in the preload, which only a test loads.
+// Required AFTER spawnSync is wrapped, so mirror.js takes the stub.
+if (require.main !== module && process.env.HAR_STUB_TAILSCALE_JSON) {
+    require(path.join(__dirname, 'mirror.js')).allowLoopbackForTests(true);
+}
+
 // ---------------------------------------------------------------------------
 // The stub agent itself
 // ---------------------------------------------------------------------------

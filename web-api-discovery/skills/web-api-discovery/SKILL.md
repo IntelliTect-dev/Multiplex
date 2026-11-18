@@ -847,14 +847,20 @@ not sent). Then the browser is yours, still open and still recording:
   done, continue** and **End the capture**. Whichever you use first, here or
   there, wins.
 - **The phone view is private by construction.** It listens only on this PC's
-  Tailscale IPv4 address, read at run time from `tailscale status --json` --
-  never on every interface, never on a LAN address -- so only devices on your
-  own tailnet can reach it. The link carries a long random token and is good
-  for that hand-over only; anything without it gets a bare 404. **One browser
-  at a time**: the first to start watching holds the view, and another gets 404
-  while it is connected -- so a link fetched by something that is not a browser
-  (an AI session reading it, a link preview) locks nobody out, and if an in-app
-  browser opened it first you can switch to Chrome once that one is closed.
+  Tailscale IPv4 address, read at run time from `tailscale status --json`, and
+  only if that address is a tailnet one (`100.64.0.0/10`) -- never on every
+  interface, never on a LAN address or loopback, whatever the CLI reports -- so
+  only devices on your own tailnet can reach it. The link carries a long random
+  token and is **single-use**: the first browser to open it is given the one
+  cookie the view issues (random, HttpOnly, SameSite=Strict) and the link is
+  spent. Anything else holding the link -- a transcript, a log, a link preview
+  -- gets a bare 404, as does every request without that cookie, so **one
+  browser** holds the view for the whole hand-over. Open the link once, in the
+  browser you mean to use; that browser may reload the page and reconnect.
+  `HAR_CAPTURE_TAILSCALE` is a **test hook**: it names the tailscale CLI outright
+  (the tests point it at one that is not there, so no test touches a real
+  tailnet). It changes where the address is read from, never which addresses
+  are accepted.
   The link is never written to `session.json` or the agent's log. It is plain HTTP inside the tailnet (WireGuard
   encrypts it end to end); `tailscale serve` is not used, because it writes
   persistent tailnet configuration. Without Tailscale installed and running,

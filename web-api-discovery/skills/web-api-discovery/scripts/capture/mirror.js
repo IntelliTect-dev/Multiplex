@@ -15,18 +15,20 @@
  * PRIVATE BY CONSTRUCTION.
  *   - It listens on ONE address: this PC's Tailscale address, read at run time
  *     from `tailscale status --json` (findTailnetAddress). Never a wildcard,
- *     never a LAN interface: only devices on the owner's own tailnet can even
+ *     never a LAN interface, never loopback -- ENFORCED, not assumed: an
+ *     address outside the tailnet's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48)
+ *     is refused by findTailnetAddress and again by startMirror, whatever the
+ *     CLI that answered said. Only devices on the owner's own tailnet can even
  *     open a connection. Without Tailscale there is no phone view, and the
  *     hand-over is the PC-only one it always was.
- *   - The link carries a long random token, and is good for this hand-over
- *     only. ONE BROWSER AT A TIME: each browser that opens the page gets its
- *     own HttpOnly, SameSite cookie, and the first to start watching the live
- *     view holds it; any other browser's stream or input is a bare 404 while
- *     that one is connected, and so is every other path. Claimed on the live
- *     stream rather than on the first page load, so a link fetched by
- *     something that is not a browser (an AI session reading it, a link
- *     preview) does not lock the person out -- and a person whose in-app
- *     browser opened it first can switch to Chrome once that one is closed.
+ *   - The link carries a long random token, and is SINGLE-USE. The first
+ *     browser to open it is given the one cookie this server issues -- random,
+ *     HttpOnly, SameSite=Strict -- and the token is spent: from then on the
+ *     page, the live stream and input all need that cookie, and anything
+ *     without it (a second holder of the link: a transcript, a log, a link
+ *     preview) is a bare 404, as is every other path. So ONE BROWSER AT A TIME
+ *     holds for the whole hand-over, and the cookie is a credential, not a
+ *     label. The browser holding it may reload and reconnect.
  *   - `tailscale serve` is deliberately not used: it writes persistent
  *     configuration to the tailnet node. The tailnet is already encrypted end
  *     to end (WireGuard), so the page is plain HTTP on the tailnet address.
@@ -64,6 +66,9 @@ const FRAME_QUALITY = 60;
 const FRAME_MAX_WIDTH = 1280;
 const FRAME_MAX_HEIGHT = 1600;
 const TAILSCALE_TIMEOUT_MS = 5000;
+// How many live streams the one browser holding the view may have open: a
+// phone that reconnects keeps its newest few, and the oldest are ended.
+const MAX_STREAMS = 3;
 
 // The only keys the phone may press, as CDP describes them.
 const KEYS = Object.freeze({
@@ -82,7 +87,46 @@ const KEYS = Object.freeze({
 // Where: this PC's Tailscale address
 // ---------------------------------------------------------------------------
 
-/** Where the tailscale CLI may be, in the order tried. */
+// The addresses Tailscale gives a node: 100.64.0.0/10 (IPv4, the CGNAT range)
+// and fd7a:115c:a1e0::/48 (IPv6). Nothing outside them is a tailnet address.
+const TAILNET = new net.BlockList();
+TAILNET.addSubnet('100.64.0.0', 10, 'ipv4');
+TAILNET.addSubnet('fd7a:115c:a1e0::', 48, 'ipv6');
+const LOOPBACK = new net.BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK.addAddress('::1', 'ipv6');
+
+function familyOf(ip) {
+    const v = net.isIP(String(ip || ''));
+    return v === 4 ? 'ipv4' : v === 6 ? 'ipv6' : null;
+}
+
+/** Is this one of the addresses Tailscale gives a node? */
+function isTailnetAddress(ip) {
+    const family = familyOf(ip);
+    return !!family && TAILNET.check(String(ip), family);
+}
+
+// TEST-ONLY: a test plays the phone on THIS PC, so its phone view must listen
+// on loopback. Switched on in-process by test code only -- mirror.test.js, and
+// the test preload that stands in for the tailscale CLI -- and reached by no
+// flag, no argument and no environment variable of the product.
+let loopbackForTests = false;
+function allowLoopbackForTests(on = true) { loopbackForTests = !!on; }
+
+/** May the phone view listen here? A tailnet address; loopback only for a test. */
+function listenable(ip) {
+    const family = familyOf(ip);
+    if (!family) return false;
+    return isTailnetAddress(ip) || (loopbackForTests && LOOPBACK.check(String(ip), family));
+}
+
+/**
+ * Where the tailscale CLI may be, in the order tried. HAR_CAPTURE_TAILSCALE
+ * names it outright -- a hook for tests, which point it at a CLI that is not
+ * there so no test touches the PC's real tailnet. Whatever answers, only a
+ * tailnet address is ever used (findTailnetAddress).
+ */
 function tailscaleCandidates(env = process.env, platform = process.platform) {
     if (env.HAR_CAPTURE_TAILSCALE) return [env.HAR_CAPTURE_TAILSCALE];
     const list = ['tailscale'];
@@ -102,7 +146,11 @@ function tailscaleCandidates(env = process.env, platform = process.platform) {
  * is the address the tailnet routes to this PC; the IPv4 one is taken because
  * every phone resolves it.
  *
- * `opts.env` (HAR_CAPTURE_TAILSCALE names the CLI when it is somewhere else),
+ * ONLY A TAILNET ADDRESS IS EVER RETURNED. Whatever answered -- the real CLI,
+ * a stand-in on PATH, a misconfigured one -- an address outside 100.64.0.0/10
+ * (a LAN address, loopback, a wildcard) is refused, and the reason names it.
+ *
+ * `opts.env` (HAR_CAPTURE_TAILSCALE, a test hook, names the CLI outright),
  * `opts.run(exe, args)` and `opts.platform` are injectable for tests.
  *
  * @returns {{address: string} | {address: null, reason: string}}
@@ -131,16 +179,25 @@ function findTailnetAddress(opts = {}) {
         return { address: null, reason: `Tailscale is not connected on this PC (it says ${doc.BackendState || 'nothing'})` };
     }
     const ips = (doc.Self && Array.isArray(doc.Self.TailscaleIPs)) ? doc.Self.TailscaleIPs : [];
-    const v4 = ips.find((ip) => net.isIPv4(String(ip)));
-    if (!v4) return { address: null, reason: 'Tailscale has no IPv4 address for this PC' };
+    const v4s = ips.map(String).filter((ip) => net.isIPv4(ip));
+    if (!v4s.length) return { address: null, reason: 'Tailscale has no IPv4 address for this PC' };
+    const v4 = v4s.find(listenable);
+    if (!v4) {
+        return { address: null, reason: `Tailscale reported ${v4s[0]} for this PC, which is not a tailnet address ` +
+            '(100.64.0.0/10), and the phone view listens only on the tailnet' };
+    }
     return { address: v4 };
 }
 
-/** A specific address to listen on -- never a wildcard, never a name. */
+/**
+ * Only a tailnet address -- never a wildcard, a name, a LAN address or
+ * loopback (that one for a test only). Checked by range, so no spelling of
+ * "every interface" ('0.0.0.0', '::', '0:0:0:0:0:0:0:0') gets through.
+ */
 function assertBindable(host) {
-    if (!net.isIP(String(host || ''))) throw new Error(`the phone view needs an IP address to listen on, not '${host}'`);
-    if (host === '0.0.0.0' || host === '::' || host === '::0') {
-        throw new Error('the phone view never listens on every interface');
+    if (!listenable(host)) {
+        throw new Error('the phone view listens only on this PC\'s Tailscale address (100.64.0.0/10 or ' +
+            `fd7a:115c:a1e0::/48), not '${host}'`);
     }
 }
 
@@ -270,10 +327,18 @@ function notFound(res) {
  */
 async function startMirror(opts) {
     const host = opts.host;
-    assertBindable(host);
     const cdp = opts.cdp;
+    try {
+        assertBindable(host);
+    } catch (e) {
+        // It owns the CDP session it was handed, started or not.
+        if (cdp && typeof cdp.detach === 'function') await Promise.resolve(cdp.detach()).catch(() => {});
+        throw e;
+    }
     const token = opts.token || newSecret();
     const prefix = `/m/${token}/`;
+    // THE ONE COOKIE. Null until the first browser opens the link; from then
+    // on, the link is spent and this is the only way in.
     let claim = null;
     let status = Object.assign({ state: 'handed-over', text: 'The capture is handed over to you.' }, opts.status || {});
     let lastFrame = null;
@@ -295,29 +360,7 @@ async function startMirror(opts) {
         }
     };
 
-    // The tab on top, so the browser renders it and the screencast has frames.
-    await Promise.resolve(cdp.send('Page.bringToFront')).catch(() => {});
-    const onFrame = (params) => {
-        if (!params) return;
-        void Promise.resolve(cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId })).catch(() => {});
-        if (closed) return;
-        const meta = params.metadata || {};
-        if (meta.deviceWidth > 0 && meta.deviceHeight > 0) size = { w: meta.deviceWidth, h: meta.deviceHeight };
-        lastFrame = { d: params.data, w: size.w, h: size.h };
-        for (const c of clients) { if (c.busy) c.stale = true; else sendFrame(c); }
-    };
-    cdp.on('Page.screencastFrame', onFrame);
-    await cdp.send('Page.startScreencast', {
-        format: 'jpeg', quality: FRAME_QUALITY, maxWidth: FRAME_MAX_WIDTH, maxHeight: FRAME_MAX_HEIGHT, everyNthFrame: 1
-    });
-
-    const claimed = (req) => !!claim && sameSecret(cookieValue(req, 'hm'), claim);
-    const browserOf = (req) => {
-        const id = cookieValue(req, 'hm');
-        return id && /^[A-Za-z0-9_-]{43}$/.test(id) ? id : null;
-    };
-    // Whether the browser holding the view still has it open.
-    const claimantConnected = () => [...clients].some((c) => sameSecret(c.id, claim));
+    const holder = (req) => !!claim && sameSecret(cookieValue(req, 'hm'), claim);
 
     const server = http.createServer((req, res) => {
         let url;
@@ -330,10 +373,14 @@ async function startMirror(opts) {
         }
         const rest = p.slice(prefix.length);
         if (req.method === 'GET' && rest === '') {
-            // Every browser that opens the page gets its own identity; which
-            // one holds the view is decided when it starts watching (below).
-            if (!browserOf(req)) {
-                res.setHeader('set-cookie', `hm=${newSecret()}; Path=${prefix}; HttpOnly; SameSite=Strict`);
+            // SINGLE-USE. The first browser to open the link is given the one
+            // cookie, and the link is spent; the browser holding it may reload.
+            if (!claim) {
+                claim = newSecret();
+                res.setHeader('set-cookie', `hm=${claim}; Path=${prefix}; HttpOnly; SameSite=Strict`);
+            } else if (!holder(req)) {
+                notFound(res);
+                return;
             }
             const nonce = crypto.randomBytes(16).toString('base64');
             res.writeHead(200, {
@@ -349,15 +396,8 @@ async function startMirror(opts) {
             res.end(phonePage(nonce));
             return;
         }
-        if (req.method === 'GET' && rest === 'events') {
-            // ONE BROWSER AT A TIME. The first to watch holds the view; another
-            // may take it only once that one has gone.
-            const id = browserOf(req);
-            if (!id) { notFound(res); return; }
-            if (claim && !sameSecret(id, claim) && claimantConnected()) { notFound(res); return; }
-            claim = id;
-        }
-        if (!claimed(req)) { notFound(res); return; }
+        // Everything else is the browser holding the cookie, or nobody.
+        if (!holder(req)) { notFound(res); return; }
         if (req.method === 'GET' && rest === 'events') {
             res.writeHead(200, {
                 'content-type': 'text/event-stream; charset=utf-8',
@@ -365,8 +405,14 @@ async function startMirror(opts) {
                 'x-content-type-options': 'nosniff',
                 connection: 'keep-alive'
             });
-            const client = { res, busy: false, stale: false, id: claim };
+            const client = { res, busy: false, stale: false };
             clients.add(client);
+            // A phone that reconnects keeps its newest few streams; the oldest go.
+            for (const old of clients) {
+                if (clients.size <= MAX_STREAMS) break;
+                clients.delete(old);
+                try { old.res.end(); } catch (e) { void e; }
+            }
             const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, KEEPALIVE_MS);
             if (typeof ping.unref === 'function') ping.unref();
             req.on('close', () => { clearInterval(ping); clients.delete(client); });
@@ -407,11 +453,54 @@ async function startMirror(opts) {
         }
         notFound(res);
     });
-
-    await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(opts.port || 0, host, () => { server.off('error', reject); resolve(); });
+    // Not HTTP at all: the same bare 404 as anything else, not Node's 400.
+    server.on('clientError', (e, socket) => {
+        if (socket.writable) {
+            socket.end('HTTP/1.1 404 Not Found\r\ncontent-type: text/plain; charset=utf-8\r\n' +
+                'content-length: 9\r\nconnection: close\r\n\r\nNot found');
+        } else {
+            socket.destroy();
+        }
     });
+
+    // LISTENING FIRST, then the screencast: a view that cannot listen (the
+    // port taken, the address gone) must leave nothing running in the browser.
+    const detach = () => (typeof cdp.detach === 'function'
+        ? Promise.resolve(cdp.detach()).catch(() => {}) : Promise.resolve());
+    try {
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(opts.port || 0, host, () => { server.off('error', reject); resolve(); });
+        });
+    } catch (e) {
+        await detach();
+        throw e;
+    }
+
+    const onFrame = (params) => {
+        if (!params) return;
+        void Promise.resolve(cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId })).catch(() => {});
+        if (closed) return;
+        const meta = params.metadata || {};
+        if (meta.deviceWidth > 0 && meta.deviceHeight > 0) size = { w: meta.deviceWidth, h: meta.deviceHeight };
+        lastFrame = { d: params.data, w: size.w, h: size.h };
+        for (const c of clients) { if (c.busy) c.stale = true; else sendFrame(c); }
+    };
+    try {
+        // The tab on top, so the browser renders it and the screencast has frames.
+        await Promise.resolve(cdp.send('Page.bringToFront')).catch(() => {});
+        cdp.on('Page.screencastFrame', onFrame);
+        await cdp.send('Page.startScreencast', {
+            format: 'jpeg', quality: FRAME_QUALITY, maxWidth: FRAME_MAX_WIDTH, maxHeight: FRAME_MAX_HEIGHT, everyNthFrame: 1
+        });
+    } catch (e) {
+        closed = true;
+        cdp.off('Page.screencastFrame', onFrame);
+        await Promise.resolve(cdp.send('Page.stopScreencast')).catch(() => {});
+        await detach();
+        await new Promise((resolve) => server.close(() => resolve()));
+        throw e;
+    }
     const address = server.address();
     const port = address.port;
     const hostPart = net.isIPv6(host) ? `[${host}]` : host;
@@ -466,10 +555,13 @@ function phonePage(nonce) {
 module.exports = {
     findTailnetAddress,
     tailscaleCandidates,
+    isTailnetAddress,
+    allowLoopbackForTests,
     startMirror,
     handOverStatus,
     parseInput,
     relayInput,
     KEYS,
-    MAX_INPUT_BYTES
+    MAX_INPUT_BYTES,
+    MAX_STREAMS
 };

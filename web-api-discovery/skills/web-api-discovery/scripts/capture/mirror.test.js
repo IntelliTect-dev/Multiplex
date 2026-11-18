@@ -5,18 +5,27 @@
 // FALSIFIERS (fail before this change, pass after):
 //   T1  the address is this PC's Tailscale IPv4, read from `tailscale status
 //       --json` at run time -- and when Tailscale is missing or not running,
-//       there is no address and the reason says which
-//   T2  it never listens on a wildcard or a name
+//       there is no address and the reason says which; an address Tailscale
+//       reports that is NOT a tailnet one (a LAN address, loopback) is refused
+//       with the reason, never used
+//   T2  it never listens on a wildcard, a name, a LAN address or loopback --
+//       only on a tailnet address (100.64.0.0/10, fd7a:115c:a1e0::/48), with
+//       loopback only through the in-process test switch
 //   T3  it listens ONLY on the address it was given
-//   T4  without the token every request is a bare 404; fetching the page
-//       claims nothing; the first browser to WATCH holds the view, a second
-//       gets 404 while it does, and may take over once it has gone
+//   T4  the link is SINGLE-USE: without the token every request is a bare
+//       404; the first browser to open it gets the one cookie the server
+//       issues, and the link is spent -- a second holder gets 404 for the
+//       page, the stream and input; a cookie the server never issued is
+//       nobody; the browser that holds it can reload and reconnect
 //   T5  frames: the screencast starts, each frame is acknowledged and reaches
 //       the phone; closing stops the screencast, ends the page and stops
 //       listening
 //   T6  input: taps, press/move/release, scroll, typing (Input.insertText),
 //       keys and Back reach the page through CDP, in order; a cross-origin or
 //       non-JSON post is refused; the two buttons call back
+//   T7  a view that cannot listen leaves nothing running: no screencast, no
+//       frame listener, the CDP session let go; malformed HTTP is a bare 404;
+//       one browser cannot pile up live streams
 //   E1  end to end, against a real browser: a frame of a real page reaches the
 //       phone view, and a tap and typing from it land in that page
 //   E2  the phone page's own script, in a real browser emulating a phone
@@ -38,9 +47,15 @@ const queued = [];
 function test(name, fn) { queued.push({ name, fn }); }
 const skipped = [];
 
-// TEST-NET addresses (RFC 5737 / RFC 3849): never anybody's real one.
-const FAKE_V4 = '192.0.2.10';
-const FAKE_V6 = '2001:db8::10';
+// Tailnet-shaped addresses (Tailscale's 100.64.0.0/10 and fd7a:115c:a1e0::/48)
+// that no test ever listens on.
+const FAKE_V4 = '100.101.102.103';
+const FAKE_V6 = 'fd7a:115c:a1e0::10';
+
+// Every view below plays the phone on THIS PC, so it listens on loopback --
+// through the in-process test switch, which nothing in the product reaches.
+// T1 and T2 turn it off to prove loopback is refused without it.
+mirror.allowLoopbackForTests(true);
 
 /** A CDP session that records what it was asked, and can emit events. */
 function fakeCdp(history) {
@@ -169,13 +184,48 @@ test('T1: the address is this PC\'s Tailscale IPv4, read at run time -- or the r
     // And HAR_CAPTURE_TAILSCALE names it outright (a test points it nowhere).
     assert.deepStrictEqual(mirror.tailscaleCandidates({ HAR_CAPTURE_TAILSCALE: 'X:\\nowhere\\tailscale.exe' }, 'win32'),
         ['X:\\nowhere\\tailscale.exe']);
+
+    // ONLY A TAILNET ADDRESS. Whatever the CLI that answered says -- a
+    // stand-in on PATH, a misconfigured one -- a LAN address or loopback is
+    // never the phone view's address, and the reason says what was refused.
+    mirror.allowLoopbackForTests(false);
+    try {
+        for (const ip of ['192.168.1.10', '10.0.0.5', '172.16.4.4', '127.0.0.1', '100.63.255.255', '100.128.0.1',
+            '0.0.0.0']) {
+            const r = mirror.findTailnetAddress({ env: {}, run: status({ BackendState: 'Running', Self: { TailscaleIPs: [ip] } }) });
+            assert.strictEqual(r.address, null, `${ip} is not a tailnet address`);
+            assert.match(r.reason, new RegExp(`Tailscale reported ${ip.replace(/\./g, '\\.')} for this PC, which is not a tailnet address`));
+        }
+        assert.strictEqual(mirror.findTailnetAddress({ env: {}, run: status({ BackendState: 'Running',
+            Self: { TailscaleIPs: ['100.64.0.1'] } }) }).address, '100.64.0.1', 'the bottom of 100.64.0.0/10');
+        assert.strictEqual(mirror.findTailnetAddress({ env: {}, run: status({ BackendState: 'Running',
+            Self: { TailscaleIPs: ['100.127.255.254'] } }) }).address, '100.127.255.254', 'and the top');
+    } finally {
+        mirror.allowLoopbackForTests(true);
+    }
+    // The in-process test switch lets loopback through -- and nothing else.
+    assert.strictEqual(mirror.findTailnetAddress({ env: {}, run: status({ BackendState: 'Running',
+        Self: { TailscaleIPs: ['127.0.0.1'] } }) }).address, '127.0.0.1');
+    assert.strictEqual(mirror.findTailnetAddress({ env: {}, run: status({ BackendState: 'Running',
+        Self: { TailscaleIPs: ['192.168.1.10'] } }) }).address, null, 'a LAN address, even for a test');
 });
 
-test('T2: it never listens on a wildcard or a name', async () => {
-    for (const host of ['0.0.0.0', '::', '', 'localhost', undefined]) {
-        await assert.rejects(mirror.startMirror({ host, cdp: fakeCdp() }),
-            /never listens on every interface|needs an IP address/, `'${host}' must be refused`);
+test('T2: it listens only on a tailnet address -- never a wildcard, a name, a LAN address or loopback', async () => {
+    mirror.allowLoopbackForTests(false);
+    try {
+        for (const host of ['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '', 'localhost', undefined, '192.168.1.10',
+            '10.0.0.5', '127.0.0.1', '::1', '2001:db8::10']) {
+            await assert.rejects(mirror.startMirror({ host, cdp: fakeCdp() }),
+                /listens only on this PC's Tailscale address/, `'${host}' must be refused`);
+        }
+    } finally {
+        mirror.allowLoopbackForTests(true);
     }
+    for (const host of ['0.0.0.0', '::', '192.168.1.10']) {
+        await assert.rejects(mirror.startMirror({ host, cdp: fakeCdp() }),
+            /listens only on this PC's Tailscale address/, `'${host}' is refused even with the test switch on`);
+    }
+    assert.ok(mirror.isTailnetAddress(FAKE_V4) && mirror.isTailnetAddress(FAKE_V6), 'both tailnet ranges count');
 });
 
 test('T3: it listens ONLY on the address it was given', async () => {
@@ -198,7 +248,18 @@ test('T3: it listens ONLY on the address it was given', async () => {
     }
 });
 
-test('T4: without the token, or from a second browser, every request is a bare 404', async () => {
+/** Resolves with the HTTP status of an SSE request, without waiting for it to end. */
+function streamStatus(url, cookie) {
+    return new Promise((resolve, reject) => {
+        const req = http.get(url, { headers: cookie ? { cookie } : {} }, (res) => {
+            resolve(res.statusCode);
+            req.destroy();
+        });
+        req.on('error', (e) => { if (e.code !== 'ECONNRESET') reject(e); });
+    });
+}
+
+test('T4: the link is single-use -- the first browser holds the one cookie, and everyone else gets a bare 404', async () => {
     const view = await mirror.startMirror({ host: '127.0.0.1', cdp: fakeCdp() });
     try {
         assert.ok(view.token.length >= 43, 'a long random token (32 bytes)');
@@ -210,7 +271,11 @@ test('T4: without the token, or from a second browser, every request is a bare 4
             assert.strictEqual(r.status, 404, `${p.replace(view.token, '<token>')} must be 404, got ${r.status}`);
             assert.strictEqual(r.body, 'Not found', 'and say nothing more');
         }
-        // Opening the page gives each browser its own identity...
+        // The stream before anyone opened the page: nobody holds it yet.
+        assert.strictEqual(await streamStatus(view.url + 'events', null), 404);
+
+        // THE FIRST BROWSER TO OPEN THE LINK gets the one cookie -- a credential
+        // the server issued, HttpOnly and SameSite=Strict -- and the link is spent.
         const first = await request(view.url);
         assert.strictEqual(first.status, 200);
         const setCookie = String(first.headers['set-cookie']);
@@ -220,30 +285,37 @@ test('T4: without the token, or from a second browser, every request is a bare 4
         assert.match(first.body, /I'm done, continue/);
         assert.match(first.body, /End the capture/);
         const a = setCookie.split(';')[0];
-        const b = await openPage(view);
-        assert.notStrictEqual(a, b, 'a second browser is a different browser');
-        // ...and the FIRST TO WATCH holds the view. Fetching the page (an AI
-        // session reading the link, a link preview) claims nothing.
-        const watchA = events(view.url + 'events', a);
-        await watchA.next('status');
-        const watchB = events(view.url + 'events', b);
+
+        // A SECOND HOLDER OF THE LINK -- a transcript, a log, scrollback -- gets
+        // nothing: not the page, not a cookie, not the stream, not input.
+        const second = await request(view.url);
+        assert.strictEqual(second.status, 404, 'the link is spent');
+        assert.strictEqual(second.body, 'Not found');
+        assert.ok(!second.headers['set-cookie'], 'and no cookie');
+        // A cookie this server never issued is nobody, whatever its shape.
+        const forged = `hm=${'A'.repeat(43)}`;
+        assert.strictEqual(await streamStatus(view.url + 'events', forged), 404, 'a forged cookie is nobody');
+        assert.strictEqual(await streamStatus(view.url + 'events', 'hm=guess'), 404);
+        assert.strictEqual((await post(view, forged, { t: 'text', v: 'x' })).status, 404, 'nor can it type');
+        assert.strictEqual((await request(view.url, { headers: { cookie: forged } })).status, 404);
+
+        // THE BROWSER THAT HOLDS IT can reload the page and reconnect the
+        // stream -- a phone back from another app -- and it alone gives input.
+        const again = await request(view.url, { headers: { cookie: a } });
+        assert.strictEqual(again.status, 200, 'a reload in the same browser');
+        assert.ok(!again.headers['set-cookie'], 'keeps the cookie it has');
+        const watch = events(view.url + 'events', a);
+        await watch.next('status');
+        watch.close();
         await settle();
-        assert.strictEqual(watchB.status(), 404, 'a second browser cannot watch while the first does');
-        watchB.close();
-        assert.strictEqual((await post(view, b, { t: 'text', v: 'x' })).status, 404, 'nor type into it');
-        assert.strictEqual((await post(view, a, { t: 'done' })).status, 204, 'the one watching can');
-        const guess = events(view.url + 'events', 'hm=guess');
+        const rewatch = events(view.url + 'events', a);
+        await rewatch.next('status');
+        assert.strictEqual((await post(view, a, { t: 'done' })).status, 204, 'the holder can');
+        rewatch.close();
+        // Even with the holder's stream closed, the link stays spent.
         await settle();
-        assert.strictEqual(guess.status(), 404, 'an identity this server never gave is nobody');
-        guess.close();
-        // The first browser goes away (an in-app browser closed): the person
-        // can carry on in another.
-        watchA.close();
-        await settle();
-        const watchB2 = events(view.url + 'events', b);
-        await watchB2.next('status');
-        assert.strictEqual((await post(view, a, { t: 'done' })).status, 404, 'the view moved: the old browser has nothing');
-        watchB2.close();
+        assert.strictEqual((await request(view.url)).status, 404);
+        assert.strictEqual(await streamStatus(view.url + 'events', forged), 404);
     } finally {
         await view.close();
     }
@@ -344,6 +416,52 @@ test('T6: taps, drags, scrolls, typing, keys and Back reach the page in order; t
         assert.deepStrictEqual(calls, { done: 1, end: 1 });
     } finally {
         if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T7: a view that cannot listen leaves nothing running; malformed HTTP is a 404; streams do not pile up', async () => {
+    // A port already taken: the view cannot start, and starts nothing.
+    const blocker = http.createServer(() => {});
+    await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
+    const cdp = fakeCdp();
+    try {
+        await assert.rejects(mirror.startMirror({ host: '127.0.0.1', port: blocker.address().port, cdp }), /EADDRINUSE/);
+        assert.ok(!cdp.calls.some((c) => c.method === 'Page.startScreencast') ||
+            cdp.calls.some((c) => c.method === 'Page.stopScreencast'), 'no screencast is left running');
+        assert.strictEqual(cdp.listenerCount('Page.screencastFrame'), 0, 'no frame listener is left attached');
+        assert.ok(cdp.detached, 'the CDP session is let go');
+    } finally {
+        blocker.close();
+    }
+
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp: fakeCdp() });
+    try {
+        // Not HTTP at all: the same bare 404 as everything else, not Node's 400.
+        const raw = await new Promise((resolve, reject) => {
+            const socket = require('net').connect(view.port, '127.0.0.1', () => socket.write('NOT HTTP\r\n\r\n'));
+            let got = '';
+            socket.setEncoding('utf8');
+            socket.on('data', (d) => { got += d; });
+            socket.on('end', () => resolve(got));
+            socket.on('error', reject);
+        });
+        assert.match(raw, /^HTTP\/1\.1 404 /, raw);
+
+        // ONE BROWSER, NOT A PILE OF STREAMS: the holder reconnecting again and
+        // again keeps a few live streams at most -- the oldest go.
+        const { cookie, stream } = await claim(view);
+        const more = [];
+        for (let i = 0; i < 6; i++) {
+            const s = events(view.url + 'events', cookie);
+            await s.next('status');
+            more.push(s);
+        }
+        await settle();
+        assert.ok(view.clients() <= mirror.MAX_STREAMS, `${view.clients()} live streams for one browser`);
+        assert.strictEqual(view.clients(), mirror.MAX_STREAMS);
+        for (const s of [stream, ...more]) s.close();
+    } finally {
         await view.close();
     }
 });
@@ -466,6 +584,15 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
         }
         await phone.mouse.up();
         await site.waitForFunction(() => Number(document.getElementById('r').value) > 80, null, { timeout: 10000 });
+        // A BUTTON WHOSE MESSAGE DID NOT GET THERE says so, and can be tapped
+        // again -- not "Handing the browser back..." for ever.
+        await phone.route('**/input', (r) => r.fulfill({ status: 500, body: '' }));
+        await phone.click('#done');
+        await phone.waitForFunction(() => document.getElementById('status').textContent.includes('did not reach the capture'),
+            null, { timeout: 10000 });
+        assert.strictEqual(await phone.isDisabled('#done'), false, 'the button can be tapped again');
+        assert.strictEqual(done, 0);
+        await phone.unroute('**/input');
         await phone.click('#done');
         const deadline = Date.now() + 10000;
         while (!done && Date.now() < deadline) await settle();
