@@ -27,6 +27,10 @@ public sealed partial class {{ProjectName}}Client : IDisposable
         PropertyNameCaseInsensitive = true,
     };
 
+    // The bring-your-own-HttpClient constructor's User-Agent: read from the
+    // environment once per process, not on every construction.
+    private static readonly Lazy<string> s_environmentUserAgent = new(() => PacingOptions.UserAgentFromEnvironment());
+
     private readonly HttpClient _http;
     private readonly bool _ownsHttpClient;
     private readonly SessionCredentials _session;
@@ -80,13 +84,14 @@ public sealed partial class {{ProjectName}}Client : IDisposable
     /// Its pipeline is the caller's: no <see cref="PacingHandler"/> is added, so
     /// put one in it to keep the pacing and throttling the other constructors give.
     /// The User-Agent is the everyday constructor's: <see cref="PacingOptions.UserAgent"/>
-    /// as <see cref="PacingOptions.FromEnvironment"/> reads it.
+    /// as the environment sets it (<see cref="PacingOptions.UserAgentFromEnvironment"/>),
+    /// read once per process. No other pacing variable is read, since none is used.
     /// </summary>
     public {{ProjectName}}Client(SessionCredentials session, HttpClient httpClient, ILogger<{{ProjectName}}Client>? log = null)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _http = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _userAgent = PacingOptions.FromEnvironment().UserAgent;
+        _userAgent = s_environmentUserAgent.Value;
         _ownsHttpClient = false;
         _log = log ?? NullLogger<{{ProjectName}}Client>.Instance;
     }

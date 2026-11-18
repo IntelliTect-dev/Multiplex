@@ -2305,7 +2305,8 @@ those options as it starts, before its host is built -- so a bad value stops it
 there, not on the first tool call -- and builds the client with them. Code passes a `PacingOptions` to
 the `(session, pacing, innerHandler, log)` constructor; the
 `(session, HttpClient)` overload stays a bring-your-own pipeline, which is what
-the per-endpoint fixture tests use.
+the per-endpoint fixture tests use. It reads only `_USER_AGENT`, once per
+process: no other pacing variable is its concern.
 
 **Authenticator contract (issue #97).** The generated
 `<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
