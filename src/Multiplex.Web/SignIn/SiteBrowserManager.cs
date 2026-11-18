@@ -29,6 +29,12 @@ public sealed class SiteBrowserManager(
     /// </summary>
     internal TimeSpan ProfileReleaseTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// How long deleting a profile nobody needs any more (a cancelled or refused sign-in, an old
+    /// profile already replaced) waits before leaving it to the startup sweep.
+    /// </summary>
+    internal TimeSpan DiscardTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     /// <summary>Takes one of the live sign-in browser slots, or returns null when all are busy.</summary>
     public IDisposable? TryAcquireLiveSlot() => _liveSlots.Wait(0) ? new Releaser(_liveSlots) : null;
 
@@ -105,33 +111,85 @@ public sealed class SiteBrowserManager(
         try { browser.Dispose(); } catch (Exception) { }
     }
 
-    /// <summary>Deletes a profile folder (inside the data folder only), retrying while Chrome lets go of its files.</summary>
-    public async Task DeleteProfileAsync(string profileDir)
+    /// <summary>
+    /// Deletes a profile folder (inside the data folder only), waiting up to
+    /// <see cref="ProfileReleaseTimeout"/> while Chrome lets go of its files; then the file error is thrown.
+    /// </summary>
+    public async Task DeleteProfileAsync(string profileDir, CancellationToken ct = default)
     {
         var dir = paths.EnsureInsideDataPath(profileDir);
-        await RetryAsync(() =>
+        await RetryAsync(() => { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); },
+            "delete", dir, TimeProvider.System.GetTimestamp(), ProfileReleaseTimeout, ct);
+    }
+
+    /// <summary>
+    /// Best effort: deletes a profile nobody needs any more, waiting at most
+    /// <see cref="DiscardTimeout"/>. Returns whether it is gone; a leftover is removed by the
+    /// startup sweep (<c>temp-*</c>, <c>*.old-*</c>), so this never throws for a held file.
+    /// </summary>
+    public async Task<bool> DiscardProfileAsync(string profileDir)
+    {
+        var dir = paths.EnsureInsideDataPath(profileDir);
+        try
         {
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        });
+            await RetryAsync(() => { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); },
+                "delete", dir, TimeProvider.System.GetTimestamp(), DiscardTimeout, CancellationToken.None);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning("Left browser profile {Profile} for the startup sweep: it is still in use ({Error}).", Path.GetFileName(dir), ex.GetType().Name);
+            return false;
+        }
     }
 
     /// <summary>
     /// Makes <paramref name="tempProfile"/> the account's persistent profile, replacing an older
-    /// one. The caller holds the account lock and has closed the browser.
+    /// one. The caller holds the account lock and has closed the browser. The moves share one
+    /// wait of <see cref="ProfileReleaseTimeout"/>, and stop when <paramref name="ct"/> is
+    /// cancelled. If the new profile cannot move in, the old one is put back. Deleting the old
+    /// profile afterwards is best effort and never costs the new sign-in.
     /// </summary>
-    public async Task<string> PromoteProfileAsync(string site, string tempProfile, string accountId)
+    public async Task<string> PromoteProfileAsync(string site, string tempProfile, string accountId, CancellationToken ct = default)
     {
         var source = paths.EnsureInsideDataPath(tempProfile);
         var target = paths.EnsureInsideDataPath(paths.AccountProfile(site, accountId));
+        var started = TimeProvider.System.GetTimestamp();
+        string? old = null;
         if (Directory.Exists(target))
         {
-            var old = paths.EnsureInsideDataPath(SignInPaths.OldProfile(target));
-            await RetryAsync(() => Directory.Move(target, old));
-            await DeleteProfileAsync(old);
+            old = paths.EnsureInsideDataPath(SignInPaths.OldProfile(target));
+            await RetryAsync(() => Directory.Move(target, old), "move aside", target, started, ProfileReleaseTimeout, ct);
         }
-        await RetryAsync(() => Directory.Move(source, target));
+        try
+        {
+            await RetryAsync(() => Directory.Move(source, target), "move in", source, started, ProfileReleaseTimeout, ct);
+        }
+        catch (Exception) when (old is not null)
+        {
+            try { Directory.Move(old, target); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogError("Could not put back the previous browser profile for {Site} account {AccountId} ({Error}).", site, accountId, ex.GetType().Name);
+            }
+            throw;
+        }
+        if (old is not null) await DiscardProfileAsync(old);
         return target;
     }
+
+    /// <summary>
+    /// Whether a file error means another process still holds files in the folder: sharing or
+    /// lock violation, access denied (a folder with open files cannot be moved), or a folder
+    /// emptied while being deleted. Anything else (a bad path, a name already taken) is not
+    /// waited out.
+    /// </summary>
+    private static bool IsHeld(Exception ex) => ex switch
+    {
+        UnauthorizedAccessException => true,
+        IOException io => (io.HResult & 0xFFFF) is 5 or 32 or 33 or 145,
+        _ => false,
+    };
 
     /// <summary>Chrome holds <c>lockfile</c> open (Windows) or keeps a <c>SingletonLock</c> link (Linux/macOS) while it runs on a profile.</summary>
     internal static bool IsProfileInUse(string dir)
@@ -154,32 +212,41 @@ public sealed class SiteBrowserManager(
     }
 
     /// <summary>
-    /// Runs a profile move or delete, retrying while its files are still held, with a growing
-    /// pause (250 ms doubling to 2 s), until <see cref="ProfileReleaseTimeout"/> has passed; then
-    /// the last file error is thrown.
+    /// Runs a profile move or delete, retrying while its files are still held (<see cref="IsHeld"/>)
+    /// with a growing pause (250 ms doubling to 2 s), until <paramref name="budget"/> has passed
+    /// since <paramref name="started"/>; then the last file error is thrown. Cancellation stops
+    /// the wait at once.
     /// </summary>
-    private async Task RetryAsync(Action action)
+    private async Task RetryAsync(Action action, string what, string dir, long started, TimeSpan budget, CancellationToken ct)
     {
-        var started = TimeProvider.System.GetTimestamp();
         var pause = TimeSpan.FromMilliseconds(250);
         var reported = false;
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 action();
-                if (reported) logger.LogInformation("A browser profile was released after {Seconds:F1} s.", TimeProvider.System.GetElapsedTime(started).TotalSeconds);
+                if (reported)
+                    logger.LogDebug("Browser profile {Profile} was released for {What} after {Seconds:F1} s.", Path.GetFileName(dir), what, TimeProvider.System.GetElapsedTime(started).TotalSeconds);
                 return;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                       && TimeProvider.System.GetElapsedTime(started) < ProfileReleaseTimeout)
+            catch (Exception ex) when (IsHeld(ex))
             {
-                if (!reported && TimeProvider.System.GetElapsedTime(started) > TimeSpan.FromSeconds(2))
+                var waited = TimeProvider.System.GetElapsedTime(started);
+                if (waited >= budget)
+                {
+                    logger.LogWarning("Gave up waiting to {What} browser profile {Profile} after {Seconds:F1} s: its files are still in use ({Error}).",
+                        what, Path.GetFileName(dir), waited.TotalSeconds, ex.GetType().Name);
+                    throw;
+                }
+                if (!reported && waited > TimeSpan.FromSeconds(2))
                 {
                     reported = true;
-                    logger.LogInformation("Waiting for Chrome to release a browser profile's files ({Error}).", ex.GetType().Name);
+                    logger.LogInformation("Waiting for Chrome to release browser profile {Profile} to {What} ({Error}).", Path.GetFileName(dir), what, ex.GetType().Name);
                 }
-                await Task.Delay(pause);
+                var remaining = budget - waited;
+                await Task.Delay(pause < remaining ? pause : remaining, ct);
                 pause = TimeSpan.FromTicks(Math.Min(pause.Ticks * 2, TimeSpan.FromSeconds(2).Ticks));
             }
         }

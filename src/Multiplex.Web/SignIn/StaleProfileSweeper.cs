@@ -48,8 +48,9 @@ public sealed class StaleProfileSweeper(
             }
             try
             {
-                await manager.DeleteProfileAsync(folder);
-                logger.LogInformation("Deleted leftover {Site} sign-in profile {Profile}.", site, name);
+                // Brief and best effort: the server must not wait a minute per folder to start.
+                if (await manager.DiscardProfileAsync(folder))
+                    logger.LogInformation("Deleted leftover {Site} sign-in profile {Profile}.", site, name);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
