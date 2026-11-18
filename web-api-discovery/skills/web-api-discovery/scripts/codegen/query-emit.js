@@ -64,10 +64,15 @@ const NEVER_BAKED_IN = {
     // parameter is noise it should leave alone.
     differsEveryCall: 'Every captured call that sent it sent a different long number or token -- an id, a cursor, ' +
         'a timestamp or a nonce -- so no value is baked in. Left out of the request unless you supply the one you mean.',
+    // Nothing about the value gave it away; the name did. Said as that, so a
+    // reader knows the scrub did NOT vouch for what was captured.
+    credentialName: 'No captured value is baked in or shown: its name says it carries a credential ' +
+        '(a token, a key, a session id, a signature). Left out of the request unless you supply a current one.',
 };
 
 function neverBakedIn(q) {
     if (q.kind === 'nonce' && q.reason === 'differs-every-call') return NEVER_BAKED_IN.differsEveryCall;
+    if (q.kind === 'scrubbed' && q.reason === 'credential-name') return NEVER_BAKED_IN.credentialName;
     return NEVER_BAKED_IN[q.kind];
 }
 
@@ -246,9 +251,23 @@ function cannedResponseFor(pattern) {
  * written about them must not assume a tool.
  */
 function endpointsWithQuery(args) {
+    return endpointsWhere(args, (p) => (p.queryParameters || []).length > 0);
+}
+
+/**
+ * The endpoints whose captured queries had names that are not parameters
+ * (collectDroppedQueryNames in query-params.js): a timestamp, a scrub fake or a
+ * secret shape where a name goes. They are in no method, tool or test; the
+ * README accounts for them.
+ */
+function endpointsWithDroppedNames(args) {
+    return endpointsWhere(args, (p) => (p.droppedQueryNames || []).length > 0);
+}
+
+function endpointsWhere(args, wanted) {
     const { patterns, tools, methodNameFor } = args;
     return (patterns || [])
-        .filter((p) => (p.queryParameters || []).length > 0)
+        .filter(wanted)
         .map((p) => ({
             pattern: p,
             methodName: methodNameFor(p),
@@ -399,9 +418,17 @@ function expectedQueryNames(tool) {
 
 // -------------------- README --------------------
 
+/**
+ * Text as a Markdown code span in a table cell. The fence is one backtick
+ * longer than the longest run of backticks inside it -- a span is closed by a
+ * run of exactly the fence's length -- and padded with a space when the text
+ * has any, so a leading or trailing backtick is not taken for the fence.
+ */
 function mdCodeSpan(text) {
     const cell = text.replace(/\|/g, '\\|');
-    return cell.includes('`') ? '`` ' + cell + ' ``' : '`' + cell + '`';
+    const longestRun = Math.max(0, ...(cell.match(/`+/g) || []).map((run) => run.length));
+    const fence = '`'.repeat(longestRun + 1);
+    return longestRun > 0 ? fence + ' ' + cell + ' ' + fence : fence + cell + fence;
 }
 
 /** A captured value as a Markdown code span inside a table cell: `"11"`, `""`. */
@@ -422,6 +449,18 @@ const SCRUB_REASON_TEXT = {
     'scrub-table': 'the scrub replaced the captured value',
     'secret-name': 'its name is one the scrub policy treats as a secret',
     'secret-shape': 'the captured value has a shape the scrub replaces (a token, an id, an email)',
+    'credential-name': 'its name says it carries a credential',
+};
+
+// Why a captured NAME is not a parameter at all (droppedNameReasonFor in
+// query-params.js). The name itself is never printed: one the scrub replaced
+// is a fake, one with a secret's shape may be the real thing, and a timestamp
+// is noise.
+const DROPPED_NAME_TEXT = {
+    'nonce-name': 'a name that was a timestamp or a long number (a cache-buster written as `?1700000000000`)',
+    'scrub-marker': 'a name the scrub had replaced',
+    'scrub-table': 'a name the scrub had replaced',
+    'secret-shape': 'a name with the shape of a token, an id, an email or other personal data',
 };
 
 function whenOmitted(q) {
@@ -454,13 +493,13 @@ function whenOmitted(q) {
  * @param {function} args.methodNameFor  generate-wrapper.js's client method namer.
  * @returns {string} The section, or '' when no endpoint takes a query parameter.
  */
-function queryReadmeSection(args) {
-    const { opts } = args;
-    const withQuery = endpointsWithQuery(args);
-    if (withQuery.length === 0) return '';
+function listedAs(endpoint) {
+    return endpoint.tool ? '`' + endpoint.tool.name + '`' : 'no tool (`' + endpoint.methodName + '`)';
+}
+
+/** The table of parameters, and what each kind of default means. */
+function parameterLines(withQuery, opts) {
     const lines = [
-        '### Query parameters',
-        '',
         'Each client method takes the query parameters the capture showed for its endpoint, and so does',
         'its tool. An endpoint that is left out of the tools keeps them on its client method, and is listed',
         'here by that method. Every parameter is optional. What is sent when a caller supplies nothing comes',
@@ -470,9 +509,8 @@ function queryReadmeSection(args) {
         '|---|---|---|---|---|',
     ];
     for (const endpoint of withQuery) {
-        const listedAs = endpoint.tool ? '`' + endpoint.tool.name + '`' : 'no tool (`' + endpoint.methodName + '`)';
         for (const q of endpoint.pattern.queryParameters) {
-            lines.push('| ' + listedAs + ' | ' + mdName(q.toolName) + ' | ' + mdName(q.wireName) + (q.repeated ? ' (repeated)' : '') +
+            lines.push('| ' + listedAs(endpoint) + ' | ' + mdName(q.toolName) + ' | ' + mdName(q.wireName) + (q.repeated ? ' (repeated)' : '') +
                 ' | ' + q.sentIn + ' of ' + q.calls + ' | ' + whenOmitted(q) + ' |');
         }
     }
@@ -484,16 +522,62 @@ function queryReadmeSection(args) {
     lines.push('- **Left out.** A parameter whose value varied from call to call -- a search term, a page number,');
     lines.push('  a filter -- has no default. The examples are values the capture happened to contain.');
     lines.push('- **Never baked in.** A value the scrub replaced (a session id, a token, personal data) is never');
-    lines.push('  written into the generated code, and neither is one that looked like a per-request timestamp or');
-    lines.push('  nonce (a cache-buster such as `_=1700000000000`), or that was a different long number or token on');
-    lines.push('  every call -- which may be a nonce, or the id or cursor a caller has to choose. Those parameters');
-    lines.push('  are left out unless the caller supplies a value. If the site refuses a call without one, pass a');
-    lines.push('  current value at run time; do not paste one into the source.');
+    lines.push('  written into the generated code. Neither is one with a shape the scrub or its leak gate looks for');
+    lines.push('  (a token, an id, an email, a phone or card number), one under a name the scrub policy calls a');
+    lines.push('  secret, or one whose name says it carries a credential (`key`, `token`, `sig`, `session` and the');
+    lines.push('  like) -- whether or not the capture was scrubbed. Nor is one that looked like a per-request');
+    lines.push('  timestamp or nonce (a cache-buster such as `_=1700000000000`), or that was a different long number');
+    lines.push('  or token on every call -- which may be a nonce, or the id or cursor a caller has to choose. Those');
+    lines.push('  parameters are left out unless the caller supplies a value. If the site refuses a call without');
+    lines.push('  one, pass a current value at run time; do not paste one into the source.');
+    lines.push('- **Examples are text someone typed.** The example values of a parameter that varied are copied');
+    lines.push('  from the capture into the tool\'s description, where every client of the tool reads them. The');
+    lines.push('  scrub replaces what it can recognise; it cannot recognise a name or an address typed into a search');
+    lines.push('  box. Read the examples in the table above before sharing the server. To change them, capture the');
+    lines.push('  action again with other input.');
+    lines.push('- **Not quite as captured.** A name sent with no value (`?debug`) is sent back as `debug=`, and a');
+    lines.push('  parameter that was repeated with others between (`a=1&b=2&a=3`) is sent with its values together');
+    lines.push('  (`a=1&a=3&b=2`). A site that tells either pair apart needs that call written by hand.');
     lines.push('');
     lines.push('A parameter keeps its exact name on the wire. Its C# and tool name is that name in camelCase');
     lines.push('(`page-size` is `pageSize`), and values are percent-encoded when the request is built.');
     lines.push('`tests/' + opts.projectName + '.Tests/QueryStringTests.cs` asserts the exact query string each endpoint sends, and');
     lines.push('`pester/Mcp.Tests.ps1` that the running server lists a tool\'s parameters in that tool\'s input schema.');
+    return lines;
+}
+
+/** The names that were in the capture and are not parameters: how many, of what kind, never which. */
+function droppedNameLines(withDropped) {
+    const lines = [
+        'Some names in the captured queries are not parameters, and are in no method, tool or test. They',
+        'are never sent:',
+        '',
+        '| Tool | Not a parameter | Names | Calls |',
+        '|---|---|---|---|',
+    ];
+    for (const endpoint of withDropped) {
+        const calls = (endpoint.pattern.samples || []).length;
+        for (const dropped of endpoint.pattern.droppedQueryNames) {
+            lines.push('| ' + listedAs(endpoint) + ' | ' + (DROPPED_NAME_TEXT[dropped.reason] || DROPPED_NAME_TEXT['scrub-marker']) +
+                ' | ' + dropped.names + ' | ' + dropped.calls + ' of ' + calls + ' |');
+        }
+    }
+    lines.push('');
+    lines.push('The names themselves are not shown: one the scrub replaced is a fake, one with the shape of a');
+    lines.push('secret may be the real thing, and a timestamp was only ever there to defeat a cache. If the site');
+    lines.push('needs one of them, pass it through `SendRawAsync` with a current value.');
+    return lines;
+}
+
+function queryReadmeSection(args) {
+    const { opts } = args;
+    const withQuery = endpointsWithQuery(args);
+    const withDropped = endpointsWithDroppedNames(args);
+    if (withQuery.length === 0 && withDropped.length === 0) return '';
+    const lines = ['### Query parameters', ''];
+    if (withQuery.length > 0) lines.push(...parameterLines(withQuery, opts));
+    if (withQuery.length > 0 && withDropped.length > 0) lines.push('');
+    if (withDropped.length > 0) lines.push(...droppedNameLines(withDropped));
     return lines.join('\n');
 }
 

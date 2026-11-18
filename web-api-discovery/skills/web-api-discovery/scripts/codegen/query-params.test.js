@@ -17,7 +17,8 @@ const os = require('os');
 const path = require('path');
 const { dedupePatterns } = require(path.join(__dirname, 'generate-wrapper.js'));
 const {
-    collectQueryParameters, loadScrubTables, scrubReasonFor, assignIdentifiers, escapeDataString, wireQuery,
+    collectQueryParameters, collectDroppedQueryNames, loadScrubTables, scrubReasonFor, looksLikeCredentialName,
+    assignIdentifiers, escapeDataString, wireQuery,
 } = require(path.join(__dirname, 'query-params.js'));
 // The scrubber's own fakes, produced by the scrubber: recognising them must not
 // drift from what it emits.
@@ -370,10 +371,326 @@ const SITE = 'https://api.example.com/api/search';
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
-    const none = loadScrubTables([path.join(os.tmpdir(), 'no-such-dir-' + process.pid, 'x.har')]);
+    console.log('PASS: the substitution tables beside a capture identify fakes that carry no marker; their keys are never read.');
+}
+
+// ---- Where the tables are looked for is reported, found or not ----
+{
+    // Nothing found is not an error -- and it is not silence either. The
+    // caller is told every directory that was searched, so it can say so: a
+    // fake that carries no marker is otherwise taken for a constant.
+    const lone = path.join(os.tmpdir(), 'no-such-dir-' + process.pid, 'x.har');
+    const none = loadScrubTables([lone]);
     assert.deepStrictEqual(none.sources, []);
     assert.deepStrictEqual(none.problems, []);
-    console.log('PASS: the substitution tables beside a capture identify fakes that carry no marker; their keys are never read.');
+    assert.strictEqual(none.searched.length, 1, 'one record per capture given');
+    assert.strictEqual(none.searched[0].har, path.resolve(lone));
+    assert.deepStrictEqual(none.searched[0].found, []);
+    assert.deepStrictEqual(none.searched[0].directories, [
+        path.join(path.dirname(path.resolve(lone)), '.har-captures'),
+        path.dirname(path.resolve(lone)),
+    ], 'beside the capture: its .har-captures folder, then the folder itself');
+
+    // The documented standalone layout: the scrub reads samples/har-original/x.har,
+    // writes samples/har/x.har, and puts its tables beside its INPUT -- in
+    // samples/har-original/.har-captures/. The generator is given the output.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'query-params-layout-'));
+    try {
+        const scrubbed = path.join(dir, 'samples', 'har', 'x.har');
+        const beside = path.join(dir, 'samples', 'har-original', '.har-captures');
+        fs.mkdirSync(path.dirname(scrubbed), { recursive: true });
+        fs.mkdirSync(beside, { recursive: true });
+        fs.writeFileSync(scrubbed, '{}');
+        fs.writeFileSync(path.join(beside, '.har-substitutions.json'), JSON.stringify({ 'field:k:original': 'fakevalue-with-no-marker-at-all' }));
+        fs.writeFileSync(path.join(beside, '.substitutions.json'), JSON.stringify({ version: 1, substitutions: [] }));
+
+        const found = loadScrubTables([scrubbed]);
+        assert.deepStrictEqual(found.searched[0].directories, [
+            path.join(dir, 'samples', 'har', '.har-captures'),
+            path.join(dir, 'samples', 'har'),
+            beside,
+        ], 'and where the scrub puts them when the capture is its conventional output');
+        assert.deepStrictEqual(found.searched[0].found, [
+            path.join(beside, '.har-substitutions.json'),
+            path.join(beside, '.substitutions.json'),
+        ]);
+        assert.ok(found.values.has('fakevalue-with-no-marker-at-all'), 'and they are read');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    console.log('PASS: the directories searched for the tables are reported, and the scrub\'s own standalone layout is one of them.');
+}
+
+// ---- A table that is JSON but not a table is said, and never crashes the run ----
+{
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'query-params-shapes-'));
+    try {
+        const harPath = path.join(dir, 'scrubbed.har');
+        fs.writeFileSync(harPath, '{}');
+        const legacy = path.join(dir, '.har-substitutions.json');
+        const typed = path.join(dir, '.substitutions.json');
+        const SECRET = 'the-content-that-must-not-be-echoed';
+
+        const wrongLegacy = [[SECRET], SECRET, 42, null, true];
+        for (const shape of wrongLegacy) {
+            fs.writeFileSync(legacy, JSON.stringify(shape));
+            fs.rmSync(typed, { force: true });
+            const scrub = loadScrubTables([harPath]);
+            assert.strictEqual(scrub.values.size, 0, 'nothing is read from ' + JSON.stringify(shape));
+            assert.strictEqual(scrub.problems.length, 1, 'and it is reported: ' + JSON.stringify(shape));
+            assert.ok(scrub.problems[0].includes('.har-substitutions.json'), scrub.problems[0]);
+            assert.ok(!scrub.problems[0].includes(SECRET), 'without its content: ' + scrub.problems[0]);
+        }
+        fs.rmSync(legacy, { force: true });
+
+        const wrongTyped = [
+            [SECRET], SECRET, 42, null,
+            { substitutions: { replacement: SECRET } },
+            { substitutions: 7 },
+            { substitutions: SECRET },
+        ];
+        for (const shape of wrongTyped) {
+            fs.writeFileSync(typed, JSON.stringify(shape));
+            const scrub = loadScrubTables([harPath]);
+            assert.strictEqual(scrub.values.size, 0, 'nothing is read from ' + JSON.stringify(shape));
+            assert.strictEqual(scrub.problems.length, 1, 'and it is reported: ' + JSON.stringify(shape));
+            assert.ok(scrub.problems[0].includes('.substitutions.json'), scrub.problems[0]);
+            assert.ok(!scrub.problems[0].includes(SECRET), 'without its content: ' + scrub.problems[0]);
+        }
+
+        // Entries of the wrong shape inside a table of the right one: the good
+        // ones are read, the others are counted, and nothing throws.
+        fs.writeFileSync(typed, JSON.stringify({ version: 1, substitutions: [
+            null, 5, SECRET, [SECRET],
+            { type: 'city', replacement: 'Cresthollow', locations: 7 },
+            { type: 'city', replacement: 'Marrowgate', locations: [null, 5, { queryParam: 9 }, { jsonPath: {} }] },
+            { type: 'city', locations: [] },
+        ] }));
+        fs.writeFileSync(legacy, JSON.stringify({ 'k:one': 'fakevalue-number-one', 'k:two': 5, 'k:three': null, 'k:four': { nested: SECRET } }));
+        const mixed = loadScrubTables([harPath]);
+        assert.ok(mixed.values.has('Cresthollow') && mixed.values.has('Marrowgate') && mixed.values.has('fakevalue-number-one'));
+        assert.strictEqual(mixed.sources.length, 2);
+        assert.strictEqual(mixed.problems.length, 2, 'one line per table: ' + mixed.problems.join(' | '));
+        for (const problem of mixed.problems) assert.ok(!problem.includes(SECRET), problem);
+        assert.ok(mixed.problems.some((p) => p.includes('.har-substitutions.json') && /\b3 entr/.test(p)), mixed.problems.join(' | '));
+        assert.ok(mixed.problems.some((p) => p.includes('.substitutions.json') && /\b5 entr/.test(p)), mixed.problems.join(' | '));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    console.log('PASS: a table of the wrong shape is reported by its shape, never by its content, and never crashes.');
+}
+
+// ---- The project's own scrub policy names secrets too ----
+{
+    // The scrub finds .har-policy.project.json by walking up from the capture it
+    // is given. So does this: a name the project added is never baked in, and a
+    // default name the project vetoed is no longer treated as a secret.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'query-params-policy-'));
+    try {
+        const harPath = path.join(dir, 'captures', 'x.har');
+        fs.mkdirSync(path.dirname(harPath), { recursive: true });
+        fs.writeFileSync(harPath, '{}');
+        const url = SITE + '?tenantCode=acme-eu-7&lsd=AbCdEf12&limit=11';
+
+        const byDefault = byWireName(parametersOf([url, url], { scrub: loadScrubTables([harPath]) }));
+        assert.strictEqual(byDefault.tenantCode.kind, 'constant', 'not a secret by the shipped policy');
+        assert.strictEqual(byDefault.lsd.kind, 'scrubbed', 'lsd is one of the shipped names');
+
+        fs.writeFileSync(path.join(dir, '.har-policy.project.json'),
+            JSON.stringify({ secretFields: ['tenantCode'], notSecretFields: ['lsd'] }));
+        const scrub = loadScrubTables([harPath]);
+        assert.deepStrictEqual(scrub.problems, []);
+        const q = byWireName(parametersOf([url, url], { scrub }));
+        assert.strictEqual(q.tenantCode.kind, 'scrubbed', 'a name the project added');
+        assert.strictEqual(q.tenantCode.reason, 'secret-name');
+        assert.strictEqual(q.tenantCode.defaults, null);
+        assert.strictEqual(q.lsd.kind, 'constant', 'a default name the project vetoed is the project\'s call');
+        assert.strictEqual(q.limit.kind, 'constant');
+
+        // A project policy that cannot be loaded is said, and the shipped names still apply.
+        fs.writeFileSync(path.join(dir, '.har-policy.project.json'), '{ "secretFields": "not-a-list-and-not-echoed" }');
+        const broken = loadScrubTables([harPath]);
+        assert.strictEqual(broken.problems.length, 1, broken.problems.join(' | '));
+        assert.ok(broken.problems[0].includes('.har-policy.project.json'), broken.problems[0]);
+        assert.ok(!broken.problems[0].includes('not-a-list-and-not-echoed'), broken.problems[0]);
+        assert.strictEqual(byWireName(parametersOf([url, url], { scrub: broken })).lsd.kind, 'scrubbed');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    console.log('PASS: the project\'s own scrub policy, found the way the scrub finds it, decides which names are secrets.');
+}
+
+// ---- A NAME is screened like a value ----
+{
+    // `url + '?' + Date.now()` puts a timestamp where a name goes, and a scrub
+    // rewrites a name as readily as a value. Neither is a parameter: it is not
+    // emitted at all, and what was dropped is counted by kind, never named.
+    const calls = [0, 700, 1400].map((offset) => ({
+        url: SITE + '?limit=11&' + (STARTED_MS + offset - 40) + '&alice%40example.org&debug&0.4821937465' + offset,
+        started: new Date(STARTED_MS + offset).toISOString(),
+    }));
+    assert.deepStrictEqual(parametersOf(calls).map((p) => p.wireName), ['limit', 'debug'],
+        'the junk names are gone; a valueless flag is still a parameter');
+    const patterns = dedupePatterns(calls.map((c) => har(c.url, c.started)));
+    assert.deepStrictEqual(collectDroppedQueryNames(patterns[0].samples), [
+        { reason: 'nonce-name', names: 6, calls: 3 },
+        { reason: 'secret-shape', names: 1, calls: 3 },
+    ], 'three timestamps and three long numbers, one per call each; one email in every call');
+
+    const fakeEmail = sanitize.fakeFor('email', 'someone@corp.example', 'salt');
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    const dropped = (name, options) => {
+        const url = SITE + '?limit=11&' + encodeURIComponent(name);
+        const p = dedupePatterns([har(url), har(url)]);
+        assert.deepStrictEqual(collectQueryParameters(p[0].samples, options).map((q) => q.wireName), ['limit'], name + ' must not be a parameter');
+        const d = collectDroppedQueryNames(p[0].samples, options);
+        assert.strictEqual(d.length, 1, name);
+        return d[0].reason;
+    };
+    assert.strictEqual(dropped(fakeEmail), 'scrub-marker', 'a name the scrub rewrote to its fake');
+    assert.strictEqual(dropped('<AccountId>'), 'scrub-marker');
+    assert.strictEqual(dropped(jwt), 'secret-shape');
+    assert.strictEqual(dropped('7c9e6679-7425-40de-944b-e07fc1f90ae7'), 'secret-shape');
+    assert.strictEqual(dropped('1794986993147'), 'nonce-name', 'a long digit run, with no call time to compare it with');
+    assert.strictEqual(dropped('fakename-with-no-marker', { scrub: { values: new Set(['fakename-with-no-marker']), namedValues: new Set() } }),
+        'scrub-table', 'a name the substitution table lists as a replacement');
+
+    // What stays a parameter: a short number, a version, a word, an empty name.
+    const kept = parametersOf([SITE + '?2024=a&v2=b&1234567=c&page=1&=d', SITE + '?2024=a&v2=b&1234567=c&page=2&=d']);
+    assert.deepStrictEqual(kept.map((p) => p.wireName), ['2024', 'v2', '1234567', 'page', '']);
+    console.log('PASS: a timestamp, a scrub fake or a secret shape used as a NAME is not a parameter, and is counted without being named.');
+}
+
+// ---- What the leak gate would report is never baked in, scrubbed capture or not ----
+{
+    // On a capture nobody scrubbed these are the real thing. The gate's own
+    // predicate decides -- the pattern WITH its validator -- so a look-alike
+    // stays a value.
+    const real = {
+        'a phone number': '+14255550123',
+        'a social security number': '123-45-6789',
+        'a card number': '4111111111111111',
+        'an IBAN': 'GB82WEST12345698765432',
+        'a bearer token': 'Bearer abcdefghijklmnopqrstuvwxyz012345',
+        'a MAC address': '00:1A:2B:3C:4D:5E',
+        'a password envelope': '#PWD_BROWSER:5:1794986993:AbCdEfGhIjKlMnOp',
+    };
+    for (const [what, value] of Object.entries(real)) {
+        const url = SITE + '?v=' + encodeURIComponent(value);
+        const q = byWireName(parametersOf([url, url])).v;
+        assert.strictEqual(q.kind, 'scrubbed', what + ' must not be a default: ' + value);
+        assert.strictEqual(q.reason, 'secret-shape', what);
+        assert.strictEqual(q.defaults, null, what);
+        // Varying, it must not be quoted as an example either.
+        const other = SITE + '?v=other-' + encodeURIComponent(value);
+        assert.deepStrictEqual(byWireName(parametersOf([url, other])).v.examples, [], what + ' must not be an example');
+        // And once is enough: an endpoint captured a single time.
+        assert.strictEqual(byWireName(parametersOf([url])).v.defaults, null, what + ', on a single call');
+    }
+    const lookAlikes = {
+        'a locale (the raw MAC pattern matches it)': 'de-DE',
+        'three hex pairs': '12-34-56',
+        'a 13-digit id (the raw card pattern matches it)': '1794000000000',
+        'a 16-digit number that fails the card checksum': '4111111111111112',
+        'a 16-digit number no issuer mints': '9999999999999995',
+        'a date': '2026-11-18',
+        'a short hex word': 'deadbeef',
+        'an IBAN-shaped code with a wrong checksum': 'GB00WEST12345698765432',
+        'the word Bearer': 'Bearer',
+        'a local phone number without its +': '4255550123',
+    };
+    for (const [what, value] of Object.entries(lookAlikes)) {
+        const url = SITE + '?v=' + encodeURIComponent(value);
+        const q = byWireName(parametersOf([url, url])).v;
+        assert.strictEqual(q.kind, 'constant', what + ' is an ordinary value: ' + value);
+        assert.deepStrictEqual(q.defaults, [value], what);
+    }
+    console.log('PASS: a value the leak gate itself would report is never a default or an example (' +
+        Object.keys(real).length + ' shapes), and ' + Object.keys(lookAlikes).length + ' look-alikes stay values.');
+}
+
+// ---- A NAME that says "credential" is never baked in, whatever the value ----
+{
+    // Words are split the way the tool emitter splits a path segment: at
+    // camelCase boundaries and at anything that is not a letter or a digit.
+    // A whole word must match -- so `key` is one and `keyword` is not.
+    const credential = ['key', 'api_key', 'apiKey', 'apikey', 'APIKey', 'sid', 'session', 'session-id', 'sessionId', 'sig',
+        'signature', 'secret', 'client-secret', 'auth', 'authToken', 'token', 'access_token', 'credential', 'password',
+        'X-Amz-Credential', 'X-Amz-Signature', 'X-Amz-Security-Token', 'X-Goog-Signature', 'X-Goog-Credential',
+        'Key-Pair-Id', 'AWSAccessKeyId', 'Signature'];
+    for (const name of credential) {
+        assert.strictEqual(looksLikeCredentialName(name), true, name);
+        // A plain short value under such a name: no marker, no shape, nothing else to go on.
+        const url = SITE + '?limit=11&' + encodeURIComponent(name) + '=plainvalue7';
+        const q = byWireName(parametersOf([url, url]))[name];
+        assert.strictEqual(q.kind, 'scrubbed', name + ' must never be baked in');
+        assert.strictEqual(q.defaults, null, name);
+        assert.deepStrictEqual(q.examples, [], name);
+        const once = byWireName(parametersOf([url]))[name];
+        assert.strictEqual(once.defaults, null, name + ', on a single call');
+        const other = SITE + '?limit=11&' + encodeURIComponent(name) + '=othervalue8';
+        assert.deepStrictEqual(byWireName(parametersOf([url, other]))[name].examples, [], name + ' must have no examples');
+    }
+    // The reason says it was the name: the value gave nothing away.
+    assert.strictEqual(byWireName(parametersOf([SITE + '?sig=plainvalue7']))['sig'].reason, 'credential-name');
+    // A marker in the value is the better reason when there is one.
+    assert.strictEqual(byWireName(parametersOf([SITE + '?sig=redacted-3f9a1c0b7e2d4a68']))['sig'].reason, 'scrub-marker');
+
+    const ordinary = ['keyword', 'keywords', 'fieldKeywords', 'side', 'sidebar', 'author', 'authors', 'tokenizer', 'sessions-per-page',
+        'sessions', 'sigma', 'design', 'secretary', 'monkey', 'k', 'q', 'limit', 'credentials-page-size', 'passwords'];
+    for (const name of ordinary) {
+        assert.strictEqual(looksLikeCredentialName(name), false, name);
+        const url = SITE + '?limit=11&' + encodeURIComponent(name) + '=plainvalue7';
+        assert.strictEqual(byWireName(parametersOf([url, url]))[name].kind, 'constant', name + ' is an ordinary parameter');
+    }
+    console.log('PASS: a parameter whose name is a credential word is never baked in (' + credential.length +
+        ' names), and ' + ordinary.length + ' names that only contain one are ordinary.');
+}
+
+// ---- A value that merely looks like markup is not a scrub replacement ----
+{
+    // Inside a larger value only the scrubber's own sentinel spellings count.
+    // An HTML-like value is a value: it is the default, and reaches the source.
+    const markup = ['<summary>&amp;</param>', '<b>bold</b> text', 'a <BR> b', 'x < y > z', '1 <br/> 2', 'if (a<b && c>d)'];
+    for (const value of markup) {
+        const url = SITE + '?v=' + encodeURIComponent(value);
+        const q = byWireName(parametersOf([url, url])).v;
+        assert.strictEqual(q.kind, 'constant', 'markup is not a marker: ' + value);
+        assert.deepStrictEqual(q.defaults, [value]);
+    }
+    const sentinels = ['/users/<AccountId>/orders', 'Hello <DisplayName>!', 'x <REDACTED-1a2b3c4d> y', 'x <BLUNTED:jwt:ABCD> y',
+        'key=redacted-3f9a1c0b7e2d4a68;', '<SignInCredential> and more'];
+    for (const value of sentinels) {
+        const url = SITE + '?v=' + encodeURIComponent(value);
+        const q = byWireName(parametersOf([url, url])).v;
+        assert.strictEqual(q.kind, 'scrubbed', 'a sentinel inside a value is still found: ' + value);
+        assert.strictEqual(q.reason, 'scrub-marker', value);
+    }
+    // A value that is NOTHING but an angle-bracket placeholder is still one,
+    // whatever its case: that is the leak gate's own reading of a redaction.
+    assert.strictEqual(byWireName(parametersOf([SITE + '?v=%3Cuseremail%3E', SITE + '?v=%3Cuseremail%3E'])).v.kind, 'scrubbed');
+    console.log('PASS: markup inside a value is not mistaken for a scrub sentinel; the scrubber\'s own spellings still are.');
+}
+
+// ---- Empty in some calls, a timestamp in others: still a nonce ----
+{
+    const q = byWireName(parametersOf([
+        { url: SITE + '?limit=11&_=', started: STARTED },
+        { url: SITE + '?limit=11&_=' + (STARTED_MS + 700 - 40), started: new Date(STARTED_MS + 700).toISOString() },
+        { url: SITE + '?limit=11&_=' + (STARTED_MS + 1400 - 40), started: new Date(STARTED_MS + 1400).toISOString() },
+    ]));
+    assert.strictEqual(q._.kind, 'nonce', 'the empty call says nothing about the others');
+    assert.deepStrictEqual(q._.examples, [], 'and no timestamp is quoted as an example');
+    assert.strictEqual(q._.defaults, null);
+
+    const tokens = byWireName(parametersOf([
+        SITE + '?rsh=', SITE + '?rsh=4821937465021', SITE + '?rsh=4821937466377',
+    ]));
+    assert.strictEqual(tokens.rsh.kind, 'nonce');
+    assert.strictEqual(tokens.rsh.reason, 'differs-every-call');
+    // Empty every time is just an empty value.
+    assert.strictEqual(byWireName(parametersOf([SITE + '?_=', SITE + '?_='])) ._.kind, 'constant');
+    console.log('PASS: an empty value in one call does not hide a timestamp or a nonce in the others.');
 }
 
 // ---- C# names: valid, unique, and the wire name untouched ----

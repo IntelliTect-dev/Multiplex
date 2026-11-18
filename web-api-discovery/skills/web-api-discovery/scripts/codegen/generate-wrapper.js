@@ -34,7 +34,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
 const { listTools, listLeftOut, emitToolsFile } = require('./mcp-tools-emit.js');
-const { collectQueryParameters, loadScrubTables } = require('./query-params.js');
+const { collectQueryParameters, collectDroppedQueryNames, loadScrubTables } = require('./query-params.js');
 const {
     describeQueryParameters, clientQueryLines, clientQueryHelperLines, queryReadmeSection, recipeQueryArguments, QUERY_LOCAL,
 } = require('./query-emit.js');
@@ -1484,15 +1484,34 @@ function run(args) {
         console.log('generate-wrapper: read the scrub\'s substitution table ' + source +
             ' (a query value it replaced is not baked in)');
     }
+    // A table or a project policy that could not be used: its path and the
+    // shape of the problem. What it would have told us is then not known.
     for (const problem of scrub.problems) {
-        console.error('generate-wrapper: NOTE -- ' + problem +
-            '; scrubbed query values are recognised by their markers only.');
+        console.error('generate-wrapper: NOTE -- ' + problem + '.');
     }
     for (const p of patterns) {
         p.queryParameters = describeQueryParameters(collectQueryParameters(p.samples, {
             reserved: p.segments.filter((s) => s.param).map((s) => s.param),
             scrub,
         }));
+        // Captured NAMES that are not parameters -- a bare timestamp, a scrub
+        // fake, a secret shape -- are in none of the above. The README counts
+        // them, by kind, without printing one.
+        p.droppedQueryNames = collectDroppedQueryNames(p.samples, { scrub });
+    }
+    // No table found for a capture is not an error, and must not be silence
+    // either: a fake that carries no marker (a typed city, a name) is then
+    // indistinguishable from a real constant and is baked in as a default. Said
+    // once per capture, on stderr, with the folders searched and nothing else --
+    // and only when there is a default it could be true of.
+    const bakesADefault = patterns.some((p) => p.queryParameters.some((q) => q.defaults !== null));
+    for (const record of scrub.searched) {
+        if (record.found.length > 0 || !bakesADefault) continue;
+        console.error('generate-wrapper: NOTE -- no scrub substitution table was found for ' + record.har +
+            ' (searched: ' + record.directories.join('; ') + '). A value the scrub replaced with a fake that ' +
+            'carries no marker -- a city, a name, a postal code -- cannot be told from a real constant without one, ' +
+            'and may have become a default in the generated code. Run the generator through run-agent.js, which ' +
+            'keeps the tables where they are found, or read the defaults under "Query parameters" in the README.');
     }
 
     // Out dirs.
@@ -1565,6 +1584,13 @@ function run(args) {
     if (leftOut.length > 0) {
         console.log('generate-wrapper: ' + leftOut.length + ' endpoint(s) left out of the MCP tools ' +
             '(sign-in or credentials, OPTIONS/HEAD, or no JSON response); see "Left out of the tools" in ' +
+            path.join(outDir, 'README.md'));
+    }
+    // Likewise captured query NAMES that are not parameters: counted, never printed.
+    const droppedNames = patterns.reduce((n, p) => n + (p.droppedQueryNames || []).reduce((m, d) => m + d.names, 0), 0);
+    if (droppedNames > 0) {
+        console.log('generate-wrapper: ' + droppedNames + ' captured query name(s) are not parameters and were not emitted ' +
+            '(a timestamp, a scrub fake or a secret shape where a name goes); see "Query parameters" in ' +
             path.join(outDir, 'README.md'));
     }
     console.log('generate-wrapper: next step -- activate the pre-commit hook with:');

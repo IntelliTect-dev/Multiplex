@@ -574,6 +574,7 @@ module.exports = {
     listTools,
     listLeftOut,
     isSignInSegment,
+    wordsOf,
     toolNameFor,
     toolHintsFor,
     graphQLHints,
