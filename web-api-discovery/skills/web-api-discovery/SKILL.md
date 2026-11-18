@@ -1108,10 +1108,11 @@ working directory is discovered the same way, and its absence is not an error.
 
 **Check first, when the start's errors will not be seen** -- a detached
 process, a hidden console, a schedule, an agent. Run
-`node capture-har.js start ... --validate-only` with the same arguments the
-real start will get. It launches no browser, asks nothing and writes nothing,
-and it answers the gates above: would this start be refused? Its JSON on stdout
-is the resolved session, as before, plus one key:
+`node scripts/capture/capture-har.js start ... --validate-only` from the folder
+the capture will run in, with the same arguments the real start will get. It
+launches no browser, asks nothing and writes nothing, and it answers the gates
+above: would this start be refused? Its JSON on stdout is the resolved session,
+as before, plus one key:
 
 ```json
 "validation": {
@@ -1134,11 +1135,11 @@ Exit **0** when every check passes, **1** when any fails -- the code the real
 start itself ends with for the same refusal -- and **2** for a usage error,
 which prints no JSON. A failed check always prints the JSON, so read
 `validation`; exit 1 with nothing on stdout is the recorder itself failing.
-Each `reason` is the real start's own message (also on
-stderr), the checks are in the order a start asks them, and every failure is
-reported in one run. The answer is the one an **unattended** start gets: at a
-terminal the real start would offer to install the driver or scaffold a
-profile, and the check reports them missing rather than asking.
+Each `reason` is the real start's own message (also on stderr), the checks are
+in the order a start asks them, and every failure is reported in one run. The
+answer is the one an **unattended** start gets: at a terminal the real start
+would offer to install the driver or scaffold a profile, and the check reports
+them missing rather than asking.
 
 A pass covers these gates and no others. A capture store that is not
 gitignored, a capture profile that is already recording, no Chrome for
