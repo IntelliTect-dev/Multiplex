@@ -7,8 +7,11 @@ namespace Multiplex.Web.Auth.Clients;
 
 /// <summary>
 /// Fetches OAuth client ID metadata documents (an HTTPS URL used as <c>client_id</c>, e.g. ChatGPT's
-/// <c>https://chatgpt.com/oauth/client.json</c>). Bounded: 5 s for the whole fetch including redirects,
-/// 64 KB, HTTPS only (redirects too), cached 10 minutes (failures 1 minute).
+/// <c>https://chatgpt.com/oauth/client.json</c> or Claude's). Bounded: 15 s for the whole fetch
+/// including redirects (a busy PC took over 5 s for Claude's), 64 KB, HTTPS only (redirects too).
+/// Cached 10 minutes; a definite failure (a 4xx, a bad document) 1 minute. A failure for the moment
+/// (a timeout, a connection error, a 5xx or 429) is not cached, and falls back to the last good
+/// document for up to a day, so a slow or briefly down host never blocks a connect it served before.
 /// </summary>
 public sealed partial class ClientMetadataDocuments(
     IHttpClientFactory httpClients,
@@ -20,11 +23,15 @@ public sealed partial class ClientMetadataDocuments(
     internal const int MaxBytes = 64 * 1024;
     private const int MaxRedirects = 3;
     private const int MaxCacheEntries = 1000;
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SuccessLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan FailureLifetime = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan LastGoodLifetime = TimeSpan.FromDays(1);
+
+    /// <summary>The whole fetch, redirects included.</summary>
+    internal TimeSpan FetchTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     private readonly ConcurrentDictionary<string, (ClientLookup Result, DateTimeOffset Expires)> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (ClientLookup Result, DateTimeOffset FetchedAt)> _lastGood = new(StringComparer.Ordinal);
 
     /// <summary>A URL that may be used as a client id: HTTPS with a path, no fragment, user info or dot segments.</summary>
     public static bool IsDocumentUrl(string clientId) =>
@@ -40,7 +47,23 @@ public sealed partial class ClientMetadataDocuments(
         var now = time.GetUtcNow();
         if (_cache.TryGetValue(clientId, out var cached) && cached.Expires > now) return cached.Result;
 
-        var result = await FetchAsync(clientId, ct);
+        var (result, transient) = await FetchAsync(clientId, ct);
+        if (result.Client is not null)
+        {
+            if (_lastGood.Count >= MaxCacheEntries) _lastGood.Clear();
+            _lastGood[clientId] = (result, now);
+        }
+        else if (transient)
+        {
+            // Not cached: the next attempt fetches again. A document that was good recently still serves.
+            if (_lastGood.TryGetValue(clientId, out var good) && now - good.FetchedAt < LastGoodLifetime)
+            {
+                LogUsingLastGood(logger, clientId);
+                return good.Result;
+            }
+            return result;
+        }
+
         if (_cache.Count >= MaxCacheEntries)
         {
             foreach (var stale in _cache.Where(kv => kv.Value.Expires <= now).Select(kv => kv.Key).ToList()) _cache.TryRemove(stale, out _);
@@ -50,12 +73,13 @@ public sealed partial class ClientMetadataDocuments(
         return result;
     }
 
-    private async Task<ClientLookup> FetchAsync(string clientId, CancellationToken ct)
+    /// <summary>The lookup, and whether a failure is only for the moment (worth trying again soon).</summary>
+    private async Task<(ClientLookup Result, bool Transient)> FetchAsync(string clientId, CancellationToken ct)
     {
-        if (!IsDocumentUrl(clientId)) return ClientLookup.Fail("The client id is not a valid HTTPS client metadata document URL.");
+        if (!IsDocumentUrl(clientId)) return (ClientLookup.Fail("The client id is not a valid HTTPS client metadata document URL."), false);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(Timeout);
+        timeout.CancelAfter(FetchTimeout);
         var http = httpClients.CreateClient(HttpClientName);
 
         try
@@ -71,27 +95,31 @@ public sealed partial class ClientMetadataDocuments(
                 if ((int)response.StatusCode is >= 300 and < 400)
                 {
                     var location = response.Headers.Location;
-                    if (location is null) return Failed(clientId, "redirected without a Location");
+                    if (location is null) return (Failed(clientId, "redirected without a Location"), false);
                     url = location.IsAbsoluteUri ? location : new Uri(url, location);
-                    if (url.Scheme != Uri.UriSchemeHttps) return Failed(clientId, "redirected to a non-HTTPS URL");
+                    if (url.Scheme != Uri.UriSchemeHttps) return (Failed(clientId, "redirected to a non-HTTPS URL"), false);
                     continue;
                 }
 
-                if (!response.IsSuccessStatusCode) return Failed(clientId, $"returned HTTP {(int)response.StatusCode}");
-                if (response.Content.Headers.ContentLength > MaxBytes) return Failed(clientId, "is larger than 64 KB");
+                if (!response.IsSuccessStatusCode)
+                {
+                    var status = (int)response.StatusCode;
+                    return (Failed(clientId, $"returned HTTP {status}"), status is >= 500 or 429);
+                }
+                if (response.Content.Headers.ContentLength > MaxBytes) return (Failed(clientId, "is larger than 64 KB"), false);
 
                 var body = await ReadBoundedAsync(response.Content, timeout.Token);
-                return body is null ? Failed(clientId, "is larger than 64 KB") : Parse(clientId, body);
+                return (body is null ? Failed(clientId, "is larger than 64 KB") : Parse(clientId, body), false);
             }
-            return Failed(clientId, "redirected too many times");
+            return (Failed(clientId, "redirected too many times"), false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Failed(clientId, "timed out");
+            return (Failed(clientId, "timed out"), true);
         }
         catch (HttpRequestException ex)
         {
-            return Failed(clientId, $"could not be fetched ({ex.HttpRequestError})");
+            return (Failed(clientId, $"could not be fetched ({ex.HttpRequestError})"), true);
         }
     }
 
@@ -222,4 +250,7 @@ public sealed partial class ClientMetadataDocuments(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Client metadata document {ClientId} {Reason}.")]
     private static partial void LogFetchFailed(ILogger logger, string clientId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Using the last good client metadata document for {ClientId} while its host does not answer.")]
+    private static partial void LogUsingLastGood(ILogger logger, string clientId);
 }
