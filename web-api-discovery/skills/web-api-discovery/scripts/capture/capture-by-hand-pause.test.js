@@ -44,9 +44,13 @@ test('J1: without -AI it is a person\'s capture -- a throttle or a check is advi
         // A TAILNET IS THERE (faked onto loopback): before, this run would
         // have handed the check to "the phone" and started its 30-minute
         // ending. A person's capture gets advice instead.
+        // AS IN CI: no Playwright Chromium build, only the system Chrome. The
+        // recorder is pointed at an empty browsers folder, so a run that would
+        // need Playwright's own Chromium fails here as it does on the runner.
         const childEnv = driverEnv({
             HAR_CAPTURE_TAILSCALE: 'tailscale',
-            HAR_STUB_TAILSCALE_JSON: JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['127.0.0.1'] } })
+            HAR_STUB_TAILSCALE_JSON: JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['127.0.0.1'] } }),
+            PLAYWRIGHT_BROWSERS_PATH: kit.scratch('no-playwright-browsers')
         });
 
         let recorder = null;
