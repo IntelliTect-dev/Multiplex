@@ -343,8 +343,9 @@
                          or typing steps, at most 12 navigations a minute, each
                          wait drawn at random -- the default
       nav=MIN-MAX,action=MIN-MAX,per-minute=N
-                         milliseconds; any subset, the rest keep their defaults
-      off                every wait zero -- for tests, never for a real site
+                         milliseconds; any subset, the rest keep their defaults;
+                         a wait over 10 minutes is clamped to 10, and said so
+      off | 0            every wait zero -- for tests, never for a real site
 
     Whatever the pace, the recorder reads every response from the site: a 429
     or a 503 with Retry-After pauses; a block, a bot check or throttling that

@@ -58,16 +58,26 @@ const PACE_OFF = Object.freeze({
 const PACE_KEYS = { nav: 'navigation', navigation: 'navigation', action: 'action', 'per-minute': 'perMinute' };
 
 /**
+ * The longest single wait a `--pace` range may ask for: 10 minutes. Longer is
+ * clamped to it, and the run says so. Without a bound, Node runs a timer above
+ * 2^31-1 ms after 1 ms -- a huge wait became no wait at all.
+ */
+const MAX_PACE_WAIT_MS = 10 * 60 * 1000;
+
+/**
  * Parse a `--pace` value.
  *
  *   (absent) | human     the default pace
- *   off                  every wait zero, no ceiling (tests)
+ *   off | 0              every wait zero, no ceiling (tests); so is a spec
+ *                        that sets every wait and the ceiling to 0
  *   nav=1500-4000,action=300-1200,per-minute=12
- *                        any subset; what is not named keeps its default
+ *                        any subset; what is not named keeps its default;
+ *                        each wait at most MAX_PACE_WAIT_MS
  *
  * Refused, never guessed: a typo must not quietly become "no pacing".
  *
- * @returns {{pace: object} | {error: string}}
+ * @returns {{pace: object, notes?: string[]} | {error: string}} -- `notes`
+ *          are what the caller tells the operator (a clamped wait)
  */
 function parsePace(spec) {
     if (spec === undefined || spec === null) return { pace: DEFAULT_PACE };
@@ -76,6 +86,7 @@ function parsePace(spec) {
     if (text === 'off' || text === '0') return { pace: PACE_OFF };
     const pace = { navigation: DEFAULT_PACE.navigation.slice(), action: DEFAULT_PACE.action.slice(),
         perMinute: DEFAULT_PACE.perMinute };
+    const notes = [];
     for (const part of text.split(',')) {
         const m = /^\s*([a-z-]+)\s*=\s*(.+?)\s*$/.exec(part);
         const key = m && PACE_KEYS[m[1]];
@@ -93,9 +104,16 @@ function parsePace(spec) {
         const lo = Number(range[1]);
         const hi = range[2] === undefined ? lo : Number(range[2]);
         if (hi < lo) return { error: `--pace: ${m[1]}=${m[2]} has its maximum below its minimum` };
-        pace[key] = [lo, hi];
+        if (hi > MAX_PACE_WAIT_MS) {
+            notes.push(`--pace ${m[1]}=${m[2]}: a wait is at most 10 minutes (${MAX_PACE_WAIT_MS} ms); ` +
+                'longer is clamped to that.');
+        }
+        pace[key] = [Math.min(lo, MAX_PACE_WAIT_MS), Math.min(hi, MAX_PACE_WAIT_MS)];
     }
-    return { pace: Object.freeze(pace) };
+    // Every wait zero and no ceiling is `off` by another spelling -- and is
+    // marked as test mode the same way.
+    if (pace.navigation[1] === 0 && pace.action[1] === 0 && pace.perMinute === 0) return { pace: PACE_OFF };
+    return notes.length ? { pace: Object.freeze(pace), notes } : { pace: Object.freeze(pace) };
 }
 
 function seconds(ms) {
@@ -638,6 +656,7 @@ function throttleLines(decision, who = 'you', opts = {}) {
 module.exports = {
     DEFAULT_PACE,
     PACE_OFF,
+    MAX_PACE_WAIT_MS,
     DEFAULT_RETRY_AFTER_CAP_MS,
     CHALLENGE_BODY_MAX,
     INTERSTITIAL_BODY_MAX,
