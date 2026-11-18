@@ -2289,11 +2289,15 @@ the site said:
 - **When retries run out**, `<Name>ThrottledException` (an
   `HttpRequestException`) says what was throttled, how many attempts were made
   and what the site asked for.
-- **A block is never retried**: an HTML 403 from a CDN, a 403 carrying
-  `x-datadome` (in any content type), a `cf-mitigated: challenge`, or
-  Cloudflare's "Just a moment..." challenge served as an HTML 503, raises
-  `<Name>BlockedException` -- the same reading as the recorder's. Nothing works
-  around it.
+- **A block is never retried**: an HTML 403 from a CDN, a 403 whose body is
+  DataDome's block (JSON naming its `geo.captcha-delivery.com` CAPTCHA, in any
+  content type), a `cf-mitigated: challenge`, or Cloudflare's "Just a
+  moment..." challenge served as an HTML 503, raises `<Name>BlockedException`
+  -- the same reading as the recorder's. Nothing works around it. The
+  `x-datadome` header alone is not a block: DataDome sends it on every
+  response, so an application's own JSON 403 that carries it is handed back as
+  the 403 it is. A refusal's body is read for this only up to 64 KB, and stays
+  readable by the caller.
 - **Waiting is not counted as a timeout.** The client's `HttpClient.Timeout` is
   infinite and each attempt gets `AttemptTimeout` (60 s) instead, so honouring a
   60 s `Retry-After` does not turn into a `TaskCanceledException`.
