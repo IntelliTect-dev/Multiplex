@@ -1079,18 +1079,26 @@ recording process has got to about every 30 seconds. It reads that from the
 `ending` record the recording process writes into `session.json` as each phase
 starts, and from the files post-processing itself writes.
 
-It ends in one of these states. The state is in the one line of JSON it prints
-on stdout (`{ "stop": ..., "sessionDir": ..., "exitCode": ..., "ending": {...} }`),
-and `node capture-har.js status` reports the same thing under `ending` at any
-time:
+Once it has found the recording it prints one line of JSON on stdout --
+`{ "stop": ..., "sessionDir": ..., "exitCode": ..., "ending": {...} }` -- and
+`node capture-har.js status` reports the same `ending` at any time. (Exit 3, no
+capture session found, prints none: there is nothing to report on.)
 
 | State | What it means | Exit | What to do |
 |---|---|---|---|
-| `complete` | Post-processing finished. | 0, 5, 6 or 7 -- the capture's own result | Carry on with the artifacts it names. |
-| `progressing` | The stop registered and something has moved recently. **`stop` does not return in this state -- it keeps waiting.** `status` reports it. | -- | **Wait.** If your shell cut `stop` off, nothing is lost: run it again, or poll `status`. |
+| `complete` | Post-processing finished. | 0, 5, 6 or 7 -- the capture's own result (4 if the capture is refused as too small) | Carry on with the artifacts it names. |
+| `progressing` | The stop registered and something has moved recently. **`stop` does not return in this state -- it keeps waiting.** `status` reports it. | -- | **Wait.** If your shell cut `stop` off, nothing is lost: run it again and it goes on waiting, or poll `status`. |
 | `stalled` | The stop registered, and nothing has moved for longer than a capture of that size is allowed. | 1 | **Escalate.** Look at the recording process (its pid is in the JSON). Nothing was taken over or removed. |
-| `not-registered` | The recording process is running and has not taken up the stop within 60 seconds. The recording is still going. | 1 | **Ask again**, or end it at its terminal (ENTER) or by closing its browser window. The request stays in place. |
+| `not-registered` | The recording process is running and has not taken up the stop within 60 seconds. The recording is still going. | 1 | **Check `status` again shortly**: the request stays in place, so the recording ends the moment that process next looks for it. If it never does, end it at its terminal (ENTER) or by closing its browser window. |
 | `not-processed` | The capture was cancelled (Ctrl+C, then `c`): the raw is kept and nothing else was run. | 0 | Nothing. |
+| `recorder-gone` | The recording process has exited and left nothing usable (exit 4). When it left a recording, `stop` post-processes it itself and the state is `complete`. | 4 | Record again. |
+
+- **Running `stop` again does not start the clock again.** The state is read
+  from what is on disk, so a second `stop` waits only if something has moved
+  since -- the recorder took the stop up, or post-processing wrote something --
+  and otherwise says `stalled` or `not-registered` again at once. That makes it
+  safe to run as often as you like, and `status` is the same question without
+  the wait.
 
 - **The allowance** before `stalled` is 60 seconds, or 15 seconds per megabyte of
   capture where that is longer, and 30 minutes during the AI catalogue pass. A

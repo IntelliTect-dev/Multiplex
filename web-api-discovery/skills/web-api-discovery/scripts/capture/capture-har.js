@@ -258,8 +258,15 @@
  * post-processed underneath it. A recording process that has EXITED is a
  * different thing -- nothing else will ever finish its work, so `stop` does.
  *
+ * RUNNING `stop` AGAIN DOES NOT START THE CLOCK AGAIN. The state is read from
+ * what is on disk -- the record's times, the files' times, the age of the stop
+ * request -- so a second `stop` waits only if something has moved since, and
+ * otherwise gives the same answer at once. A stall an hour old is reported as
+ * an hour old by whoever asks.
+ *
  * `status` reports the same state under `ending`, from the same evaluation, and
- * `stop` prints it as one line of JSON on stdout:
+ * `stop` prints it as one line of JSON on stdout once it has found the
+ * recording (so not with exit 3):
  * `{ "stop": <state>, "sessionDir", "exitCode", "ending": { ... } }`.
  *
  * Usage:
@@ -6235,13 +6242,27 @@ function resolveSession(args) {
  * The recorder's half of what `stop` waits on. `by` is what ended the
  * recording, and is given once, when the ending is acknowledged.
  *
+ * WRITTEN BESIDE IT, THEN RENAMED. These writes exist to be read by another
+ * process WHILE this one works, and a plain rewrite truncates first: a `stop`
+ * or `status` reading in that instant finds an empty session.json and reports
+ * no session at all. A rename puts the whole record there or leaves the old
+ * one. If the rename cannot be made, the plain rewrite still lands the record.
+ *
  * NEVER FATAL. This is a note about the work, not the work: a session.json
  * that cannot be rewritten this instant must not cost a capture its scrub.
  */
 function noteEndingPhase(session, phase, by) {
     try {
         captureEnding.notePhase(session, phase, { by });
-        writeJson(path.join(session.sessionDir, SESSION_FILE), session);
+        const file = path.join(session.sessionDir, SESSION_FILE);
+        const staged = `${file}.writing`;
+        try {
+            writeJson(staged, session);
+            renameWithRetry(staged, file);
+        } catch (e) {
+            try { fs.unlinkSync(staged); } catch (_) { /* nothing more to do */ }
+            writeJson(file, session);
+        }
     } catch (e) {
         log.verbose(`capture-har: could not record the ${phase} phase: ${e.message}`);
     }
@@ -6312,20 +6333,16 @@ async function stop(args, deps = {}) {
         return exitCode;
     };
 
-    // THE TWO WAYS THIS RETURNS WITH THE RECORDER STILL RUNNING. Both leave
-    // everything exactly as it is: that process still owns the raw and the
-    // scrub. Assembling `raw.har` from its log here, as the fixed timer's
-    // expiry used to fall through to, raced it for the one file that cannot be
-    // re-made. And both exit 1, not 6 -- 6 says the scrub or the catalogue
-    // FAILED, and neither of these says anything about the capture at all.
-    if (waited.verdict.state === captureEnding.STATE_STALLED) {
-        log.lines(captureEnding.stalledLines(waited.verdict, session).map((line) => ['warn', line]));
-        return result(1, waited.verdict);
-    }
-    if (waited.verdict.state !== captureEnding.STATE_COMPLETE
-        && waited.verdict.state !== captureEnding.STATE_NOT_PROCESSED
-        && waited.verdict.state !== captureEnding.STATE_RECORDER_GONE) {
-        log.lines(captureEnding.notRegisteredLines(waited.verdict).map((line) => ['warn', line]));
+    // THE WAYS THIS RETURNS WITH THE RECORDER STILL RUNNING: post-processing
+    // stalled, or the stop never registered. Both leave everything exactly as
+    // it is -- that process still owns the raw and the scrub. Assembling
+    // `raw.har` from its log here, as the fixed timer's expiry used to fall
+    // through to, raced it for the one file that cannot be re-made. And both
+    // exit 1, not 6: 6 says the scrub or the catalogue FAILED, and neither of
+    // these says anything about the capture at all.
+    const unfinished = captureEnding.unfinishedLines(waited.verdict, session);
+    if (unfinished) {
+        log.lines(unfinished.map((line) => ['warn', line]));
         return result(1, waited.verdict);
     }
 
@@ -6337,7 +6354,11 @@ async function stop(args, deps = {}) {
         process.stderr.write(
             `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
             '  Assembling the incremental log instead.\n');
-    } else if (driverLost && first.state !== captureEnding.STATE_RECORDER_GONE) {
+    } else if (driverLost && waited.verdict.phase
+        && waited.verdict.phase !== captureEnding.PHASES.FINALIZING) {
+        // Said only when its own record shows it had STARTED post-processing.
+        // A recorder that ended a run it does not post-process -- sign-in
+        // needed, or nothing recorded -- finished what it meant to do.
         process.stderr.write(
             `capture-har: the recorder for ${sessionDir} exited before post-processing finished.\n` +
             '  Running it here instead.\n');
@@ -6356,13 +6377,13 @@ async function stop(args, deps = {}) {
         process.stderr.write(
             `capture-har: nothing was recorded for ${sessionDir}.\n` +
             '  Neither recorder produced a HAR: the recording was lost entirely.\n');
-        return 4;
+        return result(4);
     }
     if (summary.bytes < minBytes) {
         process.stderr.write(
             `capture-har: ${summary.path} is only ${summary.bytes} bytes ` +
             `(minimum ${minBytes}) -- treat this as a failed capture, not data.\n`);
-        return 4;
+        return result(4);
     }
 
     // The driver owns post-processing whenever it is alive, so `stop` waited

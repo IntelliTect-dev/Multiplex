@@ -30,8 +30,11 @@
 //   E8  a recorder that finished and exited between two looks is finished
 //   N1  the recorder's own record: registered once, moved at each phase
 //   W1  the wait goes on through four minutes of a scrub that keeps writing
+//   W1b it says where it is every thirty seconds, however fast the phases change
 //   W2  a recorder that exits is noticed at once, not waited on
 //   W3  a file that grew counts even where its modification time did not move
+//   W4  a machine that slept through the wait is not told its capture stalled
+//   W5  with every time on disk ahead of the clock, the wait still ends
 //   S1  `stop` on a 22 MB capture that takes five minutes: success, exit 0
 //   S2  `stop` on a stall: its own state, exit 1 -- never 6, never 0 -- and
 //       nothing taken over
@@ -40,6 +43,8 @@
 //   S4  the recorder exits mid-scrub: `stop` runs the phases itself, at once
 //   S5  `stop` on a cancelled capture reports it and exits 0
 //   S6  `status` gives the same state `stop` does, through the real command
+//   S7  `stop` prints its state even when it refuses the capture (exit 4)
+//   S8  a recorder that ended a run on purpose is not called one that died
 //   R1  post-processing reports each phase as it STARTS, in order
 //   R2  the AI catalogue pass is its own phase, entered before the child runs
 //
@@ -151,6 +156,8 @@ function fakeRun(steps = []) {
         elapsed: () => t - start,
         sleep: async (ms) => {
             t += ms;
+            // A wait that never ends would hang the suite rather than fail it.
+            if (t - start > 6 * 60 * MINUTE) throw new Error('six hours of fake time have passed: the wait never ends');
             while (pending.length && start + pending[0].at <= t) pending.shift().run(t);
         },
         /** Add a step after the run exists, for one that needs `run.start`. */
@@ -394,13 +401,33 @@ test('W1: the wait goes on through four minutes of a scrub that keeps writing', 
         `it returned after ${run.elapsed() / 1000}s -- before the work was finished`);
     assert.ok(run.elapsed() < 252 * SECOND, 'and no later than the work finishing');
     assert.ok(result.session.postProcess, 'the finished session is handed back');
-    // It says where it is while it waits: when that changes, and otherwise
-    // about every thirty seconds -- not on every poll.
+    // It says where it is while it waits: when that changes, and every thirty
+    // seconds whether or not it has -- not on every poll.
     assert.deepStrictEqual(said.filter((s) => s.why === 'change').map((s) => `${s.verdict.state}/${s.verdict.phase}`),
         ['stop-pending/null', 'progressing/scrub']);
     const ticks = said.filter((s) => s.why === 'interval');
-    assert.ok(ticks.length >= 7 && ticks.length <= 9, `said ${ticks.length} times in 250s`);
+    assert.strictEqual(ticks.length, 8, `said ${ticks.length} times in 250s`);
     assert.ok(ticks.every((s) => s.verdict.state === 'progressing' && s.verdict.phase === 'scrub'));
+});
+
+test('W1b: the thirty-second line is not starved by phases that change faster than that', async () => {
+    // Six phases, twenty seconds each. A line owed "every thirty seconds since
+    // anything was last said" would never come due: each change resets it.
+    const run = fakeRun();
+    const f = fixture('w1b', registered('finalizing', run.start, { summary: { exists: true, bytes: 2048 } }));
+    ['scrub', 'verify', 'publish', 'digest', 'catalogue'].forEach((phase, i) => {
+        run.schedule({ at: (i + 1) * 20 * SECOND, run: (t) => enter(f, phase, t) });
+    });
+    run.schedule({ at: 120 * SECOND, run: (t) => { f.session.postProcess = { errors: [], warnings: [] }; enter(f, 'complete', t); } });
+
+    const said = [];
+    await ending.waitForEnding(f.sessionDir, {
+        now: run.now, sleep: run.sleep, isRecorderAlive: run.isDriverAlive,
+        onWaiting: (verdict, why) => said.push({ why, at: run.elapsed() })
+    });
+
+    assert.deepStrictEqual(said.filter((s) => s.why === 'interval').map((s) => Math.round(s.at / 1000)),
+        [30, 60, 90], 'one line every thirty seconds of waiting, whatever else was said');
 });
 
 test('W2: a recorder that exits is noticed at once, not waited on', async () => {
@@ -437,6 +464,42 @@ test('W3: a file that grew counts even where its modification time did not move'
     assert.strictEqual(result.verdict.state, 'stalled');
     assert.ok(run.elapsed() >= 210 * SECOND && run.elapsed() < 212 * SECOND,
         `stalled was called at ${run.elapsed() / 1000}s`);
+});
+
+test('W4: a machine that slept through the wait is not told its capture stalled when it wakes', async () => {
+    // The lid closes two seconds into the wait and opens ten minutes later. The
+    // recorder was asleep for exactly as long, so nothing on disk has moved --
+    // and by the clock alone that is ten minutes of silence.
+    const run = fakeRun();
+    const f = fixture('w4', registered('scrub', run.start, { summary: { exists: true, bytes: 2048 } }));
+    let polls = 0;
+    const sleep = (ms) => run.sleep(++polls === 10 ? 10 * MINUTE : ms);
+
+    const result = await ending.waitForEnding(f.sessionDir, {
+        now: run.now, sleep, isRecorderAlive: run.isDriverAlive
+    });
+
+    assert.strictEqual(result.verdict.state, 'stalled', 'it is still a stall if nothing moves after waking');
+    const awake = 9 * 200 + 10 * MINUTE;
+    assert.ok(run.elapsed() >= awake + 60 * SECOND && run.elapsed() < awake + 62 * SECOND,
+        `a stall was called ${(run.elapsed() - awake) / 1000}s after waking; the allowance starts again there`);
+    assert.ok(result.verdict.quietSeconds >= 60 && result.verdict.quietSeconds < 62,
+        `and the silence it reports is the silence since then, not ${result.verdict.quietSeconds}s`);
+});
+
+test('W5: with every time on disk ahead of the clock, the silence is counted from when the wait began', async () => {
+    // A clock set back after the recorder wrote its record. Nothing on disk is
+    // usable, and "no usable sign means it moved just now" would never stall.
+    const run = fakeRun();
+    const f = fixture('w5', registered('scrub', run.start + 60 * MINUTE, { summary: { exists: true, bytes: 2048 } }));
+
+    const result = await ending.waitForEnding(f.sessionDir, {
+        now: run.now, sleep: run.sleep, isRecorderAlive: run.isDriverAlive
+    });
+
+    assert.strictEqual(result.verdict.state, 'stalled');
+    assert.ok(run.elapsed() >= 60 * SECOND && run.elapsed() < 62 * SECOND,
+        `stalled was called after ${run.elapsed() / 1000}s`);
 });
 
 // ---------------------------------------------------------------------------
@@ -565,6 +628,7 @@ test('S4: the recorder exits mid-scrub -- stop notices at once and runs the phas
     assert.strictEqual(r.json.stop, 'complete');
     assert.strictEqual(r.code, r.json.exitCode);
     assert.notStrictEqual(r.code, 1);
+    assert.match(r.stderr, /exited before post-processing finished/, 'and it says why it is doing the work itself');
 });
 
 test('S5: stop on a cancelled capture reports it and exits 0', async () => {
@@ -581,6 +645,45 @@ test('S5: stop on a cancelled capture reports it and exits 0', async () => {
     assert.strictEqual(r.json.stop, 'not-processed');
     assert.match(r.stderr, /not post-processed/);
     assert.ok(!fs.existsSync(path.join(f.sessionDir, 'scrubbed.har')), 'a cancelled capture is not scrubbed');
+});
+
+test('S7: a capture refused as too small still reports its state on stdout', async () => {
+    // Exit 4 is decided AFTER the wait, so it is reached by a recording whose
+    // post-processing finished normally. Whatever drives `stop` reads one line
+    // of JSON; an exit with none is a caller parsing nothing.
+    const run = fakeRun();
+    run.alive = false;
+    const f = fixture('s7');
+    writeAt(f.harPath, RAW_TEXT, run.start - MINUTE);
+    Object.assign(f.session, {
+        endedUtc: iso(run.start - MINUTE), endedBy: 'enter',
+        postProcess: { errors: [], warnings: [] }
+    });
+    enter(f, 'complete', run.start - MINUTE, 'enter');
+
+    const r = await runStop(f, run, { 'min-bytes': 10 * MB });
+
+    assert.strictEqual(r.code, 4);
+    assert.ok(r.json, `no JSON on stdout for exit 4: ${r.stdout}`);
+    assert.strictEqual(r.json.exitCode, 4);
+    assert.strictEqual(r.json.stop, 'complete');
+    assert.match(r.stderr, /failed capture/);
+});
+
+test('S8: a run that ended needing a sign-in is not described as post-processing cut short', async () => {
+    // The recorder ends such a run on purpose, without post-processing, and
+    // exits. If it does so while `stop` is watching, what `stop` saw is a
+    // recorder that finished what it meant to do -- not one that died mid-scrub.
+    const run = fakeRun([{ at: 1 * SECOND, run: () => { run.alive = false; } }]);
+    const f = fixture('s8');
+    writeAt(f.harPath, RAW_TEXT, run.start);
+    Object.assign(f.session, { endedUtc: iso(run.start), endedBy: 'sign-in-needed', summary: { exists: true, bytes: 2048 } });
+    enter(f, 'finalizing', run.start, 'sign-in-needed');
+
+    const r = await runStop(f, run);
+
+    assert.doesNotMatch(r.stderr, /exited before post-processing finished/);
+    assert.ok(r.json, r.stdout);
 });
 
 test('S6: status gives the same state stop does, through the real command line', () => {
