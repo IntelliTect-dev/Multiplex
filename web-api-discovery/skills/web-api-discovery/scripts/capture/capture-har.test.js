@@ -1501,15 +1501,13 @@ test('the agent rate watch counts only an agent that has been launched and is st
     // Under --ai the recorder's own first navigation -- and, when the start
     // page was refused and the agent never started, a person browsing by hand
     // -- used to be counted as "the agent is navigating faster than the pace".
-    const session = {};
-    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: false, session }), false,
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: false, agentRunning: false }), false,
         'not launched yet: the page loads are the recorder\'s, or a person\'s');
-    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session }), true);
-    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session: { agentExitCode: 0 } }), false,
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, agentRunning: true }), true);
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, agentRunning: false }), false,
         'it has finished');
-    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session: { agentStopped: 'hand-over' } }),
-        false, 'it was stopped');
-    assert.strictEqual(capture.agentDriving({ ai: false, agentLaunched: true, session }), false, 'no --ai, no agent');
+    assert.strictEqual(capture.agentDriving({ ai: false, agentLaunched: true, agentRunning: true }), false,
+        'no --ai, no agent');
 });
 
 test('start says when it clamps a --pace wait to 10 minutes', () => {

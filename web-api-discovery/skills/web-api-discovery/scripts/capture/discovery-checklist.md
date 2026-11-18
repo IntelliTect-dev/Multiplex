@@ -20,9 +20,10 @@ happy path. Cover whichever of these the goal reaches:
 - **pace and throttling** -- vary the inputs above at the pace this capture
   sets, not as fast as the site will answer, and never try to provoke a
   throttle. If the site throttles anyway ("Too Many Requests", "try again
-  later") or puts up a block or a bot check, stop and hand back rather than
-  retrying: the refusal is already recorded, and its status, any Retry-After
-  and its body shape are part of the error taxonomy too.
+  later") or puts up a block or a bot check, stop and end your turn rather than
+  retrying -- the recorder pauses the capture or hands it to a person, and
+  tells you -- the refusal is already recorded, and its status, any
+  Retry-After and its body shape are part of the error taxonomy too.
 
 Stop before any personal-details or payment page: reach it, record the request
 that led to it, and go no further.
