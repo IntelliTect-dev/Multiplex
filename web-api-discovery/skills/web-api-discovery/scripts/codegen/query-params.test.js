@@ -227,6 +227,10 @@ const SITE = 'https://api.example.com/api/search';
     assert.strictEqual(q.fb_dtsg.defaults, null);
     assert.strictEqual(scrubReasonFor('lsd', 'AbCdEf12'), 'secret-name');
     assert.strictEqual(scrubReasonFor('limit', '11'), null);
+    // Even an empty one: a default of "" would send `csrftoken=` on every call.
+    const empty = SITE + '?csrftoken=&limit=11';
+    assert.strictEqual(byWireName(parametersOf([empty, empty])).csrftoken.kind, 'scrubbed');
+    assert.strictEqual(byWireName(parametersOf([empty])).csrftoken.defaults, null, 'and on a single call');
     console.log('PASS: a parameter whose name is a known secret is never baked in, whatever its value looks like.');
 }
 
