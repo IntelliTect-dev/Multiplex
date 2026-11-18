@@ -51,21 +51,33 @@ $repo = Split-Path -Parent $PSScriptRoot
 $config = Read-MultiplexConfig -Path $configPath
 if ($PSBoundParameters.ContainsKey('Port')) { $config.Port = $Port }
 if ($PSBoundParameters.ContainsKey('Tunnel')) { $config.Tunnel = $Tunnel }
+Clear-MultiplexStalePublicAddress -Config $config   # no tunnel, no public address
+# -AllowedAccount replaces the whole allowlist (that is how an account is removed); say what that did.
+$previousAccounts = @($config.AllowedAccounts.tripit)
 if ($AllowedAccount) { $config.AllowedAccounts.tripit = ConvertTo-MultiplexAccountList -Account $AllowedAccount }
+$allowlist = Get-MultiplexAllowlistChange -Previous $previousAccounts -Current @($config.AllowedAccounts.tripit)
+Write-Host $allowlist.Summary
+if ($allowlist.RemovedNotice) { Write-Warning $allowlist.RemovedNotice }
 if (-not @($config.AllowedAccounts.tripit).Count) {
     throw 'No TripIt account is allowed to connect yet. Pass -AllowedAccount <your TripIt email>.'
 }
 
-# 1. Publish
+# 1. Publish into a staging folder first: a failed build leaves the running install untouched.
 $appDir = Join-Path $Root 'app'
 if ($PSCmdlet.ShouldProcess($appDir, 'Publish Multiplex.Web')) {
-    $task = Get-ScheduledTask -TaskName 'Multiplex' -ErrorAction SilentlyContinue
-    if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -TaskName 'Multiplex' }
-    Get-Process -Name 'Multiplex.Web' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($appDir, [StringComparison]::OrdinalIgnoreCase) } |
-        Stop-Process -Force
-    dotnet publish (Join-Path $repo 'src/Multiplex.Web/Multiplex.Web.csproj') -c Release -o $appDir --nologo -v quiet
-    if ($LASTEXITCODE) { throw "dotnet publish failed ($LASTEXITCODE)" }
+    $project = Join-Path $repo 'src/Multiplex.Web/Multiplex.Web.csproj'
+    Update-MultiplexApp -AppDir $appDir -Publish {
+        param($destination)
+        dotnet publish $project -c Release -o $destination --nologo -v quiet
+        if ($LASTEXITCODE) { throw "dotnet publish failed ($LASTEXITCODE); the installed Multiplex was left as it was." }
+    } -StopServer {
+        $task = Get-ScheduledTask -TaskName 'Multiplex' -ErrorAction SilentlyContinue
+        if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -TaskName 'Multiplex' }
+        Get-Process -Name 'Multiplex.Web' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and (Test-MultiplexPathUnder -Path $_.Path -Folder $appDir) } |
+            Stop-Process -Force -PassThru |
+            Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+    }
     Copy-Item (Join-Path $PSScriptRoot 'Start-Multiplex.ps1'), (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Destination $Root -Force
 }
 

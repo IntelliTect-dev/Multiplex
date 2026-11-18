@@ -22,50 +22,18 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $tunnel = $null
 
 try {
-    switch ($config.Tunnel) {
-        'Cloudflare' {
-            $log = Join-Path $logDir 'cloudflared.log'
-            Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
-            $tunnel = Start-Process -FilePath 'cloudflared' -PassThru -WindowStyle Hidden `
-                -ArgumentList @('tunnel', '--no-autoupdate', '--url', "http://127.0.0.1:$($config.Port)", '--logfile', $log)
-            $deadline = (Get-Date).AddSeconds(60)
-            $url = $null
-            while (-not $url -and (Get-Date) -lt $deadline) {
-                Start-Sleep -Milliseconds 500
-                if (Test-Path -LiteralPath $log) { $url = Get-QuickTunnelUrl -Lines (Get-Content -LiteralPath $log) }
-            }
-            if (-not $url) { throw "cloudflared did not report a public address within 60 s; see $log" }
-            $config.PublicBaseUrl = $url
-            Write-MultiplexConfig -Config $config -Path $configPath
-            Write-Host "Public address (changes on every start): $url"
-        }
-        'Tailscale' {
-            $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
-            # When Funnel is not enabled for the tailnet, `tailscale funnel` prints an enable link and
-            # waits indefinitely; never let that keep the server from starting.
-            $job = Start-Job { param($exe, $port) & $exe funnel --bg --yes "$port" 2>&1 } -ArgumentList $ts, $config.Port
-            $finished = Wait-Job $job -Timeout 20
-            $output = (Receive-Job $job) -join "`n"
-            Remove-Job $job -Force
-            if (-not $finished -or $output -match 'not enabled') {
-                Add-Content -LiteralPath (Join-Path $logDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available: $output"
-                Write-Warning "Tailscale Funnel is not enabled for this tailnet; serving locally only. $output"
-            } else {
-                $dns = (& $ts status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
-                $config.PublicBaseUrl = "https://$dns"
-                Write-MultiplexConfig -Config $config -Path $configPath
-                Write-Host "Public address: $($config.PublicBaseUrl)"
-            }
-        }
-    }
+    # Clears the recorded public address first, so only a tunnel that came up sets it.
+    $tunnel = Start-MultiplexTunnel -Config $config -ConfigPath $configPath -LogDir $logDir
 
     foreach ($pair in (Get-MultiplexServerEnvironment -Config $config -Root $Root).GetEnumerator()) {
         [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'Process')
     }
     # Run from the app folder: the server reads appsettings.json from its working directory.
     $appDir = Join-Path $Root 'app'
+    $serverLog = Join-Path $logDir 'server.log'
+    Limit-MultiplexLog -Path $serverLog   # over ~10 MB it becomes server.log.1; one earlier log is kept
     Push-Location $appDir
-    try { & (Join-Path $appDir 'Multiplex.Web.exe') *>> (Join-Path $logDir 'server.log') }
+    try { & (Join-Path $appDir 'Multiplex.Web.exe') *>> $serverLog }
     finally { Pop-Location }
     exit $LASTEXITCODE
 }

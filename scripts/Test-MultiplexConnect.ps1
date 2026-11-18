@@ -8,14 +8,18 @@
     For unattended checks of an install. The connect pages need the owner passcode and an
     account the server already holds a signed-in session for (the "Continue as" choice);
     this script never signs in to the site itself. Exit code 0 when every step passes.
+    The passcode comes from $env:MULTIPLEX_PASSCODE unless -Passcode is given; prefer the
+    variable, which keeps it out of process lists and shell history.
 .EXAMPLE
-    ./scripts/Test-MultiplexConnect.ps1 -BaseUrl http://localhost:5190 -Passcode (./scripts/Install-Multiplex.ps1 -ShowPasscode) -ExpectEmail test@example.com
+    $env:MULTIPLEX_PASSCODE = (./scripts/Install-Multiplex.ps1 -ShowPasscode)
+    ./scripts/Test-MultiplexConnect.ps1 -BaseUrl http://localhost:5190 -ExpectEmail test@example.com
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $BaseUrl,
     [string] $Slug = 'tripit',
-    [Parameter(Mandatory)] [string] $Passcode,
+    # Defaults to $env:MULTIPLEX_PASSCODE.
+    [string] $Passcode,
     [string] $ExpectEmail,
     [string] $ToolName = 'tripit_get_profile',
     [hashtable] $ToolArguments = @{},
@@ -27,6 +31,8 @@ param(
     [string] $SaveGrantTo)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Force
+$Passcode = Resolve-MultiplexPasscode -Passcode $Passcode
 $BaseUrl = $BaseUrl.TrimEnd('/')
 $mcpUrl = "$BaseUrl/$Slug/mcp"
 $failures = 0
