@@ -445,7 +445,7 @@ function Get-MultiplexStartReport {
     $sections = foreach ($name in 'start.log', 'tunnel.log', 'server.log') {
         $path = Join-Path $LogDir $name
         $lines = @(Get-Content -LiteralPath $path -Tail $Tail -ErrorAction SilentlyContinue)
-        if ($lines) { "${path}:"; $lines | ForEach-Object { "  $_" } }
+        if ($lines) { "Last lines of ${path}:"; $lines | ForEach-Object { "  $_" } }   # may include earlier starts
     }
     if (-not $sections) { return "Nothing was logged in ${LogDir}: start-up ended before it could write its log." }
     return $sections -join [Environment]::NewLine

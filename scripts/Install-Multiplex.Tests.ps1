@@ -143,7 +143,6 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
         $script:config.Tunnel = 'Tailscale'
         $script:config.PublicBaseUrl = 'https://old-tunnel.example.ts.net'   # left from an earlier start
         Write-MultiplexConfig -Config $script:config -Path $script:path
-        InModuleScope Multiplex.Install { $script:TailscaleTimeoutSeconds = 3 }
         function Start-Tunnel {
             Start-MultiplexTunnel -Config $script:config -ConfigPath $script:path -LogDir $script:logDir -WarningVariable script:warned -WarningAction SilentlyContinue 6>$null
         }
@@ -212,6 +211,7 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
         New-FakeTailscale -Dir $script:fake -Responses @{
             status   = @{ Out = $script:running }
             'funnel' = @{ Out = 'Funnel is not enabled on your tailnet. To enable, visit: https://login.tailscale.com/f/funnel?node=abc'; Hang = $true } }
+        InModuleScope Multiplex.Install { $script:TailscaleTimeoutSeconds = 3 }   # short only here: a slow PC must not time out the other calls
         $elapsed = Measure-Command { { Start-Tunnel } | Should -Not -Throw }
         $elapsed.TotalSeconds | Should -BeLessThan 20
         (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
@@ -285,6 +285,7 @@ Describe 'start-up report' {
         Set-Content -LiteralPath (Join-Path $logs 'tunnel.log') -Value '2026-11-18T06:12:10 Tailscale Funnel is not available: refused'
         Set-Content -LiteralPath (Join-Path $logs 'server.log') -Value (1..30 | ForEach-Object { "server line $_" })
         $report = Get-MultiplexStartReport -LogDir $logs
+        $report | Should -Match ([regex]::Escape("Last lines of $(Join-Path $logs 'start.log')"))
         $report | Should -Match 'Start-up failed while starting the server: access denied'
         $report | Should -Match 'Tailscale Funnel is not available: refused'
         $report | Should -Match 'server line 30'
