@@ -13,7 +13,8 @@
 #
 #   capture/capture-preflight.test.js the preflight runs before anything is
 #                                     scaffolded, prompted or opened;
-#                                     --validate-only stays dependency-free;
+#                                     --validate-only reports a missing
+#                                     dependency rather than passing (#25);
 #                                     and a non-repo capture folder gets the
 #                                     ignore rules left behind for it.
 #
