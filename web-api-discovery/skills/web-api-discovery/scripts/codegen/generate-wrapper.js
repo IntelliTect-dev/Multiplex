@@ -4,10 +4,13 @@
  *
  * Pipeline:
  *   1. Load HAR(s) + auth-detection JSON + project metadata.
- *   2. Extract endpoints, detect GraphQL, dedup path patterns.
+ *   2. Extract endpoints, detect GraphQL, dedup path patterns, and collect each
+ *      pattern's query parameters across all its captured calls (query-params.js).
  *   3. Infer + merge JSON shapes -> typed models.
  *   4. Emit Client.Generated.cs + Models.Generated.cs (partial classes), and
  *      <Name>Tools.Generated.cs -- the MCP tool class, one tool per client method.
+ *      Both take the endpoint's query parameters; what each defaults to comes
+ *      from what the capture showed, and a scrubbed value is never a default.
  *   5. Substitute existing csharp/*.tmpl files (Client.cs, ISessionStore.cs, etc.).
  *   6. Emit .csproj with NuGet metadata.
  *   7. Emit README.md (recipes + polite-crawl note).
@@ -31,6 +34,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
 const { listTools, listLeftOut, emitToolsFile } = require('./mcp-tools-emit.js');
+const { collectQueryParameters, loadScrubTables } = require('./query-params.js');
+const {
+    describeQueryParameters, clientQueryLines, clientQueryHelperLines, queryReadmeSection, recipeQueryArguments, QUERY_LOCAL,
+} = require('./query-emit.js');
 const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 const { detectAntiBotCookies } = require('../har/detect-auth.js');
@@ -183,7 +190,10 @@ function parseUrl(rawUrl) {
         const u = new URL(rawUrl);
         // Split path into segments, drop empty leading segment.
         const segs = u.pathname.split('/').filter(Boolean);
-        return { host: u.host, segments: segs, pathname: u.pathname };
+        // The query's ordered [name, value] pairs, decoded the way a server
+        // decodes them (percent-escapes, and `+` as a space). Each call of an
+        // endpoint keeps its own, so query-params.js can tell what varied.
+        return { host: u.host, segments: segs, pathname: u.pathname, query: Array.from(u.searchParams) };
     } catch { return null; }
 }
 
@@ -792,17 +802,26 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
         const httpVerb = (p.method || 'GET').toUpperCase();
         const verbExpr = 'HttpMethod.' + (httpVerb.charAt(0) + httpVerb.slice(1).toLowerCase());
         const acceptsBody = httpVerb === 'POST' || httpVerb === 'PUT' || httpVerb === 'PATCH';
+        // What the capture showed in this endpoint's query string (issue #34).
+        // Order: path parameters, the body, the query parameters, ct -- so a
+        // call written before the endpoint had any still passes its body where
+        // the body goes.
+        const queryParams = p.queryParameters || [];
         const sigArgs = pathArgs.map((a) => a.type + ' ' + a.name);
         if (acceptsBody) sigArgs.push('string? body = null');
+        for (const q of queryParams) sigArgs.push(q.declaration);
         sigArgs.push('CancellationToken ct = default');
         const sig = sigArgs.join(', ');
         const pathExpr = pathExpression(p);
         const bodyArg = acceptsBody ? 'body' : 'null';
         lines.push('    /// <summary>' + describeFor(p) + '</summary>');
+        for (const l of queryParamDocLines(p, pathArgs, acceptsBody)) lines.push(l);
         lines.push('    [Description("' + escapeCs(describeFor(p)) + '")]');
         lines.push('    public async Task<' + modelName + '> ' + methodName + '(' + sig + ')');
         lines.push('    {');
-        lines.push('        var raw = await SendRawAsync(' + pathExpr + ', ' + verbExpr + ', jsonBody: ' + bodyArg + ', query: null, ct: ct).ConfigureAwait(false);');
+        for (const l of clientQueryLines(queryParams)) lines.push(l);
+        const queryArg = queryParams.length > 0 ? QUERY_LOCAL : 'null';
+        lines.push('        var raw = await SendRawAsync(' + pathExpr + ', ' + verbExpr + ', jsonBody: ' + bodyArg + ', query: ' + queryArg + ', ct: ct).ConfigureAwait(false);');
         if (p.envelope && p.wrapperModel) {
             // Deserialize the wrapper record (kept available in Models.Generated.cs)
             // then return the inner payload property. Conservatism: heuristic
@@ -818,6 +837,13 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
         lines.push('');
     }
 
+    // The helpers the query lines above call: once, and only in a client that
+    // has a query to send.
+    if (patterns.some((p) => (p.queryParameters || []).length > 0)) {
+        for (const l of clientQueryHelperLines()) lines.push(l);
+        lines.push('');
+    }
+
     lines.push('    private async Task<string> SendRawJsonAsync(string path, string json, CancellationToken ct)');
     lines.push('    {');
     lines.push('        // POST helper used by GraphQLAsync; delegates to the hand-written Client.cs partial.');
@@ -826,6 +852,25 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
     lines.push('}');
     lines.push('');
     return lines.join('\n');
+}
+
+/**
+ * The `<param>` documentation of a client method that takes query parameters:
+ * what each one is on the wire, what the capture showed, and what is sent when
+ * it is omitted. Every parameter of the method is documented, or none is -- a
+ * method documented in part is a compiler warning (CS1573) for a consumer who
+ * turns the XML documentation file on. A method with no query parameters gets
+ * none, as before.
+ */
+function queryParamDocLines(p, pathArgs, acceptsBody) {
+    const queryParams = p.queryParameters || [];
+    if (queryParams.length === 0) return [];
+    const doc = (name, text) => '    /// <param name="' + name + '">' + xmlEscape(text) + '</param>';
+    const lines = pathArgs.map((a) => doc(a.name, 'The ' + a.name + ' in ' + patternPath(p) + '.'));
+    if (acceptsBody) lines.push(doc('body', 'The JSON request body, as text. Omit it to send no body.'));
+    for (const q of queryParams) lines.push(doc(q.toolName, q.description));
+    lines.push(doc('ct', 'Cancels the request.'));
+    return lines;
 }
 
 function pathExpression(p) {
@@ -1013,7 +1058,8 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
         '| Tool | Request | Read-only | Destructive | Idempotent |',
         '|---|---|---|---|---|',
     ];
-    for (const tool of listTools({ patterns, hasGraphQL, methodNameFor })) {
+    const tools = listTools({ patterns, hasGraphQL, methodNameFor });
+    for (const tool of tools) {
         const request = tool.pattern
             ? tool.pattern.method.toUpperCase() + ' ' + patternPath(tool.pattern)
             : 'POST /graphql (query or mutation)';
@@ -1053,6 +1099,13 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
     lines.push('these tools, with these hints.');
     lines.push('');
     for (const line of leftOutReadmeLines(opts, patterns)) lines.push(line);
+    // What each tool takes in its query string, what it sends when a parameter
+    // is omitted, and what is never baked in (issue #34).
+    const querySection = queryReadmeSection(tools, opts);
+    if (querySection) {
+        lines.push('');
+        lines.push(querySection);
+    }
     return lines.join('\n');
 }
 
@@ -1251,7 +1304,10 @@ function buildRecipes(opts, patterns, hasGraphQL) {
     }
     for (const p of patterns.slice(0, 4)) {
         const m = methodNameFor(p);
-        const paramArgs = p.segments.filter((s) => s.param).map((s) => s.type === 'int' ? '1' : '"abc"').join(', ');
+        // A search term, a page, a filter: whatever the capture showed varying
+        // is what a caller will want to pass first (issue #34).
+        const paramArgs = p.segments.filter((s) => s.param).map((s) => s.type === 'int' ? '1' : '"abc"')
+            .concat(recipeQueryArguments(p)).join(', ');
         out.push({
             title: p.method + ' ' + patternPath(p),
             code: 'var result = await client.' + m + '(' + paramArgs + ');',
@@ -1414,6 +1470,27 @@ function run(args) {
         } else {
             p.responseModel = 'JsonElement';
         }
+    }
+
+    // What each endpoint's captured calls carried in their query strings, and
+    // so what a generated call sends by default (issue #34). The scrub's
+    // substitution tables are looked for beside each capture -- which is where
+    // run-agent.js puts them -- so a replaced value that carries no marker is
+    // still never baked in. Only paths are reported; a table's contents never are.
+    const scrub = loadScrubTables(harPaths);
+    for (const source of scrub.sources) {
+        console.log('generate-wrapper: read the scrub\'s substitution table ' + source +
+            ' (a query value it replaced is not baked in)');
+    }
+    for (const problem of scrub.problems) {
+        console.error('generate-wrapper: NOTE -- ' + problem +
+            '; scrubbed query values are recognised by their markers only.');
+    }
+    for (const p of patterns) {
+        p.queryParameters = describeQueryParameters(collectQueryParameters(p.samples, {
+            reserved: p.segments.filter((s) => s.param).map((s) => s.param),
+            scrub,
+        }));
     }
 
     // Out dirs.
