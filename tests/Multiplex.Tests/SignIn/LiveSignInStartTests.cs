@@ -27,4 +27,20 @@ public sealed class LiveSignInStartTests
         Assert.Matches(new Regex(@"^Live sign-in for stub failed: [A-Za-z0-9_.`]+$"), failure.Message);
         Assert.DoesNotContain(missingBrowser, host.Logs.AllText);
     }
+
+    /// <summary>A sign-in that could not even be set up must give its live-browser slot back.</summary>
+    [Fact]
+    public async Task Sign_in_that_fails_to_start_does_not_use_up_a_live_browser_slot()
+    {
+        var options = new SignInTestOptions { ExecutablePath = Path.Combine(Path.GetTempPath(), "no-such-chrome.exe") };
+        options.Settings["SignIn:MaxLiveBrowsers"] = "1";
+        await using var host = new SignInTestHost(options);
+        var registry = host.Get<LiveSignInRegistry>();
+
+        // An invalid slug cannot name a profile folder, so the attempt cannot be created.
+        Assert.Throws<ArgumentException>(() => registry.StartOrResume(new SlugOnlyDefinition("Not a slug!"), "p-broken"));
+        Assert.Null(registry.FindForPending("p-broken"));
+
+        Assert.NotNull(registry.StartOrResume(host.Definition, "p1"));
+    }
 }
