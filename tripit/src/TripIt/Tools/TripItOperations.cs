@@ -612,31 +612,61 @@ public sealed class TripItOperations(TripItClient client)
     }
 
     /// <summary>
-    /// Describes deleting one leg. With the plan's type and uuid it names the leg and checks
-    /// that it belongs to that plan; TripIt has no lookup by segment uuid alone.
+    /// Describes deleting one leg of a plan, naming the plan and the leg, after checking that the
+    /// leg belongs to that plan (TripIt has no lookup by segment uuid alone). Changes nothing.
     /// </summary>
-    public async Task<string> PreviewDeleteSegmentAsync(string segmentUuid, string? type, string? objectUuid,
+    public async Task<string> PreviewDeleteSegmentAsync(string segmentUuid, string type, string objectUuid,
         CancellationToken ct)
     {
-        TripsClient.ValidateUuid(segmentUuid);
-        if (type is null || objectUuid is null)
-        {
-            return $"Will permanently delete the leg (segment) {segmentUuid}; the rest of its reservation stays. " +
-                   "(Pass the plan's type and uuid to see which leg this is.)";
-        }
-        var t = TripItObjectTypes.Parse(type);
-        var current = await client.Objects.GetAsync(t, objectUuid, ct).ConfigureAwait(false);
-        var legs = ItineraryBuilder.FromObject(t, current).ToList();
-        var leg = legs.FirstOrDefault(l => string.Equals(l.SegmentUuid, segmentUuid, StringComparison.OrdinalIgnoreCase))
-                  ?? throw new ArgumentException($"Segment {segmentUuid} is not a leg of {t.ToPathSegment()} {objectUuid}.");
-        return $"Will permanently delete one leg of this {t.ToDisplayName()}: {Line(leg)}. " +
-               $"{(legs.Count - 1 == 0 ? "It is the only leg." : $"{legs.Count - 1} other leg(s) stay.")}";
+        var (t, plan, legs, leg) = await LegOfPlanAsync(segmentUuid, type, objectUuid, ct).ConfigureAwait(false);
+        return $"Will permanently delete one leg of {PlanName(t, plan, objectUuid)}: {Line(leg)}. " +
+               (legs.Count == 1 ? "It is the plan's only leg." : $"The {legs.Count - 1} other leg(s) stay.");
     }
 
+    /// <summary>
+    /// Deletes one leg of a plan, after checking again that it still belongs to that plan: the
+    /// plan may have changed since the preview.
+    /// </summary>
+    public async Task<string> DeleteSegmentAsync(string segmentUuid, string type, string objectUuid, CancellationToken ct)
+    {
+        var (t, _, _, leg) = await LegOfPlanAsync(segmentUuid, type, objectUuid, ct).ConfigureAwait(false);
+        await client.Objects.DeleteSegmentAsync(segmentUuid, ct).ConfigureAwait(false);
+        return ToJson(new { deleted_segment = segmentUuid, type = t.ToPathSegment(), object_uuid = objectUuid, leg });
+    }
+
+    /// <summary>Deletes one leg by its uuid alone, without checking which plan it belongs to.</summary>
     public async Task<string> DeleteSegmentAsync(string segmentUuid, CancellationToken ct)
     {
         await client.Objects.DeleteSegmentAsync(segmentUuid, ct).ConfigureAwait(false);
         return ToJson(new { deleted_segment = segmentUuid });
+    }
+
+    private async Task<(TripItObjectType Type, JsonElement Plan, IReadOnlyList<ItineraryItem> Legs, ItineraryItem Leg)>
+        LegOfPlanAsync(string segmentUuid, string type, string objectUuid, CancellationToken ct)
+    {
+        TripsClient.ValidateUuid(segmentUuid);
+        if (string.IsNullOrWhiteSpace(type))
+            throw new ArgumentException("type is required: the plan's type (air, rail, transport or cruise).");
+        if (string.IsNullOrWhiteSpace(objectUuid))
+            throw new ArgumentException("objectUuid is required: the uuid of the plan the leg belongs to (object_uuid in an itinerary line).");
+        var t = TripItObjectTypes.Parse(type);
+        var plan = await client.Objects.GetAsync(t, objectUuid, ct).ConfigureAwait(false);
+        var legs = ItineraryBuilder.FromObject(t, plan).Where(l => l.SegmentUuid is not null).ToList();
+        var leg = legs.FirstOrDefault(l => string.Equals(l.SegmentUuid, segmentUuid, StringComparison.OrdinalIgnoreCase))
+                  ?? throw new ArgumentException(
+                      $"Segment {segmentUuid} is not a leg of {t.ToPathSegment()} {objectUuid}. Nothing was deleted.");
+        return (t, plan, legs, leg);
+    }
+
+    /// <summary>"the flight plan {uuid} (confirmation ABC123, Example Air)".</summary>
+    private static string PlanName(TripItObjectType type, JsonElement plan, string uuid)
+    {
+        var details = new[]
+        {
+            TripItJson.Str(plan, "supplier_conf_num") is { } conf ? $"confirmation {conf}" : null,
+            TripItJson.Str(plan, "supplier_name") ?? TripItJson.Str(plan, "booking_site_name"),
+        }.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        return $"the {type.ToDisplayName()} plan {uuid}" + (details.Count == 0 ? "" : $" ({string.Join(", ", details)})");
     }
 
     public async Task<string> MovePlanAsync(string type, string uuid, string? tripUuid, CancellationToken ct)
