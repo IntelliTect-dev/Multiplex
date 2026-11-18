@@ -436,8 +436,12 @@ Describe 'no TripIt account list' {
         }
     }
 
-    It 'the installer has no -AllowedAccount parameter' {
-        (Get-Command (Join-Path $PSScriptRoot 'Install-Multiplex.ps1')).Parameters.Keys | Should -Not -Contain 'AllowedAccount'
+    It 'the installer has no -AllowedAccount parameter, and its help says so' {
+        $script = Join-Path $PSScriptRoot 'Install-Multiplex.ps1'
+        (Get-Command $script).Parameters.Keys | Should -Not -Contain 'AllowedAccount'
+        # An old command line stops at parameter binding; the help is where the owner finds out why.
+        ((Get-Help $script -Full).alertSet.alert.Text -join ' ') |
+            Should -Match ([regex]::Escape('-AllowedAccount was removed in #52; re-run the installer without it.'))
     }
 
     It 'installs without being given a TripIt account' {

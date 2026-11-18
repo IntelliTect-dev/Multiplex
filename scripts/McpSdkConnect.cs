@@ -3,7 +3,8 @@
 // An independent MCP client for checking a Multiplex endpoint: the official C# MCP SDK does
 // discovery from the 401, dynamic client registration, PKCE, token exchange and every MCP
 // call. The only thing supplied here is the part a person's browser plays on the connect
-// pages (owner passcode, then "Continue as" an account the server already holds).
+// pages: the owner passcode. Since #52 every connection then signs in to the site live, which
+// this check cannot do, so it stops with a message once the live sign-in starts.
 //
 //   $env:MULTIPLEX_PASSCODE = (./scripts/Install-Multiplex.ps1 -ShowPasscode)
 //   dotnet run scripts/McpSdkConnect.cs -- http://localhost:5190 tripit tripit_get_profile
@@ -81,10 +82,12 @@ static class ConnectPages
             var back = Regex.Match(html, Regex.Escape(redirectUri.GetLeftPart(UriPartial.Path)) + "[^\"'<\\s]*");
             if (back.Success) { url = new Uri(WebUtility.HtmlDecode(back.Value)); continue; }
 
+            if (url.AbsolutePath.EndsWith("/live", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "The passcode was accepted and the live sign-in started; every connection signs in to the site itself (#52), which this check cannot do.");
             var forms = Regex.Matches(html, "(?is)<form\\b(?<a>[^>]*)>(?<b>.*?)</form>").Select(m => m).ToList();
             var form = forms.FirstOrDefault(f => Regex.IsMatch(f.Groups["b"].Value, "(?i)name\\s*=\\s*\"[^\"]*passcode"))
-                       ?? forms.FirstOrDefault(f => Regex.IsMatch(f.Value, "(?i)continue as"))
-                       ?? throw new InvalidOperationException($"HTTP {(int)response.StatusCode} at {url} with no passcode or 'Continue as' form");
+                       ?? throw new InvalidOperationException($"HTTP {(int)response.StatusCode} at {url} with no passcode form");
             post = [];
             foreach (Match input in Regex.Matches(form.Groups["b"].Value, "(?is)<input\\b[^>]*>"))
             {
@@ -94,8 +97,6 @@ static class ConnectPages
                     ? passcode
                     : WebUtility.HtmlDecode(Regex.Match(input.Value, "(?i)\\bvalue\\s*=\\s*\"(?<v>[^\"]*)\"").Groups["v"].Value);
             }
-            var button = Regex.Match(form.Groups["b"].Value, "(?is)<button\\b[^>]*\\bname\\s*=\\s*\"(?<n>[^\"]+)\"[^>]*\\bvalue\\s*=\\s*\"(?<v>[^\"]*)\"");
-            if (button.Success) post[button.Groups["n"].Value] = WebUtility.HtmlDecode(button.Groups["v"].Value);
             var action = WebUtility.HtmlDecode(Regex.Match(form.Groups["a"].Value, "(?i)action\\s*=\\s*\"(?<x>[^\"]*)\"").Groups["x"].Value);
             url = action.Length == 0 ? url : new Uri(url, action);
         }
