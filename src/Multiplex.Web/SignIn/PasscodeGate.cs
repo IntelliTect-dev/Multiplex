@@ -70,7 +70,7 @@ public sealed class PasscodeGate
         var keys = Keys(pendingId, clientIp);
         if (!TryReserve(keys))
         {
-            _logger.LogWarning("Connect gate locked out for pending {PendingId} / client {ClientIp}.", pendingId, clientIp);
+            _logger.LogWarning("Connect gate locked out for pending {PendingRef} / client {ClientIp}.", SignInLog.PendingId(pendingId), clientIp);
             return GateResult.LockedOut;
         }
 
@@ -93,7 +93,7 @@ public sealed class PasscodeGate
         }
 
         var locked = Settle(keys, Outcome.Wrong);
-        _logger.LogWarning("Wrong connect passcode for pending {PendingId} from {ClientIp}.", pendingId, clientIp);
+        _logger.LogWarning("Wrong connect passcode for pending {PendingRef} from {ClientIp}.", SignInLog.PendingId(pendingId), clientIp);
         return locked ? GateResult.LockedOut : GateResult.Wrong;
     }
 

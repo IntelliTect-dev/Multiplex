@@ -173,6 +173,25 @@ public sealed class PasscodeGateTests
         Assert.Equal(GateResult.Passed, gate.Check("p1", "10.0.0.1", "right passcode"));
     }
 
+    /// <summary>
+    /// A pending id is a capability (whoever holds it can cancel that authorization), so the
+    /// gate's warnings name it by a short hash only: enough to match log lines, useless to replay.
+    /// </summary>
+    [Fact]
+    public void Gate_logs_name_a_pending_authorization_by_a_short_hash_not_by_its_id()
+    {
+        const string pendingId = "pending-capability-0123456789abcdef";
+        var logs = new LogCapture();
+        var gate = new PasscodeGate(Config(PasscodeHasher.Hash("right passcode")), _time, logs.For<PasscodeGate>(), (_, _) => false);
+
+        for (var i = 0; i <= PasscodeGate.MaxFailures; i++) gate.Check(pendingId, "10.0.0.1", "wrong");
+
+        Assert.Contains(logs.Entries, e => e.Message.Contains("Wrong connect passcode"));
+        Assert.Contains(logs.Entries, e => e.Message.Contains("locked out"));
+        Assert.DoesNotContain(pendingId, logs.AllText);
+        Assert.All(logs.Entries, e => Assert.Contains(SignInPaths.HashName(pendingId)[..8], e.Message));
+    }
+
     private static IConfiguration Config(string? hash) =>
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { [PasscodeGate.HashKey] = hash }).Build();
 
