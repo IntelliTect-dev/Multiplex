@@ -70,14 +70,21 @@ button[disabled]{opacity:.6}
   var es = null, finished = false, drag = false, queue = Promise.resolve();
 
   // In order, one at a time: a press must reach the page before its release.
+  // Resolves true when the capture took it.
   function post(m) {
     queue = queue.then(function () {
       return fetch(base + 'input', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(m),
         credentials: 'same-origin', cache: 'no-store'
-      }).catch(function () { });
+      }).then(function (r) { return r.ok; }, function () { return false; });
     });
     return queue;
+  }
+  // A button whose message did not get there says so, and can be tapped again.
+  function sent(button, ok) {
+    if (ok || finished) return;
+    button.disabled = false;
+    statusEl.textContent = 'That did not reach the capture -- it may already be over. Try again, or use the PC.';
   }
   function over(text) {
     finished = true;
@@ -185,15 +192,17 @@ button[disabled]{opacity:.6}
     mode.textContent = drag ? 'Press & drag' : 'Tap & scroll';
   });
   document.getElementById('done').addEventListener('click', function () {
-    this.disabled = true;
+    var button = this;
+    button.disabled = true;
     statusEl.textContent = 'Handing the browser back...';
-    post({ t: 'done' });
+    post({ t: 'done' }).then(function (ok) { sent(button, ok); });
   });
   document.getElementById('end').addEventListener('click', function () {
     if (!window.confirm('End the capture now? What was recorded is kept.')) return;
-    this.disabled = true;
+    var button = this;
+    button.disabled = true;
     statusEl.textContent = 'Ending the capture...';
-    post({ t: 'end' });
+    post({ t: 'end' }).then(function (ok) { sent(button, ok); });
   });
   connect();
 })();
