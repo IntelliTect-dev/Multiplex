@@ -302,11 +302,15 @@ const THROTTLE_GIVE_UP_MS = 60 * 60 * 1000;
 const PAUSE_EXTEND_TOLERANCE_MS = 2000;
 
 /**
- * A NAMED WAIT TOO SHORT TO BE ONE. `Retry-After: 0`, or an HTTP-date already
- * past by this PC's clock, names a wait of nothing. It is still the site
- * saying "slow down": the pause is SHORT_WAIT_MIN_MS at least, never zero, and
- * the SHORT_WAIT_LIMIT-th inside SHORT_WAIT_WINDOW_MS hands over -- a site that
- * keeps asking and never says for how long is a site a person should look at.
+ * SHORT AND ZERO WAITS. No pause is shorter than SHORT_WAIT_MIN_MS: a named
+ * wait under it -- `Retry-After: 1` -- is a pause of SHORT_WAIT_MIN_MS, and is
+ * otherwise a named wait like any other, honoured every time.
+ *
+ * A wait of NOTHING is different: `Retry-After: 0`, or an HTTP-date already
+ * past by this PC's clock. It is still the site saying "slow down" -- the pause
+ * is SHORT_WAIT_MIN_MS, never zero -- and the SHORT_WAIT_LIMIT-th inside
+ * SHORT_WAIT_WINDOW_MS hands over: a site that keeps asking and never says
+ * for how long is a site a person should look at.
  *
  * The floor IS the burst window, and that is the one burst rule: every pause
  * lasts at least as long as one page load's refusals take to arrive, so the
@@ -622,8 +626,8 @@ function isPageLoad(r, nowMs = Date.now()) {
  *     (`progress()` is told of every page that loads). The hour counts only
  *     time the site named no wait: a named wait honoured in between is taken
  *     off it;
- *   - the site names a wait too short to be one (under SHORT_WAIT_MIN_MS: a
- *     Retry-After of 0, or a date already past) for the SHORT_WAIT_LIMIT-th
+ *   - the site names a wait of nothing (a Retry-After of 0, or a date already
+ *     past -- not a short wait it did name) for the SHORT_WAIT_LIMIT-th
  *     time inside SHORT_WAIT_WINDOW_MS. Before that, each is a short pause of
  *     SHORT_WAIT_MIN_MS -- never a zero-length one.
  * A block or a challenge hands over at once. Nothing here ever retries them.
@@ -656,7 +660,7 @@ function createThrottleMonitor(opts = {}) {
     // it: time spent doing what the site asked is not time it refused us.
     let throttledSince = null;
     let namedMs = 0;
-    // When the site named a wait too short to be one (SHORT_WAIT_MIN_MS).
+    // When the site named a wait of nothing (0, or a date already past).
     let shortWaits = [];
     let current = null;
     let handedOver = null;
@@ -696,9 +700,11 @@ function createThrottleMonitor(opts = {}) {
         }
         episodes++;
         if (named) {
-            // A wait of nothing is still "slow down": a short real pause, and
-            // the third inside the window is a person's to look at.
-            if (signal.retryAfterMs < shortMinMs) {
+            // A wait of NOTHING (0, or a date already past) is still "slow
+            // down": the third inside the window is a person's to look at. A
+            // short wait the site did name -- a second -- is a wait like any
+            // other, and only floored (below).
+            if (signal.retryAfterMs === 0) {
                 shortWaits = shortWaits.filter((at) => at > t - shortWindowMs);
                 shortWaits.push(t);
                 if (shortWaits.length >= shortLimit) return handOver(signal, 'zero-wait');
