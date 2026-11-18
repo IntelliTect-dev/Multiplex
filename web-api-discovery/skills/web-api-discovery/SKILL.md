@@ -327,12 +327,23 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   scrub and the leak gate, wherever the command was typed, and says which file
   it used. A recording run from a subfolder with a profile of its own is
   re-scrubbed with that one, not the store root's. When that file no longer
-  exists the scrub is refused (exit 3). A capture recorded before the field
-  existed is refused (exit 3) when it already has a `scrubbed.har` -- nothing
-  says which profile made it; move it aside to scrub anyway -- and otherwise
-  scrubbed with the profile found from the store root, said so. Both phases run
-  from the folder that holds the capture's `.har-captures`, and you are
-  returned to the directory you ran it from.
+  exists the scrub is refused (exit 3) and told to copy the profile back to
+  that path -- a recording made in a linked worktree since removed is the
+  usual cause. The path is recorded, not the content: a re-scrub follows what
+  the file says NOW, so a removed literal or a changed salt changes the
+  result. Both phases run from the folder that holds the capture's
+  `.har-captures`, and you are returned to the directory you ran it from.
+* **A capture recorded before `scrubProfilePath` existed is not safe by
+  default.** Nothing says which profile its recording used. `-Scrub` refuses
+  it (exit 3) while a `scrubbed.har` or a quarantined, rejected scrub is there
+  -- either was checked against a profile nothing names; move it aside to
+  scrub anyway. With neither, it scrubs with the profile found from the store
+  root and says so as a WARNING, naming the file: check the result for your
+  own identifiers.
+* **`-Catalogue` by itself re-checks with the store root's profile**, which
+  may be weaker than the recording's own: a literal only the recording's
+  profile maps is not looked for. `-Scrub -Catalogue` scrubs, and gates, with
+  the recorded profile first.
 * **A capture its recorder is still working on is refused.** A recorder goes
   on writing `scrubbed.har`, the digest and the catalogue for minutes after a
   recording stops; while its process is alive and it has not recorded that it
