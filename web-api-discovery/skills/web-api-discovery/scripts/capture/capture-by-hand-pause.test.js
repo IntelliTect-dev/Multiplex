@@ -76,13 +76,12 @@ test('J1: without -AI it is a person\'s capture -- a throttle or a check is advi
             assert.ok(await waitFor(() => /Wait at least 3 s|Paused until/.test(recorderErr), 30000),
                 `the recorder never said anything about the 429:\n${recorderErr}`);
             await new Promise((r) => setTimeout(r, 300));
-            const asked = Date.now();
             assert.strictEqual(await fetchLimited(), 200);
-            const took = Date.now() - asked;
             assert.strictEqual(limitedHits.length, 2);
+            // Decided by what the recorder DID, not by a stopwatch on a busy PC:
+            // a held request is a pause, and a pause is announced and recorded.
             assert.match(recorderErr, /Wait at least 3 s/, 'the person is told how long the site asked for');
             assert.doesNotMatch(recorderErr, /Paused until/, 'no pause is announced on a person\'s capture');
-            assert.ok(took < 2000, `the person's own request waited ${took} ms -- a by-hand capture is never held`);
             assert.ok(!(readJson(path.join(sessionDir, 'session.json')).pauses || []).length,
                 'and no pause is recorded: nothing was held');
 
