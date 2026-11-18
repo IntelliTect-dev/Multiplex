@@ -109,7 +109,12 @@ since, and otherwise gives the same answer at once.
 - Every write the recorder makes to session.json from the ending onwards goes
   beside it and is renamed over it, so a `stop` or `status` reading while it
   works never finds the file truncated. (The writes made while the recording
-  is still running are unchanged: nothing polls for those.)
+  is still running are unchanged: nothing polls for those.) `stop`'s own
+  write, when it post-processes for a recorder that is gone, goes the same
+  way. A reader that finds the file there but unreadable tries again for
+  about a quarter of a second before giving up, and a `session.json.writing`
+  left by a recorder killed between stage and rename is removed by the `stop`
+  that finds the recorder gone.
 
 ### 5. Three defects closed on the way
 
@@ -124,15 +129,17 @@ since, and otherwise gives the same answer at once.
 
 ## Acceptance Criteria
 
-- [ ] `stop` keeps waiting while there is a sign of progress; a capture that
-      takes more than 60 seconds is reported as success.
-- [ ] `stalled` and `not-registered` each have their own message, JSON state
-      and are never exit 6 or 0.
-- [ ] `status` reports the same state.
-- [ ] `Stop-HarRecording.ps1` surfaces the same states.
-- [ ] No new command-line option, switch, positional argument, environment
+- [x] `stop` keeps waiting while there is a sign of progress; a capture that
+      takes more than 60 seconds is reported as success. (`capture-ending`
+      S1, W1)
+- [x] `stalled` and `not-registered` each have their own message, JSON state
+      and are never exit 6 or 0. (S2, S3, S3b)
+- [x] `status` reports the same state. (S6)
+- [x] `Stop-HarRecording.ps1` surfaces the same states. (`har-recording.Tests.ps1`:
+      the stalled, never-registered and still-working cases)
+- [x] No new command-line option, switch, positional argument, environment
       variable or exit code.
-- [ ] Tests with an injected clock for each state; each fails for a behavioural
+- [x] Tests with an injected clock for each state; each fails for a behavioural
       reason when the change is reverted.
 
 ## Implementation checklist
