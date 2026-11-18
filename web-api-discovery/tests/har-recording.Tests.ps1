@@ -694,7 +694,7 @@ Describe 'Invoke-HarCapture.ps1' {
         }
     }
 
-    It 'exposes exactly the eleven documented parameters' {
+    It 'exposes exactly the thirteen documented parameters' {
         # Was six, down from eight: -StorageState is auto-discovered and
         # -ValidateOnly stays on capture-har.js where it is the test seam.
         #
@@ -734,6 +734,17 @@ Describe 'Invoke-HarCapture.ps1' {
         # names. Forwarded only when typed; the recorder owns the default and
         # refuses what it cannot read.
         #
+        # THIRTEEN with #24, and both additions are the owner's own spelling:
+        # -Scrub and -Catalogue say WHICH PHASES RUN on a capture that already
+        # exists ("-Catalogue -Scrub, which both imply skip capture because it
+        # is already done"). Two switches rather than one -SkipCapture because
+        # each names what WILL run, so no combination means "record nothing and
+        # do nothing". They are the whole of what that feature adds: which
+        # capture they act on is said with the positional first argument and
+        # -Describe, which were already here, precisely so that no THIRD
+        # parameter had to arrive to carry a target. The behaviour is pinned in
+        # HarCapturePhases.Tests.ps1.
+        #
         # This assertion is the gate the "Adding Command-Line Options" rule
         # relies on, so it is DELIBERATELY still an equality over the whole list:
         # the next parameter has to arrive through this test and the argument for
@@ -744,8 +755,21 @@ Describe 'Invoke-HarCapture.ps1' {
             ForEach-Object { $_.Name.VariablePath.UserPath } |
             Sort-Object
         $names | Should -Be @(
-            'AI', 'AITools', 'Attach', 'Browser', 'Describe', 'Isolated', 'OutputPath', 'Pace', 'Port',
-            'Profile', 'Uri')
+            'AI', 'AITools', 'Attach', 'Browser', 'Catalogue', 'Describe', 'Isolated', 'OutputPath', 'Pace',
+            'Port', 'Profile', 'Scrub', 'Uri')
+    }
+
+    It 'treats -Scrub:$false and -Catalogue:$false as off: the run is still a recording' {
+        # Neither switch typed is today's behaviour, unchanged -- and a switch
+        # typed as $false is neither switch typed. Same hazard as -AI:$false
+        # and -Verbose:$false: read by presence in $PSBoundParameters, this
+        # would look for an existing capture and record nothing.
+        #
+        # Asserted on the arguments node actually receives: `start` is the
+        # recorder's record command, and a phase run never sends it.
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{
+            Uri = 'https://example.com'; Describe = 'pester fixture'; Scrub = $false; Catalogue = $false }).Args |
+            Should -Match 'start --uri https://example\.com'
     }
 
     It 'forwards -Pace to the recorder only when it was typed' {
