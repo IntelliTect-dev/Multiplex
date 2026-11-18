@@ -30,7 +30,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
-const { listTools, emitToolsFile } = require('./mcp-tools-emit.js');
+const { listTools, listLeftOut, emitToolsFile } = require('./mcp-tools-emit.js');
 const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 const { detectAntiBotCookies } = require('../har/detect-auth.js');
@@ -1007,7 +1007,8 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
         'protocol stream, and `dotnet run` can write build messages into it. The server logs to standard',
         'error.',
         '',
-        'It lists one tool for each captured endpoint (`' + name + 'Tools.Generated.cs`):',
+        'It lists one tool for each captured endpoint (`' + name + 'Tools.Generated.cs`), less the',
+        'endpoints left out below:',
         '',
         '| Tool | Request | Read-only | Destructive | Idempotent |',
         '|---|---|---|---|---|',
@@ -1039,9 +1040,76 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
     lines.push('so. Sign in with `' + name + 'Authenticator` (`BrowserLoginAsync`), save the session it returns,');
     lines.push('and call the tool again -- the server does not need restarting.');
     lines.push('');
-    lines.push('`tests/' + name + '.Tests/pester/Mcp.Tests.ps1` starts the server and checks that it lists exactly');
+    lines.push('`tests/' + name + '.Tests/pester/Mcp.Tests.ps1` starts the server and checks that it lists');
     lines.push('these tools, with these hints.');
+    lines.push('');
+    for (const line of leftOutReadmeLines(opts, patterns)) lines.push(line);
     return lines.join('\n');
+}
+
+/**
+ * The "Left out of the tools" part of the MCP server section: which endpoints
+ * the client has a method for and the server offers no tool for, why, and how
+ * to offer one deliberately. There is no switch for it on purpose -- a sign-in
+ * call becomes model-callable when a person writes the tool, not by default.
+ */
+function leftOutReadmeLines(opts, patterns) {
+    const name = opts.projectName;
+    const leftOut = listLeftOut({ patterns, methodNameFor });
+    const lines = [
+        '### Left out of the tools',
+        '',
+        '`' + name + 'Client` has a method for every captured endpoint. The server offers a model no tool for:',
+        '',
+        '- an endpoint whose path has a segment about **signing in or credentials** -- `auth`, `login`,',
+        '  `logout`, `signin`, `signout`, `token`, `session`, `oauth`, `sso`, `csrf`, `password`, `mfa`,',
+        '  `otp` and their other names, alone or in a compound such as `refresh-token`. Such a call',
+        '  returns tokens or takes a password, and a model should be handed neither;',
+        '- an **`OPTIONS` or `HEAD`** request, which asks about an endpoint and returns nothing to use',
+        '  (an `OPTIONS` in a capture is a browser\'s preflight);',
+        '- an endpoint the capture showed **no JSON response** from, because the client method has',
+        '  nothing typed to return.',
+        '',
+    ];
+    if (leftOut.length === 0) {
+        lines.push('Nothing in this capture was left out.');
+    } else {
+        lines.push('In this capture that is:');
+        lines.push('');
+        lines.push('| Client method | Request | Why it has no tool |');
+        lines.push('|---|---|---|');
+        for (const o of leftOut) {
+            lines.push('| `' + o.methodName + '` | `' + o.pattern.method.toUpperCase() + ' ' + patternPath(o.pattern) +
+                '` | ' + o.reason + ' |');
+        }
+    }
+    lines.push('');
+    lines.push('To offer one of them anyway, write the tool yourself; no option turns them on. `' + name + 'Tools`');
+    lines.push('is a partial class and the generator only ever writes `' + name + 'Tools.Generated.cs`, so a file');
+    lines.push('of your own beside it is kept when the wrapper is generated again:');
+    lines.push('');
+    lines.push('```csharp');
+    lines.push('// src/' + name + '/' + name + 'Tools.Mine.cs -- yours; the generator does not write this file.');
+    lines.push('using System.ComponentModel;');
+    lines.push('using System.Text.Json;');
+    lines.push('using ModelContextProtocol.Server;');
+    lines.push('');
+    lines.push('namespace ' + opts.namespace + ';');
+    lines.push('');
+    lines.push('public sealed partial class ' + name + 'Tools');
+    lines.push('{');
+    lines.push('    [McpServerTool(Name = "my_tool", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = true)]');
+    lines.push('    [Description("What it does, in words a model can choose it by.")]');
+    lines.push('    public Task<JsonElement> MyToolAsync(CancellationToken ct = default)');
+    lines.push('        => _session.RunAsync(async client =>');
+    lines.push('            JsonDocument.Parse(await client.SendRawAsync("/the/path", HttpMethod.Post, ct: ct)).RootElement);');
+    lines.push('}');
+    lines.push('```');
+    lines.push('');
+    lines.push('Inside `RunAsync`, call the client method named in the table, or `SendRawAsync` as here. Set the');
+    lines.push('hints to what the call really does. The smoke test goes on checking the generated tools; a tool');
+    lines.push('of your own is listed beside them and does not fail it.');
+    return lines;
 }
 
 /**
@@ -1300,6 +1368,9 @@ function run(args) {
             const inferred = inferShape(json);
             merged = merged ? mergeShapes(merged, inferred) : inferred;
         }
+        // Whether any captured response of this endpoint was JSON. One that
+        // never was gets a client method and no MCP tool (mcp-tools-emit.js).
+        p.hasJsonResponse = merged !== null;
         if (merged && merged.kind === 'object') {
             // Always register the wrapper model so consumers retain access to
             // the raw envelope via a strongly-typed record (issue #64 req. 3).

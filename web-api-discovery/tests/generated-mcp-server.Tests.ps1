@@ -40,6 +40,7 @@ BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\') | Select-Object -ExpandProperty Path
     $script:GenJs    = Join-Path $script:RepoRoot 'skills/web-api-discovery/scripts/codegen/generate-wrapper.js'
     $script:CrudHar  = Join-Path $script:RepoRoot 'tests/fixtures/har/rest-crud.har'
+    $script:LeftOutHar = Join-Path $script:RepoRoot 'tests/fixtures/har/rest-left-out.har'
     $script:GqlHar   = Join-Path $script:RepoRoot 'tests/fixtures/har/graphql.har'
     $script:BaseUrl  = 'https://api.example.com'
 
@@ -314,6 +315,111 @@ Describe 'a server generated from a REST capture' -Skip:$script:NoDotnet {
             Remove-Item -LiteralPath $script:Crud.ToolsSource -Force
 
             (Invoke-EmittedSmoke -Wrapper $script:Crud).Failed | Should -BeGreaterThan 0
+        }
+    }
+}
+
+Describe 'endpoints a model is not offered' -Skip:$script:NoDotnet {
+    # Every captured endpoint used to become a tool. So a captured
+    # GET /api/auth/session was offered to the model as a read-only tool whose
+    # description advertised accessToken and refreshToken, a browser's CORS
+    # preflight became options_payments_send, and POST /login became create_login
+    # with a free-text body. tests/fixtures/har/rest-left-out.har holds those,
+    # each beside an ordinary endpoint that must still be a tool.
+    BeforeAll {
+        $script:Left = New-GeneratedWrapper -Har $script:LeftOutHar -Prefix 'Left'
+        $script:LeftTools = @()
+        $script:LeftSessionError = $null
+        if ($script:Left.BuildExit -eq 0) {
+            try {
+                $script:LeftTools = @((Invoke-ServerSession -Wrapper $script:Left -Request @(@{ method = 'tools/list' })).Responses[0].tools)
+            }
+            catch { $script:LeftSessionError = $_.Exception.Message }
+        }
+        $script:LeftNames = @($script:LeftTools | ForEach-Object { $_.name })
+        $script:LeftReadme = Get-Content (Join-Path $script:Left.Out 'README.md') -Raw
+        $script:LeftSection = [regex]::Match($script:LeftReadme, '(?ms)^### Left out of the tools[ \t]*$.*?(?=^## |\z)').Value
+        $script:LeftClient = Get-Content (Join-Path $script:Left.Out "src/$($script:Left.Name)/$($script:Left.Name)Client.Generated.cs") -Raw
+    }
+    AfterAll {
+        Remove-GeneratedWrapper $script:Left
+    }
+
+    It 'builds with 0 warnings and 0 errors' {
+        $script:Left.GenerateExit | Should -Be 0 -Because $script:Left.GenerateOutput
+        $script:Left.BuildExit | Should -Be 0 -Because $script:Left.BuildOutput
+        $script:Left.BuildOutput | Should -Match '0 Warning\(s\)'
+    }
+    It 'lists a tool for each ordinary endpoint, and for nothing else' {
+        $script:LeftSessionError | Should -BeNullOrEmpty
+        ($script:LeftNames | Sort-Object) -join ', ' |
+            Should -Be 'create_payments_send, get_reports, get_reports_by_id, get_sessions_of_a_conference_by_id_talks'
+    }
+    It 'offers no tool for <Request>, keeps it in the client, and says why in the README' -ForEach @(
+        @{ Request = 'GET /api/auth/session';          Tool = 'get_auth_session';           Method = 'GetAuthSessionAsync';         Why = 'its path names sign-in or credentials (auth)' }
+        @{ Request = 'POST /login';                    Tool = 'create_login';               Method = 'CreateLoginAsync';            Why = 'its path names sign-in or credentials (login)' }
+        @{ Request = 'POST /api/refresh-token';        Tool = 'create_refresh_token';       Method = 'CreateRefreshTokenAsync';     Why = 'its path names sign-in or credentials (refresh-token)' }
+        @{ Request = 'OPTIONS /api/payments/send';     Tool = 'options_payments_send';      Method = 'OptionsPaymentsSendAsync';    Why = 'OPTIONS asks about an endpoint and returns nothing for a model to use' }
+        @{ Request = 'HEAD /api/reports';              Tool = 'head_reports';               Method = 'HeadReportsAsync';            Why = 'HEAD asks about an endpoint and returns nothing for a model to use' }
+        @{ Request = 'GET /api/reports/{id}/download'; Tool = 'get_reports_by_id_download'; Method = 'GetReportsByIdDownloadAsync'; Why = 'the capture showed no JSON response from it' }
+    ) {
+        $script:LeftNames.Count | Should -BeGreaterThan 0 -Because 'an empty list contains nothing, whatever was emitted'
+        $script:LeftNames | Should -Not -Contain $Tool
+        # Only the tool is withheld: the client keeps its method.
+        $script:LeftClient | Should -Match ('public async Task<.*?> ' + [regex]::Escape($Method) + '\(')
+        $script:LeftSection | Should -Match ([regex]::Escape('| `' + $Method + '` | `' + $Request + '` | ' + $Why + ' |'))
+    }
+    It 'no description hands the model what a sign-in call returns' {
+        $script:LeftTools.Count | Should -BeGreaterThan 0
+        (($script:LeftTools | ForEach-Object { $_.description }) -join "`n") | Should -Not -Match '(?i)accessToken|refreshToken|csrf'
+    }
+    It 'the call a preflight was for is still a tool, and one that asks first' {
+        $send = $script:LeftTools | Where-Object { $_.name -eq 'create_payments_send' }
+        $send | Should -Not -BeNullOrEmpty
+        $send.annotations.readOnlyHint    | Should -BeFalse
+        $send.annotations.destructiveHint | Should -BeTrue -Because 'nothing vouches for POST /api/payments/send, and its path says send'
+        $send.description | Should -Not -Match 'Creates|Adds to'
+    }
+    It 'a name that merely contains a sign-in word is still a tool' {
+        $script:LeftNames | Should -Contain 'get_sessions_of_a_conference_by_id_talks'
+    }
+    It 'the README says how to offer one deliberately, and that no option does it' {
+        $script:LeftSection | Should -Match 'write the tool yourself; no option turns them on'
+        $script:LeftSection | Should -Match 'partial class'
+        $script:LeftSection | Should -Match ([regex]::Escape("$($script:Left.Name)Tools.Mine.cs"))
+    }
+
+    Context 'a tool written by hand, as the README says' {
+        # The README's own example, taken from the README: if it does not
+        # compile, or its tool does not appear, the way out it describes is not
+        # one.
+        BeforeAll {
+            $example = [regex]::Match($script:LeftSection, '(?ms)^```csharp\r?\n(// src/[^\r\n]*Tools\.Mine\.cs.*?)^```').Groups[1].Value
+            $script:MineWritten = -not [string]::IsNullOrWhiteSpace($example)
+            if ($script:MineWritten) {
+                Set-Content -LiteralPath (Join-Path $script:Left.Out "src/$($script:Left.Name)/$($script:Left.Name)Tools.Mine.cs") -Value $example -NoNewline
+            }
+            $script:MineBuild = & dotnet build $script:Left.Project -c Debug --nologo -v:q 2>&1 | Out-String
+            $script:MineBuildExit = $LASTEXITCODE
+            $script:MineNames = @()
+            if ($script:MineBuildExit -eq 0) {
+                $script:MineNames = @((Invoke-ServerSession -Wrapper $script:Left -Request @(@{ method = 'tools/list' })).Responses[0].tools |
+                    ForEach-Object { $_.name })
+            }
+        }
+        It 'the example is in the README, and builds with 0 warnings' {
+            $script:MineWritten | Should -BeTrue
+            $script:MineBuildExit | Should -Be 0 -Because $script:MineBuild
+            $script:MineBuild | Should -Match '0 Warning\(s\)'
+        }
+        It 'its tool is listed beside the generated ones' {
+            $script:MineNames | Should -Contain 'my_tool'
+            $script:MineNames | Should -Contain 'get_reports'
+        }
+        It 'the wrapper''s smoke test still passes' {
+            $result = Invoke-EmittedSmoke -Wrapper $script:Left
+            $result.Failed | Should -Be 0
+            $result.Passed | Should -BeGreaterOrEqual 6
         }
     }
 }

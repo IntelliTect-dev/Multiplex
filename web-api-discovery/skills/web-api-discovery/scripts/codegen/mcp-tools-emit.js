@@ -62,10 +62,26 @@ const OPAQUE_CALL_WORDS = new Set([
     'query', 'command', 'invoke', 'call', 'run', 'action',
 ]);
 
-// Signs someone in or out, or handles what signing in produces.
+// Signs someone in or out, or handles what signing in produces. An endpoint
+// with a path segment about one of these gets no tool at all (reasonLeftOut).
 const SIGN_IN_WORDS = new Set([
     'auth', 'login', 'logout', 'signin', 'signout', 'token', 'session',
     'oauth', 'sso', 'csrf', 'password', 'mfa', 'otp',
+    // the same things under their other names
+    'authenticate', 'authentication', 'authorize', 'authorization', 'xsrf', 'totp', 'credential',
+]);
+
+// The words a sign-in word keeps company with inside one path segment:
+// refresh-token, reset_password, userSession, auth-callback. A segment made of
+// sign-in words and these is about signing in. Any other word makes it a name
+// that merely contains one -- sessions-of-a-conference, token-usage.
+const SIGN_IN_COMPANIONS = new Set([
+    'access', 'refresh', 'id', 'bearer', 'jwt', 'api', 'user', 'account', 'current', 'my', 'me',
+    'new', 'reset', 'change', 'forgot', 'forgotten', 'update', 'verify', 'validate', 'check',
+    'renew', 'revoke', 'exchange', 'callback', 'redirect', 'start', 'begin', 'end', 'complete',
+    'challenge', 'code', 'status', 'info', 'state', 'keepalive', 'extend', 'create', 'delete',
+    'get', 'set', 'generate', 'request', 'confirm', 'send', 'resend', 'device', 'sms', 'email',
+    'two', 'factor', 'external', 'social', 'provider',
 ]);
 
 // What a path has to say for a POST to count as additive.
@@ -118,6 +134,82 @@ function isCollection(pattern, patterns) {
         pattern.segments.every((s, i) => !!s.literal && s.literal === q.segments[i].literal));
 }
 
+/** `sign-in`, `signIn` and `log_out` are one word each: signin, signin, logout. */
+function signInWordsOf(segment) {
+    const words = wordsOf(segment);
+    const joined = [];
+    for (let i = 0; i < words.length; i++) {
+        const spelledInTwo = (words[i] === 'sign' || words[i] === 'log') &&
+            (words[i + 1] === 'in' || words[i + 1] === 'out');
+        joined.push(spelledInTwo ? words[i] + words[++i] : words[i]);
+    }
+    return joined;
+}
+
+/** token, tokens, oauth2: a sign-in word, a plural "s" or a version digit aside. */
+function isSignInWord(word) {
+    const bare = word.replace(/\d+$/, '');
+    return SIGN_IN_WORDS.has(bare) || (bare.endsWith('s') && SIGN_IN_WORDS.has(bare.slice(0, -1)));
+}
+
+/**
+ * Whether a path segment is about signing in. It is when, split into words
+ * (camelCase, `-`, `_` and `.` are boundaries), it has a sign-in word and every
+ * other word is one of its usual companions or a number:
+ *
+ *   auth, login, sessions, oauth2, sign-in         the word itself
+ *   refresh-token, reset_password, userSession     with its company
+ *
+ * and is not when any other word says what the segment is about:
+ *
+ *   sessions-of-a-conference, token-usage          a name containing the word
+ *   authors, tokenizer                             not the word at all
+ */
+function isSignInSegment(segment) {
+    const words = signInWordsOf(segment);
+    return words.some(isSignInWord) &&
+        words.every((w) => isSignInWord(w) || SIGN_IN_COMPANIONS.has(w) || /^\d+$/.test(w));
+}
+
+/**
+ * Every path segment an endpoint was captured with: its literal segments, and
+ * the values its path parameters took. The second half matters because the path
+ * matcher can fold a name into a parameter -- /api/auth/session captured beside
+ * /api/some-thing/7 becomes a value of /api/{id}/{id2} -- and a segment that is
+ * no longer in the pattern would otherwise not be seen.
+ */
+function capturedSegments(pattern) {
+    const literals = (pattern.segments || []).filter((s) => s.literal).map((s) => s.literal);
+    const captured = (pattern.samples || []).flatMap((sample) => (sample.url && sample.url.segments) || []);
+    return literals.concat(captured);
+}
+
+/**
+ * Why an endpoint gets no tool, or null when it gets one. The client keeps a
+ * method for every endpoint either way; this is only about what a model is
+ * offered.
+ *
+ *   OPTIONS, HEAD       ask about an endpoint and return nothing to use; an
+ *                       OPTIONS in a capture is a browser's preflight.
+ *   a sign-in segment   the call signs someone in or out, or returns what
+ *                       signing in produces -- tokens, a session, a CSRF value.
+ *                       A model should neither be handed those nor asked to
+ *                       type a password into one.
+ *   no JSON response    hasJsonResponse === false: generate-wrapper.js saw no
+ *                       captured response of it parse as JSON, so the client
+ *                       method has nothing typed to return.
+ */
+function reasonLeftOut(pattern) {
+    const method = String(pattern.method || '').toUpperCase();
+    if (method === 'OPTIONS' || method === 'HEAD') {
+        return method + ' asks about an endpoint and returns nothing for a model to use';
+    }
+    const signIn = capturedSegments(pattern).find(isSignInSegment);
+    if (signIn) return 'its path names sign-in or credentials (' + signIn + ')';
+    if (pattern.hasJsonResponse === false) return 'the capture showed no JSON response from it';
+    return null;
+}
+
 /**
  * The hints a client reads to decide whether a call needs confirming, from the
  * endpoint's HTTP method and path, and for a POST what the capture shows.
@@ -157,8 +249,9 @@ function toolNameFor(methodName) {
 }
 
 /**
- * The tool surface of a wrapper: one tool per generated client method, in the
- * order the client declares them (GraphQL first, then the REST endpoints).
+ * The tool surface of a wrapper: one tool per generated client method that is
+ * not left out (reasonLeftOut), in the order the client declares them (GraphQL
+ * first, then the REST endpoints).
  *
  * @param {object}   args
  * @param {object[]} args.patterns        REST endpoint patterns from dedupePatterns().
@@ -173,6 +266,7 @@ function listTools(args) {
         tools.push({ name: GRAPHQL_TOOL_NAME, methodName: GRAPHQL_METHOD_NAME, hints: graphQLHints(), pattern: null });
     }
     for (const p of patterns) {
+        if (reasonLeftOut(p)) continue;
         const methodName = methodNameFor(p);
         const hints = toolHintsFor(p.method, p.segments, { isCollection: isCollection(p, patterns) });
         tools.push({ name: toolNameFor(methodName), methodName, hints, pattern: p });
@@ -186,6 +280,25 @@ function listTools(args) {
         if (count > 1) t.name = t.name + '_' + count;
     }
     return tools;
+}
+
+/**
+ * The endpoints listTools() gives no tool, each with the reason, in the order
+ * the client declares them. Every endpoint is in one list or the other.
+ *
+ * @param {object}   args
+ * @param {object[]} args.patterns        REST endpoint patterns from dedupePatterns().
+ * @param {function} args.methodNameFor   generate-wrapper.js's client method namer.
+ * @returns {{methodName: string, pattern: object, reason: string}[]}
+ */
+function listLeftOut(args) {
+    const { patterns, methodNameFor } = args;
+    const leftOut = [];
+    for (const p of patterns) {
+        const reason = reasonLeftOut(p);
+        if (reason) leftOut.push({ methodName: methodNameFor(p), pattern: p, reason });
+    }
+    return leftOut;
 }
 
 // -------------------- Descriptions --------------------
@@ -340,7 +453,8 @@ function emitToolsFile(args) {
     lines.push('');
     lines.push('/// <summary>');
     lines.push('/// The MCP tools of the ' + name + ' server: one for each method the capture gave');
-    lines.push('/// <see cref="' + name + 'Client"/>. McpProgram.cs registers them with');
+    lines.push('/// <see cref="' + name + 'Client"/>, less the sign-in, OPTIONS/HEAD and non-JSON endpoints');
+    lines.push('/// the README lists as left out. McpProgram.cs registers them with');
     lines.push('/// <c>WithToolsFromAssembly()</c>, which looks for exactly these two attributes --');
     lines.push('/// <c>[McpServerToolType]</c> on the class and <c>[McpServerTool]</c> on each method.');
     lines.push('/// Without them the server starts and lists no tools.');
@@ -350,6 +464,8 @@ function emitToolsFile(args) {
     lines.push('/// the endpoint\'s HTTP method and path, and its description from the request');
     lines.push('/// and the captured response. Neither knows what the site actually does, so');
     lines.push('/// review them before relying on a client that acts on hints without asking.');
+    lines.push('/// A tool of your own goes in another file: this class is partial, and the');
+    lines.push('/// generator writes only this one.');
     lines.push('/// </remarks>');
     lines.push('[McpServerToolType]');
     lines.push('public sealed partial class ' + name + 'Tools');
@@ -372,6 +488,8 @@ function emitToolsFile(args) {
 
 module.exports = {
     listTools,
+    listLeftOut,
+    isSignInSegment,
     toolNameFor,
     toolHintsFor,
     graphQLHints,
