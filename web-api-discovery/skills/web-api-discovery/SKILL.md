@@ -730,6 +730,11 @@ recorder keeps is also checked -- but only the **site's**: a main-frame document
 or a request to the capture's own host. The trackers and ad networks an
 ordinary page talks to answer 403, 429 and 503 all day, and none of that is the
 site asking this visitor to slow down.
+"Own host" is the `--uri` host without a leading `www.`, and its subdomains --
+not its siblings. With `--uri https://www.example.com`, `api.example.com`
+counts; with `--uri https://app.example.com`, `api.example.com` does not, so
+its 429s and blocks go unseen unless it serves the page itself (a main-frame
+document counts wherever it is hosted).
 
 | Observed | Means | What happens |
 |---|---|---|
