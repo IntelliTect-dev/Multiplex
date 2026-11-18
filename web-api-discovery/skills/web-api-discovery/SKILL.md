@@ -1132,7 +1132,9 @@ is the resolved session, as before, plus one key:
 
 Exit **0** when every check passes, **1** when any fails -- the code the real
 start itself ends with for the same refusal -- and **2** for a usage error,
-which prints no JSON. Each `reason` is the real start's own message (also on
+which prints no JSON. A failed check always prints the JSON, so read
+`validation`; exit 1 with nothing on stdout is the recorder itself failing.
+Each `reason` is the real start's own message (also on
 stderr), the checks are in the order a start asks them, and every failure is
 reported in one run. The answer is the one an **unattended** start gets: at a
 terminal the real start would offer to install the driver or scaffold a

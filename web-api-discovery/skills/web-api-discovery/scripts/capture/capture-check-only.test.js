@@ -563,11 +563,17 @@ test('C12: the check writes nothing, starts nothing but its own questions, and c
         { what: 'an explicit --output-path', state: {}, args: ['--output-path', 'reference'] },
         { what: 'a failing check: no module, no profile, no agent',
             state: { driver: false, profile: false, agent: false }, args: ['--ai'],
-            asks: [/claude(\.exe)? --version$/, /npm root -g/] }
+            asks: [/claude(\.exe)? --version$/, /npm root -g/] },
+        // npm reads its settings from the environment whatever their case, and
+        // a machine may already carry one in capitals. The check's own lookup
+        // has to be quiet there too, not only where nothing was set.
+        { what: 'no module, on a machine that configures npm in capitals',
+            state: { driver: false }, args: [], asks: [/npm root -g/],
+            env: { NPM_CONFIG_LOGS_MAX: '10', NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }
     ];
     for (const mode of modes) {
         const m = machine('c12-' + mode.what.replace(/\W+/g, '-'), mode.state);
-        const run = auditedCheck(m, mode.args, { scanPorts: mode.scanPorts });
+        const run = auditedCheck(m, mode.args, { scanPorts: mode.scanPorts, env: mode.env });
         verdictOf(run);
         assertNoSideEffects(run, mode.what);
 

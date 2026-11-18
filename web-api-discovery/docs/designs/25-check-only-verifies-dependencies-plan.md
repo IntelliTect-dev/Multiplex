@@ -108,7 +108,9 @@ The check-only path must write nothing. Two existing behaviours had to change:
   already-existing temp directory and `NODE_DISABLE_COMPILE_CACHE=1`, through
   the resolver's existing `npmGlobalRoot` seam. These are npm's and Node's own
   settings, set on that one child process; the recorder reads none of them.
-  The real start is unchanged.
+  They are laid over the environment by name whatever its case, because npm
+  reads them case-insensitively and a machine may already carry one in
+  capitals. The real start is unchanged.
 
 The `claude --version` probe is reused as-is for `--ai`: it is the question the
 launch asks (a PATH lookup says yes to a `claude.cmd` that cannot be spawned).

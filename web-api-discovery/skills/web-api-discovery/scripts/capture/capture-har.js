@@ -364,7 +364,9 @@
  * usage error, with no JSON. 1 rather than a new code because it is what the
  * real start itself exits with for each of those refusals (a missing driver,
  * operator profile or agent), so the check and the start it stands in for
- * give a caller the same answer.
+ * give a caller the same answer. A refusal always comes with the JSON and its
+ * `validation` key; exit 1 with nothing on stdout is the runtime error 1 has
+ * always meant.
  */
 
 'use strict';
@@ -4593,16 +4595,26 @@ function preflightProfile(isTty) {
  * already there: npm makes sure its cache folder exists before it does
  * anything, and with the log switched off it puts nothing in it.
  *
+ * LAID OVER THE ENVIRONMENT BY NAME, WHATEVER ITS CASE. npm reads these
+ * settings case-insensitively and a machine may already carry one in capitals
+ * (`NPM_CONFIG_LOGS_MAX`). Two spellings of one setting leave which value npm
+ * sees to the platform, so the machine's own spelling is dropped for this run.
+ *
  * Only the check-only start asks this way. A real start is about to write a
  * capture, and an npm log somewhere else is nobody's surprise.
  */
 function quietNpmGlobalRoot(opts) {
-    const env = Object.assign({}, process.env, {
+    const quiet = {
         npm_config_logs_max: '0',
         npm_config_update_notifier: 'false',
         npm_config_cache: os.tmpdir(),
         NODE_DISABLE_COMPILE_CACHE: '1'
-    });
+    };
+    const silenced = new Set(Object.keys(quiet).map((name) => name.toLowerCase()));
+    const env = Object.assign({}, quiet);
+    for (const [name, value] of Object.entries(process.env)) {
+        if (!silenced.has(name.toLowerCase())) env[name] = value;
+    }
     return nodeDep.npmGlobalRoot(Object.assign({}, opts, {
         spawn: (command, args, settings) =>
             spawnSync(command, args, Object.assign({}, settings, { env }))
