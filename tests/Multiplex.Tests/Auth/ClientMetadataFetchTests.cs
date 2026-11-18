@@ -18,21 +18,42 @@ public sealed class ClientMetadataFetchTests
     /// <summary>Answers each request with the next scripted step: a delay, then a status and body.</summary>
     private sealed class ScriptedDocuments : HttpMessageHandler
     {
-        private readonly Queue<(TimeSpan Delay, HttpStatusCode Status, string Body)> _steps = new();
+        private readonly Queue<Func<CancellationToken, Task<HttpResponseMessage>>> _steps = new();
         public int Requests { get; private set; }
 
         public ScriptedDocuments Then(TimeSpan delay, HttpStatusCode status = HttpStatusCode.OK, string body = Document)
         {
-            _steps.Enqueue((delay, status, body));
+            _steps.Enqueue(async ct =>
+            {
+                await Task.Delay(delay, ct);
+                return new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            });
             return this;
         }
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        public ScriptedDocuments ThenThrow(HttpRequestError error)
+        {
+            _steps.Enqueue(_ => throw new HttpRequestException(error, "scripted"));
+            return this;
+        }
+
+        /// <summary>Headers arrive, then the connection drops while the body is read.</summary>
+        public ScriptedDocuments ThenDropMidBody()
+        {
+            _steps.Enqueue(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new DroppingStream()) }));
+            return this;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Requests++;
-            var (delay, status, body) = _steps.Count > 1 ? _steps.Dequeue() : _steps.Peek();
-            await Task.Delay(delay, ct);
-            return new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            return (_steps.Count > 1 ? _steps.Dequeue() : _steps.Peek())(ct);
+        }
+
+        private sealed class DroppingStream : MemoryStream
+        {
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) =>
+                ValueTask.FromException<int>(new IOException("The connection was reset."));
         }
     }
 
@@ -88,6 +109,81 @@ public sealed class ClientMetadataFetchTests
         Assert.Null(later.Error);
         Assert.NotNull(later.Client);
         Assert.Equal(2, handler.Requests);
+    }
+
+    [Fact]
+    public async Task A_withdrawn_document_is_not_brought_back_by_a_later_outage()
+    {
+        var handler = new ScriptedDocuments()
+            .Then(TimeSpan.Zero)
+            .Then(TimeSpan.Zero, HttpStatusCode.NotFound, "gone")
+            .Then(TimeSpan.Zero, HttpStatusCode.ServiceUnavailable, "down");
+        var (documents, clock) = Create(handler);
+
+        Assert.NotNull((await documents.GetAsync(ClientId, CancellationToken.None)).Client);
+        clock.Advance(TimeSpan.FromMinutes(11));
+        Assert.Contains("404", (await documents.GetAsync(ClientId, CancellationToken.None)).Error);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var during = await documents.GetAsync(ClientId, CancellationToken.None);
+
+        Assert.Null(during.Client);
+    }
+
+    [Fact]
+    public async Task During_an_outage_the_fallback_is_reused_for_a_minute_without_waiting_again()
+    {
+        var handler = new ScriptedDocuments()
+            .Then(TimeSpan.Zero)
+            .Then(TimeSpan.Zero, HttpStatusCode.ServiceUnavailable, "down");
+        var (documents, clock) = Create(handler);
+
+        await documents.GetAsync(ClientId, CancellationToken.None);
+        clock.Advance(TimeSpan.FromMinutes(11));
+        Assert.NotNull((await documents.GetAsync(ClientId, CancellationToken.None)).Client);
+        Assert.NotNull((await documents.GetAsync(ClientId, CancellationToken.None)).Client);
+
+        Assert.Equal(2, handler.Requests);
+    }
+
+    [Fact]
+    public async Task The_last_good_document_is_not_used_after_six_hours()
+    {
+        var handler = new ScriptedDocuments()
+            .Then(TimeSpan.Zero)
+            .Then(TimeSpan.Zero, HttpStatusCode.ServiceUnavailable, "down");
+        var (documents, clock) = Create(handler);
+
+        await documents.GetAsync(ClientId, CancellationToken.None);
+        clock.Advance(TimeSpan.FromHours(7));
+
+        Assert.Null((await documents.GetAsync(ClientId, CancellationToken.None)).Client);
+    }
+
+    [Theory]
+    [InlineData(HttpRequestError.NameResolutionError)]
+    [InlineData(HttpRequestError.SecureConnectionError)]
+    public async Task A_host_that_cannot_work_is_remembered_rather_than_retried(HttpRequestError error)
+    {
+        var handler = new ScriptedDocuments().ThenThrow(error);
+        var (documents, _) = Create(handler);
+
+        await documents.GetAsync(ClientId, CancellationToken.None);
+        await documents.GetAsync(ClientId, CancellationToken.None);
+
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
+    public async Task A_connection_dropped_mid_document_is_a_failure_for_the_moment_not_an_error()
+    {
+        var handler = new ScriptedDocuments().ThenDropMidBody().Then(TimeSpan.Zero);
+        var (documents, _) = Create(handler);
+
+        var first = await documents.GetAsync(ClientId, CancellationToken.None);
+        var second = await documents.GetAsync(ClientId, CancellationToken.None);
+
+        Assert.NotNull(first.Error);
+        Assert.NotNull(second.Client);
     }
 
     [Fact]
