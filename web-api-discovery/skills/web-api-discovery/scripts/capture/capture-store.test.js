@@ -745,6 +745,98 @@ section('a description is cut between characters, not through one', () => {
     assert.ok(describe.startsWith('x\u{1F600}'), 'got: ' + JSON.stringify(describe.slice(0, 8)));
 });
 
+section('the walk carries which run made each capture, and says when nothing did', () => {
+    // Issue #26. The store is shared and several sessions record into it at
+    // once; the walk is the one thing that looks at every capture, so it is
+    // where "which of these are mine?" has to be answerable. TWO RUNS,
+    // INTERLEAVED BY STAMP on one host, with ONE description between them --
+    // the measured case, where neither a time window nor the description could
+    // tell them apart.
+    const root = path.join(tmp, 'runs', '.har-captures');
+    const hostDir = path.join(root, 'app.example.test');
+    const record = (stamp, extra) => {
+        const dir = path.join(hostDir, stamp);
+        fs.mkdirSync(dir, { recursive: true });
+        writeHar(path.join(dir, 'raw.har'));
+        fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify(Object.assign({
+            uri: 'https://app.example.test/', describe: 'create a step, then delete it', sessionDir: dir,
+            endedUtc: '2026-01-01T00:01:00.000Z'
+        }, extra)));
+        return dir;
+    };
+    const runA = { id: 'aaaaaaaaaaaa', basis: 'process', lineage: ['111111111111', 'aaaaaaaaaaaa'] };
+    const runB = { id: 'bbbbbbbbbbbb', basis: 'terminal', lineage: ['bbbbbbbbbbbb', '222222222222'] };
+    const a1 = record('2026-02-01-000001', { captureId: 'capture-a1', run: runA });
+    const b1 = record('2026-02-01-000002', { captureId: 'capture-b1', run: runB });
+    const a2 = record('2026-02-01-000003', { captureId: 'capture-a2', run: runA });
+    const b2 = record('2026-02-01-000004', { captureId: 'capture-b2', run: runB });
+    // Recorded before any of this existed.
+    const old = record('2026-02-01-000005', {});
+    // Recorded since, on a machine where the ancestry could not be read.
+    const unread = record('2026-02-01-000006', {
+        captureId: 'capture-unread', run: { id: null, reason: 'process ancestry is not read on this platform' }
+    });
+    // A session.json somebody edited, or a different tool wrote.
+    const mangled = record('2026-02-01-000007', { captureId: 42, run: 'aaaaaaaaaaaa' });
+    const mangledId = record('2026-02-01-000008', { captureId: '', run: { id: ['aaaaaaaaaaaa'], basis: 7 } });
+    // And one this recorder did not make.
+    const foreign = path.join(root, 'phone.example.test', '2026-02-01-000009');
+    fs.mkdirSync(foreign, { recursive: true });
+    fs.writeFileSync(path.join(foreign, 'raw.mitm'), 'not-a-har');
+
+    const found = store.listCaptureDirs(root);
+    const at = (dir) => found.find((c) => c.dir === dir);
+
+    assert.strictEqual(at(a1).captureId, 'capture-a1');
+    assert.strictEqual(at(a1).runId, 'aaaaaaaaaaaa');
+    assert.strictEqual(at(a1).runBasis, 'process');
+    assert.strictEqual(at(b1).runId, 'bbbbbbbbbbbb');
+    assert.strictEqual(at(b1).runBasis, 'terminal');
+
+    // SELECTING BY ONE RUN NEVER RETURNS THE OTHER'S -- nor a capture with no
+    // run at all, which a bare equality against a missing value would.
+    const select = (id) => found.filter((c) => c.runId && c.runId === id).map((c) => c.dir).sort();
+    assert.deepStrictEqual(select('aaaaaaaaaaaa'), [a1, a2].sort());
+    assert.deepStrictEqual(select('bbbbbbbbbbbb'), [b1, b2].sort());
+    // The stamps interleave, so no window over them is one run.
+    const order = found.filter((c) => c.runId).sort((x, y) => (x.stamp < y.stamp ? -1 : 1)).map((c) => c.runId);
+    assert.deepStrictEqual(order, ['aaaaaaaaaaaa', 'bbbbbbbbbbbb', 'aaaaaaaaaaaa', 'bbbbbbbbbbbb']);
+    // And within a run each capture is still its own.
+    assert.notStrictEqual(at(a1).captureId, at(a2).captureId);
+
+    // BEFORE THIS CHANGE: listed, with nothing claimed about who made it.
+    assert.ok(at(old), 'a capture with no run is still a capture');
+    assert.strictEqual(at(old).captureId, null);
+    assert.strictEqual(at(old).runId, null);
+    assert.strictEqual(at(old).runBasis, null);
+
+    // COULD NOT BE READ: it has its own id, and no run. The two are different
+    // facts and a caller can tell them apart.
+    assert.strictEqual(at(unread).captureId, 'capture-unread');
+    assert.strictEqual(at(unread).runId, null);
+
+    // A value of the wrong shape is not an identity. Null, never a throw and
+    // never the wrong-shaped value passed through to be compared with.
+    for (const dir of [mangled, mangledId]) {
+        assert.strictEqual(at(dir).captureId, null, JSON.stringify(at(dir)));
+        assert.strictEqual(at(dir).runId, null);
+        assert.strictEqual(at(dir).runBasis, null);
+    }
+
+    // Not this recorder's: there is no session to have recorded a run in.
+    assert.strictEqual(at(foreign).captureId, null);
+    assert.strictEqual(at(foreign).runId, null);
+    assert.strictEqual(at(foreign).runBasis, null);
+
+    // THE LINEAGE STAYS IN session.json. A containment filter on a high
+    // ancestor matches every session on the machine, so the walk -- which is
+    // what the listing and every bulk driver read -- does not hand it out.
+    for (const entry of found) {
+        assert.ok(!('runLineage' in entry) && !('lineage' in entry) && !('run' in entry),
+            'the walk carries the run id and its basis, not the ancestry');
+    }
+});
+
 // `findProfileConflict` is async, and a promise nobody waits on is an assertion
 // that cannot fail. Settled before the verdict is printed.
 Promise.all(pending).then(() => {
