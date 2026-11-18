@@ -74,10 +74,13 @@ Describe "{{ProjectName}} MCP smoke" {
             $script:Tools.Count | Should -BeGreaterThan 0 -Because "a server whose tool class is not registered lists none"
         }
 
-        It "lists exactly the tools the generator made" {
-            $listed = (@($script:Tools | ForEach-Object { $_.name }) | Sort-Object) -join ", "
-            $expected = (@($script:ExpectedTools | ForEach-Object { $_.Name }) | Sort-Object) -join ", "
-            $listed | Should -Be $expected
+        It "lists every tool the generator made" {
+            # Every one, by name. A tool written by hand in another part of the
+            # partial class (the README says how) is listed beside them and is
+            # not this suite's business.
+            $listed = @($script:Tools | ForEach-Object { $_.name })
+            $missing = @($script:ExpectedTools | ForEach-Object { $_.Name } | Where-Object { $_ -notin $listed })
+            ($missing -join ", ") | Should -BeNullOrEmpty -Because "the server lists: $(($listed | Sort-Object) -join ', ')"
         }
 
         It "gives every tool a description for the model to read" {

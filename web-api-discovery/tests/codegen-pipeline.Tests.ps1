@@ -252,7 +252,9 @@ Describe 'MCP tool class (issue #17)' {
     # Whether a RUNNING server lists these tools is generated-mcp-server.Tests.ps1,
     # which builds a wrapper and asks it. These pin what is emitted, without a
     # build: the file, the two attributes the SDK looks for, and one tool per
-    # client method -- so a new endpoint cannot be left without a tool.
+    # client method -- so a new endpoint cannot be left without a tool. (This
+    # fixture has no sign-in, OPTIONS, HEAD or non-JSON endpoint; those are left
+    # out of the tools on purpose, and generated-mcp-server.Tests.ps1 covers them.)
     BeforeAll {
         $script:ToolsOut = New-OutDir
         $script:ToolsRes = Invoke-Gen -Har @($script:RestHar) -Out $script:ToolsOut
@@ -297,6 +299,8 @@ Describe 'MCP tool class (issue #17)' {
         $section | Should -Not -BeNullOrEmpty
         $section | Should -Match '\| `get_me` \| `GET /api/me` \| yes \| no \| yes \|'
         $section | Should -Match '(?i)starts without a session'
+        $section | Should -Match '(?m)^### Left out of the tools' -Because 'the README says which endpoints get no tool'
+        $section | Should -Match 'Nothing in this capture was left out\.'
     }
 }
 
