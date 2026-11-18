@@ -252,6 +252,16 @@ Made without the owner; each is in the hand-off report.
     parameter opens with its wire name.
 11. **No cap on the number of parameters.** An endpoint whose calls carried a
     hundred distinct names gets a hundred parameters.
+12. **A long value that differs on every call is not called a nonce.** It is
+    never baked in, like one; but it may be the id or the cursor the caller has
+    to choose, so its description and its README cell say only what was seen
+    ("a different long number or token on every call") and ask for "the one
+    you mean". A value that is the time of its own call, or sits under a
+    cache-buster name, is called a timestamp or nonce outright.
+13. **The generated query facts compare `Uri.Query`, not the path.** .NET
+    rewrites a path it considers equivalent (`%7E` to `~`, `%c3` to `%C3`), so
+    a captured path spelled that way would fail a path comparison while sending
+    the right request.
 
 ## Found along the way (not changed here)
 

@@ -469,7 +469,12 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
             $without | Should -Not -Match 'string\? prefix = null' -Because 'the parameter must really be gone'
             try {
                 Set-Content -LiteralPath $script:Query.ToolsSource -Value $without -NoNewline
-                (Invoke-EmittedSmoke -Wrapper $script:Query).Failed | Should -BeGreaterThan 0
+                $result = Invoke-EmittedSmoke -Wrapper $script:Query
+                # Exactly one: the input-schema check. A wrapper that no longer
+                # built would fail several, and would prove nothing about it.
+                $result.Failed | Should -Be 1 -Because 'only the input-schema check should notice a missing parameter'
+                $result.Passed | Should -Be ($result.Total - 1)
+                $result.Total | Should -BeGreaterOrEqual 9 -Because 'the whole suite must have run'
             }
             finally {
                 Set-Content -LiteralPath $script:Query.ToolsSource -Value $source -NoNewline

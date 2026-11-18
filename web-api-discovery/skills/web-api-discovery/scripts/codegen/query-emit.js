@@ -58,7 +58,18 @@ const NEVER_BAKED_IN = {
         'replaces (a session id, a token, personal data). Left out of the request unless you supply a current one.',
     nonce: 'In the capture it looked like a per-request timestamp or nonce, so no value is baked in. ' +
         'Left out of the request unless you supply one.',
+    // A different long number or token on every call is not baked in either --
+    // but it may just as well be the id or the cursor the caller has to
+    // choose. So this says what was seen, and does not tell a model the
+    // parameter is noise it should leave alone.
+    differsEveryCall: 'Every captured call that sent it sent a different long number or token -- an id, a cursor, ' +
+        'a timestamp or a nonce -- so no value is baked in. Left out of the request unless you supply the one you mean.',
 };
+
+function neverBakedIn(q) {
+    if (q.kind === 'nonce' && q.reason === 'differs-every-call') return NEVER_BAKED_IN.differsEveryCall;
+    return NEVER_BAKED_IN[q.kind];
+}
 
 /**
  * What a caller -- a model reading the tool's input schema, or a developer
@@ -69,7 +80,7 @@ const NEVER_BAKED_IN = {
  */
 function describe(q) {
     const lead = 'The ' + quoted(q.wireName) + ' query parameter' + (q.repeated ? ', sent once per value' : '') + '.';
-    if (q.kind === 'scrubbed' || q.kind === 'nonce') return lead + ' ' + NEVER_BAKED_IN[q.kind];
+    if (q.kind === 'scrubbed' || q.kind === 'nonce') return lead + ' ' + neverBakedIn(q);
 
     if (q.kind === 'varying') {
         const sentIn = q.sentIn < q.calls ? ' (' + q.sentIn + ' of them sent it)' : '';
@@ -388,7 +399,11 @@ function whenOmitted(q) {
     if (q.kind === 'scrubbed') {
         return '**left out, never baked in**: ' + (SCRUB_REASON_TEXT[q.reason] || SCRUB_REASON_TEXT['scrub-marker']);
     }
-    if (q.kind === 'nonce') return '**left out, never baked in**: a per-request timestamp or nonce';
+    if (q.kind === 'nonce') {
+        return '**left out, never baked in**: ' + (q.reason === 'differs-every-call'
+            ? 'a different long number or token on every call (an id, a cursor, a timestamp or a nonce)'
+            : 'a per-request timestamp or nonce');
+    }
     if (q.kind === 'varying') {
         const examples = q.examples.length ? ' (for example ' + q.examples.map(mdCode).join(', ') + ')' : '';
         return 'left out: it varied' + examples;
@@ -434,9 +449,10 @@ function queryReadmeSection(tools, opts) {
     lines.push('  a filter -- has no default. The examples are values the capture happened to contain.');
     lines.push('- **Never baked in.** A value the scrub replaced (a session id, a token, personal data) is never');
     lines.push('  written into the generated code, and neither is one that looked like a per-request timestamp or');
-    lines.push('  nonce (a cache-buster such as `_=1700000000000`). Those parameters are left out unless the caller');
-    lines.push('  supplies a value. If the site refuses a call without one, pass a current value at run time; do');
-    lines.push('  not paste one into the source.');
+    lines.push('  nonce (a cache-buster such as `_=1700000000000`), or that was a different long number or token on');
+    lines.push('  every call -- which may be a nonce, or the id or cursor a caller has to choose. Those parameters');
+    lines.push('  are left out unless the caller supplies a value. If the site refuses a call without one, pass a');
+    lines.push('  current value at run time; do not paste one into the source.');
     lines.push('');
     lines.push('A parameter keeps its exact name on the wire. Its C# and tool name is that name in camelCase');
     lines.push('(`page-size` is `pageSize`), and values are percent-encoded when the request is built.');
