@@ -22,6 +22,13 @@ public sealed class SiteBrowserManager(
 
     public SignInPaths Paths => paths;
 
+    /// <summary>
+    /// How long moving or deleting a profile waits for Chrome's helper processes (and, on Windows,
+    /// antivirus) to let go of its files after the browser closed. Measured: more than 5 s on a busy
+    /// PC, which used to fail the sign-in at the last step.
+    /// </summary>
+    internal TimeSpan ProfileReleaseTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
     /// <summary>Takes one of the live sign-in browser slots, or returns null when all are busy.</summary>
     public IDisposable? TryAcquireLiveSlot() => _liveSlots.Wait(0) ? new Releaser(_liveSlots) : null;
 
@@ -146,18 +153,34 @@ public sealed class SiteBrowserManager(
         return File.Exists(Path.Combine(dir, "SingletonLock")) || new FileInfo(Path.Combine(dir, "SingletonLock")).LinkTarget is not null;
     }
 
-    private static async Task RetryAsync(Action action)
+    /// <summary>
+    /// Runs a profile move or delete, retrying while its files are still held, with a growing
+    /// pause (250 ms doubling to 2 s), until <see cref="ProfileReleaseTimeout"/> has passed; then
+    /// the last file error is thrown.
+    /// </summary>
+    private async Task RetryAsync(Action action)
     {
-        for (var attempt = 1; ; attempt++)
+        var started = TimeProvider.System.GetTimestamp();
+        var pause = TimeSpan.FromMilliseconds(250);
+        var reported = false;
+        while (true)
         {
             try
             {
                 action();
+                if (reported) logger.LogInformation("A browser profile was released after {Seconds:F1} s.", TimeProvider.System.GetElapsedTime(started).TotalSeconds);
                 return;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 20)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                       && TimeProvider.System.GetElapsedTime(started) < ProfileReleaseTimeout)
             {
-                await Task.Delay(250);
+                if (!reported && TimeProvider.System.GetElapsedTime(started) > TimeSpan.FromSeconds(2))
+                {
+                    reported = true;
+                    logger.LogInformation("Waiting for Chrome to release a browser profile's files ({Error}).", ex.GetType().Name);
+                }
+                await Task.Delay(pause);
+                pause = TimeSpan.FromTicks(Math.Min(pause.Ticks * 2, TimeSpan.FromSeconds(2).Ticks));
             }
         }
     }
