@@ -95,7 +95,9 @@ node tools/extract-session.js      # -> ~/.tripit-mcp/session.json
   cookies are part of what the API requires, and they are the short-lived part.
   `TripItClient.Classify` maps it to `TripItAuthenticationException`, and the client then asks
   its `ITripItSessionProvider` for a renewed snapshot and retries once, only if the cookie
-  changed. Locally `LocalSessionProvider` re-reads the session file and runs
+  changed. A non-GET is retried only after this 403 (the edge stopped it); a non-GET answered
+  302/401 is never resent (`TripItWriteOutcomeUnknownException`: it may have been applied).
+  Locally `LocalSessionProvider` re-reads the session file and runs
   `CommandSessionRefresher` (`node tools/extract-session.js`, 30 s cool-down); the Multiplex
   host renews through its own browser (`ISiteSessionRefresher`) instead.
   **A 403 with a small HTML body means re-extract the session, not "the client is broken".**

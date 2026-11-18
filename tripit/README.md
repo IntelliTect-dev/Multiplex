@@ -154,7 +154,10 @@ fails as **403 with an Akamai HTML block page**, which the client reports as
 On an authentication failure (302, 401 or Akamai 403) the client asks its session provider
 for a new session. `LocalSessionProvider` re-reads the store / environment / session file and,
 if that still holds the rejected cookie, runs an `ISessionRefresher` (at most once per 30 s
-cool-down). The request is retried once, and only when the cookie actually changed. Sessions
+cool-down). The request is retried once, and only when the cookie actually changed. A change
+(any method but GET) is retried only after the Akamai 403, which stops it before TripIt sees
+it; a change answered 302/401 may already have been applied, so it is not resent and
+`TripItWriteOutcomeUnknownException` asks the caller to check first. Sessions
 are immutable snapshots (`TripItSession`), swapped whole, so one request never mixes values. The MCP
 server wires in `CommandSessionRefresher`, which runs `node tools/extract-session.js`
 (discovered beside or above the server binary) — so as long as the signed-in capture

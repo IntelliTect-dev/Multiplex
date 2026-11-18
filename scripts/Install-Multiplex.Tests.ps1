@@ -193,6 +193,13 @@ Describe 'replacing the installed server' {
         (Get-Content -LiteralPath (Join-Path $script:app 'version.txt') -Raw).Trim() | Should -Be 'v2'
     }
 
+    It 'installs into an empty root on a first install' {
+        Remove-Item -LiteralPath $script:app -Recurse -Force
+        Update-MultiplexApp -AppDir $script:app -StopServer {} -Publish $script:publishV2
+        (Get-Content -LiteralPath (Join-Path $script:app 'version.txt') -Raw).Trim() | Should -Be 'v2'
+        @(Get-ChildItem -LiteralPath $script:root).Name | Should -Be @('app')
+    }
+
     It 'changes nothing under -WhatIf' {
         Update-MultiplexApp -AppDir $script:app -StopServer $script:stop -Publish $script:publishV2 -WhatIf
         (Get-Content -LiteralPath (Join-Path $script:app 'version.txt') -Raw).Trim() | Should -Be 'v1'
