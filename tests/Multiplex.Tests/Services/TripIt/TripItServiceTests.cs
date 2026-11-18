@@ -207,6 +207,27 @@ public sealed class TripItServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Write_answered_302_is_not_repeated_and_the_person_is_asked_to_check()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        _host.Refresher.Next["acct-a"] = () => TripItTestHost.Snapshot("cookie-a2");
+        _host.TripIt.OnJson($"/api/v2/get/trip/uuid/{TripUuid}/include_objects/true", _ => TripJson("Iceland"));
+        _host.TripIt.On($"/api/v2/delete/trip/uuid/{TripUuid}", (_, _) => new HttpResponseMessage(HttpStatusCode.Redirect));
+        var mcp = _host.McpFor("acct-a");
+        var args = new Dictionary<string, object?> { ["tripUuid"] = TripUuid, ["confirmName"] = "Iceland" };
+        var (_, previewText) = await mcp.CallAsync("tripit_delete_trip", args);
+        args["confirm_token"] = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        var (isError, text) = await mcp.CallAsync("tripit_delete_trip", args);
+
+        Assert.True(isError);
+        Assert.Contains("may already have made the change", text, StringComparison.Ordinal);
+        Assert.Contains("before trying again", text, StringComparison.Ordinal);
+        Assert.Equal(1, _host.TripIt.Count("POST", $"/api/v2/delete/trip/uuid/{TripUuid}"));
+        Assert.Equal(1, _host.Refresher.Calls["acct-a"]);
+    }
+
+    [Fact]
     public async Task Confirm_token_is_refused_for_other_arguments_or_another_account()
     {
         _host.SignIn("acct-a", "cookie-a");

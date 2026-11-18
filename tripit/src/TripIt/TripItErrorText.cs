@@ -22,6 +22,7 @@ public static class TripItErrorText
         // Written by this library; names the remedy and carries no values.
         TripItAuthenticationException auth => auth.Message,
         TripItPartialWriteException partial => partial.Message,
+        TripItWriteOutcomeUnknownException unknown => unknown.Message,
         TripItSessionFormatException format => format.Message,
         // Argument errors are this library's and the tools' own validation messages.
         ArgumentException arg => arg.Message,
