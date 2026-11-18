@@ -15,9 +15,12 @@
 //    the last. Nothing is scaffolded, nothing is prompted and no browser is
 //    opened before it is satisfied -- because every one of those is work the
 //    operator has to undo when the run cannot proceed anyway.
-//  - `--validate-only` STAYS dependency-free. It resolves paths and opens
-//    nothing, so requiring a browser to run it would break the one command
-//    that exists to answer questions without side effects.
+//  - `--validate-only` ASKS THE SAME QUESTION AND ENFORCES NOTHING (#25). It
+//    resolves paths and opens nothing, and it used to stop there: exit 0 on a
+//    machine where the real start was about to be refused. It now reports the
+//    missing dependency beside the resolved paths, exit 1, without prompting
+//    or installing. capture-check-only.test.js pins the whole of that; the
+//    case here is the half that belongs to the dependency.
 //  - A NON-REPO CAPTURE FOLDER IS PROTECTED. The skill's own pipeline runs
 //    `git init && git add -A` in that folder later. Without a rule left behind
 //    now, that commit takes the salt and the unscrubbed raw captures with it,
@@ -685,19 +688,31 @@ test('the recorder finds a playwright installed in the operator folder', () => {
         'and the run advanced to the profile gate\n' + r.stderr);
 });
 
-test('--validate-only still answers without any browser dependency', () => {
-    // It resolves paths and opens nothing. Gating it on a browser install
-    // would break the one command that exists to answer questions without
-    // side effects -- and several suites use it for exactly that.
+test('--validate-only reports the missing dependency instead of passing (#25)', () => {
+    // THIS CASE USED TO PIN THE OPPOSITE: exit 0 with no module, because the
+    // flag resolves paths and opens nothing. That was the defect. A caller runs
+    // it as the preflight before a start whose errors it cannot see, and the
+    // one thing it most needed to hear -- the start is about to be refused --
+    // was the thing the flag skipped.
+    //
+    // So the dependency is ASKED here too. Still nothing enforced on the way:
+    // the paths are resolved and printed exactly as before, nothing is offered
+    // for install and nothing is written. Only the answer and the exit code
+    // changed.
     const cwd = dir('validate-only');
     fs.writeFileSync(path.join(cwd, harProfile.PROFILE_FILENAME),
         JSON.stringify({ salt: 'a'.repeat(48), literals: {} }), 'utf8');
     const r = runCapture(cwd, ['start', '--uri', 'https://example.com',
         '--describe', 'preflight fixture', '--port', '0', '--validate-only']);
 
-    assert.strictEqual(r.status, 0, r.stderr);
-    assert.ok(!/the playwright module was not found/.test(r.stderr), r.stderr);
-    assert.ok(JSON.parse(r.stdout).sessionDir, 'it still reports the resolved session');
+    assert.strictEqual(r.status, 1, 'the code the real start ends with for this refusal\n' + r.stderr);
+    assert.ok(/the playwright module was not found/.test(r.stderr), r.stderr);
+    assert.ok(!/Install it now/.test(r.stderr), 'and it offers nothing: it only reports\n' + r.stderr);
+
+    const answer = JSON.parse(r.stdout);
+    assert.ok(answer.sessionDir, 'it still reports the resolved session');
+    assert.ok(answer.validation && answer.validation.ok === false,
+        'and says, in the same JSON, that a start would be refused');
 });
 
 // ---------------------------------------------------------------------------
