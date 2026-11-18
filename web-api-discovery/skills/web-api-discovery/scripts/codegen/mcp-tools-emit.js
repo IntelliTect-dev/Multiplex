@@ -57,6 +57,13 @@ const ACTING_WORDS = new Set([
     'approve', 'reject', 'merge', 'unfriend', 'unfollow', 'block',
 ]);
 
+// Moves money, or commits the user to something. The record such a POST adds
+// is the point of it and not a small thing: "one more order" is an order
+// placed. So a collection of these is not vouched for by being a collection.
+const COMMITTING_WORDS = new Set([
+    'order', 'invoice', 'fund', 'donation', 'booking', 'reservation', 'subscription', 'bid', 'trade',
+]);
+
 // Carries its command in the body, so the path cannot say what it does:
 // POST /rpc, POST /batch.
 const OPAQUE_CALL_WORDS = new Set([
@@ -115,11 +122,29 @@ function wordsOf(segment) {
         .map((w) => w.toLowerCase());
 }
 
-/** Whether a word, or its singular, is in one of the lists that veto "additive". */
+// A removal or a payment is as often named by a noun or a participle as by the
+// verb: withdrawal, cancellation, deletion, removal, archived, payout. So the
+// words that change, act or commit also veto any word that BEGINS with their
+// stem -- the word without a final "e" (delet-, remov-, archiv-). A stem
+// shorter than four letters is not used: `set`, `buy`, `bid` and `mov` would
+// take settings, buyers, bidders and movies with them. `pay` is the exception,
+// because payment, payout and payee are what it is there for.
+const MIN_STEM_LENGTH = 4;
+const VETO_STEMS = [CHANGING_WORDS, ACTING_WORDS, COMMITTING_WORDS]
+    .flatMap((words) => Array.from(words))
+    .map((word) => (word.endsWith('e') ? word.slice(0, -1) : word))
+    .filter((stem) => stem.length >= MIN_STEM_LENGTH)
+    .concat(['pay']);
+
+/**
+ * Whether a word vetoes "additive": it, or its singular, is in one of the
+ * lists, or it begins with the stem of a word that changes, acts or commits.
+ */
 function vetoesAdditive(word) {
     const singular = word.endsWith('s') ? word.slice(0, -1) : word;
-    return [CHANGING_WORDS, ACTING_WORDS, OPAQUE_CALL_WORDS, SIGN_IN_WORDS]
-        .some((words) => words.has(word) || words.has(singular));
+    return [CHANGING_WORDS, ACTING_WORDS, COMMITTING_WORDS, OPAQUE_CALL_WORDS, SIGN_IN_WORDS]
+        .some((words) => words.has(word) || words.has(singular)) ||
+        VETO_STEMS.some((stem) => word.startsWith(stem));
 }
 
 /**

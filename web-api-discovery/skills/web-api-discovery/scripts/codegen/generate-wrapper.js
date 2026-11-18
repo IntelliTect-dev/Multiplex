@@ -1028,9 +1028,10 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
     lines.push('- a `GET` is read-only;');
     lines.push('- `PUT` and `DELETE` are destructive and idempotent; `PATCH` is destructive;');
     lines.push('- a `POST` is destructive unless something vouches for it. It is called additive only when its');
-    lines.push('  path has no id in it, names no change, action, opaque call or sign-in (`delete`, `send`,');
-    lines.push('  `rpc`, `login` and the like), and either says `create`, `add` or `new` or is a collection:');
-    lines.push('  the capture also holds that same path with an id appended.');
+    lines.push('  path has no id in it; names no change, action, money or commitment, opaque call or sign-in');
+    lines.push('  (`delete`, `send`, `payment`, `order`, `rpc`, `login` and the like, or a word that begins');
+    lines.push('  with one: `deletion`, `withdrawal`); and either says `create`, `add` or `new` or is a');
+    lines.push('  collection: the capture also holds that same path with an id appended.');
     lines.push('');
     lines.push('So a `POST` the capture says little about asks for confirmation. Review the table before');
     lines.push('relying on a client that acts on hints without asking.');
