@@ -381,13 +381,46 @@ Describe 'Invoke-HarCapture -Scrub and -Catalogue run one phase on a capture tha
         Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse -Because 'a refusal runs nothing'
     }
 
+    It '-Scrub will not replace a scrubbed.har when session.json cannot say whether the recorder signed in' {
+        # FOUND IN REVIEW, and the same mistake one level down. session.json is
+        # where the sign-in is recorded; a torn or hand-edited one answered
+        # "did not sign in", so the refusal above could be switched off by
+        # damage to the one file it reads. Not knowing is not the same as no.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed
+        Set-Content -LiteralPath (Join-Path $capture 'session.json') -Value '{ "describe": "a torn wri' -Encoding utf8
+        $before = (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'session\.json that cannot be read'
+        $run.Text | Should -Match 'move scrubbed\.har aside'
+        (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash | Should -Be $before
+    }
+
+    It '-Scrub still scrubs a capture with an unreadable session.json when there is nothing to replace' {
+        # The same terms as a known sign-in: with no scrubbed.har there is no
+        # better artifact to lose, so the scrub runs -- and says what it could
+        # not find out.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+        Set-Content -LiteralPath (Join-Path $capture 'session.json') -Value '{ "describe": "a torn wri' -Encoding utf8
+
+        $run = Invoke-PhaseDoorInProcess -Store $script:Store -Arguments @{
+            Uri = 'https://www.example.test'; Scrub = $true }
+
+        $run.ExitCode | Should -Be 0
+        $run.Warning | Should -Match 'session\.json that cannot be read'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
+    }
+
     It '-Scrub is not held up by a caller''s lowered $ConfirmPreference' {
         # The other half of the $WhatIfPreference case. The scrub wrapper asks
         # ShouldProcess per capture; a session that set $ConfirmPreference to
         # Low would have it PROMPT, and a run with nobody at a terminal -- an
         # agent, which is who runs this -- fails on a prompt it cannot answer.
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
-        $command = "`$ConfirmPreference = 'Low'; & '$($script:InvokePs1)' https://www.example.test -Scrub; exit `$LASTEXITCODE"
+        $door = $script:InvokePs1.Replace("'", "''")
+        $command = "`$ConfirmPreference = 'Low'; & '$door' https://www.example.test -Scrub; exit `$LASTEXITCODE"
 
         Push-Location -LiteralPath $script:Store.Base
         try {
@@ -460,7 +493,7 @@ Describe 'Invoke-HarCapture -Scrub and -Catalogue run one phase on a capture tha
         # the command. A property read that only works without it would pass
         # every test that calls the script by path and fail for the operator.
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
-        $manifest = Join-Path $script:RepoRoot 'WebApiDiscovery.psd1'
+        $manifest = (Join-Path $script:RepoRoot 'WebApiDiscovery.psd1').Replace("'", "''")
         $command = "Import-Module '$manifest'; Invoke-HarCapture https://www.example.test -Scrub -Catalogue | Out-Null; exit `$LASTEXITCODE"
 
         Push-Location -LiteralPath $script:Store.Base
@@ -873,6 +906,25 @@ Describe 'the leak gate is not softened by re-entering' {
         Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
         $run.Text | Should -Match 'ADVISORY'
+    }
+
+    It 'does not blame a missing repository for a refusal that has another cause' {
+        # FOUND IN REVIEW. "Recorded outside a git repository" is written into
+        # session.json when the capture is made and never changes. The folder
+        # can become a repository afterwards -- that is the remedy this very
+        # command gives -- and from then on a failure is about something else.
+        # Said on the flag alone, the hint would send an operator whose scrub
+        # the gate REJECTED to run `git init` instead of to the findings.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -UnprotectedTables
+        $door = New-StubbedGateDoor -Store $script:Store -Verdict 3
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Script $door -Arguments @(
+            'https://www.example.test', '-Scrub')
+
+        $run.ExitCode | Should -Not -Be 0 -Because $run.Text
+        $run.Text | Should -Match 'leak gate REJECTED' -Because 'that is what actually happened'
+        $run.Text | Should -Not -Match 'recorded outside a git repository'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.rejected.har') | Should -BeTrue
     }
 
     It '-Scrub alone answers the scrub wrapper''s own code on an ADVISORY verdict, and says the verdict' {
