@@ -66,7 +66,7 @@ public sealed class SiteProfileAdopter(
 
             using (await manager.LockAccountAsync(definition.Slug, account.AccountId, ct))
             {
-                await manager.PromoteProfileAsync(definition.Slug, copy, account.AccountId);
+                await manager.PromoteProfileAsync(definition.Slug, copy, account.AccountId, ct);
                 kept = true;
                 await store.SetAsync(definition.Slug, account.AccountId, snapshot, ct);
                 await index.UpsertAsync(account, ct);
@@ -77,7 +77,7 @@ public sealed class SiteProfileAdopter(
         finally
         {
             await manager.CloseAsync(browser);
-            if (!kept) await manager.DeleteProfileAsync(copy);
+            if (!kept) await manager.DiscardProfileAsync(copy);
         }
     }
 

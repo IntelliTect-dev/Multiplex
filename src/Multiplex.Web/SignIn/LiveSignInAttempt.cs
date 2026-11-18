@@ -201,7 +201,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         {
             _services.Logger.LogWarning("{Site} account {AccountId} is not on the allowlist; refusing it.", Slug, account.AccountId);
             await CloseBrowserAsync();
-            await _services.Manager.DeleteProfileAsync(TempProfile);
+            // The refused account's profile is discarded by CleanUpAsync, after the person is told.
             // Claim the end first, so a Cancel arriving meanwhile cannot also end the authorization.
             if (!TryEnd(AttemptState.Denied, $"This {Definition.DisplayName} account is not allowed on this server.")) return;
             if (_services.Completer() is { } completer)
@@ -215,7 +215,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
 
         using (await _services.Manager.LockAccountAsync(Slug, account.AccountId, ct))
         {
-            await _services.Manager.PromoteProfileAsync(Slug, TempProfile, account.AccountId);
+            await _services.Manager.PromoteProfileAsync(Slug, TempProfile, account.AccountId, ct);
             _profileKept = true;
             await _services.Store.SetAsync(Slug, account.AccountId, snapshot, ct);
             await _services.Index.UpsertAsync(account, ct);
@@ -312,18 +312,20 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     private async Task CleanUpAsync()
     {
         await CloseBrowserAsync();
+        // Free the live-browser slot before any wait on the profile's files, so a new sign-in is
+        // not refused while Chrome lets go of this one.
+        Interlocked.Exchange(ref _slot, null)?.Dispose();
         if (!_profileKept)
         {
             try
             {
-                await _services.Manager.DeleteProfileAsync(TempProfile);
+                await _services.Manager.DiscardProfileAsync(TempProfile);
             }
             catch (Exception ex)
             {
                 _services.Logger.LogError("Could not delete temporary sign-in profile {Profile}: {Error}", Path.GetFileName(TempProfile), ex.GetType().Name);
             }
         }
-        Interlocked.Exchange(ref _slot, null)?.Dispose();
     }
 
     private async Task CloseBrowserAsync()

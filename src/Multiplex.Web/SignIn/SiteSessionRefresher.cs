@@ -121,7 +121,8 @@ public sealed class SiteSessionRefresher(
     {
         try
         {
-            await manager.DeleteProfileAsync(profile);
+            if (!await manager.DiscardProfileAsync(profile))
+                logger.LogWarning("Could not delete the browser profile of signed-out {Site} account {AccountId} yet.", site, accountId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
