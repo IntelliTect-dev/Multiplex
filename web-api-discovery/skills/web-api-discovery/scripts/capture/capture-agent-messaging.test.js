@@ -26,6 +26,8 @@
 //       end -- and an acknowledgement that never comes is waited for only so long
 //   G7  a child gone from under its stdin (EPIPE) does not crash the recorder
 //   G8  the messages say what the owner asked them to say
+//   G9  once the message the grace was waiting for is acknowledged, the agent
+//       is working: a quiet stretch longer than the grace does not end it
 
 'use strict';
 
@@ -265,6 +267,38 @@ test('G6: a turn ending with a message unacknowledged is not the end; a missing 
     await done;
     assert.ok(resolved);
     void realOut;
+});
+
+test('G9: once the awaited message is acknowledged the agent is working, however long it then stays quiet', async () => {
+    // The grace for an unacknowledged message is armed when a turn ends with
+    // one outstanding. When that acknowledgement ARRIVES, the agent has taken
+    // the message in and a turn is starting on it -- and a turn may be quiet
+    // for longer than the grace (a long first thinking block). It must not be
+    // declared finished, and its stdin closed, in the middle of that turn.
+    const fake = fakeAgent();
+    const held = [];
+    let holdAcks = false;
+    fake.proc.stdout.emit = ((orig) => function (event, data) {
+        if (holdAcks && event === 'data' && /"isReplay":true/.test(String(data))) { held.push(data); return true; }
+        return orig.call(this, event, data);
+    })(fake.proc.stdout.emit);
+    const { control, done, log } = drive('g9', fake, { ackGraceMs: 200 });
+    await tick();
+    holdAcks = true;
+    control.carryOn('The wait is over.');   // sent as the turn was ending
+    await tick();
+    fake.result();                          // the turn ends with it unacknowledged: the grace starts
+    await tick(50);
+    holdAcks = false;
+    for (const d of held.splice(0)) fake.proc.stdout.emit('data', d);   // ...and now it is acknowledged
+    await tick(450);                        // then nothing at all, for twice the grace
+    assert.strictEqual(fake.state.stdinEnded, false, 'mid-turn: its stdin must not be closed');
+    assert.doesNotMatch(log(), /the agent has finished/);
+    fake.text('STEP: re-checked the page; continuing');
+    fake.result();
+    await done;
+    assert.strictEqual(fake.state.stdinEnded, true, 'the turn that ends with everything acknowledged is the end');
+    assert.match(log(), /the agent has finished/);
 });
 
 test('G7: a child gone from under its stdin does not take the recorder down', async () => {
