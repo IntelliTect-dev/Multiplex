@@ -93,10 +93,12 @@
     raw is kept), stalled, not-registered, and -- only with exit 4 --
     recorder-gone (the recording process exited and left nothing usable).
     "ending" carries the phase, when the stop registered, the last sign of
-    progress, how long nothing has moved (quietSeconds) and how long it is
-    allowed to (quietLimitSeconds). `node capture-har.js status` reports the
-    same "ending" at any time, including "progressing" while post-processing is
-    still under way.
+    progress (lastProgressUtc), how long the allowance has been running
+    (quietSeconds) and how long it may (quietLimitSeconds). When the machine
+    running this slept through part of the wait, the allowance is counted again
+    from when it woke and waitResumedUtc says so; lastProgressUtc never moves
+    for that. `node capture-har.js status` reports the same "ending" at any
+    time, including "progressing" while post-processing is still under way.
 
     Nothing is printed when no capture session is found (exit 3), and
     -ValidateOnly prints what it resolved instead.

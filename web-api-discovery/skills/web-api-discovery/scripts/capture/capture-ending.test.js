@@ -28,6 +28,7 @@
 //   E6  finished, cancelled and recorder-gone each say so, whatever the clock
 //   E7  a modification time in the future is not a sign of progress
 //   E8  a recorder that finished and exited between two looks is finished
+//   E9  an interrupted wait restarts the allowance and is never called progress
 //   N1  the recorder's own record: registered once, moved at each phase
 //   W1  the wait goes on through four minutes of a scrub that keeps writing
 //   W1b it says where it is every thirty seconds, however fast the phases change
@@ -157,7 +158,7 @@ function fakeRun(steps = []) {
         sleep: async (ms) => {
             t += ms;
             // A wait that never ends would hang the suite rather than fail it.
-            if (t - start > 6 * 60 * MINUTE) throw new Error('six hours of fake time have passed: the wait never ends');
+            if (t - start > 2 * 60 * MINUTE) throw new Error('two hours of fake time have passed: the wait never ends');
             while (pending.length && start + pending[0].at <= t) pending.shift().run(t);
         },
         /** Add a step after the run exists, for one that needs `run.start`. */
@@ -211,7 +212,7 @@ function runCommand(f, command) {
 
 const evidence = (over = {}) => Object.assign({
     session: {}, recorderAlive: true, recorderPid: 4242, stopRequestedMs: null,
-    artifacts: [], captureBytes: 0, observedChangeMs: null
+    artifacts: [], captureBytes: 0, observedChangeMs: null, watchingSinceMs: null, resumedMs: null
 }, over);
 
 const registered = (phase, at, over = {}) => Object.assign({
@@ -354,6 +355,40 @@ test('E8: a recorder that finished and exited between two looks is finished, not
     assert.strictEqual(v.state, 'complete');
 });
 
+test('E9: an interrupted wait restarts the allowance, and is never reported as a sign of progress', () => {
+    // Where the allowance is counted from and when anything last MOVED are two
+    // different facts. A watcher that slept may fairly count again from when it
+    // woke -- but if that were written down as progress, a hung capture on a
+    // laptop that woke up would read "last sign of progress 0s ago".
+    const hung = registered('scrub', T0 - 10 * MINUTE);
+    const v = ending.evaluate(evidence({ session: hung, resumedMs: T0 - 5 * SECOND }), T0);
+    assert.strictEqual(v.state, 'progressing', 'the allowance is counted from when the wait resumed');
+    assert.strictEqual(v.quietSeconds, 5);
+    assert.strictEqual(v.lastProgressUtc, iso(T0 - 10 * MINUTE), 'but nothing has moved for ten minutes, and it says so');
+    assert.strictEqual(v.waitResumedUtc, iso(T0 - 5 * SECOND), 'and it says why the two differ');
+
+    // The allowance from the resumption runs out like any other.
+    const later = ending.evaluate(evidence({ session: hung, resumedMs: T0 - 61 * SECOND }), T0);
+    assert.strictEqual(later.state, 'stalled');
+    assert.strictEqual(later.lastProgressUtc, iso(T0 - 10 * MINUTE));
+
+    // An interruption BEFORE the last real sign changes nothing and is not mentioned.
+    const moved = ending.evaluate(evidence({
+        session: hung, resumedMs: T0 - 5 * MINUTE,
+        artifacts: [{ name: 'session:.scrubbed.har.partial-9', size: 1, mtimeMs: T0 - 2 * SECOND }]
+    }), T0);
+    assert.strictEqual(moved.quietSeconds, 2);
+    assert.strictEqual(moved.waitResumedUtc, null);
+
+    // The same for a stop not yet taken up: more time, and no pretence of an answer.
+    const pending = ending.evaluate(evidence({
+        session: { pid: 4242 }, stopRequestedMs: T0 - 10 * MINUTE, resumedMs: T0 - 5 * SECOND
+    }), T0);
+    assert.strictEqual(pending.state, 'stop-pending');
+    assert.strictEqual(pending.registeredUtc, null);
+    assert.strictEqual(pending.stopRequestedUtc, iso(T0 - 10 * MINUTE));
+});
+
 // ---------------------------------------------------------------------------
 // The recorder's record
 // ---------------------------------------------------------------------------
@@ -474,24 +509,35 @@ test('W4: a machine that slept through the wait is not told its capture stalled 
     const f = fixture('w4', registered('scrub', run.start, { summary: { exists: true, bytes: 2048 } }));
     let polls = 0;
     const sleep = (ms) => run.sleep(++polls === 10 ? 10 * MINUTE : ms);
+    const said = [];
 
     const result = await ending.waitForEnding(f.sessionDir, {
-        now: run.now, sleep, isRecorderAlive: run.isDriverAlive
+        now: run.now, sleep, isRecorderAlive: run.isDriverAlive,
+        onWaiting: (verdict) => said.push({ at: run.elapsed(), verdict })
     });
 
     assert.strictEqual(result.verdict.state, 'stalled', 'it is still a stall if nothing moves after waking');
     const awake = 9 * 200 + 10 * MINUTE;
     assert.ok(run.elapsed() >= awake + 60 * SECOND && run.elapsed() < awake + 62 * SECOND,
         `a stall was called ${(run.elapsed() - awake) / 1000}s after waking; the allowance starts again there`);
-    assert.ok(result.verdict.quietSeconds >= 60 && result.verdict.quietSeconds < 62,
-        `and the silence it reports is the silence since then, not ${result.verdict.quietSeconds}s`);
+    assert.strictEqual(result.verdict.waitResumedUtc, iso(run.start + awake), 'and it says the wait was interrupted');
+
+    // WAKING UP IS NOT PROGRESS. The recorder may be hung; nothing has moved
+    // since before the lid closed, and at no point may the wait claim it has.
+    const afterWaking = said.filter((s) => s.at >= awake);
+    assert.ok(afterWaking.length, 'the wait said nothing after waking');
+    for (const { verdict } of [...afterWaking, { verdict: result.verdict }]) {
+        assert.strictEqual(verdict.lastProgressUtc, iso(run.start),
+            'the last sign of progress moved, though nothing on disk did');
+    }
 });
 
 test('W5: with every time on disk ahead of the clock, the silence is counted from when the wait began', async () => {
     // A clock set back after the recorder wrote its record. Nothing on disk is
-    // usable, and "no usable sign means it moved just now" would never stall.
+    // usable, and "no usable sign means it moved just now" would never stall --
+    // until the clock caught up, five minutes later.
     const run = fakeRun();
-    const f = fixture('w5', registered('scrub', run.start + 60 * MINUTE, { summary: { exists: true, bytes: 2048 } }));
+    const f = fixture('w5', registered('scrub', run.start + 5 * MINUTE, { summary: { exists: true, bytes: 2048 } }));
 
     const result = await ending.waitForEnding(f.sessionDir, {
         now: run.now, sleep: run.sleep, isRecorderAlive: run.isDriverAlive
@@ -500,6 +546,7 @@ test('W5: with every time on disk ahead of the clock, the silence is counted fro
     assert.strictEqual(result.verdict.state, 'stalled');
     assert.ok(run.elapsed() >= 60 * SECOND && run.elapsed() < 62 * SECOND,
         `stalled was called after ${run.elapsed() / 1000}s`);
+    assert.strictEqual(result.verdict.lastProgressUtc, null, 'with no usable sign of progress, none is claimed');
 });
 
 // ---------------------------------------------------------------------------
