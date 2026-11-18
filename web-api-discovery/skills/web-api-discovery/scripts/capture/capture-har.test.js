@@ -1497,6 +1497,21 @@ test('the placement guard stays silent in a worktree', () => {
         'a worktree is the sanctioned place to work and must never be warned about');
 });
 
+test('the agent rate watch counts only an agent that has been launched and is still driving', () => {
+    // Under --ai the recorder's own first navigation -- and, when the start
+    // page was refused and the agent never started, a person browsing by hand
+    // -- used to be counted as "the agent is navigating faster than the pace".
+    const session = {};
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: false, session }), false,
+        'not launched yet: the page loads are the recorder\'s, or a person\'s');
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session }), true);
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session: { agentExitCode: 0 } }), false,
+        'it has finished');
+    assert.strictEqual(capture.agentDriving({ ai: true, agentLaunched: true, session: { agentStopped: 'hand-over' } }),
+        false, 'it was stopped');
+    assert.strictEqual(capture.agentDriving({ ai: false, agentLaunched: true, session }), false, 'no --ai, no agent');
+});
+
 // ---------------------------------------------------------------------------
 
 run().then((passed) => {
