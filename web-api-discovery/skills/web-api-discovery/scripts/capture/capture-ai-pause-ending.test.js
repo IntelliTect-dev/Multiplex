@@ -28,6 +28,7 @@ const http = require('http');
 const path = require('path');
 
 const { createE2eKit } = require(path.join(__dirname, 'capture-ai-e2e.test-support.js'));
+const capture = require(path.join(__dirname, 'capture-har.js'));
 
 const kit = createE2eKit('capture-ai-pause-end-');
 const {
@@ -55,9 +56,12 @@ async function longPauseSite() {
             res.end(JSON.stringify({ ok: true }));
             return;
         }
+        // The page counts its own clicks: the witness that the second click was
+        // MADE, whatever the site and the recorder saw of it.
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end('<html><body><h1>ai drive fixture</h1>' +
-            '<button id="limited" onclick="fetch(\'/api/limited?q=again\')">limited</button></body></html>');
+            '<button id="limited" onclick="window.clicks=(window.clicks||0)+1;fetch(\'/api/limited?q=again\')">' +
+            'limited</button></body></html>');
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     return { server, uri: `http://127.0.0.1:${server.address().port}/`, hits };
@@ -90,9 +94,20 @@ test('K1: a recording stopped mid-pause aborts what it held -- the site never se
         assert.ok(await waitFor(() => fs.existsSync(session.agentLogPath) &&
             /capture-har -> agent: The site asked us to slow down/.test(fs.readFileSync(session.agentLogPath, 'utf8')),
         30000), 'the agent was told to wait');
-        // The stub clicks again 300 ms after being told; a few seconds for that
-        // click to be made and held.
-        await sleep(3000);
+        // The stub clicks again 300 ms after being told. THE PAGE says when it
+        // has: two clicks made, one request at the site -- the second is held.
+        const playwright = require(capture.resolvePlaywright({ cwd: repo, env: childEnv }).path);
+        const watcher = await playwright.chromium.connectOverCDP(session.cdpEndpoint);
+        try {
+            let page = null;
+            assert.ok(await waitFor(() => (page = watcher.contexts()[0].pages().find((p) => p.url().startsWith(uri))), 30000),
+                `no tab on ${uri}`);
+            assert.ok(await waitFor(async () => (await page.evaluate(() => window.clicks || 0)) >= 2, 30000),
+                'the agent made its second click');
+        } finally {
+            await watcher.close();   // disconnects; the browser is not this test's to close
+        }
+        await sleep(500);
         assert.strictEqual(hits.length, 1, `the second click is held, not sent: ${JSON.stringify(hits)}`);
 
         // STOPPED MID-PAUSE -- the file Stop-HarRecording writes.
@@ -102,13 +117,6 @@ test('K1: a recording stopped mid-pause aborts what it held -- the site never se
         await sleep(2000);
         assert.strictEqual(hits.length, 1,
             `the click held for the pause reached the site after the recording ended: ${JSON.stringify(hits)}`);
-        // And it WAS held and aborted -- not merely never made: the recorder
-        // saw it fail as blocked by the client.
-        const held = fs.readFileSync(path.join(sessionDir, 'raw.ndjson'), 'utf8').split('\n')
-            .filter((l) => l.includes('"url":') && l.includes('/api/limited?q=again'))
-            .map((l) => JSON.parse(l));
-        assert.ok(held.some((e) => /ERR_BLOCKED_BY_CLIENT/.test(String(e._failure || ''))),
-            `the second click was held and aborted: ${JSON.stringify(held.map((e) => [e.response.status, e._failure]))}`);
 
         const finalSession = readJson(path.join(sessionDir, 'session.json'));
         agentPid = finalSession.agentPid;
