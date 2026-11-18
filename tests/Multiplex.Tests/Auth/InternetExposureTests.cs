@@ -52,6 +52,61 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("https://evil.example")]
+    [InlineData("null")]
+    [InlineData("http://localhost.evil.example")]
+    public async Task OpenEndpoint_FromAWebPageThatIsNotLocal_IsNotFound(string origin)
+    {
+        using var request = Initialize("/time/mcp");
+        request.Headers.Host = "localhost";
+        request.Headers.Add("Origin", origin);
+        var response = await _app.Client().SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task OpenEndpoint_FromALocalWebPage_StillWorks()
+    {
+        using var request = Initialize("/time/mcp");
+        request.Headers.Host = "localhost";
+        request.Headers.Add("Origin", "http://localhost:6274");
+        var response = await _app.Client().SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("http://localhost:6274", false)]
+    [InlineData("https://localhost", false)]
+    [InlineData("http://LOCALHOST:5190", false)]
+    [InlineData("http://127.0.0.1:5190", false)]
+    [InlineData("http://[::1]:8080", false)]
+    [InlineData("https://evil.example", true)]
+    [InlineData("null", true)]
+    [InlineData("http://localhost.evil.example", true)]
+    [InlineData("http://127.0.0.1.evil.example", true)]
+    [InlineData("chrome-extension://abcdefghijklmnop", true)]
+    [InlineData("file://", true)]
+    public void IsFromOutsideThisPc_JudgesTheOriginOfBrowserRequests(string? origin, bool expected)
+    {
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Loopback;
+        context.Request.Host = new HostString("localhost:5190");
+        if (origin is not null) context.Request.Headers.Append("Origin", origin);
+        Assert.Equal(expected, RequestOrigin.IsFromOutsideThisPc(context));
+    }
+
+    [Fact]
+    public void IsFromOutsideThisPc_WithTwoOrigins_IsOutside()
+    {
+        var context = new DefaultHttpContext();
+        context.Connection.RemoteIpAddress = IPAddress.Loopback;
+        context.Request.Host = new HostString("localhost");
+        context.Request.Headers.Origin = new Microsoft.Extensions.Primitives.StringValues(["http://localhost:6274", "https://evil.example"]);
+        Assert.True(RequestOrigin.IsFromOutsideThisPc(context));
+    }
+
     [Fact]
     public async Task AuthenticatedEndpoint_ThroughATunnel_StillChallenges()
     {
