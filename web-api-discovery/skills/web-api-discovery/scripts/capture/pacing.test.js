@@ -43,6 +43,11 @@
 //       person hands back
 //   M5  only a Retry-After beyond the 24 h ceiling hands over
 //   M6  a burst is one episode even with Retry-After: 0
+//   M7  a named wait of zero (Retry-After: 0, or a date already past) is a
+//       short real pause -- the burst window -- not a zero-length one; the
+//       third DISTINCT one inside ten minutes hands over, as repeated
+//       throttling did before
+//   M8  time spent honouring a NAMED wait never counts towards the hour
 //   L1  the hand-over says who has the browser, gives the phone link, and that
 //       nothing evades -- and a hand-driven run gets advice, not a hand-over
 //   L2  the pause and resume lines say until when, for how long, and why
@@ -776,6 +781,91 @@ test('M5: only a Retry-After beyond the 24-hour ceiling hands over', () => {
     const d = monitor.observe(throttle(pacing.RETRY_AFTER_CEILING_MS + 1000));
     assert.strictEqual(d.action, 'hand-over');
     assert.strictEqual(d.why, 'retry-after-too-long');
+});
+
+test('M7: a named wait of zero (or a date already past) is a short real pause -- and the third distinct one in ten minutes hands over', () => {
+    // Retry-After: 0, or an HTTP-date at or behind this PC's clock, names a
+    // wait of 0 ms. That used to be a zero-length "pause", announced and over at
+    // once, repeated for ever: the site saying "slow down" over and over and
+    // nothing ever escalating.
+    const time = fakeTime();
+    const monitor = pacing.createThrottleMonitor({ now: time.now });
+    const first = monitor.observe(throttle(0));
+    assert.strictEqual(first.action, 'pause');
+    assert.strictEqual(first.waitMs, pacing.SHORT_WAIT_MIN_MS, 'a real pause, however short the wait named');
+    assert.strictEqual(pacing.SHORT_WAIT_MIN_MS, pacing.PAUSE_EXTEND_TOLERANCE_MS,
+        'the floor IS the burst window: one rule, not two');
+    time.advance(first.waitMs);
+    const second = monitor.observe(throttle(0));
+    assert.strictEqual(second.action, 'pause');
+    time.advance(second.waitMs);
+    const third = monitor.observe(throttle(0));
+    assert.strictEqual(third.action, 'hand-over', `the third within the window hands over: ${JSON.stringify(third)}`);
+    assert.strictEqual(third.why, 'zero-wait');
+    assert.match(pacing.handOverReason(third), /no wait|already over/);
+
+    // Outside the window they do not add up: ten minutes apart is not "again and again".
+    const t2 = fakeTime();
+    const m2 = pacing.createThrottleMonitor({ now: t2.now });
+    assert.strictEqual(m2.observe(throttle(0)).action, 'pause');
+    t2.advance(6 * MIN);
+    assert.strictEqual(m2.observe(throttle(0)).action, 'pause');
+    t2.advance(6 * MIN);   // the first is now twelve minutes old
+    assert.strictEqual(m2.observe(throttle(0)).action, 'pause', 'only two inside the last ten minutes');
+    t2.advance(2000);
+    assert.strictEqual(m2.observe(throttle(0)).action, 'hand-over', 'three inside ten minutes');
+
+    // ONE BURST IS ONE EPISODE, and is counted once: the rest of a page load's
+    // refusals land inside the short pause.
+    const t3 = fakeTime();
+    const m3 = pacing.createThrottleMonitor({ now: t3.now });
+    const burst = [];
+    for (let i = 0; i < 3; i++) { burst.push(m3.observe(throttle(0)).action); t3.advance(100); }
+    assert.deepStrictEqual(burst, ['pause', 'none', 'none']);
+    t3.advance(pacing.SHORT_WAIT_MIN_MS);
+    assert.strictEqual(m3.observe(throttle(0)).action, 'pause',
+        'the second distinct episode -- not the fourth refusal, which would hand over');
+    // And a person handing back starts the count again.
+    m3.handedBack();
+    t3.advance(pacing.SHORT_WAIT_MIN_MS);
+    assert.strictEqual(m3.observe(throttle(0)).action, 'pause');
+    t3.advance(pacing.SHORT_WAIT_MIN_MS);
+    assert.strictEqual(m3.observe(throttle(0)).action, 'pause', 'two since the person handed back');
+});
+
+test('M8: time spent honouring a NAMED wait never counts towards the hour', () => {
+    // NAMED, THEN NOT: an hour's Retry-After honoured in full, then one 429
+    // that names nothing. That is the first minute of backoff, not "throttling
+    // for an hour without one page loading".
+    const time = fakeTime();
+    const monitor = pacing.createThrottleMonitor({ now: time.now, rng: fixed(0) });
+    const named = monitor.observe(throttle(60 * MIN));
+    assert.strictEqual(named.action, 'pause');
+    time.advance(named.waitMs);
+    const after = monitor.observe(throttle(null));
+    assert.strictEqual(after.action, 'pause', `backoff, not a hand-over: ${JSON.stringify(after)}`);
+    assert.strictEqual(after.waitMs, 1 * MIN);
+
+    // NOT, NAMED, NOT: the named hour in the middle is not counted either;
+    // only the unnamed backoff adds up to the hour.
+    const t2 = fakeTime();
+    const m2 = pacing.createThrottleMonitor({ now: t2.now, rng: fixed(0) });
+    const unnamed = [];
+    let d = m2.observe(throttle(null));
+    unnamed.push(d.waitMs / MIN);
+    t2.advance(d.waitMs);
+    d = m2.observe(throttle(60 * MIN));
+    assert.strictEqual(d.action, 'pause');
+    t2.advance(d.waitMs);
+    for (;;) {
+        d = m2.observe(throttle(null));
+        if (d.action !== 'pause') break;
+        unnamed.push(d.waitMs / MIN);
+        t2.advance(d.waitMs);
+    }
+    assert.deepStrictEqual(unnamed, [1, 2, 4, 8, 15, 15, 15], 'the same schedule as with no named wait in between');
+    assert.strictEqual(d.action, 'hand-over');
+    assert.strictEqual(d.why, 'persistent');
 });
 
 test('L1: the hand-over says who has the browser, gives the phone link, and evades nothing', () => {
