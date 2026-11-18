@@ -248,6 +248,58 @@ Describe 'mcp-descriptions' {
     }
 }
 
+Describe 'MCP tool class (issue #17)' {
+    # Whether a RUNNING server lists these tools is generated-mcp-server.Tests.ps1,
+    # which builds a wrapper and asks it. These pin what is emitted, without a
+    # build: the file, the two attributes the SDK looks for, and one tool per
+    # client method -- so a new endpoint cannot be left without a tool.
+    BeforeAll {
+        $script:ToolsOut = New-OutDir
+        $script:ToolsRes = Invoke-Gen -Har @($script:RestHar) -Out $script:ToolsOut
+        $script:ToolsFile = Join-Path $script:ToolsOut 'src/ExampleEx/ExampleExTools.Generated.cs'
+        $script:ToolsCode = if (Test-Path $script:ToolsFile) { Get-Content $script:ToolsFile -Raw } else { '' }
+        $client = Get-Content (Join-Path $script:ToolsOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $script:ClientMethods = @([regex]::Matches($client, 'public\s+async\s+Task<.*?>\s+(\w+Async)\s*[<(]') |
+            ForEach-Object { $_.Groups[1].Value })
+    }
+    AfterAll {
+        if (Test-Path $script:ToolsOut) { Remove-Item -Recurse -Force $script:ToolsOut }
+    }
+    It 'emits <Name>Tools.Generated.cs' {
+        $script:ToolsRes.ExitCode | Should -Be 0 -Because $script:ToolsRes.Output
+        Test-Path $script:ToolsFile | Should -BeTrue
+    }
+    It 'marks the class as a tool type, which is what WithToolsFromAssembly() looks for' {
+        $script:ToolsCode | Should -Match '\[McpServerToolType\]\s*public sealed partial class ExampleExTools'
+    }
+    It 'has one [McpServerTool] for every generated client method' {
+        $script:ClientMethods.Count | Should -BeGreaterThan 0
+        ([regex]::Matches($script:ToolsCode, '\[McpServerTool\(')).Count | Should -Be $script:ClientMethods.Count
+        foreach ($method in $script:ClientMethods) {
+            $script:ToolsCode | Should -Match ("client\.$([regex]::Escape($method))\(") -Because "a tool must call the client's $method"
+        }
+    }
+    It 'sets every hint explicitly on every tool' {
+        $attributes = [regex]::Matches($script:ToolsCode, '\[McpServerTool\((.*?)\)\]') | ForEach-Object { $_.Groups[1].Value }
+        foreach ($attribute in $attributes) {
+            # The SDK's defaults are Destructive = true and the rest false; a
+            # hint left out would be a default nobody chose.
+            $attribute | Should -Match '^Name = "[a-z0-9_]+", ReadOnly = (true|false), Destructive = (true|false), Idempotent = (true|false), OpenWorld = true$'
+        }
+    }
+    It 'every tool goes through the tool session, which reads the saved session at the first call' {
+        $script:ToolsCode | Should -Match 'public ExampleExTools\(ExampleExToolSession session\)'
+        ([regex]::Matches($script:ToolsCode, '=> _session\.RunAsync\(client => client\.')).Count | Should -Be $script:ClientMethods.Count
+    }
+    It 'the README lists the tools and their hints for review' {
+        $readme = Get-Content (Join-Path $script:ToolsOut 'README.md') -Raw
+        $section = [regex]::Match($readme, '(?ms)^## MCP server[ \t]*$.*?(?=^## |\z)').Value
+        $section | Should -Not -BeNullOrEmpty
+        $section | Should -Match '\| `get_me` \| `GET /api/me` \| yes \| no \| yes \|'
+        $section | Should -Match '(?i)starts without a session'
+    }
+}
+
 Describe 'auto-generated header' {
     It 'has do-not-edit banner + source HAR sha-256' {
         $out = New-OutDir

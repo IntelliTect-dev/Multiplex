@@ -45,6 +45,9 @@ builder.Services.AddSingleton(sp =>
         sp.GetService<ILogger<{{ProjectName}}ToolSession>>());
 });
 
+// The tools are {{ProjectName}}Tools ({{ProjectName}}Tools.Generated.cs): the class
+// marked [McpServerToolType], with one [McpServerTool] method per endpoint.
+// WithToolsFromAssembly() finds it by those attributes and by nothing else.
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()

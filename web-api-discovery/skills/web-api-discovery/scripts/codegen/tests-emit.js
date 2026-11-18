@@ -10,9 +10,11 @@
 //       MockHandler.cs
 //       PacingHandlerTests.cs     (the client's pacing + throttling handler)
 //       ToolSessionTests.cs       (the MCP server's lazily read session)
+//       ToolsTests.cs             (one [Fact] per MCP tool, through the tool class)
 //       ClientTests.<Group>.cs    (one per resource group; [Fact] per endpoint)
 //       pester/
-//         Mcp.Tests.ps1
+//         Mcp.Tests.ps1           (starts the server and asks it for its tools)
+//         McpStdio.ps1            (the MCP stdio client that suite uses)
 //         run-pester.ps1
 
 'use strict';
@@ -21,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { pascalCase } = require('./generate-wrapper-helpers.js');
+const { listTools } = require('./mcp-tools-emit.js');
 
 const IGNORED_PATH_PREFIXES = new Set(['api', 'v1', 'v2', 'v3', 'rest', 'graphql']);
 
@@ -81,6 +84,39 @@ function buildGraphQlFact() {
     lines.push('        Assert.NotNull((object?)result);');
     lines.push('    }');
     return lines.join('\n');
+}
+
+// One fact per MCP tool. The call goes tool -> tool session -> client, so a tool
+// that passes the wrong arguments, or does not reach the client at all, fails
+// here and not in front of a model.
+function buildToolFact(tool, patternPath) {
+    const p = tool.pattern;
+    const fixture = p ? fixtureFileNameFor(p, patternPath(p)) : 'graphql.json';
+    const args = p
+        ? p.segments.filter((s) => s.param).map((s) => placeholderArg(s.type)).join(', ')
+        : '"query { me { id } }"';
+    const lines = [];
+    lines.push('    [Fact]');
+    lines.push('    public async Task ' + tool.methodName + '_ReturnsFixtureThroughTheTool()');
+    lines.push('    {');
+    lines.push('        using var http = MockHandler.FromFixture("' + fixture + '");');
+    lines.push('        using var session = SignedInOver(http);');
+    lines.push('        var result = await new __TOOLS__(session).' + tool.methodName + '(' + args + ');');
+    lines.push('        Assert.NotNull((object?)result);');
+    lines.push('    }');
+    return lines.join('\n');
+}
+
+function psBool(b) { return b ? '$true' : '$false'; }
+
+// What a RUNNING server must answer to tools/list, as a PowerShell hashtable
+// per tool. Built from the endpoint list -- not read back from the emitted tool
+// class -- so a wrapper whose tool class is missing still expects its tools.
+function expectedToolLine(tool) {
+    return '        @{ Name = "' + tool.name + '"; Method = "' + tool.methodName + '"' +
+        '; ReadOnly = ' + psBool(tool.hints.readOnly) +
+        '; Destructive = ' + psBool(tool.hints.destructive) +
+        '; Idempotent = ' + psBool(tool.hints.idempotent) + ' }';
 }
 
 function substitute(body, tokens) {
@@ -171,17 +207,29 @@ function emitTestScaffold(args) {
         fs.writeFileSync(path.join(testProjDir, 'ClientTests.' + g + '.cs'), body);
     }
 
-    // Pester -- bake the expected method list into Mcp.Tests.ps1 so the smoke
-    // suite can assert every generated tool retains its [Description].
-    const methodNames = [];
-    for (const p of patterns) methodNames.push(methodNameFor(p));
-    if (hasGraphQL) methodNames.push('GraphQLAsync');
-    const uniqueSorted = Array.from(new Set(methodNames)).sort();
-    const expectedMethods = uniqueSorted.map((n) => '        "' + n + '"').join(',\n');
+    // The tool surface, from the endpoint list (mcp-tools-emit.js). Sorted by
+    // name so the output is deterministic whatever order the capture was in.
+    const tools = listTools({ patterns, hasGraphQL, methodNameFor })
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
-    const mcpTokens = Object.assign({}, baseTokens, { ExpectedMethods: expectedMethods });
+    // ToolsTests.cs -- one [Fact] per tool, through the tool class.
+    const toolFacts = tools.map((t) => buildToolFact(t, patternPath)).join('\n\n')
+        .replace(/__TOOLS__/g, projectName + 'Tools');
+    const ttTmpl = fs.readFileSync(path.join(tmplDir, 'ToolsTests.cs.tmpl'), 'utf8');
+    fs.writeFileSync(path.join(testProjDir, 'ToolsTests.cs'),
+        substitute(ttTmpl, Object.assign({}, baseTokens, { Facts: toolFacts })));
+
+    // Pester -- bake the expected tools into Mcp.Tests.ps1, which starts the
+    // server and compares them with what it answers to tools/list.
+    const expectedTools = tools.map(expectedToolLine).join('\n');
+
+    const mcpTokens = Object.assign({}, baseTokens, { ExpectedTools: expectedTools });
     const mcpTmpl = fs.readFileSync(path.join(tmplDir, 'pester', 'Mcp.Tests.ps1.tmpl'), 'utf8');
     fs.writeFileSync(path.join(pesterDir, 'Mcp.Tests.ps1'), substitute(mcpTmpl, mcpTokens));
+    // The MCP stdio client Mcp.Tests.ps1 starts the server with. It sits beside
+    // the suite so the smoke test needs nothing but PowerShell and the SDK.
+    const stdioTmpl = fs.readFileSync(path.join(tmplDir, 'pester', 'McpStdio.ps1.tmpl'), 'utf8');
+    fs.writeFileSync(path.join(pesterDir, 'McpStdio.ps1'), substitute(stdioTmpl, baseTokens));
     const runTmpl = fs.readFileSync(path.join(tmplDir, 'pester', 'run-pester.ps1.tmpl'), 'utf8');
     fs.writeFileSync(path.join(pesterDir, 'run-pester.ps1'), substitute(runTmpl, baseTokens));
 }

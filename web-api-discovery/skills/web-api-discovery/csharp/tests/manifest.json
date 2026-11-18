@@ -1,12 +1,12 @@
 {
   "$schema": "../manifest.schema.json",
-  "description": "Manifest of xUnit + Pester .tmpl files emitted into each generated wrapper's tests/<TestProjectName>/ directory. The web-api-discovery codegen pipeline (scripts/codegen/tests-emit.js) substitutes the tokens below and emits one ClientTests.<Group>.cs per resource group (with [Fact] bodies injected via the {{Facts}} token). Tests in tests/tests-templates.Tests.ps1 enforce manifest <-> body parity.",
+  "description": "Manifest of xUnit + Pester .tmpl files emitted into each generated wrapper's tests/<TestProjectName>/ directory. The web-api-discovery codegen pipeline (scripts/codegen/tests-emit.js) substitutes the tokens below and emits one ClientTests.<Group>.cs per resource group and one ToolsTests.cs (with [Fact] bodies injected via the {{Facts}} token). Tests in tests/tests-templates.Tests.ps1 enforce manifest <-> body parity.",
   "tokens": {
     "ProjectName": "PascalCase wrapper name, e.g. ExampleEx. Matches the wrapper csproj.",
     "Namespace": "Root .NET namespace of the wrapper, e.g. Example. Test code lives under {Namespace}.Tests.",
     "TestProjectName": "PascalCase test-project name. Default is '<ProjectName>.Tests'.",
-    "Facts": "Pre-rendered block of [Fact] methods (emitted by tests-emit.js per resource group). Empty string in manifest-parity tests.",
-    "ExpectedMethods": "Multi-line PowerShell string literal list of generated method names (e.g. '        \"GetMeAsync\",'). Baked into Mcp.Tests.ps1 so the smoke suite knows exactly which tools to expect."
+    "Facts": "Pre-rendered block of [Fact] methods (emitted by tests-emit.js: per resource group for ClientTests, one per MCP tool for ToolsTests). Empty string in manifest-parity tests.",
+    "ExpectedTools": "One PowerShell hashtable per MCP tool, one per line (e.g. '        @{ Name = \"get_me\"; Method = \"GetMeAsync\"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'). Built from the captured endpoints and baked into Mcp.Tests.ps1, which starts the server and compares them with its answer to tools/list."
   },
   "templates": [
     {
@@ -45,6 +45,14 @@
       ]
     },
     {
+      "file": "ToolsTests.cs.tmpl",
+      "requiredTokens": [
+        "Namespace",
+        "ProjectName",
+        "Facts"
+      ]
+    },
+    {
       "file": "MockHandler.cs.tmpl",
       "requiredTokens": [
         "Namespace"
@@ -53,9 +61,13 @@
     {
       "file": "pester/Mcp.Tests.ps1.tmpl",
       "requiredTokens": [
-        "ExpectedMethods",
+        "ExpectedTools",
         "ProjectName"
       ]
+    },
+    {
+      "file": "pester/McpStdio.ps1.tmpl",
+      "requiredTokens": []
     },
     {
       "file": "pester/run-pester.ps1.tmpl",
