@@ -239,9 +239,14 @@ test('I5: THE OWNER\'S CASE -- a bot check, the live view on the phone, and the 
             let streamed = '';
             events.setEncoding('utf8');
             events.on('data', (d) => { streamed += d; });
-            // ONE BROWSER AT A TIME: another one with the same link cannot watch.
-            const other = String((await phoneRequest(link)).headers['set-cookie']).split(';')[0];
-            const intruder = await phoneRequest(link + 'events', { stream: true, headers: { cookie: other } });
+            // SINGLE-USE: the phone opened the link, so it is spent. Anyone else
+            // holding it -- this transcript, a log -- gets a bare 404, and a
+            // cookie the server never issued is nobody.
+            const other = await phoneRequest(link);
+            assert.strictEqual(other.status, 404, 'a second holder of the link gets nothing');
+            assert.ok(!other.headers['set-cookie'], 'and no cookie');
+            const intruder = await phoneRequest(link + 'events', { stream: true,
+                headers: { cookie: `hm=${'A'.repeat(43)}` } });
             assert.strictEqual(intruder.statusCode, 404, 'a second browser cannot watch while the phone does');
             intruder.resume();
             assert.ok(await waitFor(() => /event: frame\ndata: \{"d":"\/9j\//.test(streamed), 30000),
