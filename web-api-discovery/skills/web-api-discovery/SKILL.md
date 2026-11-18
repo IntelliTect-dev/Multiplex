@@ -342,7 +342,9 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   nowhere else, so a later scrub removes them by field name and cannot prove
   them gone. If that capture already has a `scrubbed.har`, `-Scrub` **refuses
   to replace it**: move the file aside to say you mean it. If it has none,
-  the scrub runs with a warning -- check the result before sharing it.
+  the scrub runs with a warning -- check the result before sharing it. A
+  capture whose `session.json` cannot be read is treated the same way: that
+  file is the only record of whether the recorder signed in.
 * **A capture recorded outside a git repository cannot be re-scrubbed until
   the folder is one.** The recorder placed that capture's substitution tables
   itself; the scrub re-entry point writes them only where git confirms they

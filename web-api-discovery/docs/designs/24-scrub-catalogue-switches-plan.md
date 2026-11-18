@@ -125,6 +125,12 @@ recorder that has exited.
 Asked as "not `none`" rather than as the recorder's list of sources, so a
 source added later fails closed.
 
+**A `session.json` that cannot be read is treated as a sign-in**, on the same
+two terms. It is the only record of the sign-in, so a torn or hand-edited one
+has no answer -- and "did not sign in" is the one answer damage must not be
+able to produce, since it would switch off the refusal above. (Second review
+finding: the first fix read an unreadable file as "no".)
+
 **It was recorded outside a git repository** (`unprotectedTables`). The
 recorder placed that capture's substitution tables itself; the scrub re-entry
 point writes them only where git confirms they are ignored, and refuses. Its
@@ -133,7 +139,10 @@ followed through this door, so when the scrub fails on such a capture the run
 adds what can be: `git init` the folder that holds `.har-captures`. It is said
 AFTER the failure rather than refused up front, because the flag records where
 the capture was made, not where it is now -- a folder that has since become a
-repository scrubs fine.
+repository scrubs fine. For the same reason the hint is only given while git
+says the capture's folder is still outside a work tree: once it is a
+repository, a failure is about something else, and pointing at `git init`
+would send the operator away from the cause.
 
 ## Evidence Plan
 
