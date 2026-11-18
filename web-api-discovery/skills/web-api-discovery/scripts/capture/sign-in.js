@@ -406,7 +406,8 @@ async function identifierField(page) {
  * fill and keypress -- one step at a time, the way a person signs in. The wait
  * comes BEFORE `stillHere()`, never between it and the step it vets: a page
  * can move during a wait, and the check has to be about the page the step
- * then lands on. No pacer, no wait -- for the unit tests and older callers.
+ * then lands on. A one-time code takes both its waits before it is made (see
+ * the 'otp' step). No pacer, no wait -- for the unit tests and older callers.
  */
 async function fillStep(page, creds, step, stillHere = () => true, pace = null) {
     const ready = async () => {
@@ -430,12 +431,20 @@ async function fillStep(page, creds, step, stillHere = () => true, pace = null) 
     }
     if (step === 'otp') {
         if (!creds.totp) return null;
+        // THE CODE IS MADE LAST. It lives about 30 s, and a paced wait lasts as
+        // long as any throttle pause the site asks for, so both waits -- the
+        // one before typing and the one before submitting -- come first, and
+        // the code is typed and sent at once after them. The vet comes after
+        // the code: making it can be a prompt the operator takes a minute over.
+        if (pace) {
+            await pace.beforeAction();
+            await pace.beforeAction();
+        }
         const code = await creds.totp();
         if (!code) return null;
         const otp = await firstVisible(page, OTP_SELECTOR);
-        if (!otp || !(await ready())) return null;
+        if (!otp || !(await stillHere())) return null;
         await otp.fill(code);
-        if (pace && !(await ready())) return null;
         await otp.press('Enter');
         return step;
     }
