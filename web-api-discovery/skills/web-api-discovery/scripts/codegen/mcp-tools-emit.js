@@ -28,11 +28,17 @@ const GRAPHQL_METHOD_NAME = 'GraphQLAsync';
 // HTTP's safe methods: a request made with one asks for nothing to change.
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-// A POST is taken to ADD something unless its path says it changes or removes
-// what is already there -- POST /items/42/delete is not an additive call. The
-// words are matched against whole words of the literal path segments. Erring
-// this way round is deliberate: a tool wrongly called destructive costs a
-// confirmation, one wrongly called additive can skip it.
+// A POST is taken to CHANGE OR REMOVE something unless there is positive
+// evidence that it only adds (addsOnly, below). Erring this way round is
+// deliberate: a tool wrongly called destructive costs a confirmation, one
+// wrongly called additive can skip it -- and a list of the words that make a
+// POST dangerous can never be complete.
+//
+// These word lists are therefore vetoes, not the rule: a path that carries one
+// of them is not additive whatever else speaks for it. They are matched against
+// whole words of the literal path segments, a plural "s" aside.
+
+// Changes or removes what is already there: POST /items/42/delete.
 const CHANGING_WORDS = new Set([
     // removes
     'delete', 'remove', 'destroy', 'cancel', 'revoke', 'purge', 'clear',
@@ -40,6 +46,30 @@ const CHANGING_WORDS = new Set([
     // overwrites
     'update', 'edit', 'replace', 'overwrite', 'rename', 'move', 'set', 'patch',
 ]);
+
+// Does something that is not "one more record": it sends, pays for, closes or
+// releases. POST /payments/send, POST /orders/checkout.
+const ACTING_WORDS = new Set([
+    'send', 'pay', 'checkout', 'purchase', 'buy', 'charge', 'transfer', 'refund',
+    'withdraw', 'close', 'terminate', 'void', 'trash', 'submit', 'publish',
+    'approve', 'reject', 'merge', 'unfriend', 'unfollow', 'block',
+]);
+
+// Carries its command in the body, so the path cannot say what it does:
+// POST /rpc, POST /batch.
+const OPAQUE_CALL_WORDS = new Set([
+    'rpc', 'jsonrpc', 'batch', 'bulk', 'execute', 'exec', 'graphql', 'gql',
+    'query', 'command', 'invoke', 'call', 'run', 'action',
+]);
+
+// Signs someone in or out, or handles what signing in produces.
+const SIGN_IN_WORDS = new Set([
+    'auth', 'login', 'logout', 'signin', 'signout', 'token', 'session',
+    'oauth', 'sso', 'csrf', 'password', 'mfa', 'otp',
+]);
+
+// What a path has to say for a POST to count as additive.
+const ADDING_WORDS = new Set(['create', 'add', 'new']);
 
 const MAX_FIELDS_IN_DESCRIPTION = 10;
 
@@ -52,30 +82,58 @@ function wordsOf(segment) {
         .map((w) => w.toLowerCase());
 }
 
-function namesAChange(segments) {
-    for (const s of segments || []) {
-        if (!s.literal) continue;
-        if (wordsOf(s.literal).some((w) => CHANGING_WORDS.has(w))) return true;
-    }
-    return false;
+/** Whether a word, or its singular, is in one of the lists that veto "additive". */
+function vetoesAdditive(word) {
+    const singular = word.endsWith('s') ? word.slice(0, -1) : word;
+    return [CHANGING_WORDS, ACTING_WORDS, OPAQUE_CALL_WORDS, SIGN_IN_WORDS]
+        .some((words) => words.has(word) || words.has(singular));
+}
+
+/**
+ * Whether there is positive evidence that a POST only adds. All of:
+ *
+ *   - no path parameter: a POST addressed to something that exists
+ *     (/items/{id}, /items/{id}/anything) changes that thing or acts on it;
+ *   - no word of the path is a veto (vetoesAdditive);
+ *   - and either the path says so -- a whole word create, add or new -- or the
+ *     capture does: evidence.isCollection, the same path with an id appended
+ *     was captured too, so a POST here makes one more of something.
+ */
+function addsOnly(segments, evidence) {
+    const all = segments || [];
+    if (all.some((s) => !s.literal)) return false;
+    const words = all.flatMap((s) => wordsOf(s.literal));
+    if (words.some(vetoesAdditive)) return false;
+    return words.some((w) => ADDING_WORDS.has(w)) || !!(evidence && evidence.isCollection);
+}
+
+/**
+ * The capture shows things addressed by id under this path: /items beside
+ * /items/{id}, on the same host, with any method.
+ */
+function isCollection(pattern, patterns) {
+    const n = pattern.segments.length;
+    return patterns.some((q) => q.host === pattern.host && q.segments.length === n + 1 &&
+        !!q.segments[n].param &&
+        pattern.segments.every((s, i) => !!s.literal && s.literal === q.segments[i].literal));
 }
 
 /**
  * The hints a client reads to decide whether a call needs confirming, from the
- * endpoint's HTTP method and path.
+ * endpoint's HTTP method and path, and for a POST what the capture shows.
  *
  *   GET / HEAD / OPTIONS   read-only (and so idempotent, not destructive)
- *   POST                   additive, not idempotent -- destructive when the
- *                          path names a change or removal
+ *   POST                   destructive, not idempotent -- additive only on
+ *                          positive evidence (addsOnly)
  *   PUT                    replaces what is there: destructive, idempotent
  *   DELETE                 destructive, idempotent
  *   PATCH, anything else   destructive, not idempotent -- the cautious answer
  *                          when the method does not say
  */
-function toolHintsFor(method, segments) {
+function toolHintsFor(method, segments, evidence) {
     const m = String(method || '').toUpperCase();
     if (SAFE_METHODS.has(m)) return { readOnly: true, destructive: false, idempotent: true };
-    if (m === 'POST') return { readOnly: false, destructive: namesAChange(segments), idempotent: false };
+    if (m === 'POST') return { readOnly: false, destructive: !addsOnly(segments, evidence), idempotent: false };
     if (m === 'PUT' || m === 'DELETE') return { readOnly: false, destructive: true, idempotent: true };
     return { readOnly: false, destructive: true, idempotent: false };
 }
@@ -116,7 +174,8 @@ function listTools(args) {
     }
     for (const p of patterns) {
         const methodName = methodNameFor(p);
-        tools.push({ name: toolNameFor(methodName), methodName, hints: toolHintsFor(p.method, p.segments), pattern: p });
+        const hints = toolHintsFor(p.method, p.segments, { isCollection: isCollection(p, patterns) });
+        tools.push({ name: toolNameFor(methodName), methodName, hints, pattern: p });
     }
     // A tool name must be unique on the wire. Two client methods that differ
     // only in casing (GetHTMLAsync, GetHtmlAsync) would otherwise share one.
@@ -163,7 +222,7 @@ function effectSentence(hints) {
     if (!hints.destructive) return ' Adds to the data on the site; calling it again adds again.';
     return hints.idempotent
         ? ' Changes or removes data on the site; repeating the same call changes nothing more.'
-        : ' Changes or removes data on the site.';
+        : ' May change or remove data on the site.';
 }
 
 /**
@@ -176,8 +235,11 @@ function toolDescriptionFor(tool, ctx) {
             'A query reads; a mutation can change or remove data on the site.';
     }
     const p = tool.pattern;
-    return ctx.describeFor(p) +
-        ' Sends ' + String(p.method).toUpperCase() + ' ' + ctx.patternPath(p) + ' to ' + ctx.baseUrl + '.' +
+    // The client summarizes every POST as "Creates ...". That is true only of
+    // one that adds; for the rest the request line below says what is known.
+    const summary = String(p.method).toUpperCase() === 'POST' && tool.hints.destructive ? '' : ctx.describeFor(p) + ' ';
+    return summary +
+        'Sends ' + String(p.method).toUpperCase() + ' ' + ctx.patternPath(p) + ' to ' + ctx.baseUrl + '.' +
         returnsSentence(p.returnShape) +
         effectSentence(tool.hints);
 }
