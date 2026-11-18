@@ -173,6 +173,41 @@ public sealed class ClientMetadataFetchTests
         Assert.Equal(1, handler.Requests);
     }
 
+    /// <summary>Counts requests that reach the production handler (which never reaches the network here).</summary>
+    private sealed class Counting(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        public int Requests { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests++;
+            return base.SendAsync(request, ct);
+        }
+    }
+
+    [Theory]
+    [InlineData("https://localhost/oauth/client.json")]                     // resolves only to loopback: never public
+    [InlineData("https://no-such-host.invalid/oauth/client.json")]          // .invalid never resolves (RFC 6761)
+    public async Task Through_the_real_connection_a_host_that_cannot_work_is_remembered(string clientId)
+    {
+        var counting = new Counting(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            UseProxy = false,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            ConnectCallback = ClientMetadataDocuments.ConnectToPublicAddressAsync,
+        });
+        var clock = new TestClock(new DateTimeOffset(2026, 11, 18, 12, 0, 0, TimeSpan.Zero));
+        var documents = new ClientMetadataDocuments(new Factory(counting), clock, NullLogger<ClientMetadataDocuments>.Instance);
+
+        var first = await documents.GetAsync(clientId, CancellationToken.None);
+        var second = await documents.GetAsync(clientId, CancellationToken.None);
+
+        Assert.NotNull(first.Error);
+        Assert.Equal(first.Error, second.Error);
+        Assert.Equal(1, counting.Requests);
+    }
+
     [Fact]
     public async Task A_connection_dropped_mid_document_is_a_failure_for_the_moment_not_an_error()
     {
