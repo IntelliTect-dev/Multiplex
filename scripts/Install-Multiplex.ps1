@@ -7,23 +7,23 @@
       1. publishes the server to %USERPROFILE%\.multiplex\app (not AppData: the Claude desktop
          app keeps a private copy of AppData for everything started from it, which the logon
          task could not see);
-      2. writes %USERPROFILE%\.multiplex\multiplex.config.json: port, tunnel, the TripIt accounts
-         allowed to connect, and the hash of the owner passcode (generated on first install and
-         kept, encrypted for your Windows account only, in passcode.dpapi — see -ShowPasscode);
+      2. writes %USERPROFILE%\.multiplex\multiplex.config.json: port, tunnel and the hash of the
+         owner passcode (generated on first install and kept, encrypted for your Windows account
+         only, in passcode.dpapi — see -ShowPasscode);
       3. registers a per-user "Multiplex" scheduled task that starts the server (and tunnel) at
          logon, and starts it now;
       4. checks the endpoint locally and through the public address;
       5. with -ClaudeDesktopBridge, adds a local stdio bridge entry to Claude Desktop's config.
     Adding the connector inside Claude or ChatGPT is a step in their apps; the script prints
-    the address to paste.
+    the address to paste. No TripIt account is named here: each connector added is its own
+    connection, bound to the TripIt account signed in while it is added, behind the passcode.
 .EXAMPLE
-    ./scripts/Install-Multiplex.ps1 -AllowedAccount you@example.com -Tunnel Tailscale
+    ./scripts/Install-Multiplex.ps1 -Tunnel Tailscale
 .EXAMPLE
     ./scripts/Install-Multiplex.ps1 -ShowPasscode
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string[]] $AllowedAccount,
     [ValidateSet('None', 'Tailscale', 'Cloudflare')] [string] $Tunnel,
     [int] $Port,
     [switch] $ClaudeDesktopBridge,
@@ -52,14 +52,10 @@ $config = Read-MultiplexConfig -Path $configPath
 if ($PSBoundParameters.ContainsKey('Port')) { $config.Port = $Port }
 if ($PSBoundParameters.ContainsKey('Tunnel')) { $config.Tunnel = $Tunnel }
 Clear-MultiplexStalePublicAddress -Config $config   # no tunnel, no public address
-# -AllowedAccount replaces the whole allowlist (that is how an account is removed); say what that did.
-$previousAccounts = @($config.AllowedAccounts.tripit)
-if ($AllowedAccount) { $config.AllowedAccounts.tripit = ConvertTo-MultiplexAccountList -Account $AllowedAccount }
-$allowlist = Get-MultiplexAllowlistChange -Previous $previousAccounts -Current @($config.AllowedAccounts.tripit)
-Write-Host $allowlist.Summary
-if ($allowlist.RemovedNotice) { Write-Warning $allowlist.RemovedNotice }
-if (-not @($config.AllowedAccounts.tripit).Count) {
-    throw 'No TripIt account is allowed to connect yet. Pass -AllowedAccount <your TripIt email>.'
+if ($config.Contains('AllowedAccounts')) {
+    # Left by an earlier install. Each connection now uses the TripIt account signed in while it is added.
+    $config.Remove('AllowedAccounts')
+    Write-Host 'The TripIt account list in the configuration is no longer used: each connection uses the TripIt account signed in while it is added, behind the passcode. Removing the list.'
 }
 
 # 1. Publish into a staging folder first: a failed build leaves the running install untouched.
