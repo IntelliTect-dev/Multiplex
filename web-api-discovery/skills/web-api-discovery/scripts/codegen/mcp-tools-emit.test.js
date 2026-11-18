@@ -59,38 +59,118 @@ const ctx = {
     console.log('PASS: GET, HEAD and OPTIONS are read-only, idempotent and not destructive.');
 }
 
-// ---- Hints: POST adds, and is never idempotent ----
-{
-    assert.deepStrictEqual(toolHintsFor('POST', literal('api', 'items')),
-        { readOnly: false, destructive: false, idempotent: false });
-    console.log('PASS: a POST is additive and not idempotent.');
+// A path as the generator sees it: `/api/items/{id}/archive` -> literal, literal, param, literal.
+function route(text) {
+    return text.split('/').filter(Boolean).map((s) => {
+        const param = /^\{(\w+)\}$/.exec(s);
+        return param ? { param: param[1], type: 'int' } : { literal: s };
+    });
 }
 
-// ---- Hints: a POST whose path names a change or removal is destructive ----
+// What the capture can add to a path: it also holds this path with an id appended.
+const inACollection = { isCollection: true };
+
+// ---- Hints: a POST nothing vouches for is destructive ----
 {
-    const destructive = [
-        literal('api', 'items', 'delete'),
-        literal('api', 'orders', 'cancelOrder'),
-        literal('api', 'cart', 'remove-item'),
-        literal('api', 'profile', 'update_email'),
-        literal('api', 'tokens', 'revoke'),
-    ];
-    for (const segments of destructive) {
-        const hints = toolHintsFor('POST', segments);
-        const where = segments.map((s) => s.literal).join('/');
-        assert.strictEqual(hints.destructive, true, 'POST ' + where + ' is destructive');
-        assert.strictEqual(hints.readOnly, false);
-        assert.strictEqual(hints.idempotent, false, 'and still not idempotent');
+    // An unknown POST costs a confirmation when it is called destructive, and
+    // can skip one when it is called additive. So the path has to earn "additive".
+    assert.deepStrictEqual(toolHintsFor('POST', route('/api/items')),
+        { readOnly: false, destructive: true, idempotent: false });
+
+    // The independent reviewer's probe paths. Before, every one of these was
+    // reported as an additive call that "adds to the data on the site".
+    for (const text of [
+        '/api/payments/send',
+        '/api/orders/checkout',
+        '/api/transfers',
+        '/api/refund',
+        '/api/account/close',
+        '/api/subscriptions/{id}/terminate',
+        '/api/reservations/{id}/void',
+        '/api/friends/{id}/unfriend',
+        '/api/trash',
+        '/api/auth/logout',
+        '/api/login',
+        '/api/items/{id}',
+        '/api/items/{id}/updates',
+        '/api/rpc',
+        '/api/batch',
+    ]) {
+        assert.deepStrictEqual(toolHintsFor('POST', route(text)),
+            { readOnly: false, destructive: true, idempotent: false }, 'POST ' + text + ' is destructive');
     }
-    // Whole words only: a resource whose NAME merely contains one is not a verb.
-    for (const segments of [literal('api', 'settings'), literal('api', 'resets'), literal('api', 'movements')]) {
-        const where = segments.map((s) => s.literal).join('/');
-        assert.strictEqual(toolHintsFor('POST', segments).destructive, false, 'POST ' + where + ' stays additive');
+    console.log('PASS: a POST is destructive unless something vouches for it.');
+}
+
+// ---- Hints: what makes a POST additive ----
+{
+    const additive = { readOnly: false, destructive: false, idempotent: false };
+
+    // The path says so: a whole word create, add or new.
+    for (const text of ['/api/widgets/create', '/api/cart/add-item', '/api/users/new', '/api/createOrder']) {
+        assert.deepStrictEqual(toolHintsFor('POST', route(text)), additive, 'POST ' + text + ' adds');
     }
-    // A path PARAMETER is a value, not a word of the operation.
-    assert.strictEqual(
-        toolHintsFor('POST', [{ literal: 'items' }, { param: 'delete', type: 'string' }]).destructive, false);
-    console.log('PASS: a POST is destructive when its path names a change or removal, by whole word.');
+    // Or the capture does: the same path with an id appended was captured too,
+    // so this is a collection and a POST to it makes one more.
+    assert.deepStrictEqual(toolHintsFor('POST', route('/api/items'), inACollection), additive);
+
+    // Whole words: `news` is not `new`, and `address` adds nothing.
+    for (const text of ['/api/news', '/api/address', '/api/renewal']) {
+        assert.strictEqual(toolHintsFor('POST', route(text)).destructive, true, 'POST ' + text + ' is not vouched for');
+    }
+    console.log('PASS: a POST is additive when its path says create, add or new, or the capture shows a collection.');
+}
+
+// ---- Hints: what no evidence can vouch for ----
+{
+    const destructive = (text, evidence) => toolHintsFor('POST', route(text), evidence).destructive;
+
+    // Addressed to something that exists: it changes that thing, or acts on it.
+    assert.strictEqual(destructive('/api/items/{id}', inACollection), true);
+    assert.strictEqual(destructive('/api/items/{id}/add', inACollection), true, 'even when the path says add');
+
+    // A word for changing or removing, whatever else the path says.
+    for (const text of ['/api/items/delete', '/api/orders/cancelOrder', '/api/cart/remove-item',
+        '/api/profile/update_email', '/api/items/add-or-update', '/api/resets']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' changes or removes');
+    }
+    // A word for doing something that is not "one more record".
+    for (const text of ['/api/transfers', '/api/payments/send', '/api/orders/checkout', '/api/refund',
+        '/api/account/close', '/api/trash', '/api/posts/publish']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' acts');
+    }
+    // A call whose command is in its body: the path cannot say what it does.
+    for (const text of ['/api/rpc', '/api/batch', '/api/execute', '/graphql', '/api/jsonrpc', '/api/commands/run']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is opaque');
+    }
+    // Signing in or out.
+    for (const text of ['/api/login', '/api/auth/logout', '/api/sessions', '/api/oauth2/token']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is a sign-in call');
+    }
+    // Whole words here too: a resource whose NAME merely contains one is still a resource.
+    for (const text of ['/api/settings', '/api/movements', '/api/sendgrid-templates', '/api/closets']) {
+        assert.strictEqual(destructive(text, inACollection), false, 'POST ' + text + ' is a collection like any other');
+    }
+    console.log('PASS: a path parameter, or a word for changing, acting, an opaque call or sign-in, overrides the evidence.');
+}
+
+// ---- Hints: the capture is where "it is a collection" comes from ----
+{
+    const hintsOf = (entries, name) => toolsFor(entries).find((t) => t.name === name).hints;
+    const post = har('POST', 'https://api.example.com/api/items');
+
+    assert.strictEqual(hintsOf([post], 'create_items').destructive, true, 'nothing else was captured');
+    assert.strictEqual(hintsOf([post, har('GET', 'https://api.example.com/api/items')], 'create_items').destructive, true,
+        'listing the path does not make it a collection of things with ids');
+    assert.strictEqual(hintsOf([post, har('GET', 'https://api.example.com/api/items/42')], 'create_items').destructive, false,
+        'an item was captured under it');
+    assert.strictEqual(hintsOf([post, har('DELETE', 'https://api.example.com/api/items/42')], 'create_items').destructive, false,
+        'whatever the method that item was captured with');
+    assert.strictEqual(hintsOf([post, har('GET', 'https://other.example.com/api/items/42')], 'create_items').destructive, true,
+        'another host is another site');
+    assert.strictEqual(hintsOf([post, har('GET', 'https://api.example.com/api/items/42/notes')], 'create_items').destructive, true,
+        'something deeper is not an item under it');
+    console.log('PASS: a POST is to a collection when the capture holds the same path with an id appended.');
 }
 
 // ---- Hints: PUT, DELETE, PATCH, and the unknown ----
@@ -189,15 +269,31 @@ const ctx = {
 
 // ---- A write says what it does to the site, in the words of its hints ----
 {
-    const write = (method, segments) => toolDescriptionFor(
-        { name: 'x', hints: toolHintsFor(method, segments), pattern: { method, segments, returnShape: null } }, ctx);
-    assert.ok(write('POST', literal('items')).endsWith('Adds to the data on the site; calling it again adds again.'));
-    assert.ok(write('POST', literal('items', 'delete')).endsWith('Changes or removes data on the site.'));
-    assert.ok(write('PATCH', literal('items')).endsWith('Changes or removes data on the site.'));
+    const write = (method, text, evidence) => {
+        const segments = route(text);
+        return toolDescriptionFor(
+            { name: 'x', hints: toolHintsFor(method, segments, evidence), pattern: { method, segments, returnShape: null } }, ctx);
+    };
+    // Only a POST that is known to add is said to add.
+    assert.ok(write('POST', '/items', inACollection).endsWith('Adds to the data on the site; calling it again adds again.'));
+    for (const text of ['/items', '/payments/send', '/items/{id}/archive', '/rpc']) {
+        const said = write('POST', text);
+        assert.ok(said.endsWith('May change or remove data on the site.'), 'POST ' + text + ': ' + said);
+        assert.ok(!/Adds to/.test(said), 'nothing claims POST ' + text + ' only adds: ' + said);
+    }
+    assert.ok(write('PATCH', '/items').endsWith('May change or remove data on the site.'));
     for (const method of ['PUT', 'DELETE']) {
-        assert.ok(write(method, literal('items')).endsWith(
+        assert.ok(write(method, '/items').endsWith(
             'Changes or removes data on the site; repeating the same call changes nothing more.'), method);
     }
+
+    // The client summarizes every POST as "Creates ...". That is carried into a
+    // description only where it is true: beside "may change or remove" it would
+    // tell the model two different things about one tool.
+    assert.ok(write('POST', '/items', inACollection).startsWith('Summary of POST. Sends POST /items to '));
+    assert.ok(write('POST', '/items/{id}/archive').startsWith('Sends POST /items/{id}/archive to '),
+        'a POST nothing vouches for is described by its request alone: ' + write('POST', '/items/{id}/archive'));
+    assert.ok(write('PUT', '/items/{id}').startsWith('Summary of PUT. '), 'other methods keep their summary');
     const gql = toolDescriptionFor({ name: 'graphql', hints: graphQLHints(), pattern: null }, ctx);
     assert.ok(gql.includes('https://api.example.com') && gql.includes('mutation can change or remove'), gql);
     console.log('PASS: a write tells the model what calling it does.');

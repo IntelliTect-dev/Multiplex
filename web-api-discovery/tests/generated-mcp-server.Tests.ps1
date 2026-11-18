@@ -25,8 +25,10 @@ BeforeDiscovery {
         @{ Name = 'get_items';                  Request = 'GET /api/items';                ReadOnly = $true;  Destructive = $false; Idempotent = $true }
         @{ Name = 'get_items_by_id';            Request = 'GET /api/items/{id}';           ReadOnly = $true;  Destructive = $false; Idempotent = $true }
         # An additive POST: not read-only, not destructive, and a second call adds a second item.
+        # What vouches for it is in the fixture: /api/items/{id} was captured too, so /api/items
+        # is a collection. A POST nothing vouches for is destructive.
         @{ Name = 'create_items';               Request = 'POST /api/items';               ReadOnly = $false; Destructive = $false; Idempotent = $false }
-        # A POST whose path names a removal is not an additive call.
+        # A POST addressed to an existing item, and naming a removal, is not an additive call.
         @{ Name = 'create_items_by_id_archive'; Request = 'POST /api/items/{id}/archive';  ReadOnly = $false; Destructive = $true;  Idempotent = $false }
         @{ Name = 'update_items_by_id';         Request = 'PUT /api/items/{id}';           ReadOnly = $false; Destructive = $true;  Idempotent = $true }
         @{ Name = 'update_profile';             Request = 'PATCH /api/profile';            ReadOnly = $false; Destructive = $true;  Idempotent = $false }
@@ -198,7 +200,15 @@ Describe 'a server generated from a REST capture' -Skip:$script:NoDotnet {
             ($script:CrudTools | Where-Object { $_.name -eq 'delete_items_by_id' }).description |
                 Should -Match 'Changes or removes data on the site; repeating the same call changes nothing more\.'
             ($script:CrudTools | Where-Object { $_.name -eq 'get_items' }).description |
-                Should -Not -Match 'Adds to|Changes or removes'
+                Should -Not -Match 'Adds to|hanges? or removes?'
+        }
+        It 'a POST nothing vouches for is described by its request, and is not said to create or add' {
+            # The client names and summarizes every POST "Creates ...". Beside a
+            # destructive hint that told the model two different things.
+            $archive = ($script:CrudTools | Where-Object { $_.name -eq 'create_items_by_id_archive' }).description
+            $archive | Should -Match '^Sends POST /api/items/\{id\}/archive to '
+            $archive | Should -Match 'May change or remove data on the site\.$'
+            $archive | Should -Not -Match 'Creates|Adds to'
         }
         It 'a path parameter is a required, described argument' {
             $schema = ($script:CrudTools | Where-Object { $_.name -eq 'get_items_by_id' }).inputSchema
