@@ -59,7 +59,9 @@ Read by VALUE: `-Scrub:$false` records as today.
   `-OutputPath` run. The recorder asks the leak gate again, runs the digest,
   asks `decideCatalogueRunner`, and refuses to replace a catalogue that
   carries described actions -- all unchanged.
-- Nothing is added to `capture-har.js`, `capture-store.js` or either wrapper.
+- Nothing is added to `capture-store.js` or either wrapper. `capture-har.js`
+  gains one field in `session.json`, `scrubProfilePath` (see below), and no
+  command or option.
 - **Both calls are made from the capture's own store root** -- the folder that
   holds its `.har-captures` -- and the caller's directory is restored
   afterwards, even on failure. The scrub and the leak gate find the operator
@@ -72,25 +74,43 @@ Read by VALUE: `-Scrub:$false` records as today.
   the profile beside the capture is the one found; if none is found from
   there, the scrub's existing hard failure applies.
 
-  WHAT THAT RULE DOES AND DOES NOT GUARANTEE. A recording finds its profile by
-  walking up from the directory IT was run in (`harProfile.loadProfile({})`,
-  and it scaffolds a missing one in that same directory), while the store is
-  anchored to the repository's main working tree. Run from the store's own
-  folder -- or from below it with no nearer profile, which is what a linked
-  worktree under the main tree is -- those are the same file, and a re-scrub
-  uses the profile the recording used. Run from a subfolder that has its own
-  profile, the recording used THAT one, and the phases will not find it: they
-  use the one at the store root (a different salt, so different pseudonyms) or
-  fail for want of any. The rule makes a re-scrub independent of where it is
-  typed; it does not make it use the recording's profile in that case. Nothing
-  records which profile a recording used.
+  WHICH PROFILE: THE ONE THE RECORDING USED (re-review N1). A recording finds
+  its profile by walking up from the directory IT was run in, while the store
+  is anchored to the repository's main working tree, so a recording run from a
+  subfolder or linked worktree with a profile of its own scrubbed with THAT
+  one -- and a re-scrub from the store root found another. Reproduced: the
+  store root's profile maps nothing, a subfolder's maps an account id, the raw
+  carries the id; scrubbed from the subfolder the id was gone, and `-Scrub`
+  put it back at exit 0, "1 clean". So:
+
+  - The recorder writes the profile path it resolved into `session.json`
+    (`scrubProfilePath`) when the recording starts, beside the fields it
+    already writes there.
+  - `-Scrub` hands exactly that file to the scrub wrapper's existing
+    `-ProfilePath` (which passes it to the scrub and the leak gate), and says
+    which file it used. No command-line surface is added.
+  - When the recorded file no longer exists, `-Scrub` is refused (exit 3):
+    any other profile could be the wrong one.
+  - A capture recorded before this field existed: `-Scrub` is refused (exit
+    3) when a `scrubbed.har` is already there -- nothing says the store
+    root's profile made it, and replacing it could swap a verified scrub for
+    one carrying the operator's identifiers; move it aside to scrub anyway.
+    With nothing to replace, it scrubs with the profile found from the store
+    root, as before, and says so.
+  - `-Catalogue` still asks the gate from the store root. Its re-check is then
+    weaker for a capture recorded with another profile, never looser than the
+    scrub it is checking: `-Scrub -Catalogue` is gated with the recorded
+    profile by the scrub first.
 
 ### FOR THE OWNER: what changed meaning beyond the two switches
 
+**APPROVED by the owner in full, 2026-11-18 (F4, recorded on #24)** -- every
+row of the table below, and the two refusals and the sign-in rule listed after
+it.
+
 The two switches are the approved surface. To make them usable without a third
 parameter, three existing things mean something new WHEN A PHASE SWITCH IS
-TYPED. Each is an option-level change and none has been approved; the pull
-request is a draft until they are.
+TYPED. Each is an option-level change.
 
 | What | Before | With `-Scrub` / `-Catalogue` |
 |---|---|---|
@@ -100,6 +120,19 @@ request is a draft until they are.
 
 Also new, and in the same spirit: the nine recording parameters are REFUSED
 with a phase switch rather than ignored.
+
+Two more things the first argument now does, new behaviour of an existing
+argument (approved with F4):
+
+- **It refuses a wildcard**, by its spelling and without echoing it, at exit
+  2 -- a pattern would select captures nobody listed. A URL with its scheme is
+  exempt (`?` starts its query string).
+- **It refuses a folder outside a capture store** (not under a
+  `.har-captures` directory), at exit 3 -- the phases run from the folder that
+  holds the store, and a capture-shaped folder anywhere else has none.
+
+And it refuses to replace the scrub of a capture that signed in (approved
+with F4).
 
 **The alternative, if overloading is not wanted** -- neither part was built,
 because each is new command-line surface:
