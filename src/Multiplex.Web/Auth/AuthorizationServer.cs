@@ -28,7 +28,9 @@ public sealed partial class AuthorizationServer(
     private static readonly string[] SingleValued =
         ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "resource", "scope"];
 
-    public async Task<AuthorizeOutcome> AuthorizeAsync(IQueryCollection query, PathString pathBase, CancellationToken ct)
+    /// <param name="clientAddress">The caller's rate-limit key (<see cref="RequestOrigin.ClientAddress"/>); only a
+    /// keyed hash of it is stored, to cap how many pending authorizations one caller holds.</param>
+    public async Task<AuthorizeOutcome> AuthorizeAsync(IQueryCollection query, PathString pathBase, string clientAddress, CancellationToken ct)
     {
         // Until the client and redirect URI are trusted, errors are shown here, never redirected (RFC 6749 4.1.2.1).
         if (query["client_id"] is not [{ Length: > 0 } clientId])
@@ -79,21 +81,26 @@ public sealed partial class AuthorizationServer(
 
         // Requested scopes are not widened or failed on: the grant is always exactly the endpoint's scope.
         var now = time.GetUtcNow();
+        var caller = OAuthCrypto.CallerKey(clientAddress);
         var pending = new PendingAuthorizationRecord(
             OAuthCrypto.NewId(), endpoint.Slug, client.ClientId, client.ClientName, redirectUri, state, challenge,
-            endpoint.Resource, endpoint.Slug, now + AuthLifetimes.PendingAuthorization);
-        var started = await store.WriteAsync(st =>
+            endpoint.Resource, endpoint.Slug, now + AuthLifetimes.PendingAuthorization, caller);
+        var refusal = await store.WriteAsync(st =>
         {
             // Counted after pruning, so expired authorizations make room again.
-            if (st.PendingAuthorizations.Count >= AuthCapacity.PendingAuthorizations) return StoreWrite.Unchanged(false);
+            if (st.PendingAuthorizations.Count >= AuthCapacity.PendingAuthorizations)
+            {
+                return StoreWrite.Unchanged<string?>("Too many sign-ins are in progress on this server; try again in a few minutes.");
+            }
+            if (st.PendingAuthorizations.Values.Count(p => p.CallerKey == caller) >= AuthCapacity.PendingAuthorizationsPerCaller)
+            {
+                return StoreWrite.Unchanged<string?>("Too many sign-ins are in progress from your address; try again in a few minutes.");
+            }
             st.PendingAuthorizations[pending.Id] = pending;
             OAuthClients.Touch(st, client.ClientId, now);
-            return StoreWrite.Changed(true);
+            return StoreWrite.Changed<string?>(null);
         }, ct);
-        if (!started)
-        {
-            return Fail("temporarily_unavailable", "Too many sign-ins are in progress on this server; try again in a few minutes.");
-        }
+        if (refusal is not null) return Fail("temporarily_unavailable", refusal);
 
         LogStarted(logger, client.ClientId, endpoint.Slug);
         return new AuthorizeOutcome.Redirect($"{pathBase}/connect/{endpoint.Slug}?p={Uri.EscapeDataString(pending.Id)}");

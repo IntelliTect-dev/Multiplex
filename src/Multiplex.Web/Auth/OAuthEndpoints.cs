@@ -96,7 +96,8 @@ public static class OAuthEndpoints
 
     private static async Task<IResult> Authorize(HttpContext context, AuthorizationServer server)
     {
-        var outcome = await server.AuthorizeAsync(context.Request.Query, context.Request.PathBase, context.RequestAborted);
+        var outcome = await server.AuthorizeAsync(
+            context.Request.Query, context.Request.PathBase, Sites.RequestOrigin.ClientAddress(context), context.RequestAborted);
         NoStore(context.Response);
         return outcome switch
         {

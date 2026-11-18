@@ -16,6 +16,17 @@ internal static class OAuthCrypto
     /// <summary>The key a token or code is stored under: base64url SHA-256 of its UTF-8 bytes.</summary>
     public static string Hash(string token) => Base64Url.EncodeToString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 
+    // Random per process, so a stored caller key cannot be matched to an address by hashing guesses (the
+    // IPv4 space is small). After a restart, keys stored earlier simply stop counting toward any caller.
+    private static readonly byte[] CallerKeySecret = RandomNumberGenerator.GetBytes(32);
+
+    /// <summary>
+    /// What a pending authorization stores about who started it: a short keyed hash (12 bytes of
+    /// HMAC-SHA256, base64url) of the caller's rate-limit key, never the address itself.
+    /// </summary>
+    public static string CallerKey(string clientAddress) =>
+        Base64Url.EncodeToString(HMACSHA256.HashData(CallerKeySecret, Encoding.UTF8.GetBytes(clientAddress)).AsSpan(0, 12));
+
     /// <summary>RFC 7636: 43-128 characters from the unreserved set.</summary>
     public static bool IsValidPkceString(string? value) =>
         value is { Length: >= 43 and <= 128 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '.' or '_' or '~');
