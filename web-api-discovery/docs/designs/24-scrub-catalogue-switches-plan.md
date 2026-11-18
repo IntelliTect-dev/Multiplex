@@ -68,8 +68,9 @@ The positional first argument names it. With a phase switch it is one of:
 2. a **directory** -- the capture's own directory, or a folder holding one;
 3. a **`host/stamp` label** -- as the refusal list and `Remove-HarCapture` use.
 
-`-Describe`, when typed, narrows to captures recorded with exactly that
-description, so the command that made a capture plus `-Catalogue` names it.
+`-Describe`, when typed, narrows to captures recorded with that description
+(the whole of it; letter case and surrounding spaces aside), so the command
+that made a capture plus `-Catalogue` names it.
 
 The candidates come from `Get-HarCaptureInventory` (`capture-store.js`, the one
 walk), filtered to recorder output. Exactly one -> selected, and said: label,
@@ -85,7 +86,12 @@ newest is never picked silently.
 | no capture matches / `-Describe` matches none | 3 |
 | the only match is not recorder output (foreign / imported) | 3 |
 | `-Scrub` and the capture has no `raw.har` | 3 |
-| `-Catalogue` alone and the capture has no `scrubbed.har` (never scrubbed, or its scrub was REJECTED) | 3 |
+| `-Scrub` and the capture signed in AND already has a `scrubbed.har` (see below) | 3 |
+| `-Catalogue` alone and the capture has no `scrubbed.har` (never scrubbed, or its only scrub was REJECTED) | 3 |
+
+A first argument that is not a URL with a scheme, a directory or a label that
+matches is refused (3) without being echoed: a URL pasted without `https://`
+lands there and may carry a token.
 
 2 is the recorder's usage-error code; 3 is its "no capture / nothing to
 catalogue" code. A phase's own exit code is passed through whole.
@@ -98,16 +104,36 @@ catalogue" code. A phase's own exit code is passed through whole.
   `WebApiDiscovery.HarCapture.CatalogueEntry`, like a recording does.
 - `-Scrub` alone emits nothing on the success stream.
 
-### One caution the front door adds
+### What the front door reads from session.json, and why
 
-A recording that signed in (`session.json` -> `signIn.source` of `bitwarden` or
-`prompt`) handed the values it filled to the scrub and the gate over stdin;
-they exist nowhere else. A later scrub removes them by field name only and
-cannot prove them gone. `postProcess` already warns about exactly this when it
-scrubs for a recorder that has exited; `-Scrub` says the same before it runs,
-so re-scrubbing through the front door is not the one place it goes unsaid. It
-warns and proceeds -- refusing would put `-Scrub` out of reach of every capture
-that signed in.
+Two facts the shared walk does not carry.
+
+**The recorder signed in** (`signIn.source` is anything but `none`). It handed
+the values it filled to the scrub and the gate over stdin; they exist nowhere
+else, so a later scrub removes them by field name only and cannot prove them
+gone. `postProcess` already warns about exactly this when it scrubs for a
+recorder that has exited.
+
+- No `scrubbed.har` yet: `-Scrub` warns and runs. There is nothing to lose.
+- A `scrubbed.har` already there: `-Scrub` **refuses** (3). That file was
+  checked against the values and its replacement cannot be, and `-Force` would
+  overwrite it with nothing able to put it back. The way through is to move
+  the file aside -- the same deliberate act the recorder asks for before it
+  replaces a catalogue somebody worked on. (Review finding; the first cut
+  warned in both cases.)
+
+Asked as "not `none`" rather than as the recorder's list of sources, so a
+source added later fails closed.
+
+**It was recorded outside a git repository** (`unprotectedTables`). The
+recorder placed that capture's substitution tables itself; the scrub re-entry
+point writes them only where git confirms they are ignored, and refuses. Its
+stated remedies (run inside the owning repository, or pass `--subs`) cannot be
+followed through this door, so when the scrub fails on such a capture the run
+adds what can be: `git init` the folder that holds `.har-captures`. It is said
+AFTER the failure rather than refused up front, because the flag records where
+the capture was made, not where it is now -- a folder that has since become a
+repository scrubs fine.
 
 ## Evidence Plan
 
@@ -119,31 +145,31 @@ that signed in.
 
 ## Acceptance Criteria
 
-- [ ] `-Scrub` runs the scrub and its verification on an existing capture and records nothing.
-- [ ] `-Catalogue` runs the catalogue step on an existing, already scrubbed capture and records nothing.
-- [ ] Both together run scrub then catalogue. Neither: today's behaviour, unchanged.
-- [ ] The selected capture is named; an ambiguous selection and a capture not in the needed state are refused, non-zero, with a clear message.
-- [ ] Tests for each combination and each refusal.
-- [ ] The only new parameters anywhere are `-Scrub` and `-Catalogue`.
+- [x] `-Scrub` runs the scrub and its verification on an existing capture and records nothing.
+- [x] `-Catalogue` runs the catalogue step on an existing, already scrubbed capture and records nothing.
+- [x] Both together run scrub then catalogue. Neither: today's behaviour, unchanged.
+- [x] The selected capture is named; an ambiguous selection and a capture not in the needed state are refused, non-zero, with a clear message.
+- [x] Tests for each combination and each refusal.
+- [x] The only new parameters anywhere are `-Scrub` and `-Catalogue`.
 
 ## Implementation Checklist
 
-- [ ] RED: `tests/HarCapturePhases.Tests.ps1` -- each combination, selection by
+- [x] RED: `tests/HarCapturePhases.Tests.ps1` -- each combination, selection by
       URL / directory / label / `-Describe`, every refusal, gate REJECTED and
       ADVISORY through a stubbed-gate copy of the scripts tree, "records
       nothing" (store directories and raw hash unchanged), ambient
       `$WhatIfPreference`.
       `pwsh -NoProfile -Command "Invoke-Pester web-api-discovery/tests/HarCapturePhases.Tests.ps1"`
-- [ ] RED: `tests/har-recording.Tests.ps1` -- the parameter list becomes
+- [x] RED: `tests/har-recording.Tests.ps1` -- the parameter list becomes
       thirteen with the argument written down; `-Scrub:$false -Catalogue:$false`
       still forwards `start`.
-- [ ] GREEN: `scripts/capture/Invoke-HarCapture.ps1` -- the two switches, the
+- [x] GREEN: `scripts/capture/Invoke-HarCapture.ps1` -- the two switches, the
       phase block (selection, refusals, the two re-entry calls), help text.
-- [ ] `tests/har-recatalogue.Tests.ps1` -- the `-WhatIf:$false` tripwire is no
+- [x] `tests/har-recatalogue.Tests.ps1` -- the `-WhatIf:$false` tripwire is no
       longer vacuous; say so.
-- [ ] Refactor: small functions, no duplicated messages.
-- [ ] Docs: `SKILL.md` parameter table and capture-only section.
-- [ ] Evidence under `.evidence/`, self review, suites re-run.
+- [x] Refactor: small functions, no duplicated messages.
+- [x] Docs: `SKILL.md` parameter table and capture-only section.
+- [x] Evidence under `.evidence/`, self review, suites re-run.
 
 ## Known gaps (reported, not built -- each needs an owner decision)
 
@@ -157,8 +183,15 @@ that signed in.
   command-line surface and was not added.
 - A capture recorded with `-OutputPath` keeps the artifacts it published
   there; the phases work in the capture's own directory and do not republish.
-- The sign-in caution is said by `-Scrub` only. `Invoke-SanitizeHar <folder>
-  -Force` re-scrubs the same captures with no such notice.
+- The sign-in rule is applied by `-Scrub` only. `Invoke-SanitizeHar <folder>
+  -Force` re-scrubs the same captures, replaces the same checked artifacts, and
+  says nothing.
+- A capture recorded outside a git repository cannot be re-scrubbed until its
+  folder is one (above). Making the folder form place the tables as the
+  recorder does would change the scrub wrapper for every store run.
+- A capture whose recorder is still post-processing it is not detected:
+  only the recorder can say whether its driver is alive. The same race exists
+  for both wrappers run directly.
 - `session.json`'s `postProcess` record is not refreshed by either phase, so a
   failure recorded at capture time is still listed after a successful re-run.
 - `-WhatIf` is not offered on `Invoke-HarCapture` (existing guard); #48's

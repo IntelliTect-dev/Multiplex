@@ -312,30 +312,43 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
 | both | the scrub, then the catalogue -- whatever order they are typed in | a `raw.har` |
 
 * **The first argument says which capture**, since there is no site to open:
-  the site's URL (only the host is used, and only the host is printed), the
-  capture's directory, or the `host/stamp` label `Remove-HarCapture` also
-  takes. The run **says which capture it selected** -- label, description and
-  directory -- before it does anything.
+  the site's URL with its scheme (only the host is used, and only the host is
+  printed), the capture's directory, or the `host/stamp` label
+  `Remove-HarCapture` also takes. The run **says which capture it selected**
+  -- label, description and directory -- before it does anything. Anything
+  else -- a URL pasted without `https://`, say -- is refused without being
+  echoed, because it may carry a token.
 * **A site recorded more than once is refused, with the list.** It is never
   resolved to "the newest": several sessions record into one store. Paste a
   label from the list, or add `-Describe` -- with a phase switch it is not
-  required, and narrows to the capture recorded with exactly that description.
+  required, and narrows to the capture recorded with that description (the
+  whole of it; letter case and surrounding spaces aside).
 * **A capture in the wrong state is refused**, non-zero, saying why:
-  `-Catalogue` on a capture nobody scrubbed (or whose scrub the gate
-  rejected), `-Scrub` on one with no raw, either on a capture this recorder
-  did not make.
+  `-Catalogue` on a capture with no `scrubbed.har` (never scrubbed, or its
+  only scrub rejected), `-Scrub` on one with no raw, either on a capture this
+  recorder did not make.
 * **The recording parameters are refused with them** -- `-OutputPath`,
   `-Profile`, `-Isolated`, `-Port`, `-Browser`, `-Attach`, `-AI`, `-AITools`,
   `-Pace`. They say how to record, and nothing is recorded.
 * **`-Scrub` scrubs again a capture that was already scrubbed** -- that is the
   request. A scrub the gate rejects is quarantined as `scrubbed.rejected.har`
   and replaces nothing; with `-Catalogue` alongside, nothing is catalogued
-  from it. After `-Scrub` alone the existing digest and catalogue describe the
-  scrub that was replaced, and the run says so.
-* **A capture the recorder signed in for is re-scrubbed with a warning.** The
-  values it filled were handed to the scrub at recording time and exist
+  from it. Whenever a scrub is replaced and the digest and catalogue are not
+  rebuilt -- `-Scrub` alone, or `-Scrub -Catalogue` where the recorder then
+  declines to replace a described catalogue -- the run says they describe the
+  previous scrub.
+* **A capture the recorder signed in for is the exception to "scrubs again".**
+  The values it filled were handed to the scrub at recording time and exist
   nowhere else, so a later scrub removes them by field name and cannot prove
-  them gone. Check the new `scrubbed.har` for them before sharing it.
+  them gone. If that capture already has a `scrubbed.har`, `-Scrub` **refuses
+  to replace it**: move the file aside to say you mean it. If it has none,
+  the scrub runs with a warning -- check the result before sharing it.
+* **A capture recorded outside a git repository cannot be re-scrubbed until
+  the folder is one.** The recorder placed that capture's substitution tables
+  itself; the scrub re-entry point writes them only where git confirms they
+  are ignored, so `-Scrub` fails and says to run `git init` in the folder
+  that holds `.har-captures` (the recorder already wrote the `.gitignore`).
+  `-Catalogue` alone is unaffected.
 * **`-Catalogue` returns the catalogue rows as objects**, as a recording does,
   and the recorder still refuses to replace a catalogue that carries described
   actions -- move that file aside to catalogue afresh.
