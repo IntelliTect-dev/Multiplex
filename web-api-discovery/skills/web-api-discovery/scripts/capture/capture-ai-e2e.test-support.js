@@ -218,6 +218,12 @@ function createE2eKit(prefix) {
      * TTY. `opts.ai === false` starts it WITHOUT -AI -- a capture somebody
      * browses by hand, here played by the test over CDP -- with the same
      * preloads, so the stand-in Tailscale still applies.
+     *
+     * THE SYSTEM CHROME EITHER WAY. -AI implies `--browser native`; by hand it
+     * is asked for, because the default (`--browser playwright`) launches
+     * Playwright's own Chromium build, which CI does not install -- it drives
+     * the system Chrome only (.github/workflows/web-api-discovery.yml). The
+     * headless preload makes that Chrome headless, as for -AI.
      */
     function startStubDrivenCapture(repo, uri, env, opts = {}) {
         const ai = opts.ai !== false;
@@ -225,7 +231,7 @@ function createE2eKit(prefix) {
             '-r', HEADLESS_PRELOAD, '-r', STUB_AGENT_PRELOAD, captureJs, 'start',
             '--uri', uri,
             '--describe', ai ? 'ai drive: search once on the fixture page' : 'by hand: browse the fixture page',
-            ...(ai ? ['--ai'] : []),
+            ...(ai ? ['--ai'] : ['--browser', 'native']),
             '--profile', path.join(repo, '.chrome-profile'),
             '--snapshot-seconds', '1',
             '--no-wait'
