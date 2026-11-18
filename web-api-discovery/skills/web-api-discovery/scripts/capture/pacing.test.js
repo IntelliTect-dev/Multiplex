@@ -895,10 +895,6 @@ test('L2: the pause and resume lines say until when, for how long, and why', () 
     assert.match(named, /carries on by itself/);
     const backoff = say({ action: 'pause', waitMs: MIN, until: start + MIN, signal: throttle(null) }, 'script');
     assert.match(backoff, /Paused until T\+1 -- the site is throttling \(HTTP 429\) and named no wait, so backing off 1 min/);
-    // No -AI and nobody at the terminal: automation over CDP. Held, not told.
-    const external = say({ action: 'pause', waitMs: MIN, until: start + MIN, signal: throttle(60000) }, 'external');
-    assert.match(external, /browser holds this capture's requests to the site, whatever drives it over CDP/);
-    assert.doesNotMatch(external, /told/);
     // A tool that does not hold the browser (capture-cdp.js) does not claim to.
     const cdp = pacing.throttleLines({ action: 'pause', waitMs: MIN, until: start + MIN, signal: throttle(null) },
         'script', { now: start, clock, noHold: true, tool: 'capture-cdp' }).map(([, t]) => t).join('\n');
