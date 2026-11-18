@@ -115,7 +115,14 @@ if (-not $NoStart -and $PSCmdlet.ShouldProcess('Multiplex', 'Start server')) {
         $up = try { (Invoke-WebRequest "$local/healthz" -TimeoutSec 3 -SkipHttpErrorCheck).StatusCode -eq 200 } catch { $false }
         $config = Read-MultiplexConfig -Path $configPath   # Start-Multiplex records the tunnel's address
     } until ($up -or (Get-Date) -gt $deadline)
-    if (-not $up) { throw "The server did not answer on $local within 90 s; see $(Join-Path $Root 'logs')" }
+    if (-not $up) {
+        $taskInfo = if (-not $NoScheduledTask) {
+            $info = Get-ScheduledTaskInfo -TaskName 'Multiplex' -ErrorAction SilentlyContinue
+            if ($info) { "The Multiplex task last ran at $($info.LastRunTime) with result $($info.LastTaskResult)." }
+        }
+        throw (@("The server did not answer on $local within 90 s.", $taskInfo, (Get-MultiplexStartReport -LogDir (Join-Path $Root 'logs'))) |
+            Where-Object { $_ }) -join [Environment]::NewLine
+    }
 
     $public = $config.PublicBaseUrl
     $checks = @(Test-MultiplexEndpoint -BaseUrl $local -ExpectedBaseUrl ($public ?? $local))

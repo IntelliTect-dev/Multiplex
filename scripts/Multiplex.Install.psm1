@@ -234,22 +234,146 @@ function Get-QuickTunnelUrl {
     return $null
 }
 
-function Invoke-TailscaleFunnel {
+$script:TailscaleTimeoutSeconds = 20
+
+function Invoke-TailscaleCommand {
     <#
-    Runs `tailscale funnel --bg` for -Port. When Funnel is not enabled for the tailnet, the
-    command prints an enable link and waits indefinitely, so it runs in a job with a timeout.
+    Runs tailscale with -Arguments and says what happened; never throws. ExitCode is $null when
+    it could not be run or did not finish within -TimeoutSeconds (it is then stopped): `tailscale
+    funnel` prints an enable link and waits indefinitely while Funnel still needs enabling.
     #>
-    [CmdletBinding()] param([Parameter(Mandatory)] [string] $Tailscale, [Parameter(Mandatory)] [int] $Port)
-    $job = Start-Job { param($exe, $p) & $exe funnel --bg --yes "$p" 2>&1 } -ArgumentList $Tailscale, $Port
-    $finished = Wait-Job $job -Timeout 20
-    $output = (Receive-Job $job) -join "`n"
-    Remove-Job $job -Force
-    [pscustomobject]@{ Started = [bool]$finished -and $output -notmatch 'not enabled'; Output = $output }
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Tailscale,
+        [Parameter(Mandatory)] [string[]] $Arguments,
+        [int] $TimeoutSeconds = $script:TailscaleTimeoutSeconds)
+    $result = [pscustomobject]@{
+        Command = "tailscale $($Arguments -join ' ')"; ExitCode = $null; TimedOut = $false
+        TimeoutSeconds = $TimeoutSeconds; Output = ''; ErrorOutput = ''; RunError = $null
+    }
+    $start = [System.Diagnostics.ProcessStartInfo]::new($Tailscale)
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    try { $process = [System.Diagnostics.Process]::Start($start) }
+    catch { $result.RunError = $_.Exception.GetBaseException().Message; return $result }
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if ($process.WaitForExit($TimeoutSeconds * 1000)) { $process.WaitForExit(); $result.ExitCode = $process.ExitCode }
+        else {
+            $result.TimedOut = $true
+            try { $process.Kill($true) } catch { Write-Verbose "Could not stop $($result.Command): $($_.Exception.Message)" }
+        }
+        # Whatever it printed before it ended or was stopped (an enable link, an error).
+        if ([System.Threading.Tasks.Task]::WaitAll(@($stdout, $stderr), 5000)) {
+            $result.Output = $stdout.Result.Trim()
+            $result.ErrorOutput = $stderr.Result.Trim()
+        }
+    }
+    finally { $process.Dispose() }
+    return $result
+}
+
+function Get-TailscaleProblem {
+    <# A plain account of a tailscale command that did not do its job, in its own words, and what to do. #>
+    [CmdletBinding()] [OutputType([string])] param([Parameter(Mandatory)] [psobject] $Result)
+    $said = (@($Result.ErrorOutput, $Result.Output) | Where-Object { $_ }) -join ' '
+    $words = if ($said) { " Tailscale said: $said" } else { ' Tailscale said nothing.' }
+    if ($Result.RunError) { return "Tailscale could not be run ($($Result.RunError)). Is it installed?" }
+    if ($said -match 'server mode \("([^"]+)"\)') {
+        $owner = $Matches[1] -replace '\\\\', '\'
+        $me = "$([Environment]::UserDomainName)\$([Environment]::UserName)"
+        return "Tailscale on this PC runs unattended for the Windows account $owner and refuses every other " +
+            "account, including $me, which runs Multiplex. Either sign in to Windows as $owner, open Tailscale " +
+            "and turn off 'Run unattended', then sign in as $me, open Tailscale and turn 'Run unattended' on; " +
+            "or install and run Multiplex while signed in as $owner.$words"
+    }
+    if ($Result.TimedOut) {
+        return "$($Result.Command) did not finish within $($Result.TimeoutSeconds) s and was stopped; it waits " +
+            "like this when Funnel still needs enabling for this PC in the Tailscale admin console.$words"
+    }
+    if ($said -match 'not enabled') { return "Funnel is not enabled for this PC in the Tailscale admin console.$words" }
+    if ($said -match 'failed to connect to local tailscaled|is Tailscale running') {
+        return "Tailscale is not running on this PC; start it and sign in.$words"
+    }
+    return "$($Result.Command) failed with exit code $($Result.ExitCode).$words"
+}
+
+function ConvertFrom-TailscaleJson {
+    <# A tailscale command's JSON as a dictionary, or a reason it is not one. Never throws. #>
+    [CmdletBinding()] param([Parameter(Mandatory)] [psobject] $Result)
+    if (-not $Result.Output) { return [pscustomobject]@{ Value = $null; Problem = "$($Result.Command) printed nothing." } }
+    try { $value = $Result.Output | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+    catch {
+        $start = $Result.Output.Substring(0, [Math]::Min(200, $Result.Output.Length))
+        return [pscustomobject]@{ Value = $null; Problem = "$($Result.Command) printed something that is not JSON: $start" }
+    }
+    [pscustomobject]@{ Value = $value; Problem = $null }
+}
+
+function Get-DictionaryValue {
+    <# The value at -Path in nested dictionaries (parsed JSON), or $null where any step is missing. #>
+    [CmdletBinding()] param($Dictionary, [Parameter(Mandatory)] [string[]] $Path)
+    $value = $Dictionary
+    foreach ($key in $Path) {
+        if ($value -isnot [System.Collections.IDictionary] -or -not $value.Contains($key)) { return $null }
+        $value = $value[$key]
+    }
+    return $value
 }
 
 function Get-TailscaleDnsName {
-    [CmdletBinding()] [OutputType([string])] param([Parameter(Mandatory)] [string] $Tailscale)
-    (& $Tailscale status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.')
+    <#
+    This PC's Tailscale DNS name (without the trailing dot) when Tailscale is connected, else
+    Problem says why, including when Tailscale refuses this Windows account. Never throws.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)] [string] $Tailscale)
+    $run = Invoke-TailscaleCommand -Tailscale $Tailscale -Arguments 'status', '--json'
+    if ($run.ExitCode -ne 0) { return [pscustomobject]@{ DnsName = $null; Problem = Get-TailscaleProblem -Result $run } }
+    $json = ConvertFrom-TailscaleJson -Result $run
+    if ($json.Problem) { return [pscustomobject]@{ DnsName = $null; Problem = $json.Problem } }
+    $state = Get-DictionaryValue $json.Value 'BackendState'
+    $problem = switch ($state) {
+        'NeedsLogin' { 'Tailscale is not signed in on this PC; open Tailscale and sign in.' }
+        'NeedsMachineAuth' { 'This PC is waiting for approval in the Tailscale admin console.' }
+        'Stopped' { 'Tailscale is turned off on this PC; open Tailscale and connect.' }
+    }
+    if (-not $problem -and $state -and $state -ne 'Running') { $problem = "Tailscale is not connected on this PC (state $state)." }
+    $name = "$(Get-DictionaryValue $json.Value 'Self', 'DNSName')".TrimEnd('.')
+    if (-not $problem -and -not $name) { $problem = "Tailscale did not report this PC's DNS name (is MagicDNS on for the tailnet?)." }
+    [pscustomobject]@{ DnsName = ($problem ? $null : $name); Problem = $problem }
+}
+
+function Invoke-TailscaleFunnel {
+    <#
+    Opens -Port to the internet with `tailscale funnel --bg` and confirms it: Started only when the
+    command exits 0 and `tailscale funnel status --json` shows https on -DnsName open to the
+    internet. Otherwise Problem says why, in Tailscale's own words. Never throws.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Tailscale, [Parameter(Mandatory)] [int] $Port, [Parameter(Mandatory)] [string] $DnsName)
+    $run = Invoke-TailscaleCommand -Tailscale $Tailscale -Arguments 'funnel', '--bg', '--yes', "$Port"
+    if ($run.ExitCode -ne 0) { return [pscustomobject]@{ Started = $false; Problem = Get-TailscaleProblem -Result $run } }
+    $status = Invoke-TailscaleCommand -Tailscale $Tailscale -Arguments 'funnel', 'status', '--json'
+    if ($status.ExitCode -ne 0) {
+        return [pscustomobject]@{ Started = $false; Problem = "Funnel could not be confirmed. $(Get-TailscaleProblem -Result $status)" }
+    }
+    $json = ConvertFrom-TailscaleJson -Result $status
+    $open = Get-DictionaryValue $json.Value 'AllowFunnel'
+    $hostPort = "${DnsName}:443"   # Tailscale keys Funnel by "<name>:<port>"
+    $confirmed = $open -is [System.Collections.IDictionary] -and
+        @($open.Keys | Where-Object { $_ -eq $hostPort -and $open[$_] -eq $true }).Count -gt 0
+    if (-not $confirmed) {
+        $said = if ($run.Output) { " Tailscale said: $($run.Output)" } else { '' }
+        return [pscustomobject]@{
+            Started = $false
+            Problem = "$($run.Command) exited 0, but $($status.Command) does not show https://$DnsName open to the internet ($($json.Problem ?? $status.Output)).$said"
+        }
+    }
+    [pscustomobject]@{ Started = $true; Problem = $null }
 }
 
 function Start-MultiplexTunnel {
@@ -290,19 +414,41 @@ function Start-MultiplexTunnel {
             return $tunnel
         }
         'Tailscale' {
-            $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
-            # Never let an unavailable Funnel keep the server from starting.
-            $funnel = Invoke-TailscaleFunnel -Tailscale $ts -Port $Config.Port
-            if (-not $funnel.Started) {
-                Add-Content -LiteralPath (Join-Path $LogDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available: $($funnel.Output)"
-                Write-Warning "Tailscale Funnel is not enabled for this tailnet; serving locally only. $($funnel.Output)"
+            # Never let Tailscale keep the server from starting: whatever goes wrong is logged and
+            # said, and the server serves on this PC only.
+            try {
+                $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
+                $self = Get-TailscaleDnsName -Tailscale $ts
+                $problem = $self.Problem ?? (Invoke-TailscaleFunnel -Tailscale $ts -Port $Config.Port -DnsName $self.DnsName).Problem
+            }
+            catch { $problem = "Starting Tailscale Funnel failed unexpectedly: $($_.Exception.Message)" }
+            if ($problem) {
+                Add-Content -LiteralPath (Join-Path $LogDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available, so Multiplex serves on this PC only. $problem"
+                Write-Warning "Tailscale Funnel is not available; serving on this PC only. $problem"
                 return
             }
-            $Config.PublicBaseUrl = "https://$(Get-TailscaleDnsName -Tailscale $ts)"
+            $Config.PublicBaseUrl = "https://$($self.DnsName)"
             Write-MultiplexConfig -Config $Config -Path $ConfigPath
             Write-Host "Public address: $($Config.PublicBaseUrl)"
         }
     }
+}
+
+function Get-MultiplexStartReport {
+    <#
+    What the logs say about a start, for the installer to show when the server does not answer:
+    the end of the start log (the step start-up reached and how it ended), the tunnel log, and
+    the end of the server log. Says so when nothing was logged at all.
+    #>
+    [CmdletBinding()] [OutputType([string])]
+    param([Parameter(Mandatory)] [string] $LogDir, [int] $Tail = 10)
+    $sections = foreach ($name in 'start.log', 'tunnel.log', 'server.log') {
+        $path = Join-Path $LogDir $name
+        $lines = @(Get-Content -LiteralPath $path -Tail $Tail -ErrorAction SilentlyContinue)
+        if ($lines) { "${path}:"; $lines | ForEach-Object { "  $_" } }
+    }
+    if (-not $sections) { return "Nothing was logged in ${LogDir}: start-up ended before it could write its log." }
+    return $sections -join [Environment]::NewLine
 }
 
 function Clear-MultiplexStalePublicAddress {
