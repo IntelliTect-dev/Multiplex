@@ -13,6 +13,7 @@
 //   P4  the per-minute ceiling holds a navigation until the minute rolls
 //   P5  `--pace off` waits for nothing -- but a throttle pause still holds
 //   P6  `--pace` parses, and refuses what it cannot parse instead of guessing
+//   P7  a pause that arrives while a step is already waiting holds that step
 //   R1  Retry-After: delay-seconds, an HTTP-date, a date in the past, junk
 //   R2  backoff is exponential with equal jitter: in [step/2, step], capped
 //   C1  429 and 503+Retry-After are throttling; a bare 503 is not
@@ -136,6 +137,32 @@ test('P5: --pace off waits for nothing, and a throttle pause still holds', async
         'honouring a site\'s Retry-After is not pacing; turning pacing off must not turn it off');
     await pacer.act(async () => {});
     assert.deepStrictEqual(time.slept, [30000], 'the pause is over once waited');
+});
+
+test('P7: a pause that arrives while a step is already waiting holds that step too', async () => {
+    // The 429 lands during the 0.3-1.2 s wait before a sign-in keystroke: the
+    // keystroke must not go out before the site's Retry-After is up.
+    const time = fakeTime();
+    let pacer;
+    let interrupted = false;
+    const sleep = async (ms) => {
+        time.slept.push(ms);
+        if (!interrupted) {
+            interrupted = true;
+            time.advance(Math.floor(ms / 2));
+            pacer.pauseFor(30000);              // the site throttles mid-wait
+            time.advance(ms - Math.floor(ms / 2));
+            return;
+        }
+        time.advance(ms);
+    };
+    pacer = pacing.createPacer({ navigation: [0, 0], action: [750, 750], perMinute: 0 },
+        { now: time.now, sleep, rng: fixed(0) });
+    await pacer.act(async () => {});            // the first step: no gap yet
+    let ranAt = null;
+    await pacer.act(async () => { ranAt = time.now(); });
+    assert.ok(ranAt >= pacer.pausedUntil(),
+        `the step ran at +${ranAt - (pacer.pausedUntil() - 30375)} ms, inside a pause that ends at +30375 ms`);
 });
 
 test('P6: --pace parses, and refuses what it cannot parse', () => {
