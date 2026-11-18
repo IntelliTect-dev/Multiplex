@@ -215,6 +215,14 @@ public sealed partial class TripItClient : IDisposable
     /// session provider is asked for a renewed session, and the request is retried once, only
     /// when the renewed cookie differs from the rejected one.
     /// </summary>
+    /// <remarks>
+    /// A change (any method but GET) is retried only after Akamai's 403 block page, which the
+    /// edge sends before the request reaches TripIt. A change answered 302/401 reached TripIt,
+    /// which may have applied it, so the session is renewed for the next request but the change
+    /// is not sent again: <see cref="TripItWriteOutcomeUnknownException"/> asks the caller to
+    /// check first. When the renewal itself fails (the provider reports the person signed out),
+    /// that failure propagates instead: a session that is gone could not have made the change.
+    /// </remarks>
     public async Task<string> SendAsync(
         HttpMethod method,
         string path,
@@ -237,7 +245,16 @@ public sealed partial class TripItClient : IDisposable
             authFailure = ex;
         }
 
+        var mayHaveApplied = method != HttpMethod.Get && !authFailure.BlockedAtEdge;
         var renewed = await _sessions.RenewAsync(session, ct).ConfigureAwait(false);
+        if (mayHaveApplied)
+        {
+            _log.LogWarning("TripIt rejected the session on {Method} {Path}; the change is not sent again.", method, path);
+            throw new TripItWriteOutcomeUnknownException(
+                $"TripIt answered {method} {path} by rejecting the session (expired or rotated), but it may already have " +
+                "made the change. It was not sent again, so it cannot happen twice. Check whether the change took " +
+                "effect (read the trip or plan) before trying again.", authFailure);
+        }
         if (renewed is null || !renewed.IsConfigured || renewed.Cookie == session.Cookie)
         {
             throw authFailure;
@@ -332,7 +349,7 @@ public sealed partial class TripItClient : IDisposable
             throw new TripItAuthenticationException(
                 $"TripIt returned an Akamai 403 block page for {path}. This means the short-lived " +
                 "bot-management cookies have aged out, not that the request is malformed. " +
-                "Re-run `node tools/extract-session.js` against the signed-in browser.");
+                "Re-run `node tools/extract-session.js` against the signed-in browser.", blockedAtEdge: true);
         }
         if (status is < 200 or > 299)
         {
@@ -420,7 +437,27 @@ public sealed partial class TripItClient : IDisposable
 /// </summary>
 public sealed class TripItAuthenticationException : InvalidOperationException
 {
-    public TripItAuthenticationException(string message) : base(message) { }
+    public TripItAuthenticationException(string message, bool blockedAtEdge = false) : base(message)
+    {
+        BlockedAtEdge = blockedAtEdge;
+    }
+
+    /// <summary>
+    /// True for Akamai's 403 block page: the edge stopped the request, so it never reached
+    /// TripIt's application and resending it cannot repeat a change. False for 302/401, which
+    /// TripIt's application itself answered.
+    /// </summary>
+    public bool BlockedAtEdge { get; }
+}
+
+/// <summary>
+/// A change (a non-GET request) was answered 302/401: the session had expired or rotated, but
+/// TripIt may already have applied the change, so it was not sent again. The caller must check
+/// whether it took effect before repeating it.
+/// </summary>
+public sealed class TripItWriteOutcomeUnknownException : Exception
+{
+    public TripItWriteOutcomeUnknownException(string message, Exception inner) : base(message, inner) { }
 }
 
 /// <summary>

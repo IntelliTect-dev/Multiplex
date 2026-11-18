@@ -18,8 +18,13 @@ public sealed class TripItClientTests
     [InlineData(302)]
     [InlineData(401)]
     public void Classify_treats_302_and_401_as_authentication_failure(int status)
-        => Assert.Throws<TripItAuthenticationException>(
-            () => TripItClient.Classify("/p", status, "application/json", "{}"));
+        => Assert.False(Assert.Throws<TripItAuthenticationException>(
+            () => TripItClient.Classify("/p", status, "application/json", "{}")).BlockedAtEdge);
+
+    [Fact]
+    public void Classify_marks_the_Akamai_403_as_blocked_before_TripIt()
+        => Assert.True(Assert.Throws<TripItAuthenticationException>(
+            () => TripItClient.Classify("/p", 403, "text/html", Fixtures.AkamaiBlockPage)).BlockedAtEdge);
 
     [Fact]
     public void Classify_surfaces_TripIt_error_description()
@@ -101,6 +106,61 @@ public sealed class TripItClientTests
         await Assert.ThrowsAsync<TripItAuthenticationException>(() => client.GetProfileAsync());
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal(1, refresher!.Calls);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Redirect)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task Write_answered_302_or_401_renews_the_session_but_is_not_sent_again(HttpStatusCode status)
+    {
+        // TripIt may have applied the write before it answered; resending could apply it twice.
+        FakeRefresher? refresher = null;
+        var (client, handler, _) = FakeTripIt.Create("old", s => refresher = new FakeRefresher(s, "new"));
+        var delete = $"/api/v2/delete/trip/uuid/{Fixtures.TripUuid}";
+        handler.On(delete, _ => FakeHandler.Json("", status));
+
+        var ex = await Assert.ThrowsAsync<TripItWriteOutcomeUnknownException>(() => client.Trips.DeleteAsync(Fixtures.TripUuid));
+
+        Assert.Single(handler.Requests, r => r.Uri.AbsolutePath == delete);
+        Assert.Equal(1, refresher!.Calls);
+        Assert.Contains("may already have", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("before trying again", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(ex.Message, TripItErrorText.ForTool(ex));
+
+        // The session was renewed: the next request goes out with it.
+        await client.GetProfileAsync();
+        Assert.Equal("new", handler.Requests[^1].Cookie);
+    }
+
+    [Fact]
+    public async Task Write_answered_302_is_not_sent_again_even_when_the_session_cannot_be_renewed()
+    {
+        var (client, handler, _) = FakeTripIt.Create();
+        var delete = $"/api/v2/delete/trip/uuid/{Fixtures.TripUuid}";
+        handler.On(delete, _ => FakeHandler.Json("", HttpStatusCode.Redirect));
+
+        await Assert.ThrowsAsync<TripItWriteOutcomeUnknownException>(() => client.Trips.DeleteAsync(Fixtures.TripUuid));
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Write_blocked_by_the_Akamai_403_page_is_sent_once_more_after_renewal()
+    {
+        // The block page comes from the edge: the write never reached TripIt's application.
+        FakeRefresher? refresher = null;
+        var (client, handler, _) = FakeTripIt.Create("old", s => refresher = new FakeRefresher(s, "new"));
+        var delete = $"/api/v2/delete/trip/uuid/{Fixtures.TripUuid}";
+        handler.On(delete, _ => FakeHandler.Html(Fixtures.AkamaiBlockPage, HttpStatusCode.Forbidden))
+               .On(delete, _ => FakeHandler.Json("""{"timestamp":"1"}"""));
+
+        await client.Trips.DeleteAsync(Fixtures.TripUuid);
+
+        Assert.Equal(1, refresher!.Calls);
+        var sent = handler.Requests.Where(r => r.Uri.AbsolutePath == delete).ToList();
+        Assert.Equal(2, sent.Count);
+        Assert.All(sent, r => Assert.Equal(HttpMethod.Post, r.Method));
+        Assert.Equal(["old", "new"], sent.Select(r => r.Cookie));
     }
 
     [Fact]
