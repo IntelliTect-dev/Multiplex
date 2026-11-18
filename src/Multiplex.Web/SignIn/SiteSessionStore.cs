@@ -53,8 +53,9 @@ public sealed class SiteSessionStore(IDataProtectionProvider provider, SignInPat
 }
 
 /// <summary>
-/// The accounts the server holds a session for, per site, so the connect page can offer
-/// "Continue as …". Encrypted like the sessions, at <c>DataPath\sites\{slug}\accounts.bin</c>.
+/// The accounts the server holds a session for, per site: a record of whose sessions are on disk.
+/// The connect page never offers them (#52): every connection signs in as its own account.
+/// Encrypted like the sessions, at <c>DataPath\sites\{slug}\accounts.bin</c>.
 /// A list that cannot be decrypted or parsed reads as empty; the next change moves it aside to
 /// <c>accounts.bin.unreadable-{timestamp}</c> before writing a new one, so it is never lost silently.
 /// </summary>

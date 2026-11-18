@@ -25,8 +25,15 @@ namespace Multiplex.Tests.Services.TripIt;
 /// with an in-memory auth store, in-memory session store and refresher, and a fake TripIt
 /// behind the real pacing handler.
 /// </summary>
-public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFactory<Program>
+/// <param name="signInSite">
+/// When set, the connect pages stay in: TripIt's sign-in is a live sign-in (local Chromium,
+/// headless) against this stub login site, and the tools read the sessions it stores from the
+/// real encrypted store, so a connection is added the whole way a person adds one
+/// (<see cref="ConnectThroughPagesAsync"/>).
+/// </param>
+public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = null) : WebApplicationFactory<Program>
 {
+    private static readonly TimeSpan s_signInTimeout = TimeSpan.FromSeconds(90);
     private readonly string _dataPath = Path.Combine(Path.GetTempPath(), "multiplex-tripit-tests-" + Guid.NewGuid().ToString("N"));
 
     public FakeSessionStore Store { get; } = new();
@@ -47,11 +54,27 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
             builder.UseSetting($"{TripItServiceOptions.Section}:MinRequestSpacingMs", "0");
             builder.UseSetting($"{TripItServiceOptions.Section}:RequestJitterMs", "0");
         }
+        if (signInSite is not null)
+        {
+            // Never a browser download, and never a visible window (TripIt's own default is headed).
+            builder.UseSetting("Browser:ExecutablePath", ChromiumLocator.Path ?? Path.Combine(Path.GetTempPath(), "no-such-chrome.exe"));
+            builder.UseSetting("SignIn:Headless", "true");
+            builder.UseSetting($"Multiplex:Sites:{TripItAccountSessions.Site}:Headless", "true");
+            builder.UseSetting("SignIn:PollInterval", "00:00:00.500");
+        }
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<IAuthStore>();
             services.AddSingleton<IAuthStore, InMemoryAuthStore>();
-            services.AddSingleton<ISiteSessionStore>(Store);
+            if (signInSite is null)
+            {
+                services.AddSingleton<ISiteSessionStore>(Store);
+            }
+            else
+            {
+                services.RemoveAll<ISiteSignInDefinition>();
+                services.AddSingleton<ISiteSignInDefinition>(new StubSignInDefinition(signInSite, TripItAccountSessions.Site));
+            }
             // Live runs have no browser to refresh from: a rejected session must not look like a sign-out.
             if (fakeTripIt) services.AddSingleton<ISiteSessionRefresher>(Refresher);
             if (fakeTripIt)
@@ -69,22 +92,6 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
 
     public static string Snapshot(string cookie)
         => JsonSerializer.Serialize(new { cookie, csrf_token = "csrf-" + cookie, spa_headers = new Dictionary<string, string> { ["user-agent"] = "Test" }, captured_at = "2026-11-17T08:00:00Z" });
-
-    /// <summary>
-    /// What an earlier TripIt sign-in on this server leaves behind for <paramref name="account"/>:
-    /// its session for the tools (<see cref="SignIn"/>), and for the connect page a saved account
-    /// (index entry, stored session, kept browser profile) whose session the refresher confirms,
-    /// so a connection can be added with "Continue as" and no browser.
-    /// </summary>
-    public async Task SaveSignInAsync(string account, string cookie)
-    {
-        SignIn(account, cookie);
-        await Services.GetRequiredService<SiteAccountIndex>().UpsertAsync(
-            new SiteAccount(TripItAccountSessions.Site, account, [], "Traveller " + account), CancellationToken.None);
-        await Services.GetRequiredService<SiteSessionStore>().SetAsync(TripItAccountSessions.Site, account, Snapshot(cookie), CancellationToken.None);
-        Directory.CreateDirectory(Services.GetRequiredService<SignInPaths>().AccountProfile(TripItAccountSessions.Site, account));
-        Refresher.Next[account] = () => Snapshot(cookie);
-    }
 
     public const string BaseUrl = "https://mcp.example.test";
     private const string ClaudeRedirect = "https://claude.ai/api/mcp/auth_callback";
@@ -108,23 +115,40 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
     }
 
     /// <summary>
-    /// Adds one connection the whole way a person does: the client registers and authorizes, the
-    /// person enters the passcode on the connect page and chooses "Continue as"
-    /// <paramref name="account"/>, and the client exchanges the code. Returns that connection's client.
+    /// Adds one connection the whole way a person does (needs <c>signInSite</c>): the client
+    /// registers and authorizes; the person enters the passcode, is taken straight to the live
+    /// sign-in and signs in there as <paramref name="email"/>; the client exchanges the code.
+    /// Returns that connection's MCP client.
     /// </summary>
-    public async Task<McpTestClient> ConnectThroughPagesAsync(string account)
+    public async Task<McpTestClient> ConnectThroughPagesAsync(string email, string password)
     {
         var browser = new ConnectClient(this);
         var (clientId, verifier, pendingId) = await AuthorizeAsync(browser.Http);
 
         var (gate, _) = await browser.PassGateAsync(pendingId, slug: TripItAccountSessions.Site);
         Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        var (_, choose) = await browser.GetAsync(gate.Headers.Location!.OriginalString);
-        var (back, _) = await browser.PostAsync($"/connect/tripit/continue?p={Uri.EscapeDataString(pendingId)}", choose, ("account", account));
-        Assert.Equal(HttpStatusCode.SeeOther, back.StatusCode);
+        var attempt = Services.GetRequiredService<LiveSignInRegistry>().Find(ConnectClient.AttemptIdOf(gate.Headers.Location!))
+            ?? throw new InvalidOperationException("The passcode did not lead to a live sign-in: " + gate.Headers.Location);
+        await using (var mirror = await browser.OpenMirrorAsync(attempt.Id, TripItAccountSessions.Site))
+        {
+            await mirror.WaitForStatusAsync("live", s_signInTimeout);
+            await LiveMirrorTests.SignInAsync(attempt, mirror, email, password);
+            var ready = await mirror.WaitForStatusAsync("ready", s_signInTimeout);
+            var (done, _) = await browser.GetAsync(ready.GetProperty("next").GetString()!);
+            Assert.Equal(HttpStatusCode.Redirect, done.StatusCode);
+            await attempt.Completion.WaitAsync(s_signInTimeout);
 
-        var token = await ExchangeAsync(browser.Http, clientId, verifier, back.Headers.Location!);
-        return new McpTestClient(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }), () => Task.FromResult(token));
+            var token = await ExchangeAsync(browser.Http, clientId, verifier, done.Headers.Location!);
+            return new McpTestClient(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }), () => Task.FromResult(token));
+        }
+    }
+
+    /// <summary>The session cookie the live sign-in stored for <paramref name="account"/>.</summary>
+    public async Task<string> StoredCookieAsync(string account)
+    {
+        var snapshot = await Services.GetRequiredService<ISiteSessionStore>().GetAsync(TripItAccountSessions.Site, account, CancellationToken.None)
+            ?? throw new InvalidOperationException("No session is stored for " + account);
+        return JsonDocument.Parse(snapshot).RootElement.GetProperty("cookie").GetString()!;
     }
 
     /// <summary>Registers a client like Claude and starts an authorization; returns where the connect page takes over.</summary>

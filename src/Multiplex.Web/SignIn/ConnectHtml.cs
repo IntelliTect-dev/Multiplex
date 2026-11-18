@@ -44,30 +44,21 @@ public static class ConnectHtml
             """);
     }
 
-    public static string Choose(string nonce, ISiteSignInDefinition site, PendingAuthorization pending, FormToken token, IReadOnlyList<SiteAccount> accounts)
-    {
-        var p = Uri.EscapeDataString(pending.Id);
-        var buttons = string.Concat(accounts.Select(a =>
-            $"""<button type="submit" name="account" value="{E(a.AccountId)}">Continue as {E(Label(a))}</button>"""));
-        var continueForm = accounts.Count == 0 ? "" : $"""
-            <form method="post" action="/connect/{E(site.Slug)}/continue?p={p}" class="card" data-busy="Checking your {E(site.DisplayName)} session…">
-              {token.Html}
-              {buttons}
-            </form>
-            """;
-        var other = accounts.Count == 0 ? $"Sign in to {site.DisplayName}" : "Sign in with a different account";
-        return Page(nonce, $"Connect to {site.DisplayName}", $"""
+    /// <summary>
+    /// After the passcode: the only way on is to sign in. No account the server already holds a
+    /// session for is shown or offered; every connection signs in as its own account.
+    /// </summary>
+    public static string SignIn(string nonce, ISiteSignInDefinition site, PendingAuthorization pending, FormToken token) =>
+        Page(nonce, $"Connect to {site.DisplayName}", $"""
             <h1>Connect {E(pending.ClientName)} to {E(site.DisplayName)}</h1>
-            {continueForm}
-            <form method="post" action="/connect/{E(site.Slug)}/start?p={p}" data-busy="Opening {E(site.DisplayName)}…">
+            <form method="post" action="/connect/{E(site.Slug)}/start?p={Uri.EscapeDataString(pending.Id)}" data-busy="Opening {E(site.DisplayName)}…">
               {token.Html}
-              <button type="submit" class="{(accounts.Count == 0 ? "" : "secondary")}">{E(other)}</button>
+              <button type="submit">Sign in to {E(site.DisplayName)}</button>
             </form>
             {CancelForm(site, token, "p", pending.Id, "Cancel")}
             """, BusyScript);
-    }
 
-    public static string Live(string nonce, LiveSignInAttempt attempt, FormToken token, string? notice)
+    public static string Live(string nonce, LiveSignInAttempt attempt, FormToken token)
     {
         var site = attempt.Definition;
         var config = JsonSerializer.Serialize(new
@@ -75,7 +66,6 @@ public static class ConnectHtml
             ws = $"/connect/{site.Slug}/live?a={Uri.EscapeDataString(attempt.Id)}",
             site = site.DisplayName,
         });
-        var noticeHtml = notice is null ? "" : $"""<p class="notice" role="status">{E(notice)}</p>""";
         var hint = site.SignInHint is { } h ? $"""<p class="hint muted">{E(h)}</p>""" : "";
         return Page(nonce, $"Sign in to {site.DisplayName}", $"""
             <div id="bar" class="bar">
@@ -84,7 +74,6 @@ public static class ConnectHtml
                 {CancelForm(site, token, "a", attempt.Id, "Cancel", "cancel-inline")}
               </div>
               <p id="status" class="status" role="status" aria-live="polite">{E(attempt.StatusMessage)}</p>
-              {noticeHtml}
               <div class="row type">
                 <input id="txt" type="text" maxlength="500" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the {E(site.DisplayName)} page">
                 <button id="send" type="button">Send</button>
@@ -134,10 +123,6 @@ public static class ConnectHtml
             {CancelForm(site, token, "p", pendingId, "Cancel")}
             """);
 
-    private static string Label(SiteAccount account) =>
-        !string.IsNullOrWhiteSpace(account.DisplayName) ? account.DisplayName
-        : account.Emails.FirstOrDefault() ?? account.AccountId;
-
     private static string CancelForm(ISiteSignInDefinition site, FormToken token, string key, string value, string label, string cssClass = "") => $"""
         <form method="post" action="/connect/{E(site.Slug)}/cancel?{key}={Uri.EscapeDataString(value)}" class="cancel {cssClass}">
           {token.Html}
@@ -170,8 +155,8 @@ public static class ConnectHtml
     }
 
     private const string Css = """
-        :root{--bg:#f6f7f9;--fg:#14171a;--muted:#59626e;--card:#fff;--border:#d4d9e0;--accent:#1f5fd6;--accent-fg:#fff;--danger:#b42318;--notice:#7a4b00}
-        @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e8eaed;--muted:#a0a8b3;--card:#191c22;--border:#2c313a;--accent:#5b95ff;--accent-fg:#0b0d10;--danger:#ff8a80;--notice:#f0c36d}}
+        :root{--bg:#f6f7f9;--fg:#14171a;--muted:#59626e;--card:#fff;--border:#d4d9e0;--accent:#1f5fd6;--accent-fg:#fff;--danger:#b42318}
+        @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--fg:#e8eaed;--muted:#a0a8b3;--card:#191c22;--border:#2c313a;--accent:#5b95ff;--accent-fg:#0b0d10;--danger:#ff8a80}}
         *{box-sizing:border-box}
         [hidden]{display:none!important}
         html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
@@ -184,12 +169,10 @@ public static class ConnectHtml
         label{display:block;font-weight:600;margin:0 0 6px}
         input[type=password],input[type=text]{width:100%;font-size:18px;padding:11px 12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-height:48px}
         button,.button{display:block;width:100%;min-height:48px;font:inherit;font-size:17px;font-weight:600;border-radius:10px;border:1px solid transparent;padding:11px 14px;margin:10px 0 0;cursor:pointer;background:var(--accent);color:var(--accent-fg);text-align:center;text-decoration:none;touch-action:manipulation}
-        button.secondary,.button.secondary{background:transparent;color:var(--fg);border-color:var(--border)}
         button.link{background:transparent;color:var(--accent);border:0;font-weight:500;width:auto;margin:6px auto 0;min-height:44px}
         button[disabled]{opacity:.6}
         .cancel{text-align:center}
         .error{color:var(--danger);font-weight:600}
-        .notice{color:var(--notice);font-weight:600}
         body.live main{max-width:none;padding:0}
         .bar{position:sticky;top:0;z-index:2;background:var(--bg);padding:max(8px,env(safe-area-inset-top)) 10px 6px;border-bottom:1px solid var(--border)}
         .row{display:flex;gap:6px;align-items:center}

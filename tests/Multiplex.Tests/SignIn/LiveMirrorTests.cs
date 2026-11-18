@@ -84,13 +84,10 @@ public sealed class LiveMirrorTests
         var (gate1, _) = await first.PassGateAsync("p1");
         await SignInLiveAsync(host, first, gate1, StubLoginSite.Email, StubLoginSite.Password);
 
-        // The same connector added again, from another client: it chooses a different account and signs in as that one.
+        // The same connector added again, from another client: the first account is not on offer, so it signs in as another.
         var second = host.NewClient();
         var (gate2, _) = await second.PassGateAsync("p2");
-        var (_, choose) = await second.GetAsync(gate2.Headers.Location!.OriginalString);
-        Assert.Contains($"Continue as {StubLoginSite.DisplayName}", choose);
-        var (start, _) = await second.PostAsync("/connect/stub/start?p=p2", choose);
-        await SignInLiveAsync(host, second, start, StubLoginSite.OtherEmail, StubLoginSite.OtherPassword);
+        await SignInLiveAsync(host, second, gate2, StubLoginSite.OtherEmail, StubLoginSite.OtherPassword);
 
         Assert.Equal(
             [("p1", StubLoginSite.AccountId), ("p2", StubLoginSite.OtherAccountId)],

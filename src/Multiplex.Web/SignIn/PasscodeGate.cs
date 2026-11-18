@@ -202,7 +202,7 @@ public sealed class PasscodeGate
 /// <summary>
 /// Proof that this browser passed the gate for one pending authorization: an HttpOnly,
 /// SameSite=Strict, data-protected, time-limited cookie scoped to <c>/connect/{slug}</c>.
-/// The live WebSocket, "Continue", "Cancel" and "Done" all require it.
+/// The live WebSocket, "Sign in", "Cancel" and "Done" all require it.
 /// </summary>
 public sealed class GateCookie(IDataProtectionProvider provider, IOptions<SignInOptions> options, TimeProvider time)
 {
