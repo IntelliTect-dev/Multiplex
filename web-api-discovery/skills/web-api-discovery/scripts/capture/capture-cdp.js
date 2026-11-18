@@ -57,6 +57,18 @@ function parseArgs(argv) {
     return out;
 }
 
+/**
+ * Whether a response's body is read for the throttle check: where the body is
+ * what tells a block or a challenge apart. An HTML main-frame document (a page
+ * that answered 200 can be an interstitial), and a refusal from the site --
+ * a 403 or 503 -- WHATEVER its content type, because an edge refusing an XHR
+ * answers it in JSON as often as in HTML.
+ */
+function readsBodyFor({ status, contentType, isDocument, onSite }) {
+    if (isDocument && /html/i.test(contentType || '')) return true;
+    return (isDocument || onSite) && (status === 403 || status === 503);
+}
+
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.url || !args.out) {
@@ -152,12 +164,11 @@ async function main() {
                 const host = new URL(response.url()).hostname.toLowerCase();
                 const headers = await response.allHeaders().catch(() => ({}));
                 const status = response.status();
-                const html = /html/i.test(headers['content-type'] || '');
-                const body = html && (isDocument || status === 403 || status === 503)
+                const onSite = host === site || host.endsWith('.' + site);
+                const body = readsBodyFor({ status, contentType: headers['content-type'], isDocument, onSite })
                     ? await response.body().catch(() => null) : null;
                 const decision = monitor.observe(pacing.classifyResponse({
-                    url: response.url(), status, headers, mimeType: headers['content-type'], body, isDocument,
-                    onSite: host === site || host.endsWith('.' + site)
+                    url: response.url(), status, headers, mimeType: headers['content-type'], body, isDocument, onSite
                 }));
                 if (!decision || decision.action === 'none') return;
                 if (decision.action === 'pause') pacer.pauseFor(decision.waitMs);
@@ -204,4 +215,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main, parseArgs };
+module.exports = { main, parseArgs, readsBodyFor };

@@ -303,7 +303,10 @@ const INTERSTITIALS = [
     // The block page is an iframe onto /_Incapsula_Resource?CWUDNSAI=..., with
     // the incident ID as its fallback text.
     { name: 'Imperva', test: marker(/incapsula incident id|_incapsula_resource\?[^"'\s>]*\bcwudnsai=/i) },
-    { name: 'Akamai "Access Denied"', test: marker(/<title>\s*access denied\s*<\/title>[\s\S]*reference\s*#\s*\d/i) },
+    // Akamai's page ENTITY-ENCODES its reference -- `Reference&#32;&#35;18&#46;...`
+    // -- and links it on errors.edgesuite.net; either spelling counts.
+    { name: 'Akamai "Access Denied"', test: marker(new RegExp('<title>\\s*access denied\\s*</title>[\\s\\S]*' +
+        '(?:reference(?:\\s|&#32;|&nbsp;)*(?:#|&#35;)\\s*\\d|errors(?:\\.|&#46;)edgesuite(?:\\.|&#46;)net)', 'i')) },
     // Amazon answers a signed-out visitor it doubts with a full storefront page
     // whose middle is a form to /checkpoint/validate: "Check the box to
     // continue", a checkbox labelled "I am human".
@@ -313,6 +316,20 @@ const INTERSTITIALS = [
         return (form || /^\/checkpoint\//i.test(ctx.path)) && /check the box to continue|\bi am human\b/i.test(page);
     } }
 ];
+
+// What a bot-protection edge answers a refused XHR or fetch with, in place of
+// its HTML page. Judged on refusals only, whatever the content type.
+const BLOCK_RESPONSES = [
+    // {"url":"https://geo.captcha-delivery.com/captcha/?initialCid=..."}
+    { name: 'DataDome block', test: marker(/"url"\s*:\s*"https?:\/\/geo\.captcha-delivery\.com\/(?:captcha|interstitial)\//i) },
+    // {"appId":"PX...","blockScript":"/.../captcha.js?...", ...}
+    { name: 'PerimeterX block', test: (ctx) => /"appId"\s*:\s*"PX\w+"/i.test(ctx.text) && /"blockScript"\s*:/i.test(ctx.text) }
+];
+
+// Headers only a bot-protection vendor's own refusal carries. Unlike a CDN's
+// cf-ray or x-amz-cf-id, which are on every response of a site behind it, one
+// of these on a 403 is the vendor refusing -- whatever the content type.
+const BOT_VENDOR_HEADERS = ['x-datadome'];
 
 // WORDING an ordinary page can use too: a sign-up form's "verify you are
 // human", a help page's "are you a robot?", a title naming a CAPTCHA game, an
@@ -339,13 +356,18 @@ function bodyText(body, max = CHALLENGE_BODY_MAX) {
     return String(body).slice(0, max);
 }
 
-/** What a signature is tested against: the body's head, its path, and (lazily) more of the body. */
+/**
+ * What a signature is tested against: the head of the body, the URL's path,
+ * and more of the body for a deep signature. Each is decoded only when a
+ * signature asks for it -- most responses never are.
+ */
 function signatureContext(r) {
+    let text = null;
     let deep = null;
     let path = '';
     try { path = new URL(r.url).pathname; } catch (e) { void e; }
     return {
-        text: bodyText(r.body),
+        get text() { return text === null ? (text = bodyText(r.body)) : text; },
         path,
         deep: () => (deep === null ? (deep = bodyText(r.body, DEEP_SCAN_MAX)) : deep)
     };
@@ -386,16 +408,23 @@ function classifyResponse(r, nowMs = Date.now()) {
 
     const mime = String(r.mimeType || headerValue(headers, 'content-type') || '').toLowerCase();
     const html = mime.includes('html') || (!mime && r.isDocument);
-    if (!html) return null;
     const ctx = signatureContext(r);
     const size = bodySize(r.body);
     const small = size <= CHALLENGE_BODY_MAX;
     const interstitial = (bound) => INTERSTITIALS.find((s) => (s.deep || size <= bound) && s.test(ctx));
 
     if (status === 403 || status === 503) {
+        // A KNOWN BLOCK IS ONE WHATEVER ITS CONTENT TYPE. An edge refusing an
+        // XHR or a fetch answers it with its JSON, or its HTML page, while the
+        // page on screen stays up -- and an -AI agent's API calls are exactly
+        // what gets refused that way.
         const known = interstitial(CHALLENGE_BODY_MAX) ||
-            (small ? REFUSAL_WORDING.find((s) => s.re.test(ctx.text)) : null);
+            (small ? BLOCK_RESPONSES.find((s) => s.test(ctx)) : null) ||
+            (html && small ? REFUSAL_WORDING.find((s) => s.re.test(ctx.text)) : null);
         if (known) return signal('blocked', `${status} ${known.name}`);
+        const vendor = status === 403 && BOT_VENDOR_HEADERS.find((h) => headerValue(headers, h) !== undefined);
+        if (vendor) return signal('blocked', `403 from bot protection (${vendor})`);
+        if (!html) return null;
         // EDGE HEADERS ALONE are weak evidence: a CDN-fronted site puts cf-ray
         // or x-amz-cf-id on EVERY response, its own error pages included, and
         // the checklist asks for error cases. So without a known signature only
@@ -413,7 +442,7 @@ function classifyResponse(r, nowMs = Date.now()) {
     // main-frame documents only, where it replaces the page that was asked for,
     // and only on markers and inside the tighter bound -- an AWS WAF script
     // check that answers 202 and passes by itself in any browser is neither.
-    if (!r.isDocument || status < 200 || status >= 400) return null;
+    if (!html || !r.isDocument || status < 200 || status >= 400) return null;
     const known = interstitial(INTERSTITIAL_BODY_MAX);
     return known ? signal('challenge', known.name) : null;
 }
