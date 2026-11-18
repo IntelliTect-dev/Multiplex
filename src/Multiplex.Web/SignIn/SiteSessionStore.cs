@@ -55,18 +55,32 @@ public sealed class SiteSessionStore(IDataProtectionProvider provider, SignInPat
 /// <summary>
 /// The accounts the server holds a session for, per site, so the connect page can offer
 /// "Continue as …". Encrypted like the sessions, at <c>DataPath\sites\{slug}\accounts.bin</c>.
+/// A list that cannot be decrypted or parsed reads as empty; the next change moves it aside to
+/// <c>accounts.bin.unreadable-{timestamp}</c> before writing a new one, so it is never lost silently.
 /// </summary>
-public sealed class SiteAccountIndex(IDataProtectionProvider provider, SignInPaths paths)
+public sealed class SiteAccountIndex(IDataProtectionProvider provider, SignInPaths paths, ILogger<SiteAccountIndex>? logger = null)
 {
     private readonly IDataProtector _protector = provider.CreateProtector("Multiplex.SignIn.AccountIndex.v1");
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.Ordinal);
+    private readonly ILogger _logger = (ILogger?)logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
 
     public async Task<IReadOnlyList<SiteAccount>> ListAsync(string site, CancellationToken ct)
     {
         var gate = Lock(site);
         await gate.WaitAsync(ct);
-        try { return await ReadAsync(site, ct); }
-        finally { gate.Release(); }
+        try
+        {
+            return (await ReadAsync(site, ct)).Accounts;
+        }
+        catch (IOException ex)
+        {
+            _logger.LogError("The {Site} account list could not be read ({Error}); offering no saved accounts.", site, ex.GetType().Name);
+            return [];
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task<SiteAccount?> FindAsync(string site, string accountId, CancellationToken ct) =>
@@ -88,7 +102,10 @@ public sealed class SiteAccountIndex(IDataProtectionProvider provider, SignInPat
         await gate.WaitAsync(ct);
         try
         {
-            var list = (await ReadAsync(site, ct)).ToList();
+            // An IOException here propagates: a file that could not even be read is never overwritten.
+            var (accounts, unreadable) = await ReadAsync(site, ct);
+            if (unreadable) MoveAside(site);
+            var list = accounts.ToList();
             change(list);
             var json = JsonSerializer.SerializeToUtf8Bytes(list.Select(a => new Entry(a.AccountId, a.DisplayName, [.. a.Emails])).ToList());
             await AtomicFile.WriteAsync(paths.AccountIndexFile(site), _protector.Protect(json), ct);
@@ -99,19 +116,31 @@ public sealed class SiteAccountIndex(IDataProtectionProvider provider, SignInPat
         }
     }
 
-    private async Task<IReadOnlyList<SiteAccount>> ReadAsync(string site, CancellationToken ct)
+    /// <summary>The site's accounts; <c>Unreadable</c> when the file exists but could not be decrypted or parsed.</summary>
+    private async Task<(IReadOnlyList<SiteAccount> Accounts, bool Unreadable)> ReadAsync(string site, CancellationToken ct)
     {
         var path = paths.AccountIndexFile(site);
-        if (!File.Exists(path)) return [];
+        if (!File.Exists(path)) return ([], false);
+        var bytes = await File.ReadAllBytesAsync(path, ct);
         try
         {
-            var entries = JsonSerializer.Deserialize<List<Entry>>(_protector.Unprotect(await File.ReadAllBytesAsync(path, ct))) ?? [];
-            return [.. entries.Select(e => new SiteAccount(site, e.AccountId, e.Emails ?? [], e.DisplayName ?? ""))];
+            var entries = JsonSerializer.Deserialize<List<Entry>>(_protector.Unprotect(bytes)) ?? [];
+            return ([.. entries.Select(e => new SiteAccount(site, e.AccountId, e.Emails ?? [], e.DisplayName ?? ""))], false);
         }
-        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or JsonException or IOException)
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or JsonException)
         {
-            return [];
+            _logger.LogError("The {Site} account list could not be read ({Error}); treating it as empty.", site, ex.GetType().Name);
+            return ([], true);
         }
+    }
+
+    /// <summary>Keeps an unreadable account list beside the new one, so a lost key or a damaged file can still be recovered.</summary>
+    private void MoveAside(string site)
+    {
+        var path = paths.AccountIndexFile(site);
+        var aside = $"{path}.unreadable-{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}-{Guid.NewGuid().ToString("N")[..6]}";
+        File.Move(path, aside);
+        _logger.LogError("Moved the unreadable {Site} account list aside to {File} and started a new one.", site, Path.GetFileName(aside));
     }
 
     private SemaphoreSlim Lock(string site) => _locks.GetOrAdd(SignInPaths.CheckSlug(site), _ => new SemaphoreSlim(1, 1));
