@@ -4,15 +4,18 @@
 //
 // It answers every request with one canned JSON body and writes the request
 // line it received -- method and raw request target, exactly as sent, before
-// any decoding -- to a log file, one line per request. A test starts it, points
-// a generated wrapper at it (the base URL is baked in at generation, so it must
+// any decoding -- to a log, one line per request. A test starts it, points a
+// generated wrapper at it (the base URL is baked in at generation, so it must
 // be listening first), makes a real tools/call, and reads the log.
 //
-// It listens on 127.0.0.1 only, on a port the system picks, and stops when its
-// standard input closes or the process is stopped. No real site is involved.
+// It takes no arguments and reads no environment variable. Its working
+// directory is its configuration: it serves `response.json` from there and
+// appends to `requests.log` there, so a test gives it a directory of its own.
 //
-// Usage: node stand-in-site.js <log file> <response body file>
-//   stdout, first line:  LISTENING <port>
+// It listens on 127.0.0.1 only, on a port the system picks, and says which on
+// the first line of stdout: `LISTENING <port>`. It stops when its standard
+// input closes -- so it cannot outlive the test that holds that pipe -- or when
+// the process is stopped. No real site is involved.
 //
 // Not a test itself, and deliberately not named *.test.js: the Node test runner
 // would start it and wait for it to exit.
@@ -21,17 +24,15 @@
 const fs = require('fs');
 const http = require('http');
 
-const [logFile, bodyFile] = process.argv.slice(2);
-if (!logFile || !bodyFile) {
-    process.stderr.write('usage: node stand-in-site.js <log file> <response body file>\n');
-    process.exit(2);
-}
-const body = fs.readFileSync(bodyFile);
+const RESPONSE_FILE = 'response.json';
+const LOG_FILE = 'requests.log';
+
+const body = fs.readFileSync(RESPONSE_FILE);
 
 const server = http.createServer((request, response) => {
     // request.url is the request target as it arrived: the path and the query
     // string, still percent-encoded.
-    fs.appendFileSync(logFile, request.method + ' ' + request.url + '\n');
+    fs.appendFileSync(LOG_FILE, request.method + ' ' + request.url + '\n');
     request.resume();
     request.on('end', () => {
         response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': body.length });
