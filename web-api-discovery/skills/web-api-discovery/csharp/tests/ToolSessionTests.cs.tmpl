@@ -165,6 +165,109 @@ public class {{ProjectName}}ToolSessionTests
         Assert.Equal(new[] { SignedIn, signedInAgain }, built);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.SeeOther)]
+    [InlineData(HttpStatusCode.TemporaryRedirect)]
+    [InlineData((HttpStatusCode)419)]
+    [InlineData((HttpStatusCode)440)]
+    public async Task A_refusal_that_may_be_about_the_session_has_the_next_call_read_the_store_again(HttpStatusCode refusal)
+    {
+        // Sites say "that session is no good" in more ways than 302 and 401: a
+        // 403, a redirect of another kind to the sign-in page, 419 and 440. If
+        // only two of them had the store read again, signing in after any of
+        // the others would need the server restarted to take effect.
+        var signedInAgain = new SessionCredentials("session=2", string.Empty);
+        var store = new CountingSessionStore { Saved = SignedIn };
+        var built = new List<SessionCredentials>();
+        using var session = new {{ProjectName}}ToolSession(
+            store,
+            credentials =>
+            {
+                built.Add(credentials);
+                return ClientAnswering(credentials, credentials == SignedIn ? refusal : HttpStatusCode.OK);
+            });
+        var error = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/anything")));
+
+        store.Save(signedInAgain);
+        var answer = await session.RunAsync(client => client.SendRawAsync("/anything"));
+
+        Assert.Equal("{}", answer);
+        Assert.Equal(new[] { SignedIn, signedInAgain }, built);
+        Assert.Contains("/anything -> " + (int)refusal, error.Message);
+        Assert.Contains("does not need restarting", error.Message);
+    }
+
+    /// <summary>A site that never answers: a request to it waits until it is cancelled.</summary>
+    private sealed class SilentSite : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("A cancelled wait does not get here.");
+        }
+    }
+
+    [Fact]
+    public async Task A_write_that_times_out_is_not_reported_as_not_having_happened()
+    {
+        // The request left; no answer came back. The site may have acted on it
+        // all the same, and a model told only "an error occurred" sends it again.
+        var impatient = new PacingOptions
+        {
+            MinimumSpacing = TimeSpan.Zero,
+            SpacingJitter = TimeSpan.Zero,
+            AttemptTimeout = TimeSpan.FromMilliseconds(50),
+        };
+        var store = new CountingSessionStore { Saved = SignedIn };
+        using var session = new {{ProjectName}}ToolSession(
+            store,
+            credentials => new {{ProjectName}}Client(credentials, impatient, new SilentSite()));
+
+        var error = await Assert.ThrowsAsync<McpException>(
+            () => session.RunAsync(client => client.SendRawAsync("/items", HttpMethod.Post, jsonBody: "{}")));
+
+        Assert.Contains("did not respond within", error.Message);
+        Assert.Contains("may still have taken effect", error.Message);
+        Assert.IsType<TimeoutException>(error.InnerException);
+    }
+
+    [Fact]
+    public async Task A_call_the_caller_cancelled_is_not_reported_as_a_timeout()
+    {
+        // Cancelling is the caller's own doing, and it knows. Only the wait
+        // that ran out on its own is put into words.
+        var store = new CountingSessionStore { Saved = SignedIn };
+        using var site = new HttpClient(new SilentSite());
+        using var session = new {{ProjectName}}ToolSession(store, credentials => new {{ProjectName}}Client(credentials, site));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => session.RunAsync(client => client.SendRawAsync("/items", ct: cancelled.Token)));
+    }
+
+    [Theory]
+    [InlineData("upstream said:\nSet-Cookie: sid=SECRET-VALUE; Path=/; HttpOnly\nand then failed")]
+    [InlineData("upstream said:\ncookie: sid=SECRET-VALUE\nand then failed")]
+    [InlineData("{\"error\":\"bad gateway\",\"set-cookie\":\"sid=SECRET-VALUE; Path=/\"}\nand then failed")]
+    public async Task A_cookie_in_the_sites_error_text_does_not_reach_the_model(string siteAnswer)
+    {
+        // The client's message for an error status carries the start of what
+        // the site answered, and that goes to the model. A proxy that echoes
+        // response headers into its error page would put a session cookie there.
+        var store = new CountingSessionStore { Saved = SignedIn };
+        using var site = MockHandler.FromJson(siteAnswer, HttpStatusCode.BadGateway);
+        using var session = new {{ProjectName}}ToolSession(store, credentials => new {{ProjectName}}Client(credentials, site));
+
+        var error = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/broken")));
+
+        Assert.DoesNotContain("SECRET-VALUE", error.Message);
+        Assert.Contains("[cookie removed]", error.Message);
+        Assert.Contains("/broken -> 502", error.Message);
+        Assert.Contains("and then failed", error.Message);
+    }
+
     [Fact]
     public async Task A_refusal_from_the_site_reaches_the_caller_and_keeps_the_session()
     {

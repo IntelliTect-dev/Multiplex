@@ -1,4 +1,6 @@
+using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol;
@@ -17,9 +19,11 @@ namespace {{Namespace}};
 /// client, so a missing or expired session is the tool call's error instead.
 /// </para>
 /// <para>
-/// It is read again after the site refuses it, and a session saved since then
-/// is used from the next call on, without a restart. The client -- and the
-/// pacing that lives in it -- is replaced only when the saved session changed.
+/// It is read again after the site refuses it -- with a redirect, 401, 403,
+/// 419 or 440 -- and a session saved since then is used from the next call on,
+/// without a restart. The client, and the pacing that lives in it, is replaced
+/// only when the saved session changed. A session the site still accepts is
+/// never read again: changing accounts while it works needs a restart.
 /// </para>
 /// <para>
 /// Only a failure the model can do something about is put into words for it --
@@ -37,6 +41,20 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
 
     private const string ReadAgain =
         " The server reads the saved session again at the next call and does not need restarting.";
+
+    private const string IfTheSessionEnded =
+        " If that is because the session ended, sign in again: the server reads the saved session again " +
+        "at the next call and does not need restarting.";
+
+    private const string NoAnswerInTime =
+        " So it is not known whether the call reached the site: it may still have taken effect there. " +
+        "If it changes anything, check before sending it again.";
+
+    // "Set-Cookie: sid=...; Path=/" or "cookie":"sid=..." in text the site
+    // answered with, up to the end of its line.
+    private static readonly Regex s_cookieText = new(
+        @"\b(?:set-)?cookie2?\b[""']?\s*[:=][^\r\n]*",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private const string NotTheExpectedJson =
         "{{ProjectName}} answered, but not with the JSON this tool expects: an empty answer, or a page " +
@@ -91,14 +109,44 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
         catch (HttpRequestException ex)
         {
             // Throttled, blocked, or an error status: the client's message
-            // already says which, in the site's own terms.
-            throw new McpException(ex.Message, ex);
+            // already says which, in the site's own terms. Those terms include
+            // the start of what the site answered, so a cookie echoed into an
+            // error page is taken out before the model is shown it.
+            var said = s_cookieText.Replace(ex.Message, "[cookie removed]");
+            if (MayBeAboutTheSession(ex.StatusCode))
+            {
+                // A site also says "that session is no good" with a redirect to
+                // its sign-in page, a 403, a 419 or a 440. Read the store again
+                // next time, as after a 302 or 401.
+                ReadStoreAgainNextTime();
+                said += IfTheSessionEnded;
+            }
+            throw new McpException(said, ex);
+        }
+        catch (TimeoutException ex)
+        {
+            // The request left and no answer came back in time. A write may
+            // have been acted on all the same; say so, or the model resends it.
+            // (A call the caller cancelled is an OperationCanceledException and
+            // is not caught here: the caller knows what it did.)
+            throw new McpException(ex.Message + NoAnswerInTime, ex);
         }
         catch (JsonException ex)
         {
             throw new McpException(NotTheExpectedJson, ex);
         }
     }
+
+    /// <summary>
+    /// Whether an error status may mean the saved session was refused: any
+    /// redirect (the client follows none, and a signed-out site redirects to
+    /// its sign-in page), 403, and the two "session expired" statuses in use.
+    /// 302 and 401 never get here: the client raises those as
+    /// <see cref="{{ProjectName}}AuthenticationException"/>.
+    /// </summary>
+    private static bool MayBeAboutTheSession(HttpStatusCode? status)
+        => status is { } code
+            && ((int)code is >= 300 and < 400 || code == HttpStatusCode.Forbidden || (int)code is 419 or 440);
 
     private {{ProjectName}}Client GetClient()
     {

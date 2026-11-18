@@ -299,6 +299,12 @@ Describe 'MCP tool class (issue #17)' {
         $section | Should -Not -BeNullOrEmpty
         $section | Should -Match '\| `get_me` \| `GET /api/me` \| yes \| no \| yes \|'
         $section | Should -Match '(?i)starts without a session'
+        # When the store is read is said exactly, restart case included: the
+        # generated ToolSessionTests.cs pins the behaviour these lines describe.
+        $section | Should -Match 'while it has none, at every tool call'
+        $section | Should -Match 'not again while the site accepts it'
+        $section | Should -Match 'a redirect \(any 3xx\), `401`, `403`, `419` or `440`'
+        $section | Should -Match 'need a restart is changing to another account'
         $section | Should -Match '(?m)^### Left out of the tools' -Because 'the README says which endpoints get no tool'
         $section | Should -Match 'Nothing in this capture was left out\.'
     }
