@@ -2288,8 +2288,10 @@ the site said:
 - **When retries run out**, `<Name>ThrottledException` (an
   `HttpRequestException`) says what was throttled, how many attempts were made
   and what the site asked for.
-- **A block is never retried**: an HTML 403 from a CDN, or a
-  `cf-mitigated: challenge`, raises `<Name>BlockedException`. Nothing works
+- **A block is never retried**: an HTML 403 from a CDN, a 403 carrying
+  `x-datadome` (in any content type), a `cf-mitigated: challenge`, or
+  Cloudflare's "Just a moment..." challenge served as an HTML 503, raises
+  `<Name>BlockedException` -- the same reading as the recorder's. Nothing works
   around it.
 - **Waiting is not counted as a timeout.** The client's `HttpClient.Timeout` is
   infinite and each attempt gets `AttemptTimeout` (60 s) instead, so honouring a

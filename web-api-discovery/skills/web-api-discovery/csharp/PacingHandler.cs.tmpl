@@ -270,7 +270,7 @@ public sealed class PacingHandler : DelegatingHandler
                 await WaitForSlotAsync(request, cancellationToken).ConfigureAwait(false);
                 var response = await SendAttemptAsync(request, cancellationToken).ConfigureAwait(false);
 
-                if (IsBlocked(response))
+                if (await RefusalAsync(response, cancellationToken).ConfigureAwait(false) is { } refusal)
                 {
                     var status = response.StatusCode;
                     var preview = await PreviewAsync(response, cancellationToken).ConfigureAwait(false);
@@ -279,8 +279,8 @@ public sealed class PacingHandler : DelegatingHandler
                     // HTML error pages through the same edge, so the preview is
                     // what tells bot protection from, say, an expired session.
                     throw new {{ProjectName}}BlockedException(
-                        $"{request.Method} {request.RequestUri} was refused with an HTML {(int)status} from the " +
-                        "site's CDN -- most likely bot protection or a firewall. It is not retried and nothing " +
+                        $"{request.Method} {request.RequestUri} was refused with {refusal} ({(int)status}) -- " +
+                        "most likely bot protection or a firewall. It is not retried and nothing " +
                         "works around it: re-authenticate in a browser, slow down, or stop. " +
                         $"The response began: {preview}",
                         status);
@@ -436,20 +436,56 @@ public sealed class PacingHandler : DelegatingHandler
         "cf-ray", "x-iinfo", "x-cdn", "x-datadome", "x-akamai-transformed", "akamai-grn", "x-amz-cf-id", "x-sucuri-id",
     };
 
-    private static bool IsBlocked(HttpResponseMessage response)
+    // The same reading as the capture side (scripts/capture/pacing.js): a
+    // marker only Cloudflare's challenge page carries, and its title.
+    private static readonly System.Text.RegularExpressions.Regex s_cloudflareChallenge = new(
+        @"window\._cf_chl_opt\b|/cdn-cgi/challenge-platform/(?:h/[a-z]/)?orchestrate/|<title>\s*just a moment\.\.\.\s*</title>",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>A challenge page is a few kilobytes; a 503 body larger than this is not read.</summary>
+    private const long ChallengeBodyMax = 64 * 1024;
+
+    /// <summary>What refused the request, when it was the site's edge rather than the site; otherwise null.</summary>
+    private static async Task<string?> RefusalAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (response.Headers.TryGetValues("cf-mitigated", out var mitigated) &&
             mitigated.Any(v => v.Contains("challenge", StringComparison.OrdinalIgnoreCase)))
         {
-            return true;
+            return "a Cloudflare challenge";
         }
-        if (response.StatusCode != HttpStatusCode.Forbidden) return false;
         var mediaType = response.Content?.Headers.ContentType?.MediaType ?? string.Empty;
-        if (!mediaType.Contains("html", StringComparison.OrdinalIgnoreCase)) return false;
+        var html = mediaType.Contains("html", StringComparison.OrdinalIgnoreCase);
         var server = string.Join(" ", response.Headers.Server.Select(p => p.ToString()));
-        return s_edgeHeaders.Any(h => response.Headers.Contains(h)) ||
-            System.Text.RegularExpressions.Regex.IsMatch(server,
-                "cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            // DataDome sets x-datadome on its own refusals, and answers an API
+            // call in JSON: the content type is not what decides.
+            if (response.Headers.Contains("x-datadome")) return "a DataDome block";
+            var fromEdge = s_edgeHeaders.Any(h => response.Headers.Contains(h)) ||
+                System.Text.RegularExpressions.Regex.IsMatch(server,
+                    "cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return html && fromEdge ? "an HTML 403 from the site's CDN" : null;
+        }
+        // A 503 is the site being unavailable -- waited out and retried -- unless
+        // it is Cloudflare's "Just a moment..." challenge, which is never retried.
+        if (response.StatusCode == HttpStatusCode.ServiceUnavailable && html && response.Content is { } content &&
+            (server.Contains("cloudflare", StringComparison.OrdinalIgnoreCase) || response.Headers.Contains("cf-ray")) &&
+            !(content.Headers.ContentLength > ChallengeBodyMax))
+        {
+            try
+            {
+                var body = await content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                if (s_cloudflareChallenge.IsMatch(body.Length > ChallengeBodyMax ? body[..(int)ChallengeBodyMax] : body))
+                {
+                    return "a Cloudflare challenge page";
+                }
+            }
+            catch (Exception e) when (e is HttpRequestException or IOException)
+            {
+                // Unreadable: judged as the 503 it says it is.
+            }
+        }
+        return null;
     }
 
     private static {{ProjectName}}ThrottledException Throttled(

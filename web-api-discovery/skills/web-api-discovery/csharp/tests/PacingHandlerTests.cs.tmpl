@@ -348,6 +348,52 @@ public class PacingHandlerTests
         var response = await rig.Http.GetAsync(Url);
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal(1, rig.Site.Calls);
+
+        // Behind a CDN too: its headers are on every response, the app's own 403 included.
+        var behindCdn = Build(Unspaced, 0.5, Edge(HttpStatusCode.Forbidden, "application/json", "{\"error\":\"forbidden\"}",
+            ("cf-ray", "8a1b2c3d4e5f6789-IAD"), ("server", "cloudflare")), Succeed);
+        Assert.Equal(HttpStatusCode.Forbidden, (await behindCdn.Http.GetAsync(Url)).StatusCode);
+    }
+
+    // HAND-WRITTEN, minimal edge responses: there is no captured vendor
+    // response to test against. Each carries the marker the capture side keys
+    // on (pacing.js), so the client and the recorder agree on what a block is.
+    private static Func<HttpRequestMessage, HttpResponseMessage> Edge(
+        HttpStatusCode status, string mediaType, string body, params (string Name, string Value)[] headers) => _ =>
+    {
+        var response = new HttpResponseMessage(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, mediaType) };
+        foreach (var (name, value) in headers) response.Headers.TryAddWithoutValidation(name, value);
+        return response;
+    };
+
+    [Fact]
+    public async Task A_Cloudflare_challenge_served_as_a_503_is_a_block_and_is_never_retried()
+    {
+        const string challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>" +
+            "<script>window._cf_chl_opt={cType: 'managed'};</script></body></html>";
+        var rig = Build(Unspaced, 0.5, Edge(HttpStatusCode.ServiceUnavailable, "text/html", challenge,
+            ("server", "cloudflare"), ("cf-ray", "8a1b2c3d4e5f6789-IAD")), Succeed);
+        var ex = await Assert.ThrowsAsync<{{ProjectName}}BlockedException>(() => rig.Http.GetAsync(Url));
+        Assert.Equal(1, rig.Site.Calls);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, ex.StatusCode);
+
+        // An HTML 503 from Cloudflare that is NOT a challenge is still the site
+        // being unavailable: waited out and retried like any 503.
+        var outage = Build(Unspaced, 0.5, Edge(HttpStatusCode.ServiceUnavailable, "text/html",
+            "<html><head><title>503 Service Temporarily Unavailable</title></head></html>", ("server", "cloudflare")), Succeed);
+        Assert.Equal(HttpStatusCode.OK, (await outage.Http.GetAsync(Url)).StatusCode);
+        Assert.Equal(2, outage.Site.Calls);
+    }
+
+    [Fact]
+    public async Task A_403_carrying_x_datadome_is_a_block_whatever_its_content_type()
+    {
+        var rig = Build(Unspaced, 0.5, Edge(HttpStatusCode.Forbidden, "application/json",
+            "{\"url\":\"https://geo.captcha-delivery.com/captcha/?initialCid=example&cid=example\"}",
+            ("x-datadome", "protected")), Succeed);
+        var ex = await Assert.ThrowsAsync<{{ProjectName}}BlockedException>(() => rig.Http.GetAsync(Url));
+        Assert.Equal(1, rig.Site.Calls);
+        Assert.Contains("captcha-delivery.com", ex.Message);
     }
 
     [Fact]

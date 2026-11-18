@@ -133,6 +133,8 @@ Describe "Codegen integration: emits test project" {
             'POST_is_never_retried_even_when_listed',
             'PUT_and_DELETE_are_retried_only_when_configured',
             'A_block_from_the_edge_is_never_retried',
+            'A_Cloudflare_challenge_served_as_a_503_is_a_block_and_is_never_retried',
+            'A_403_carrying_x_datadome_is_a_block_whatever_its_content_type',
             'PacingOptions_None_adds_no_wait',
             'The_client_sends_through_the_pacing_handler',
             'The_client_names_itself_and_sends_no_browser_fingerprint',
