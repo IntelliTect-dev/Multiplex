@@ -50,7 +50,9 @@ Describe "tests-templates directory exists" {
             "MockHandler.cs.tmpl",
             "PacingHandlerTests.cs.tmpl",
             "ToolSessionTests.cs.tmpl",
+            "ToolsTests.cs.tmpl",
             "pester/Mcp.Tests.ps1.tmpl",
+            "pester/McpStdio.ps1.tmpl",
             "pester/run-pester.ps1.tmpl"
         ) | Sort-Object
         $actual = @($manifest.templates | ForEach-Object { $_.file } | Sort-Object)
@@ -81,7 +83,7 @@ Describe "Token substitution leaves no markers" {
             Namespace       = "Example"
             TestProjectName = "ExampleEx.Tests"
             Facts           = "    // (facts injected by generator)"
-            ExpectedMethods = '        "GetExampleAsync"'
+            ExpectedTools   = '        @{ Name = "get_example"; Method = "GetExampleAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'
         }
         $manifest = Get-Content -Raw (Join-Path $script:TmplDir "manifest.json") | ConvertFrom-Json
         foreach ($entry in $manifest.templates) {
@@ -204,9 +206,33 @@ Describe "Codegen integration: emits test project" {
         $csproj | Should -Match 'PackageReference\s+Include="xunit\.runner\.visualstudio"\s+Version="\d'
         $csproj | Should -Match 'PackageReference\s+Include="Moq"\s+Version="\d'
     }
+    It "emits ToolsTests.cs with exactly one [Fact] per MCP tool" {
+        $toolsCs = Get-Content (Join-Path $script:Out "src/ExampleEx/ExampleExTools.Generated.cs") -Raw
+        $toolCount = ([regex]::Matches($toolsCs, "\[McpServerTool\(")).Count
+        $toolCount | Should -BeGreaterThan 0
+        $body = Get-Content (Join-Path $script:TestProjDir "ToolsTests.cs") -Raw
+        $body | Should -Not -Match '\{\{' -Because 'every token is substituted'
+        ([regex]::Matches($body, "\[Fact\]\s*[\r\n]+\s*public\s+async")).Count | Should -Be $toolCount
+        # Each fact calls the tool the way the server does: through the tool
+        # class, over a tool session.
+        $body | Should -Match 'await new ExampleExTools\(session\)\.GetUsersByIdAsync\(1\)'
+    }
     It "emits Pester scaffolds under tests/pester/" {
         Test-Path (Join-Path $script:TestProjDir "pester/Mcp.Tests.ps1") | Should -BeTrue
         Test-Path (Join-Path $script:TestProjDir "pester/run-pester.ps1") | Should -BeTrue
+        # The MCP stdio client the smoke suite dot-sources. Without it the suite
+        # cannot start the server at all.
+        Test-Path (Join-Path $script:TestProjDir "pester/McpStdio.ps1") | Should -BeTrue
+    }
+    It "Mcp.Tests.ps1 expects each tool by name, with the hints of its endpoint" {
+        $pester = Get-Content (Join-Path $script:TestProjDir "pester/Mcp.Tests.ps1") -Raw
+        $pester | Should -Not -Match '\{\{' -Because 'every token is substituted'
+        foreach ($line in @(
+            '@{ Name = "get_me"; Method = "GetMeAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }',
+            '@{ Name = "get_users_by_id"; Method = "GetUsersByIdAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }',
+            '@{ Name = "get_users_by_id_trips"; Method = "GetUsersByIdTripsAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }')) {
+            $pester | Should -Match ([regex]::Escape($line))
+        }
     }
     It "Mcp.Tests.ps1 references every generated method name" {
         $clientCs = Get-Content (Join-Path $script:Out "src/ExampleEx/ExampleExClient.Generated.cs") -Raw

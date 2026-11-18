@@ -1,0 +1,168 @@
+#Requires -Version 7.0
+
+# A minimal MCP client over stdio, for the smoke suite beside it.
+#
+# It starts a server, completes the initialize handshake, sends the requests it
+# is given, and hands back what the server actually wrote. It is here so the
+# smoke suite can ask a RUNNING server which tools it lists: reading the source
+# for attributes cannot tell a server that registers its tools from one that
+# registers none.
+#
+# The MCP stdio transport is one JSON-RPC message per line: requests on the
+# server's stdin, replies on its stdout, and nothing else on stdout. Logging
+# belongs on stderr. Every line the server writes to stdout is kept in
+# StdoutLines, so a caller can assert exactly that.
+
+function Invoke-McpStdioSession {
+    <#
+    .SYNOPSIS
+        Starts an MCP server over stdio, initializes it, sends each request in
+        order and returns the replies.
+    .PARAMETER FilePath
+        The program to start, e.g. 'dotnet'.
+    .PARAMETER ArgumentList
+        Its arguments, e.g. the path of the built server .dll.
+    .PARAMETER Request
+        The requests to send after the handshake, in order. Each is a hashtable
+        with a 'method' and, optionally, 'params'.
+    .PARAMETER TimeoutSeconds
+        How long the whole exchange may take. A server that does not answer
+        fails the call instead of hanging it.
+    .OUTPUTS
+        An object with Initialize (the handshake result), Responses (one reply
+        per request, in order), StdoutLines (every line the server wrote to
+        stdout), Stderr and ExitCode.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [hashtable[]]$Request = @(),
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60
+    )
+
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($FilePath)
+    foreach ($argument in $ArgumentList) { $startInfo.ArgumentList.Add($argument) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    # No byte-order mark: one in front of the first message is not JSON.
+    $startInfo.StandardInputEncoding = $utf8
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $stdoutLines = [System.Collections.Generic.List[string]]::new()
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    # The server logs to stderr. Read it as it comes, or a full pipe stops the
+    # server and the exchange below waits on a reply that is never written.
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    $send = {
+        param([hashtable]$Message)
+        $process.StandardInput.WriteLine(($Message | ConvertTo-Json -Depth 32 -Compress))
+        $process.StandardInput.Flush()
+    }
+
+    $receive = {
+        param([int]$Id)
+        while ($true) {
+            $remaining = $deadline - [DateTime]::UtcNow
+            $lineTask = $process.StandardOutput.ReadLineAsync()
+            if ($remaining -le [TimeSpan]::Zero -or -not $lineTask.Wait($remaining)) {
+                throw "The MCP server did not answer request $Id within $TimeoutSeconds s."
+            }
+            $line = $lineTask.Result
+            if ($null -eq $line) {
+                throw "The MCP server closed its output before answering request $Id."
+            }
+            $stdoutLines.Add($line)
+            try {
+                $message = $line | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw "The MCP server wrote a line to stdout that is not a JSON-RPC message: $line"
+            }
+            # Anything without this id is a notification or a server request;
+            # it stays in StdoutLines and the wait goes on.
+            $idProperty = $message.PSObject.Properties['id']
+            if ($null -ne $idProperty -and "$($idProperty.Value)" -eq "$Id") { return $message }
+        }
+    }
+
+    $resultOf = {
+        param($Message, [string]$Method)
+        $errorProperty = $Message.PSObject.Properties['error']
+        if ($null -ne $errorProperty) {
+            throw "The MCP server answered '$Method' with an error: $($errorProperty.Value | ConvertTo-Json -Depth 8 -Compress)"
+        }
+        return $Message.result
+    }
+
+    try {
+        try {
+            $nextId = 1
+            & $send @{
+                jsonrpc = '2.0'
+                id      = $nextId
+                method  = 'initialize'
+                params  = @{
+                    # A version to open with. The server answers with the one it
+                    # will speak, and that answer is returned, not assumed.
+                    protocolVersion = '2025-06-18'
+                    capabilities    = @{}
+                    clientInfo      = @{ name = 'mcp-stdio-smoke'; version = '1.0.0' }
+                }
+            }
+            $initialize = & $resultOf (& $receive $nextId) 'initialize'
+            & $send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
+
+            $responses = [System.Collections.Generic.List[object]]::new()
+            foreach ($item in $Request) {
+                $nextId++
+                $message = @{ jsonrpc = '2.0'; id = $nextId; method = $item.method }
+                if ($item.ContainsKey('params')) { $message.params = $item.params }
+                & $send $message
+                $responses.Add((& $resultOf (& $receive $nextId) $item.method))
+            }
+        }
+        catch {
+            # What the server logged is usually the reason. It is only read once
+            # the server has stopped, so stop it first.
+            if (-not $process.HasExited) { $process.Kill($true) }
+            $logged = if ($stderrTask.Wait(5000)) { $stderrTask.Result.Trim() } else { '' }
+            if ($logged) { throw "$($_.Exception.Message)`nThe server logged:`n$logged" }
+            throw
+        }
+
+        # Closing stdin is how a stdio client says goodbye: the server exits.
+        $process.StandardInput.Close()
+        $exited = $process.WaitForExit(15000)
+        if (-not $exited) { $process.Kill($true); $process.WaitForExit(5000) | Out-Null }
+        # Anything written between the last reply and the exit is still stdout.
+        $restTask = $process.StandardOutput.ReadToEndAsync()
+        if ($restTask.Wait(5000) -and $restTask.Result) {
+            foreach ($line in ($restTask.Result -split "`r?`n")) {
+                if ($line) { $stdoutLines.Add($line) }
+            }
+        }
+
+        [pscustomobject]@{
+            Initialize  = $initialize
+            Responses   = $responses.ToArray()
+            StdoutLines = $stdoutLines.ToArray()
+            Stderr      = if ($stderrTask.Wait(5000)) { $stderrTask.Result } else { '' }
+            ExitCode    = if ($exited) { $process.ExitCode } else { $null }
+        }
+    }
+    finally {
+        # This process, by the handle it was started with -- never by name.
+        if (-not $process.HasExited) {
+            try { $process.Kill($true) } catch { Write-Verbose "Could not stop the MCP server: $($_.Exception.Message)" }
+        }
+        $process.Dispose()
+    }
+}
