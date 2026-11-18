@@ -293,6 +293,43 @@ const DEEP_SCAN_MAX = 1024 * 1024;
 
 const marker = (re) => (ctx) => re.test(ctx.text);
 
+// How far before its literal a marker may open: the checkpoint's `<form` before
+// its action, DataDome's `var dd={` before its CAPTCHA host.
+const FORM_TAG_REACH = 2048;
+const DD_OBJECT_REACH = 4096;
+
+/**
+ * Does `literal` (lower case) occur in `text` with what `opens` accepts in the
+ * `reach` characters before it? `opens(before, next)` gets that stretch,
+ * lower-cased, and the character after the literal.
+ *
+ * FOUND BY ITS LITERAL FIRST. A regex that opens on `<form` and runs to the
+ * marker backtracks across the whole page when the page never closes the tag:
+ * an unclosed `<form ` repeated to 1 MB did not finish in five minutes, and the
+ * scan is synchronous, so it stalled ENTER, the stop command and the recording.
+ * Here a page without the literal is one plain search, and each occurrence costs
+ * at most `reach`.
+ */
+function precededBy(text, literal, reach, opens) {
+    const lower = text.toLowerCase();
+    for (let at = lower.indexOf(literal); at !== -1; at = lower.indexOf(literal, at + literal.length)) {
+        if (opens(lower.slice(Math.max(0, at - reach), at), lower.charAt(at + literal.length))) return true;
+    }
+    return false;
+}
+
+// A <form> tag still open -- no `>` since its `<form` -- whose action is the
+// checkpoint's validator.
+const checkpointForm = (page) => precededBy(page, '/checkpoint/validate', FORM_TAG_REACH, (before, next) => {
+    const open = before.lastIndexOf('<form');
+    return !/\w/.test(next) && open !== -1 &&
+        /^<form\b[^>]*\baction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?$/.test(before.slice(open));
+});
+
+// DataDome's `dd` object, still open -- no `}` since its `{` -- naming its CAPTCHA host.
+const ddObject = (text) => precededBy(text, 'captcha-delivery.com', DD_OBJECT_REACH,
+    (before) => /\bvar\s+dd\s*=\s*\{/.test(before.slice(before.lastIndexOf('}') + 1)));
+
 // Signatures of bot-protection INTERSTITIALS: pages that stand in for the one
 // asked for. Each tests for a marker ONLY the interstitial carries -- never the
 // vendor's script, a preconnect to its host, or wording an ordinary page can
@@ -319,7 +356,7 @@ const INTERSTITIALS = [
     { name: 'Cloudflare block', test: marker(
         /<title>\s*attention required! \| cloudflare\s*<\/title>|\bid\s*=\s*["']?cf-error-details\b/i) },
     // The block page hands its parameters to the CAPTCHA in a `dd` object.
-    { name: 'DataDome CAPTCHA', test: marker(/\bvar\s+dd\s*=\s*\{[^}]*captcha-delivery\.com/i) },
+    { name: 'DataDome CAPTCHA', test: (ctx) => ddObject(ctx.text) },
     { name: 'PerimeterX "Press & Hold"', test: marker(/\bid\s*=\s*["']?px-captcha\b/i) },
     // The block page is an iframe onto /_Incapsula_Resource?CWUDNSAI=..., with
     // the incident ID as its fallback text.
@@ -334,8 +371,7 @@ const INTERSTITIALS = [
     // never the URL: any site can have a /checkpoint/ path.
     { name: 'Amazon "Check the box to continue" checkpoint', deep: true, test: (ctx) => {
         const page = ctx.deep();
-        const form = /<form\b[^>]*\baction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?\/checkpoint\/validate\b/i.test(page);
-        return form && /check the box to continue|\bi am human\b/i.test(page);
+        return checkpointForm(page) && /check the box to continue|\bi am human\b/i.test(page);
     } }
 ];
 

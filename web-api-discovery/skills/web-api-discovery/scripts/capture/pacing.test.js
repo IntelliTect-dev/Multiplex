@@ -27,6 +27,9 @@
 //   C8  a block delivered to an XHR is seen whatever its content type:
 //       Akamai's encoded page, DataDome's and PerimeterX's JSON -- but the
 //       x-datadome header alone, on every response of a DataDome site, is not one
+//   C9  a page built to make a signature backtrack (an unclosed <form or
+//       `var dd={` repeated) is judged in bounded time, not minutes
+//   C10 a signature's marker must sit near where it opens (the bound C9 rests on)
 //   M1  a throttle pauses for Retry-After, a burst is one episode
 //   M2  a throttle that persists hands over
 //   M3  throttling through a pause hands over (the agent case)
@@ -522,6 +525,61 @@ test('C8: a block delivered to an XHR is seen, whatever its content type', () =>
     null, 'a tracker\'s refusal is not the site\'s');
     assert.strictEqual(xhr({ status: 200, mimeType: 'application/json',
         body: '{"url":"https://geo.captcha-delivery.com/captcha/?x"}' }), null, 'a 200 is not a refusal');
+});
+
+test('C9: a page built to make a signature backtrack is judged in bounded time', () => {
+    // The scan is synchronous: a page that stalls it stalls ENTER, the stop
+    // command and the recording. Run in a child with a kill timeout, so a
+    // stall fails this test rather than hanging the suite.
+    const { spawnSync } = require('child_process');
+    const child = `
+        const pacing = require(process.argv[1]);
+        const MB = 1024 * 1024;
+        const fill = (unit, bytes, tail = '') => unit.repeat(Math.ceil(bytes / unit.length)).slice(0, bytes - tail.length) + tail;
+        const page = { url: 'https://www.example.com/', onSite: true, isDocument: true, status: 200, mimeType: 'text/html', headers: {} };
+        // [what, response, the most of its body a signature reads]
+        const cases = [
+            ['an unclosed <form repeated to 1 MB', { body: fill('<form ', MB) }, MB],
+            ['the same, ending in the checkpoint action and its wording',
+                { body: fill('<form ', MB, '/checkpoint/validate I am human') }, MB],
+            ['an unclosed var dd={ repeated to 64 KB, refused', { status: 403, body: fill('var dd={', 64 * 1024) },
+                pacing.CHALLENGE_BODY_MAX],
+            ['the same, closed just before the CAPTCHA host',
+                { status: 403, body: fill('var dd={', 64 * 1024, '}captcha-delivery.com') }, pacing.CHALLENGE_BODY_MAX]
+        ];
+        const out = [];
+        for (const [what, over, read] of cases) {
+            const r = Object.assign({}, page, over);
+            const started = Date.now();
+            const signal = pacing.classifyResponse(r);
+            out.push({ what, ms: Date.now() - started, inside: Buffer.byteLength(r.body) <= read, signal });
+        }
+        process.stdout.write(JSON.stringify(out));`;
+    const run = spawnSync(process.execPath, ['-e', child, path.join(__dirname, 'pacing.js')],
+        { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    assert.strictEqual(run.status, 0, `the classifier did not finish within 20 s (${run.signal || run.stderr})`);
+    for (const { what, ms, inside, signal } of JSON.parse(run.stdout)) {
+        assert.ok(inside, `${what}: inside what is read, so the signature runs on all of it`);
+        assert.strictEqual(signal, null, `${what} is no interstitial: ${JSON.stringify(signal)}`);
+        assert.ok(ms < 2000, `${what} took ${ms} ms`);
+    }
+});
+
+test('C10: a signature\'s marker must sit near where it opens', () => {
+    // What keeps C9 bounded, pinned: the checkpoint form's action within
+    // 2 KB of its <form, and DataDome's CAPTCHA host within 4 KB of `var dd={`.
+    const doc = (body, over) => pacing.classifyResponse(onSite(Object.assign(
+        { url: 'https://www.amazon.com/s?k=usb+hub', status: 200, isDocument: true, mimeType: 'text/html', body }, over)));
+    const form = (gap) => '<html><body><h4>Check the box to continue.</h4><form method="POST" ' +
+        `data-pad="${'y'.repeat(gap)}" action="/checkpoint/validate" id="checkpointForm">` +
+        '<input type="checkbox" id="continueCheck"><span>I am human</span></form></body></html>';
+    assert.strictEqual(doc(form(100)).kind, 'challenge', 'a form tag of ordinary length');
+    assert.strictEqual(doc(form(3000)), null, 'an action 3 KB into the form tag is past the reach');
+    const dd = (gap) => '<html><body><script>var dd={\'rt\':\'c\',\'cid\':\'AHrlqAAAAAMAexample\',' +
+        `'pad':'${'y'.repeat(gap)}','host':'geo.captcha-delivery.com'}</script></body></html>`;
+    assert.strictEqual(doc(dd(100), { status: 403, isDocument: false }).kind, 'blocked', 'DataDome\'s object of ordinary length');
+    assert.strictEqual(doc(dd(5000), { status: 403, isDocument: false }), null,
+        'the CAPTCHA host 5 KB into the object is past the reach');
 });
 
 test('C4: only the site counts -- a tracker\'s 429 on another host is ignored', () => {
