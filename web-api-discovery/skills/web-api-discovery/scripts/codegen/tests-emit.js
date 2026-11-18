@@ -23,7 +23,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { pascalCase } = require('./generate-wrapper-helpers.js');
-const { listTools } = require('./mcp-tools-emit.js');
+const { listTools, listLeftOut, toolNameFor } = require('./mcp-tools-emit.js');
 
 const IGNORED_PATH_PREFIXES = new Set(['api', 'v1', 'v2', 'v3', 'rest', 'graphql']);
 
@@ -223,7 +223,19 @@ function emitTestScaffold(args) {
     // server and compares them with what it answers to tools/list.
     const expectedTools = tools.map(expectedToolLine).join('\n');
 
-    const mcpTokens = Object.assign({}, baseTokens, { ExpectedTools: expectedTools });
+    // And the names the left-out endpoints' tools WOULD have had, none of which
+    // the server may list: the smoke test lets a hand-written tool stand beside
+    // the generated ones, so without these a sign-in tool coming back through a
+    // generator regression would pass it. (A name a real tool has is not one.)
+    const listed = new Set(tools.map((t) => t.name));
+    const leftOutTools = listLeftOut({ patterns, methodNameFor })
+        .map((o) => ({ name: toolNameFor(o.methodName), methodName: o.methodName }))
+        .filter((o) => !listed.has(o.name))
+        .map((o) => '        @{ Name = "' + o.name + '"; Method = "' + o.methodName + '" }')
+        .sort()
+        .join('\n');
+
+    const mcpTokens = Object.assign({}, baseTokens, { ExpectedTools: expectedTools, LeftOutTools: leftOutTools });
     const mcpTmpl = fs.readFileSync(path.join(tmplDir, 'pester', 'Mcp.Tests.ps1.tmpl'), 'utf8');
     fs.writeFileSync(path.join(pesterDir, 'Mcp.Tests.ps1'), substitute(mcpTmpl, mcpTokens));
     // The MCP stdio client Mcp.Tests.ps1 starts the server with. It sits beside

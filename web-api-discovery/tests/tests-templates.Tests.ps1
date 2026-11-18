@@ -84,6 +84,7 @@ Describe "Token substitution leaves no markers" {
             TestProjectName = "ExampleEx.Tests"
             Facts           = "    // (facts injected by generator)"
             ExpectedTools   = '        @{ Name = "get_example"; Method = "GetExampleAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'
+            LeftOutTools    = '        @{ Name = "create_login"; Method = "CreateLoginAsync" }'
         }
         $manifest = Get-Content -Raw (Join-Path $script:TmplDir "manifest.json") | ConvertFrom-Json
         foreach ($entry in $manifest.templates) {

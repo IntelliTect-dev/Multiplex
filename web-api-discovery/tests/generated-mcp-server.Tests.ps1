@@ -494,6 +494,43 @@ Describe 'endpoints a model is not offered' -Skip:$script:NoDotnet {
         $script:LeftSection | Should -Match ([regex]::Escape("$($script:Left.Name)Tools.Mine.cs"))
     }
 
+    Context 'the wrapper''s own smoke test knows what was left out' {
+        # The smoke test checks every generated tool is listed and lets a tool
+        # written by hand stand beside them. Left there, a generator regression
+        # that brought a sign-in tool back would pass it. So the names the
+        # left-out endpoints' tools WOULD have are baked in too, and none of
+        # them may be listed.
+        It 'bakes in the would-be tool name of each endpoint left out' {
+            $smoke = Get-Content -LiteralPath $script:Left.Smoke -Raw
+            foreach ($line in @(
+                '@{ Name = "get_auth_session"; Method = "GetAuthSessionAsync" }'
+                '@{ Name = "create_login"; Method = "CreateLoginAsync" }'
+                '@{ Name = "create_refresh_token"; Method = "CreateRefreshTokenAsync" }'
+                '@{ Name = "options_payments_send"; Method = "OptionsPaymentsSendAsync" }'
+                '@{ Name = "head_reports"; Method = "HeadReportsAsync" }'
+                '@{ Name = "get_reports_by_id_download"; Method = "GetReportsByIdDownloadAsync" }')) {
+                $smoke | Should -Match ([regex]::Escape($line))
+            }
+        }
+        It 'FALSIFIER: a tool under a left-out endpoint''s name fails that case, and no other' {
+            # What a regression in the filter would produce: create_login, listed.
+            # Made here from the README's example, renamed, in a copy of the wrapper.
+            $copy = Copy-GeneratedWrapper -Wrapper $script:Left
+            try {
+                $example = [regex]::Match($script:LeftSection, '(?ms)^```csharp\r?\n(// src/[^\r\n]*Tools\.Mine\.cs.*?)^```').Groups[1].Value
+                $signIn = $example.Replace('Name = "my_tool"', 'Name = "create_login"')
+                $signIn | Should -Not -Be $example -Because 'the falsifier must actually rename the tool'
+                Set-Content -LiteralPath (Join-Path $copy.Out "src/$($copy.Name)/$($copy.Name)Tools.Mine.cs") -Value $signIn -NoNewline
+
+                $result = Invoke-EmittedSmoke -Wrapper $copy
+
+                ($result.FailedNames -join ' | ') | Should -Be 'lists no tool for an endpoint the generator left out'
+                $result.PassedNames | Should -Contain 'lists every tool the generator made'
+            }
+            finally { Remove-GeneratedWrapper $copy }
+        }
+    }
+
     Context 'a tool written by hand, as the README says' {
         # The README's own example, taken from the README: if it does not
         # compile, or its tool does not appear, the way out it describes is not
