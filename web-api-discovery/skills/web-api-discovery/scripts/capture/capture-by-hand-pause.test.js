@@ -69,7 +69,12 @@ test('J1: without -AI it is a person\'s capture -- a throttle or a check is advi
             const playwright = require(resolved.path);
             browser = await playwright.chromium.connectOverCDP(session.cdpEndpoint);
             const context = browser.contexts()[0];
-            const page = context.pages().find((p) => p.url().startsWith(uri)) || context.pages()[0];
+            // THE CAPTURE'S OWN TAB, on this test's fixture -- never "whatever
+            // page is first": a browser left over from another run on the same
+            // endpoint would answer from a site this test is not watching.
+            let page = null;
+            assert.ok(await waitFor(() => (page = context.pages().find((p) => p.url().startsWith(uri))), 30000),
+                `no tab on ${uri} at ${session.cdpEndpoint}: ${context.pages().map((p) => p.url()).join(', ')}`);
             await page.waitForSelector('#limited', { timeout: 30000 });
             const fetchLimited = () => page.evaluate(() => fetch('/api/limited?q=by-hand').then((r) => r.status));
 
@@ -77,6 +82,7 @@ test('J1: without -AI it is a person\'s capture -- a throttle or a check is advi
             // in (its line is out, plus a beat, as in I3), the person's next
             // request. Held, it would not reach the site until the 3 s were up.
             assert.strictEqual(await fetchLimited(), 429);
+            assert.strictEqual(limitedHits.length, 1, 'the 429 came from this test\'s own fixture');
             assert.ok(await waitFor(() => /Wait at least 3 s|Paused until/.test(recorderErr), 30000),
                 `the recorder never said anything about the 429:\n${recorderErr}`);
             await new Promise((r) => setTimeout(r, 300));
