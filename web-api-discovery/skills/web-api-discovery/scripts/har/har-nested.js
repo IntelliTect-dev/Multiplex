@@ -106,6 +106,19 @@ function looksFormEncoded(text) {
         && /^[^=&\s]+=/.test(text);
 }
 
+/**
+ * Does `transformNested` read this string as a layer with NAMES of its own --
+ * a form body (its branch 1) or a JSON document (its branch 2)?
+ *
+ * Asked by a caller that is about to pass blind text over the same string and
+ * needs to know whether some of that text is structure the walk will keep:
+ * parameter names, object keys (issue #66). The walk's own two predicates, in
+ * its own order, so the answer cannot drift from what the walk then does.
+ */
+function isNamedLayer(text) {
+    return looksFormEncoded(text) || decodeNestedJson(text) !== null;
+}
+
 /** A string that is ONE percent-encoded payload rather than `k=v` pairs. */
 function looksWhollyEncoded(text) {
     return typeof text === 'string'
@@ -287,5 +300,6 @@ function looksWhollyEncodedJson(text) {
 module.exports = {
     MAX_DEPTH,
     looksFormEncoded,
+    isNamedLayer,
     transformNested,
 };
