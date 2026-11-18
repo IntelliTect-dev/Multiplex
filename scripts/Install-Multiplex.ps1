@@ -1,4 +1,5 @@
 #Requires -Version 7.2
+
 <#
 .SYNOPSIS
     Installs Multiplex on this PC so Claude and ChatGPT (including on a phone) can connect to it.
@@ -17,6 +18,8 @@
     Adding the connector inside Claude or ChatGPT is a step in their apps; the script prints
     the address to paste. No TripIt account is named here: each connector added is its own
     connection, bound to the TripIt account signed in while it is added, behind the passcode.
+.NOTES
+    -AllowedAccount was removed in #52; re-run the installer without it.
 .EXAMPLE
     ./scripts/Install-Multiplex.ps1 -Tunnel Tailscale
 .EXAMPLE

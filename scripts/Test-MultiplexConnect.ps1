@@ -5,9 +5,11 @@
     and calls a tool: discovery from the 401, client registration, PKCE authorization through
     the connect pages, token exchange, MCP initialize, tools/list, a tool call, refresh.
 .DESCRIPTION
-    For unattended checks of an install. The connect pages need the owner passcode and an
-    account the server already holds a signed-in session for (the "Continue as" choice);
-    this script never signs in to the site itself. Exit code 0 when every step passes.
+    For checks of an install. This script never signs in to the site itself, and since #52
+    every connection must: the passcode leads straight to the live sign-in, and no account the
+    server holds is offered. So the authorize step now stops there with a message saying so;
+    the steps before it still check discovery, registration and the passcode. Exit code 0 when
+    every step passes.
     The passcode comes from $env:MULTIPLEX_PASSCODE unless -Passcode is given; prefer the
     variable, which keeps it out of process lists and shell history.
 .EXAMPLE
@@ -98,13 +100,13 @@ $query = @(@{
 }.GetEnumerator() | ForEach-Object { "$($_.Key)=$([Uri]::EscapeDataString($_.Value))" }) -join '&'
 $authorizeUrl = "$($as.authorization_endpoint)?$query"
 
-$code = Step 'authorize through the connect pages (passcode, then continue as the signed-in account)' {
+$code = Step 'authorize through the connect pages (passcode, then the live sign-in)' {
     # A browser-like client that does not follow redirects, so each hop can be inspected.
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $handler.AllowAutoRedirect = $false
     $handler.CookieContainer = [System.Net.CookieContainer]::new()
     $browser = [System.Net.Http.HttpClient]::new($handler)
-    $browser.Timeout = [TimeSpan]::FromSeconds(90)   # "Continue as" re-checks the TripIt session
+    $browser.Timeout = [TimeSpan]::FromSeconds(90)
     $url = $authorizeUrl
     $form = $null
     for ($hop = 0; $hop -lt 12; $hop++) {
@@ -135,18 +137,15 @@ $code = Step 'authorize through the connect pages (passcode, then continue as th
         $html = "$($r.Content)"
         # A page that hands the browser back via script (e.g. after the live page completes).
         if ($html -match [regex]::Escape($redirectUri) + '[^"''<\s]*') { $url = [System.Net.WebUtility]::HtmlDecode($Matches[0]); continue }
-        $forms = @(Get-Forms $html)
-        $gate = $forms | Where-Object { $_.Fields.Keys -match '(?i)passcode' } | Select-Object -First 1
-        $continue = $forms | Where-Object { $_.Html -match '(?i)continue as' } | Select-Object -First 1
-        $picked = $gate ?? $continue
-        if (-not $picked) { throw "HTTP $($r.StatusCode) at $url with no passcode or 'Continue as' form" }
-        if ($gate) { $key = @($gate.Fields.Keys | Where-Object { $_ -match '(?i)passcode' })[0]; $gate.Fields[$key] = $Passcode }
-        if ($continue -and -not $gate) {
-            # Include the clicked button's name/value when the form identifies the account that way.
-            foreach ($b in [regex]::Matches($continue.Html, '(?is)<button\b[^>]*\bname\s*=\s*"(?<n>[^"]+)"[^>]*\bvalue\s*=\s*"(?<v>[^"]*)"')) { $continue.Fields[$b.Groups['n'].Value] = [System.Net.WebUtility]::HtmlDecode($b.Groups['v'].Value); break }
+        if (([Uri]$url).AbsolutePath -match '/live$') {
+            throw "the passcode was accepted and the live sign-in started; every connection signs in to the site itself (#52), which this script cannot do"
         }
-        $url = Resolve-Url $url $picked.Action
-        $form = $picked.Fields
+        $gate = @(Get-Forms $html) | Where-Object { $_.Fields.Keys -match '(?i)passcode' } | Select-Object -First 1
+        if (-not $gate) { throw "HTTP $($r.StatusCode) at $url with no passcode form" }
+        $key = @($gate.Fields.Keys | Where-Object { $_ -match '(?i)passcode' })[0]
+        $gate.Fields[$key] = $Passcode
+        $url = Resolve-Url $url $gate.Action
+        $form = $gate.Fields
     }
     throw 'too many hops'
 }
