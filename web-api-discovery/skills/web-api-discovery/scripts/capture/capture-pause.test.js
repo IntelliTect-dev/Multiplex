@@ -3,8 +3,11 @@
 // holds the site's requests, and it carries on by itself. Zero-dep; runs with
 // `node capture-pause.test.js`.
 //
-// Nothing here waits on a clock or a browser: the hold is driven through fake
-// routes, and the pause through an injected clock and timer.
+// The H and P cases do not wait on a clock or a browser: the hold is driven
+// through fake routes, and the pause through an injected clock and timer. The
+// fake context removes a route the way Playwright does -- whatever is still in
+// the handler is CONTINUED -- so an ordering that would send a held request
+// fails here too. E1 proves the same against a real browser.
 //
 // FALSIFIERS (fail before this change, pass after):
 //   H1  during a pause the site's requests are HELD -- not continued -- and go
@@ -13,9 +16,21 @@
 //       route is installed AT the pause, and removed after it (interception
 //       disables the browser cache, so it is never left in place)
 //   H3  a request that is not the site's (a tracker) goes straight through
-//   H4  a hand-over or an ending DROPS what is held: aborted, never sent
+//   H4  a hand-over or an ending DROPS what is held: aborted, never sent --
+//       the route is removed only after every held request was aborted, and
+//       one still being judged when the drop came is aborted too
 //   H5  a predicate that throws holds: when in doubt, the site is not sent it
 //   H6  a hold that cannot be installed is said, not swallowed
+//   H7  when a pause ends, what it held goes on ONE AT A TIME, spaced like any
+//       other action -- not all at once onto a site that just asked for a
+//       slowdown; a hand-over during that drain aborts the rest, and a new
+//       pause holds the rest again until it ends
+//   H8  a pause holds at most a modest number of requests: beyond it, a
+//       request is aborted at once (the site never sees it), and that is said
+//       once per pause, not once per request
+//   E1  in a REAL browser: a hand-over or an ending aborts the held request --
+//       the page sees a failed fetch, the site sees nothing; and a pause that
+//       runs out sends it
 //   P1  a pause ends by itself when its time is up -- the timer resumes it,
 //       releases the hold and the pacer, and records how long it lasted
 //   P2  a longer wait named during a pause extends it, and the timer moves
@@ -27,6 +42,7 @@
 'use strict';
 
 const assert = require('assert');
+const http = require('http');
 const path = require('path');
 
 const { createSiteHold, createCapturePause, pauseSummaryText } = require(path.join(__dirname, 'capture-pause.js'));
@@ -37,27 +53,56 @@ function test(name, fn) { queued.push({ name, fn }); }
 
 const tick = () => new Promise((r) => setImmediate(r));
 
-/** A Playwright-shaped route that records what was done to it. */
+/**
+ * A Playwright-shaped route that records what was done to it. Like
+ * Playwright's, it can be handled ONCE: a second continue or abort rejects.
+ */
 function fakeRoute(url, log) {
     const request = { url: () => url };
-    return {
+    const route = {
+        handled: false,
         request: () => request,
-        continue: async () => { log.push(`continue ${url}`); },
-        abort: async (code) => { log.push(`abort ${url} ${code}`); }
+        continue: async () => {
+            if (route.handled) throw new Error('Route is already handled!');
+            route.handled = true;
+            log.push(`continue ${url}`);
+        },
+        abort: async (code) => {
+            if (route.handled) throw new Error('Route is already handled!');
+            route.handled = true;
+            log.push(`abort ${url} ${code}`);
+        }
     };
+    return route;
 }
 
-/** A context whose route/unroute record the handler, so a test can push requests through it. */
+/**
+ * A context whose route/unroute record the handler, so a test can push
+ * requests through it. UNROUTE BEHAVES AS PLAYWRIGHT'S DOES: a request whose
+ * handler has not yet continued or aborted it is CONTINUED -- sent to the site
+ * -- when its route is removed. A hold that unroutes before its aborts land
+ * sends what it promised to drop, and that shows here as a `continue`.
+ */
 function fakeContext() {
-    const ctx = { handler: null, installs: 0, uninstalls: 0 };
+    const ctx = { handler: null, installs: 0, uninstalls: 0, routed: new Set() };
     ctx.install = async (h) => { ctx.handler = h; ctx.installs++; };
-    ctx.uninstall = async (h) => { if (ctx.handler === h) ctx.handler = null; ctx.uninstalls++; };
+    ctx.uninstall = async (h) => {
+        if (ctx.handler === h) ctx.handler = null;
+        ctx.uninstalls++;
+        for (const route of ctx.routed) {
+            ctx.routed.delete(route);
+            if (!route.handled) await route.continue();
+        }
+    };
     /** What the browser does with a new request: routed if a route is installed, else sent. */
     ctx.request = (url, log) => {
         const route = fakeRoute(url, log);
-        if (ctx.handler) return ctx.handler(route);
-        log.push(`sent ${url}`);
-        return Promise.resolve();
+        if (!ctx.handler) {
+            log.push(`sent ${url}`);
+            return Promise.resolve();
+        }
+        ctx.routed.add(route);
+        return Promise.resolve(ctx.handler(route)).finally(() => ctx.routed.delete(route));
     };
     return ctx;
 }
@@ -141,8 +186,27 @@ test('H4: a hand-over or an ending drops what is held -- aborted, never sent', a
     await tick();
     await hold.drop();
     await p;
-    assert.deepStrictEqual(log, ['abort https://www.example.com/queued-by-the-agent blockedbyclient']);
+    assert.deepStrictEqual(log, ['abort https://www.example.com/queued-by-the-agent blockedbyclient'],
+        'aborted BEFORE the route was removed -- removing it first would have sent it');
     assert.strictEqual(hold.active(), false);
+    assert.strictEqual(ctx.uninstalls, 1, 'and the route is removed once the abort has landed');
+
+    // A request still being JUDGED (the predicate is async) when the drop comes
+    // is aborted too, not sent by the route being removed under it.
+    const slow = fakeContext();
+    let judge;
+    const judged = new Promise((r) => { judge = r; });
+    const hold2 = createSiteHold({ install: slow.install, uninstall: slow.uninstall, holds: () => judged });
+    const log2 = [];
+    await hold2.start();
+    const q = slow.request('https://www.example.com/being-judged', log2);
+    await tick();
+    const dropped = hold2.drop();
+    await tick();
+    judge(true);
+    await dropped;
+    await q;
+    assert.deepStrictEqual(log2, ['abort https://www.example.com/being-judged blockedbyclient']);
 });
 
 test('H5: a predicate that throws holds the request', async () => {
@@ -175,6 +239,90 @@ test('H6: a hold that cannot be installed is SAID, not swallowed', async () => {
     await hold.start();
     await hold.settled();
     assert.strictEqual(said.length, 2, 'a later pause tries to install it again');
+});
+
+/** A spacing function whose gaps the test releases one by one. */
+function manualSpacing() {
+    const gaps = [];
+    const space = () => new Promise((resolve) => gaps.push(resolve));
+    return { space, gaps, next: async () => { await tick(); gaps.shift()(); await tick(); await tick(); } };
+}
+
+test('H7: what a pause held goes on one at a time, spaced -- a hand-over mid-drain aborts the rest', async () => {
+    const ctx = fakeContext();
+    const spacing = manualSpacing();
+    const hold = createSiteHold({ install: ctx.install, uninstall: ctx.uninstall, holds: () => true, space: spacing.space });
+    const log = [];
+    await hold.start();
+    const sent = ['a', 'b', 'c', 'd'].map((n) => ctx.request(`https://www.example.com/${n}`, log));
+    await tick();
+    assert.strictEqual(hold.heldCount(), 4);
+    const released = hold.release();
+    await tick();
+    assert.deepStrictEqual(log, [], 'nothing goes before its gap: not a burst onto a site that just asked for a slowdown');
+    await spacing.next();
+    assert.deepStrictEqual(log, ['continue https://www.example.com/a'], 'the first, after one gap');
+    await spacing.next();
+    assert.deepStrictEqual(log.slice(1), ['continue https://www.example.com/b'], 'then the next, after another');
+    assert.strictEqual(ctx.uninstalls, 0, 'the route stays until the drain is over -- removing it would send the rest at once');
+    // A person takes over mid-drain: what has not gone yet is aborted, at once.
+    await hold.drop();
+    await released;
+    await Promise.all(sent);
+    assert.deepStrictEqual(log.slice(2), ['abort https://www.example.com/c blockedbyclient',
+        'abort https://www.example.com/d blockedbyclient']);
+    assert.strictEqual(ctx.uninstalls, 1);
+
+    // A NEW PAUSE mid-drain holds the rest again, until IT ends.
+    const ctx2 = fakeContext();
+    const spacing2 = manualSpacing();
+    const hold2 = createSiteHold({ install: ctx2.install, uninstall: ctx2.uninstall, holds: () => true, space: spacing2.space });
+    const log2 = [];
+    await hold2.start();
+    const sent2 = ['x', 'y'].map((n) => ctx2.request(`https://www.example.com/${n}`, log2));
+    await tick();
+    hold2.release();
+    await spacing2.next();
+    assert.deepStrictEqual(log2, ['continue https://www.example.com/x']);
+    hold2.start();                      // x drew another 429: a second pause
+    await spacing2.next();
+    assert.deepStrictEqual(log2, ['continue https://www.example.com/x'], 'y is held again by the second pause');
+    assert.strictEqual(ctx2.uninstalls, 0, 'and the second pause keeps the route');
+    const done2 = hold2.release();
+    await spacing2.next();
+    await done2;
+    await Promise.all(sent2);
+    assert.deepStrictEqual(log2, ['continue https://www.example.com/x', 'continue https://www.example.com/y']);
+    assert.strictEqual(ctx2.uninstalls, 1);
+});
+
+test('H8: a pause holds at most a modest number; beyond it a request is aborted, and that is said once', async () => {
+    const ctx = fakeContext();
+    const said = [];
+    const hold = createSiteHold({ install: ctx.install, uninstall: ctx.uninstall, holds: () => true, max: 3,
+        onOverflow: (max) => said.push(max) });
+    const log = [];
+    await hold.start();
+    const sent = [1, 2, 3, 4, 5].map((n) => ctx.request(`https://www.example.com/poll?n=${n}`, log));
+    await tick();
+    await tick();
+    assert.strictEqual(hold.heldCount(), 3, 'no more than the cap is held');
+    assert.deepStrictEqual(log, ['abort https://www.example.com/poll?n=4 blockedbyclient',
+        'abort https://www.example.com/poll?n=5 blockedbyclient'], 'the rest never reach the site');
+    assert.deepStrictEqual(said, [3], 'said once for the pause, not once per request');
+    assert.strictEqual(hold.overflowed(), 2);
+    await hold.release();
+    await Promise.all(sent);
+    assert.deepStrictEqual(log.slice(2), [1, 2, 3].map((n) => `continue https://www.example.com/poll?n=${n}`));
+    // The next pause says it again if it overflows again.
+    await hold.start();
+    const more = [6, 7, 8, 9].map((n) => ctx.request(`https://www.example.com/poll?n=${n}`, log));
+    await tick();
+    await tick();
+    assert.deepStrictEqual(said, [3, 3]);
+    await hold.drop();
+    await Promise.all(more);
+    assert.strictEqual(hold.heldCount(), 0, 'and a drop empties it');
 });
 
 // ---------------------------------------------------------------------------
@@ -284,6 +432,98 @@ test('P4: no query string in the record, and the summary counts pauses, hand-ove
     assert.strictEqual(pauseSummaryText({ count: 0, handOvers: 0, totalMs: 0 }), null);
 });
 
+// ---------------------------------------------------------------------------
+// E1 -- a real browser
+// ---------------------------------------------------------------------------
+
+const skipped = [];
+
+function integrationRequired(ciValue) {
+    if (ciValue === undefined || ciValue === null) return false;
+    const value = String(ciValue).trim();
+    return !!value && value.toLowerCase() !== 'false';
+}
+
+/** Playwright and a Chrome to drive, or why not (as mirror.test.js finds them). */
+function browserBlocker() {
+    const capture = require(path.join(__dirname, 'capture-har.js'));
+    const env = Object.assign({}, process.env,
+        { NODE_PATH: process.env.HAR_CAPTURE_TEST_NODE_PATH || process.env.NODE_PATH || '' });
+    const resolved = capture.resolvePlaywright({ cwd: process.cwd(), env });
+    if (!resolved.found) return { why: 'the playwright module is not installed' };
+    const chrome = capture.findChromeExecutable();
+    if (!chrome.path) return { why: 'Google Chrome is not installed' };
+    return { playwright: require(resolved.path), chrome: chrome.path };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function waitUntil(predicate, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await sleep(25);
+    }
+    return false;
+}
+
+test('E1: in a real browser, a dropped hold ABORTS the held request -- the site never sees it', async () => {
+    // The fake context above removes a route as Playwright does. This is the
+    // same against the real thing: Playwright 'route'/'unroute' on a real
+    // context, as capture-har.js installs them, and a local site as witness.
+    const found = browserBlocker();
+    if (found.why) {
+        if (integrationRequired(process.env.CI)) throw new Error(`E1 cannot run: ${found.why} -- in CI that is a failure`);
+        skipped.push(`E1 (${found.why})`);
+        return;
+    }
+    const hits = [];
+    const server = http.createServer((req, res) => {
+        if (req.url.startsWith('/held')) hits.push(req.url);
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html><body>the site</body></html>');
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    // Headless, in a test only: the product never launches this browser.
+    const browser = await found.playwright.chromium.launch({ executablePath: found.chrome, headless: true });
+    try {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        await page.goto(origin + '/');
+        const hold = createSiteHold({
+            install: (h) => context.route('**/*', h),
+            uninstall: (h) => context.unroute('**/*', h),
+            holds: (request) => request.url().startsWith(origin)
+        });
+        const fetchFromPage = (what) => page.evaluate((u) => fetch(u, { cache: 'no-store' })
+            .then((r) => `fetched ${r.status}`, (e) => `failed: ${e.message}`), what);
+
+        // A HAND-OVER (or an ending) drops what is held.
+        await hold.start();
+        const dropped = fetchFromPage('/held?by=the-agent');
+        assert.ok(await waitUntil(() => hold.heldCount() === 1, 15000), 'the request is held in the browser');
+        await hold.drop();
+        await hold.settled();
+        assert.match(await dropped, /^failed/, 'the page sees the request fail');
+        await sleep(500);
+        assert.deepStrictEqual(hits, [], 'and the site never sees it');
+
+        // A PAUSE THAT RUNS OUT sends it.
+        await hold.start();
+        const released = fetchFromPage('/held?by=the-page');
+        assert.ok(await waitUntil(() => hold.heldCount() === 1, 15000));
+        assert.deepStrictEqual(hits, [], 'held, not sent');
+        await hold.release();
+        await hold.settled();
+        assert.strictEqual(await released, 'fetched 200');
+        assert.deepStrictEqual(hits, ['/held?by=the-page']);
+    } finally {
+        await browser.close();
+        server.close();
+    }
+});
+
 (async () => {
     let passed = 0;
     const failures = [];
@@ -299,5 +539,6 @@ test('P4: no query string in the record, and the summary counts pauses, hand-ove
             failures.map((f) => `  - ${f}\n`).join(''));
         process.exit(1);
     }
-    console.log(`All capture-pause tests passed (${passed})`);
+    console.log(`All capture-pause tests passed (${passed})` + (skipped.length ? ` -- SKIPPED: ${skipped.join(', ')}` : ''));
+    process.exit(0);
 })();

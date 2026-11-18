@@ -7,7 +7,8 @@
  * over). This file makes the decision TRUE in the browser and keeps the record:
  *
  *   createSiteHold      while a pause runs, this capture's requests to the
- *                       site WAIT in the browser and go on when it ends.
+ *                       site WAIT in the browser and go on, one at a time and
+ *                       spaced like any other action, when it ends.
  *                       Enforced at the browser, not by trusting whatever is
  *                       driving: an agent told to wait that clicks anyway
  *                       clicks into a request that does not leave.
@@ -27,9 +28,13 @@
  *     place: request interception disables the browser's HTTP cache, and in
  *     native or attached mode the context is the operator's whole browser.
  *   - A HAND-OVER DROPS IT. The person answering a check needs the site; what
- *     automation queued during the pause is aborted rather than sent.
+ *     automation queued during the pause is aborted rather than sent -- and
+ *     aborted BEFORE the route is removed, because removing it continues
+ *     whatever is still held.
  *   - Every ending drops it too: a recording that ends mid-pause sends
  *     nothing the site asked to wait for.
+ *   - It is BOUNDED: one pause holds at most HOLD_MAX requests, and aborts the
+ *     rest, so a page polling through a long wait is not a flood afterwards.
  *
  * THE BOUNDARY (SKILL.md, "Pacing, throttling, and where the line is") is
  * unchanged by any of this: a pause honours what the site asked; nothing here
@@ -44,11 +49,15 @@
 
 const pacing = require('./pacing.js');
 
-function deferred() {
-    let resolve;
-    const promise = new Promise((r) => { resolve = r; });
-    return { promise, resolve };
-}
+/**
+ * THE MOST REQUESTS ONE PAUSE HOLDS. A page that polls every few seconds
+ * through a fifteen-minute backoff, or a day-long Retry-After, would otherwise
+ * queue hundreds or thousands. Past this, a request is ABORTED at once rather
+ * than held: the site never sees it either way, and a page that needs it asks
+ * again. Held requests are released one at a time, so this also bounds how
+ * long that takes.
+ */
+const HOLD_MAX = 20;
 
 /**
  * The browser-level hold.
@@ -59,46 +68,110 @@ function deferred() {
  *   opts.holds(request)      is this request the site's, from this capture?
  *                            May be async. A predicate that throws HOLDS: when
  *                            in doubt during a pause, the site is not sent it.
+ *   opts.space()             the gap before each held request goes on once
+ *                            the pause is over -- capture-har.js passes the
+ *                            pacer's action gap. Default: none (tests).
+ *   opts.max                 how many one pause holds (HOLD_MAX)
+ *   opts.onOverflow(max)     the first request past `max` in a pause was
+ *                            aborted -- said once a pause, not once a request
  *   opts.onError(e, installing)  the route could not be installed (or
  *                            removed): told, so a pause is never announced as
  *                            held when it is not
  *
  * `route` is Playwright's shape: request(), continue(), abort(code).
+ *
+ * THE ORDER THE ROUTE GOES IN. Playwright CONTINUES every request still in a
+ * handler when that handler's route is removed. So the route is removed only
+ * once every handler that met a pause has SETTLED -- its continue or abort
+ * delivered to the browser. Removed first, a dropped request would be sent.
+ *
+ * WHEN A PAUSE ENDS, what it held goes on ONE AT A TIME, `space()` apart, in
+ * the order it was asked for -- not all at once onto a site that has just
+ * asked for a slowdown. Chosen over aborting the held requests and letting the
+ * page ask again: that is no simpler here, and it would turn "pause until the
+ * wait is up, then carry on" into "then fail", losing whatever an agent or a
+ * page asked for during the pause. A hand-over or an ending during that drain
+ * aborts what has not gone yet; a new pause holds it again until that one ends.
  */
 function createSiteHold(opts) {
     const install = opts.install;
     const uninstall = opts.uninstall;
     const holds = opts.holds || (() => true);
+    const space = opts.space || (() => undefined);
+    const max = opts.max === undefined ? HOLD_MAX : opts.max;
     let gate = null;
     let installed = false;
     let routing = Promise.resolve();
+    let releasing = Promise.resolve();
+    // Bumped by every drop: a request that met a pause before a drop is
+    // aborted, however far it got.
+    let drops = 0;
     const held = new Set();
+    // Every handler call that met a pause and has not settled (see THE ORDER).
+    const handling = new Set();
     let total = 0;
     let failures = 0;
+    let overflowed = 0;
 
-    const pass =(route) => Promise.resolve().then(() => route.continue()).catch(() => {});
+    const pass = (route) => Promise.resolve().then(() => route.continue()).catch(() => {});
+    const abort = (route) => Promise.resolve().then(() => route.abort('blockedbyclient')).catch(() => {});
 
-    async function handler(route) {
-        // The gate as it was when the request ARRIVED: a pause that ends (or
-        // a hand-over that drops it) while the predicate runs still decides it.
-        const g = gate;
-        if (!g) return pass(route);
+    /** One held request's turn in the drain, `space()` after the one before. */
+    function queueRelease(entry) {
+        releasing = releasing.then(async () => {
+            if (entry.epoch !== drops) { entry.decide('drop'); return; }
+            try { await space(); } catch (e) { void e; }
+            if (entry.epoch !== drops) { entry.decide('drop'); return; }
+            // A NEW PAUSE began while this one waited its turn: held again.
+            if (gate) { gate.entries.push(entry); return; }
+            entry.decide('release');
+        });
+    }
+
+    async function judge(route, g) {
+        const epoch = drops;
         let mine = true;
         try { mine = !!(await holds(route.request())); } catch (e) { void e; mine = true; }
         if (!mine) return pass(route);
-        const entry = { route };
+        // A hand-over or an ending came while this was being judged.
+        if (epoch !== drops) return abort(route);
+        if (held.size >= max) {
+            overflowed++;
+            if (g.overflowed++ === 0 && opts.onOverflow) opts.onOverflow(max);
+            return abort(route);
+        }
+        const entry = { epoch };
+        const outcome = new Promise((resolve) => { entry.decide = resolve; });
         held.add(entry);
         total++;
-        const outcome = await g.promise;
+        // The pause this request met may have ended while it was judged.
+        if (g.over) queueRelease(entry); else g.entries.push(entry);
+        const decided = await outcome;
         held.delete(entry);
-        if (outcome === 'drop') return Promise.resolve().then(() => route.abort('blockedbyclient')).catch(() => {});
-        return pass(route);
+        return decided === 'drop' ? abort(route) : pass(route);
+    }
+
+    function handler(route) {
+        // The gate as it was when the request ARRIVED.
+        const g = gate;
+        if (!g) return pass(route);
+        const p = judge(route, g);
+        handling.add(p);
+        const forget = () => { handling.delete(p); };
+        p.then(forget, forget);
+        return p;
     }
 
     function setRouting(on) {
         routing = routing.then(async () => {
-            if (on && !installed) { installed = true; await install(handler); }
-            if (!on && installed) { installed = false; await uninstall(handler); }
+            // Only for a pause still running when this step comes round.
+            if (on && !installed && gate) { installed = true; await install(handler); }
+            if (!on && installed) {
+                while (handling.size) await Promise.allSettled([...handling]);
+                if (gate) return;   // a new pause began meanwhile, and keeps the route
+                installed = false;
+                await uninstall(handler);
+            }
         }).catch((e) => {
             // SAID, never swallowed: a pause announced as held that is not.
             if (on) { installed = false; failures++; }
@@ -108,29 +181,38 @@ function createSiteHold(opts) {
     }
 
     function end(outcome) {
-        if (!gate) return routing;
+        if (outcome === 'drop') {
+            drops++;
+            for (const entry of held) entry.decide('drop');
+        }
         const g = gate;
-        gate = null;
-        g.resolve(outcome);
+        if (g) {
+            gate = null;
+            g.over = true;
+            if (outcome === 'release') for (const entry of g.entries) queueRelease(entry);
+            g.entries = [];
+        }
         return setRouting(false);
     }
 
     return {
         /** Hold the site's requests from now until release() or drop(). */
         start() {
-            if (!gate) gate = deferred();
+            if (!gate) gate = { entries: [], over: false, overflowed: 0 };
             return setRouting(true);
         },
-        /** The pause is over: every held request goes on, in order. */
+        /** The pause is over: what was held goes on, one at a time, `space()` apart. */
         release: () => end('release'),
-        /** A person is taking over, or the recording ended: held requests are aborted. */
+        /** A person is taking over, or the recording ended: what is held is aborted. */
         drop: () => end('drop'),
         active: () => !!gate,
         heldCount: () => held.size,
         totalHeld: () => total,
+        /** How many requests were aborted because a pause already held `max`. */
+        overflowed: () => overflowed,
         /** How many times the hold could not be installed (opts.onError was told each time). */
         failures: () => failures,
-        /** For tests: resolves once install/uninstall has settled. */
+        /** Resolves once what was held has gone on or been aborted, and the route is in place or removed. */
         settled: () => routing
     };
 }
@@ -295,6 +377,7 @@ function pauseSummaryText(summary) {
 }
 
 module.exports = {
+    HOLD_MAX,
     createSiteHold,
     createCapturePause,
     pauseSummaryText
