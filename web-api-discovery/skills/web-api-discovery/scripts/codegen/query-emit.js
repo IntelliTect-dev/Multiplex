@@ -440,7 +440,8 @@ function queryReadmeSection(tools, opts) {
     lines.push('');
     lines.push('A parameter keeps its exact name on the wire. Its C# and tool name is that name in camelCase');
     lines.push('(`page-size` is `pageSize`), and values are percent-encoded when the request is built.');
-    lines.push('`tests/' + opts.projectName + '.Tests/QueryStringTests.cs` asserts the exact query string each endpoint sends.');
+    lines.push('`tests/' + opts.projectName + '.Tests/QueryStringTests.cs` asserts the exact query string each endpoint sends, and');
+    lines.push('`pester/Mcp.Tests.ps1` that the running server lists every one of these parameters in its tool\'s input schema.');
     return lines.join('\n');
 }
 

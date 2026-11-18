@@ -322,13 +322,12 @@ function distinctInOrder(values) {
 
 function classify(wireName, perCall, sent, scrub) {
     const values = sent.flatMap((call) => call.values);
+    // One replaced value is enough: what the scrub touched once it would touch
+    // again. (A secret NAME answers here too, whatever the value, even empty.)
     for (const value of values) {
         const reason = scrubReasonFor(wireName, value, scrub);
         if (reason) return { kind: 'scrubbed', reason, defaults: null, examples: [] };
     }
-    // A secret name is a secret name even when every captured value was empty.
-    const byName = scrubReasonFor(wireName, '', scrub);
-    if (byName) return { kind: 'scrubbed', reason: byName, defaults: null, examples: [] };
 
     const nonce = nonceReasonFor(wireName, sent);
     if (nonce) return { kind: 'nonce', reason: nonce, defaults: null, examples: [] };
@@ -371,13 +370,8 @@ function collectQueryParameters(samples, options) {
         startedMs: Date.parse(sample && sample.entry && sample.entry.startedDateTime),
     }));
 
-    const wireNames = [];
-    const known = new Set();
-    for (const call of calls) {
-        for (const [name] of call.pairs) {
-            if (!known.has(name)) { known.add(name); wireNames.push(name); }
-        }
-    }
+    // First-seen order: the first call's own order, then whatever a later call adds.
+    const wireNames = distinctInOrder(calls.flatMap((call) => call.pairs.map(([name]) => name)));
     if (wireNames.length === 0) return [];
 
     const identifiers = assignIdentifiers(wireNames, opts.reserved);
