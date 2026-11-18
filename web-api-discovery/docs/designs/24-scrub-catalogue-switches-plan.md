@@ -40,7 +40,7 @@ Read by VALUE: `-Scrub:$false` records as today.
 ### Re-entry points are reused, never rebuilt
 
 - **Scrub** -> `har/Invoke-SanitizeHar.ps1 -InputHar <capture directory> -Force
-  -WhatIf:$false`. The FOLDER form, on purpose. #48 rejected composing the
+  -WhatIf:$false -Confirm:$false`. The FOLDER form, on purpose. #48 rejected composing the
   FILE form (`-InputHar raw.har -OutputHar ...`) because it writes an unjudged
   file straight to its destination. The folder form (since #386) scrubs under
   a temporary name, calls it `scrubbed.har` only after the gate passes, and
@@ -49,7 +49,9 @@ Read by VALUE: `-Scrub:$false` records as today.
   operator asked for this capture to be scrubbed again; without it the wrapper
   answers "already scrubbed -- use -Force", a switch this door does not have.
   `-WhatIf:$false` because that wrapper supports ShouldProcess and an ambient
-  `$WhatIfPreference` would otherwise turn the phase into a silent no-op.
+  `$WhatIfPreference` would otherwise turn the phase into a silent no-op;
+  `-Confirm:$false` because a lowered `$ConfirmPreference` would have it prompt
+  per capture, which an unattended run cannot answer.
 - **Catalogue** -> `capture-har.js catalogue <capture directory> --output-path
   <capture directory>`. `--output-path` is pinned to the capture's own
   directory so the catalogue is derived from the `scrubbed.har` a `-Scrub`
