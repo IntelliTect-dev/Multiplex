@@ -41,6 +41,19 @@ Describe "{{ProjectName}} MCP smoke" {
         $script:ExpectedTools.Count | Should -BeGreaterThan 0
     }
 
+    It "has the .NET SDK to start the server with, whenever CI is set" {
+        # Without the SDK everything below is skipped. That is fair on a machine
+        # that has none, and a false green in CI, the run anyone relies on: one
+        # passing case over a server that was never started. So under CI a
+        # missing SDK is a failure.
+        if ($null -ne (Get-Command dotnet -ErrorAction SilentlyContinue)) { return }
+        if ([string]::IsNullOrWhiteSpace($env:CI) -or $env:CI -eq "false") {
+            Set-ItResult -Skipped -Because "dotnet is not on PATH, so the server was not started (and this is not a CI run)"
+            return
+        }
+        throw "CI is set and dotnet is not on PATH: the smoke test could not start the MCP server, so it checked nothing."
+    }
+
     Context "the running server" -Skip:$script:NoDotnet {
         BeforeAll {
             $script:BuildOutput = & dotnet build $script:Project -c Debug --nologo -v minimal 2>&1 | Out-String

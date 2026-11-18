@@ -504,10 +504,19 @@ Describe 'MCP SDK version (issue #17)' {
         if (Test-Path $script:SdkOut) { Remove-Item -Recurse -Force $script:SdkOut }
     }
     It 'the host declares an MCP SDK version to match' {
-        $script:HostCsprojFound | Should -BeTrue -Because 'the host csproj is where the version line is set'
+        if (-not $script:HostCsprojFound) {
+            # This suite also runs where the skill is checked out on its own,
+            # with no Multiplex host beside it. There is then nothing to match.
+            Set-ItResult -Skipped -Because 'src/Multiplex.Web/Multiplex.Web.csproj is not beside this skill, so there is no host version to compare with'
+            return
+        }
         $script:HostMcpVersion | Should -Match '^\d+\.\d+\.\d+' -Because 'a version that could not be read would match anything'
     }
     It 'the generated csproj pins ModelContextProtocol to the host''s version' {
+        if (-not $script:HostCsprojFound) {
+            Set-ItResult -Skipped -Because 'src/Multiplex.Web/Multiplex.Web.csproj is not beside this skill, so there is no host version to compare with'
+            return
+        }
         $generated = [regex]::Match($script:SdkCsproj,
             'PackageReference\s+Include="ModelContextProtocol"\s+Version="([^"]+)"').Groups[1].Value
         $generated | Should -Be $script:HostMcpVersion
