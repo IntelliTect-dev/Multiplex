@@ -148,7 +148,7 @@ const inACollection = { isCollection: true };
     const additive = { readOnly: false, destructive: false, idempotent: false };
 
     // The path says so: a whole word create, add or new.
-    for (const text of ['/api/widgets/create', '/api/cart/add-item', '/api/users/new', '/api/createOrder']) {
+    for (const text of ['/api/widgets/create', '/api/cart/add-item', '/api/users/new', '/api/createNote']) {
         assert.deepStrictEqual(toolHintsFor('POST', route(text)), additive, 'POST ' + text + ' adds');
     }
     // Or the capture does: the same path with an id appended was captured too,
@@ -188,11 +188,66 @@ const inACollection = { isCollection: true };
     for (const text of ['/api/login', '/api/auth/logout', '/api/sessions', '/api/oauth2/token']) {
         assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is a sign-in call');
     }
-    // Whole words here too: a resource whose NAME merely contains one is still a resource.
-    for (const text of ['/api/settings', '/api/movements', '/api/sendgrid-templates', '/api/closets']) {
+    // A resource whose NAME merely contains a short veto word is still a
+    // resource: `set` and `move` are matched whole, not as a beginning.
+    for (const text of ['/api/settings', '/api/movements', '/api/movies']) {
         assert.strictEqual(destructive(text, inACollection), false, 'POST ' + text + ' is a collection like any other');
     }
     console.log('PASS: a path parameter, or a word for changing, acting, an opaque call or sign-in, overrides the evidence.');
+}
+
+// ---- Hints: the capture does not vouch for money, a commitment, or a removal under another name ----
+{
+    const destructive = (text, evidence) => toolHintsFor('POST', route(text), evidence).destructive;
+
+    // The re-review's paths. Each is a collection in the capture, or says add,
+    // new or create -- the very evidence that made it additive -- and a client
+    // that confirms only destructive calls would have paid, ordered or withdrawn
+    // without asking.
+    for (const text of ['/api/payments', '/api/orders', '/api/payouts', '/api/withdrawals', '/api/cancellations',
+        '/api/funds/add', '/api/payments/new', '/api/v2/addPayment', '/api/orders/create']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is destructive');
+    }
+    // And as the generator meets one: beside its own by-id sibling in a capture.
+    const payments = toolsFor([
+        har('POST', 'https://api.example.com/api/payments'),
+        har('GET', 'https://api.example.com/api/payments/42'),
+    ]).find((x) => x.name === 'create_payments');
+    assert.strictEqual(payments.hints.destructive, true, 'the capture does not vouch for a payment');
+
+    // By stem: a veto word is matched as the beginning of a word too, so the
+    // noun and the participle of a removal are the removal.
+    for (const text of ['/api/deletions', '/api/removals', '/api/items/archived', '/api/cancelled-orders',
+        '/api/withdrawal', '/api/purchasing', '/api/account/closing', '/api/chargebacks', '/api/approvals',
+        '/api/terminations', '/api/refunded', '/api/patches']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is a veto by stem');
+    }
+    // Money and commitment: the record such a POST adds is the point of it.
+    for (const text of ['/api/invoices', '/api/donations', '/api/bookings', '/api/reservations', '/api/subscriptions',
+        '/api/bids', '/api/trades', '/api/trading', '/api/funding', '/api/payees', '/api/payroll', '/api/orderItems']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' moves money or commits');
+    }
+
+    // An ordinary collection is as additive as before.
+    for (const text of ['/api/items', '/api/notes', '/api/comments', '/api/widgets', '/api/users', '/api/books',
+        '/api/messages', '/api/settings', '/api/movies']) {
+        assert.strictEqual(destructive(text, inACollection), false, 'POST ' + text + ' still adds');
+    }
+    // A veto word of three letters is matched whole -- `set`, `buy`, `bid`,
+    // `run` -- or every word beginning with it would go: settings, buyers,
+    // bidders. `pay` is the one exception, for payment, payout and payee.
+    for (const text of ['/api/settings', '/api/buyers', '/api/bidders', '/api/runners']) {
+        assert.strictEqual(destructive(text, inACollection), false, 'POST ' + text + ' begins with a short word only');
+    }
+
+    // The price of matching by stem, stated: these harmless names begin with a
+    // veto word and now ask for confirmation. They keep their tools; only the
+    // "additive" is gone, which is the cheap direction to be wrong in.
+    for (const text of ['/api/closets', '/api/sendgrid-templates', '/api/payloads', '/api/editors', '/api/traditions',
+        '/api/publishers']) {
+        assert.strictEqual(destructive(text, inACollection), true, 'POST ' + text + ' is caught by a stem');
+    }
+    console.log('PASS: money, commitments and removals under another name are destructive whatever the capture shows.');
 }
 
 // ---- Hints: the capture is where "it is a collection" comes from ----
