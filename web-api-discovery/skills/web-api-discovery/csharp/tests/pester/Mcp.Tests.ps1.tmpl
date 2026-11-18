@@ -32,6 +32,12 @@ BeforeAll {
     $script:ExpectedTools = @(
 {{ExpectedTools}}
     )
+    # The endpoints the generator gave NO tool -- sign-in and credentials,
+    # OPTIONS/HEAD, no JSON response; the README lists them -- by the name the
+    # tool would have had. Empty when nothing was left out.
+    $script:LeftOutTools = @(
+{{LeftOutTools}}
+    )
 }
 
 Describe "{{ProjectName}} MCP smoke" {
@@ -94,6 +100,15 @@ Describe "{{ProjectName}} MCP smoke" {
             $listed = @($script:Tools | ForEach-Object { $_.name })
             $missing = @($script:ExpectedTools | ForEach-Object { $_.Name } | Where-Object { $_ -notin $listed })
             ($missing -join ", ") | Should -BeNullOrEmpty -Because "the server lists: $(($listed | Sort-Object) -join ', ')"
+        }
+
+        It "lists no tool for an endpoint the generator left out" {
+            # A tool written by hand is allowed beside the generated ones, so
+            # "every generated tool is listed" would still hold if a sign-in
+            # endpoint's tool came back by mistake. This is what catches that.
+            $listed = @($script:Tools | ForEach-Object { $_.name })
+            $offered = @($script:LeftOutTools | Where-Object { $_.Name -in $listed } | ForEach-Object { "$($_.Name) ($($_.Method))" })
+            ($offered -join ", ") | Should -BeNullOrEmpty -Because "these endpoints are left out of the tools on purpose; see the README"
         }
 
         It "gives every tool a description for the model to read" {
