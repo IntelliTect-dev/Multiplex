@@ -34,6 +34,7 @@
  * Zero dependencies.
  */
 
+const { StringDecoder } = require('string_decoder');
 const pacing = require('./pacing.js');
 
 /** One stream-json user message, as the CLI reads it from stdin: one line. */
@@ -188,6 +189,9 @@ function createStreamRenderer(opts = {}) {
     const write = opts.write || (() => {});
     const raw = opts.raw || null;
     const onEvent = opts.onEvent || (() => {});
+    // Bytes are decoded ACROSS chunks: a pipe can split a multi-byte
+    // character between two of them, and each half alone is U+FFFD.
+    const decoder = new StringDecoder('utf8');
     let buf = '';
 
     function line(text) {
@@ -206,7 +210,7 @@ function createStreamRenderer(opts = {}) {
 
     return {
         push(chunk) {
-            buf += String(chunk);
+            buf += typeof chunk === 'string' ? chunk : decoder.write(chunk);
             let i;
             while ((i = buf.indexOf('\n')) >= 0) {
                 const next = buf.slice(0, i);
@@ -216,6 +220,7 @@ function createStreamRenderer(opts = {}) {
         },
         /** The last line, when the stream ended without a newline. */
         flush() {
+            buf += decoder.end();
             if (buf) { const rest = buf; buf = ''; line(rest); }
         }
     };
