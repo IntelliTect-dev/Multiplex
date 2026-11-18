@@ -483,6 +483,12 @@ test('C7: Amazon\'s checkpoint is a challenge, though its form sits deep in a fu
     assert.ok(!formless.includes('/checkpoint/validate'), 'the form is gone, its wording kept');
     assert.strictEqual(at('https://www.amazon.com/checkpoint/continue', formless), null,
         'Amazon\'s checkpoint path without the form is not the checkpoint');
+    // The attribute is `action` itself: a hyphen is a word boundary, so
+    // data-action= is not it.
+    const dataAction = page.replace('action="/checkpoint/validate"', 'data-action="/checkpoint/validate"');
+    assert.ok(dataAction.includes('<form method="POST" data-action="/checkpoint/validate"'), 'the attribute is renamed');
+    assert.strictEqual(at('https://www.amazon.com/s?k=usb+hub', dataAction), null,
+        'a form whose data-action names the validator does not post to it');
 });
 
 test('C8: a block delivered to an XHR is seen, whatever its content type', () => {
