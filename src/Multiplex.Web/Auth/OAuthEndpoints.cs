@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Net.Http.Headers;
 using Multiplex.Web.Auth.Clients;
 
 namespace Multiplex.Web.Auth;
@@ -121,17 +123,18 @@ public static class OAuthEndpoints
     private static async Task<(IFormCollection?, IResult?)> ReadFormAsync(HttpContext context)
     {
         NoStore(context.Response);
-        if (!context.Request.HasFormContentType)
+        if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var type)
+            || !type.MediaType.Equals("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
         {
             return (null, Error("invalid_request", "The request must be application/x-www-form-urlencoded."));
         }
-        if (context.Request.ContentLength > MaxFormBytes)
-        {
-            return (null, Error("invalid_request", "The request is too large."));
-        }
+
+        // Counted as it is read, so a chunked body (no Content-Length) is held to the same limit.
+        var body = await ReadBoundedAsync(context.Request.Body, MaxFormBytes, context.RequestAborted);
+        if (body is null) return (null, Error("invalid_request", "The request is too large."));
         try
         {
-            return (await context.Request.ReadFormAsync(context.RequestAborted), null);
+            return (new FormCollection(new FormReader(Encoding.UTF8.GetString(body)).ReadForm()), null);
         }
         catch (InvalidDataException)
         {
