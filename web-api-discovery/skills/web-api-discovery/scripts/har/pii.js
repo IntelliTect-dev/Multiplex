@@ -115,7 +115,7 @@ const { hasAssignedIin, LEAK_PATTERNS, settingFor, isIdentifierShaped } = requir
 // name-only sensitivity and nesting rather than a general failure to descend:
 // the flat text pass finds a shaped value at any depth, because it does not
 // need the layer to be decoded to recognise it.
-const { transformNested, MAX_DEPTH: NESTED_MAX_DEPTH } = require('./har-nested.js');
+const { transformNested, isNamedLayer, MAX_DEPTH: NESTED_MAX_DEPTH } = require('./har-nested.js');
 
 /**
  * One slot of the gate's own leak table, taken from the gate rather than
@@ -1141,7 +1141,9 @@ function splitUrl(url) {
         origin = beforeQuery;
         pathText = '';
     }
-    return { origin, pathText, query, fragment };
+    // `hierarchical`: the origin is a scheme and an authority -- structure --
+    // rather than a whole opaque URL (#66).
+    return { origin, pathText, query, fragment, hierarchical: scheme >= 0 };
 }
 
 /**
@@ -1438,11 +1440,19 @@ function writeBackChangedSpan(raw, decoded, next, offsets) {
         raw.slice(rawEnd);
 }
 
-function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace) {
+function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace, plainText) {
     // THE TWIN OF `detectInUrlComponent`, branching on the same predicate over
     // the same raw text. The two must agree about which treatment a component
     // gets, or a value is found under one reading and rewritten under the
     // other.
+    //
+    // `plainText(text, spansOut)` rewrites the component read as PLAIN TEXT --
+    // structure-aware for a bare path segment and a refused query (#66), the
+    // plain replacement otherwise. A component that parses as a document or as
+    // form data takes the branch for that grammar instead, which knows its own
+    // names. Which branch a component takes is unchanged; only what acts inside
+    // the plain-text one is.
+    const text = plainText || ((t, spans) => replaceAll(t, replacements, spans));
     if (isFormComponent(raw, mayBeForm)) {
         // `plusIsSpace: false`, AND THIS IS THE LEAK-SAFE DIRECTION rather
         // than a stylistic preference. Reading `+` as a space made an E.164
@@ -1460,13 +1470,13 @@ function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace) 
     // pure cost -- it respelled `@` as `%40`, and where two values changed it
     // escaped the `=` and `&` between them. For this case `main` was simply
     // right, and this is the cheapest way to keep being right about it.
-    if (!/%[0-9A-Fa-f]{2}/.test(raw)) return replaceAll(raw, replacements);
+    if (!/%[0-9A-Fa-f]{2}/.test(raw)) return text(raw);
     const offsets = [];
     const decoded = decodedOnceOrNull(raw, plusIsSpace === true, offsets);
-    if (decoded === null) return replaceAll(raw, replacements);
+    if (decoded === null) return text(raw);
     const spans = [];
     const next = replaceJsonOrText(decoded, replacements, policy, 0, true,
-        plusIsSpace === true, spans);
+        plusIsSpace === true, spans, text);
     if (next === decoded) return raw;
     // Per span when the replacement pass could say where it landed; the
     // whole-span diff otherwise (the JSON branch, which reproduces its own
@@ -1477,16 +1487,28 @@ function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace) 
 
 function replaceInUrl(url, replacements, policy) {
     const parts = splitUrl(url);
+    // STRUCTURE TAKES THE STRUCTURE LIST (#66): a scheme and authority, and a
+    // bare path segment, never receive a value whose only evidence was a
+    // field name somewhere else. A non-hierarchical URL's "origin" is the
+    // whole opaque URL -- a `mailto:` address, a `data:` payload -- and stays
+    // payload.
+    const structure = structureReplacements(replacements);
+    const segmentText = (t, spans) => replaceAll(t, structure, spans);
     const pathText = pathSegments(parts.pathText)
-        .map((s) => (s.length === 0 ? s : replaceUrlComponent(s, replacements, policy, false, false)))
+        .map((s) => (s.length === 0 ? s : replaceUrlComponent(s, replacements, policy, false, false, segmentText)))
         .join('/');
-    let out = replaceAll(parts.origin, replacements) + pathText;
+    let out = replaceAll(parts.origin, parts.hierarchical ? structure : replacements) + pathText;
     // `!== null` rather than a truthiness test, and the detection twin's
     // falsy skip is the same decision: an EMPTY query or fragment has nothing
     // to detect, but its delimiter is still part of the URL and `http://h/x?`
     // must not come back as `http://h/x`.
     if (parts.query !== null) {
-        out += '?' + replaceUrlComponent(parts.query, replacements, policy, true, true);
+        // A query the strict form reader refuses -- a flag part with no `=`,
+        // an unencoded URL inside it -- is still a query: its names stay
+        // names (#66). The form-shaped query never reaches this; its form
+        // branch already knows its names.
+        out += '?' + replaceUrlComponent(parts.query, replacements, policy, true, true,
+            (t, spans) => replaceParamText(t, replacements, spans));
     }
     if (parts.fragment !== null) {
         out += '#' + replaceUrlComponent(parts.fragment, replacements, policy, true, false);
@@ -1785,13 +1807,22 @@ function summariseRetained(entries, replacedValues) {
         });
 }
 
+// Headers whose whole value is a scheme and authority -- the request URL's
+// origin, written a second time. Structure for the reason `replaceInUrl`'s
+// origin is (#66): the Host header must not disagree with the URL it names.
+// Other header values keep plain-text treatment; that is not a decision about
+// them, only the edge of this one.
+const AUTHORITY_HEADERS = new Set(['host', ':authority', 'origin']);
+
 function applyReplacementsToEntry(entry, replacements, policy) {
     // headers
     for (const ctx of ['request', 'response']) {
         const hs = entry[ctx] && entry[ctx].headers;
         if (Array.isArray(hs)) {
             for (const h of hs) {
-                if (typeof h.value === 'string') h.value = replaceAll(h.value, replacements);
+                if (typeof h.value !== 'string') continue;
+                const authority = AUTHORITY_HEADERS.has(String(h.name).toLowerCase());
+                h.value = replaceAll(h.value, authority ? structureReplacements(replacements) : replacements);
             }
         }
     }
@@ -1858,7 +1889,7 @@ function applyReplacementsToEntry(entry, replacements, policy) {
  * whose whole purpose is to be a faithful record. Only a parameter that
  * actually changed pays that cost, and only because it had to.
  */
-function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpace, spansOut) {
+function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpace, spansOut, plainText) {
     if (plusIsSpace === undefined) plusIsSpace = true;
     depth = depth || 0;
     let parsed = null;
@@ -1918,8 +1949,13 @@ function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpac
                 // Raised by independent review as the asymmetry it is; the
                 // respelling is the lesser of the two, and the real fix is the
                 // nested re-encode contract on #133 rather than a guard here.
+                //
+                // A NAME IS STRUCTURE (#66), so the field-only kinds stay off
+                // it: a query or form parameter named like an enrolled `name`
+                // value is a parameter, not a person. The shaped kinds still
+                // reach it -- that is the secret-used-as-a-key case above.
                 const name = percentDecode(p.name, plusIsSpace);
-                const nextName = replaceAll(name, replacements);
+                const nextName = replaceAll(name, structureReplacements(replacements));
 
                 const valueChanged = nextValue !== value;
                 const nameChanged = nextName !== name;
@@ -1955,7 +1991,13 @@ function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpac
     // spans in the caller's coordinate space -- and the caller falls back to
     // the whole-span diff, which is harmless there because those branches
     // reproduce their own delimiters.
-    return replaceAll(text, replacements, spansOut);
+    //
+    // `plainText` is how THIS text is rewritten when read as plain text, and
+    // like `noForm` it is a statement about the caller's own layer: a bare URL
+    // path segment and a refused query know which of their characters are
+    // structure (#66). It is not threaded into the branches above, whose
+    // leaves are values again.
+    return plainText ? plainText(text, spansOut) : replaceAll(text, replacements, spansOut);
 }
 
 function replaceInJson(node, parentKey, replacements, policy, depth) {
@@ -1976,8 +2018,9 @@ function replaceInJson(node, parentKey, replacements, policy, depth) {
         // what the flat pass structurally could not: a value whose FIELD NAME
         // lives inside an encoded layer. Detection's twin is
         // `descendNestedLeaf`, and the two must descend identically or a value
-        // is found in one shape and rewritten in another.
-        return replaceNestedLeaf(replaceAll(node, replacements), parentKey,
+        // is found in one shape and rewritten in another. The flat pass leaves
+        // a nested document's own names alone (#66): see `replaceLeafText`.
+        return replaceNestedLeaf(replaceLeafText(node, replacements, depth || 0), parentKey,
             replacements, policy, depth || 0);
     }
     if (typeof node === 'number') {
@@ -2034,7 +2077,9 @@ function replaceNestedLeaf(text, parentKey, replacements, policy, depth) {
                 .get(`${pickContextType(fType)}${node.value}`);
             if (target) return target.replacement;
         }
-        return replaceAll(node.value, replacements);
+        // The walk descends into this value next, at `node.depth` -- so a
+        // document nested one layer further keeps its names too (#66).
+        return replaceLeafText(node.value, replacements, node.depth);
         // `path` below is threaded even though this callback never reads it.
         // The twin passes it, and two functions documented as twins diverging
         // in their options bag is how the next person extending one to use
@@ -2212,6 +2257,142 @@ function indexFor(replacements) {
     idx = { root, rootAscii, byTypeValue, empty: root.next.size === 0 };
     INDEX_CACHE.set(replacements, idx);
     return idx;
+}
+
+// --- structure is not payload (issue #66) --------------------------------
+//
+// The kinds a FIELD NAME alone vouches for. Their detectors (`detectInValue`)
+// accept ANY non-empty string at the right field and check nothing about the
+// value itself, so the value's own spelling is no evidence of anything. That
+// is what the blind text pass got wrong: `name` is an exact person-name field,
+// a real capture holds `{"name": "g"}` for an ad slot, and the pass then wrote
+// a fake name over every word-bounded `g` in the entry -- the `g` in
+// `securepubads.g.doubleclick.net` included. A fake name holds a space, a space
+// cannot sit in a host, and 160 of 651 request URLs stopped parsing. The
+// capture was signed out; every hit was a false positive.
+//
+// So where these values meet STRUCTURE -- a URL's scheme and authority, a bare
+// path segment, a parameter name, the keys of a JSON document carried as a
+// string -- they are left alone. A replace path fails toward a miss. PAYLOAD
+// keeps its reach: the value at its own field, and the same value in a query
+// value, a header, a cookie or free text, exactly as before.
+//
+// NOT IN THE SET, deliberately: kinds with a SHAPE. An email, a card, an IBAN,
+// a MAC or an IP address carries its own evidence wherever it sits, and its
+// fake keeps that shape, so a URL holding one stays well-formed. `phone`,
+// `dob` and `device-id` are matched by field AND shape (a digit run, an ISO
+// date, a UUID) -- shaped enough that the same literal elsewhere is the same
+// datum and no fake of theirs breaks a URL. `geo-coordinates` is a number and
+// never enters the text pass at all (#529).
+//
+// THE PATH SEGMENT DECISION, and its cost. A bare segment has no name, so a
+// field-only value there has no evidence but its spelling -- on the capture
+// above, every one of 55 rewritten paths was a false positive. A segment that
+// DECODES to a JSON document keeps the field-typed treatment, because its keys
+// are evidence. The residual is stated rather than hidden: a real username a
+// REST path carries (`/users/<name>`) is no longer replaced there. The
+// operator's own identifiers are the literal pass's job and it still runs over
+// URLs; a third party's name in a path is the miss this rule accepts.
+const FIELD_ONLY_KINDS = new Set([
+    'person-name', 'street-address', 'city', 'region', 'postal-code', 'country',
+]);
+
+const STRUCTURE_CACHE = new WeakMap();
+
+/**
+ * The replacements that may act on STRUCTURE: every entry but the field-only
+ * kinds, in the same longest-first order. Memoised on the list for the reason
+ * `indexFor` is, so `indexFor` can then memoise the result in turn.
+ *
+ * Returns the list ITSELF when it holds no field-only kind, so a caller can
+ * tell "nothing to withhold" by identity and skip work.
+ */
+function structureReplacements(replacements) {
+    let structure = STRUCTURE_CACHE.get(replacements);
+    if (structure) return structure;
+    structure = replacements.some((r) => FIELD_ONLY_KINDS.has(r.type))
+        ? replacements.filter((r) => !FIELD_ONLY_KINDS.has(r.type))
+        : replacements;
+    STRUCTURE_CACHE.set(replacements, structure);
+    return structure;
+}
+
+/**
+ * Plain text that is `&`-separated `name=value` parts -- a URL query the strict
+ * form reader (`formEncodedPairs`) refused -- rewritten with each part's NAME
+ * as structure and its VALUE as payload (#66).
+ *
+ * The form reader refuses a whole query over one part it cannot read: a flag
+ * with no `=` (`&debug`), or an unencoded URL. That refusal is right for
+ * BODIES, where it keeps a script or a page off the form path, and the query
+ * then fell to one blind pass that renamed its parameters -- 16 real URLs after
+ * the authority fix. A query's grammar is not in doubt, though, so its parts
+ * are read here without the form reader's other demands. A part with no `=` is
+ * a flag, which is a name. Only the list changes per piece: the shaped kinds
+ * still reach every character, and no shaped value holds a `&` or `=` for the
+ * split to cut. On the decoded route an escaped `%26` inside a value reads as a
+ * delimiter here, so a field-only value after it is withheld -- a miss, the
+ * direction a replace path takes.
+ *
+ * Spans are reported in `text`'s coordinates, for the per-span write-back.
+ */
+function replaceParamText(text, replacements, spansOut) {
+    const structure = structureReplacements(replacements);
+    if (structure === replacements) return replaceAll(text, replacements, spansOut);
+    let out = '';
+    let at = 0;
+    const piece = (s, list) => {
+        const local = spansOut ? [] : undefined;
+        out += replaceAll(s, list, local);
+        if (local) {
+            for (const span of local) {
+                spansOut.push({ from: span.from + at, to: span.to + at, replacement: span.replacement });
+            }
+        }
+        at += s.length;
+    };
+    const delimiter = (c) => { out += c; at += 1; };
+    text.split('&').forEach((part, k) => {
+        if (k > 0) delimiter('&');
+        const eq = part.indexOf('=');
+        if (eq < 0) { piece(part, structure); return; }
+        piece(part.slice(0, eq), structure);
+        delimiter('=');
+        piece(part.slice(eq + 1), replacements);
+    });
+    return out === text ? text : out;
+}
+
+/**
+ * The flat text pass over ONE string leaf of a parsed document, before the
+ * nested walk (`replaceNestedLeaf`) looks inside it.
+ *
+ * A leaf that is itself a JSON document or a form body has NAMES of its own --
+ * a GraphQL `variables` string, an analytics `payload`. The flat pass reads it
+ * as plain text, so it reached those names before the nested walk ever parsed
+ * them, and a field-only value equal to a key renamed the key. For such a leaf
+ * the field-only kinds are left to the nested walk, which visits every VALUE
+ * inside it with the full list and leaves its names alone; the flat pass keeps
+ * the shaped kinds. Same reach on values, none on names.
+ *
+ * Only where the walk will actually descend: at the shared depth cap the walk
+ * stops, and the flat pass is all that is left, so it keeps the full list.
+ * Asked only when a field-only needle changed something, so a leaf nothing
+ * matched pays nothing extra for the question. The one value this gives up is a
+ * nested form parameter the walk itself cannot decode (a malformed escape),
+ * which it passes over whole -- a miss, on a replace path, in an input no
+ * capture has been seen to carry.
+ *
+ * `walkDepth` is the depth `transformNested` will be called at for this leaf.
+ */
+function replaceLeafText(text, replacements, walkDepth) {
+    const all = replaceAll(text, replacements);
+    if (all === text) return text;
+    const structure = structureReplacements(replacements);
+    if (structure === replacements || walkDepth >= NESTED_MAX_DEPTH) return all;
+    const shaped = replaceAll(text, structure);
+    if (shaped === all) return all;
+    return isNamedLayer(text) ? shaped : all;
 }
 
 // One walk of the text, recording EVERY needle that matches anywhere -- nested
