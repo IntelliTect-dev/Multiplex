@@ -1620,6 +1620,19 @@ Implementation rules that mattered in practice:
   applies to values the typed-PII pass already found: detection reads the
   decoded `queryString` pair while the URL carries `phone=%2B1...`, and
   replacing only the raw spelling leaves the encoded copy readable.
+- **A value found only by its field name is never written into structure**
+  (#66). A person's name, street, city, region, postal code or country is
+  detected because of the key it sits under, not its shape, so its spelling
+  elsewhere is no evidence. `name` is such a key, and on a signed-out capture
+  it enrolled ad slots and tags -- single letters, short words -- whose fakes
+  then landed in hostnames: 160 of 651 request URLs stopped parsing. Those
+  values reach payload (a field value, a query value, a header, free text)
+  and not a scheme or authority (in the URL or the `Host`, `:authority` and
+  `Origin` headers), a bare path segment, a query, form or matrix parameter
+  name, or the keys of a JSON document carried inside a string. Shaped kinds
+  -- email, card, IP and the rest -- carry their own evidence and keep their
+  reach. The cost: a real username in a REST path (`/users/<name>`) is no
+  longer replaced there unless it is also an operator literal.
 - **Never default or commit the literals.** They are the operator's own
   account identifiers, and baking a real identifier into a committed script
   is exactly what account hygiene forbids. They live in a gitignored
@@ -2318,14 +2331,16 @@ Both are the kind of thing that passes review:
 Unit tests and review have repeatedly passed post-processing defects that a
 real capture shows within minutes. **`har/pipeline-check.js`** runs the real
 stages -- trim, scrub, gate, catalogue scaffold -- over a pinned set of raw
-captures and asks four questions of each:
+captures and asks five questions of each:
 
 1. the gate passes (exit 0, or 4 for advisory findings only);
 2. no value the scrub's own table says to replace survives it;
 3. every JSON piece that parsed before the scrub still parses -- whole bodies,
    bodies behind a `for (;;);` prefix, lines of line-delimited bodies, and
    JSON inside form fields such as `variables=`;
-4. the catalogue scaffold's rows account for every scrubbed entry.
+4. the catalogue scaffold's rows account for every scrubbed entry;
+5. every request URL that parsed before the scrub still parses (#66) --
+   reported by entry index only, never by URL.
 
 ```
 node har/pipeline-check.js --manifest <store>/_pipeline/pinned.json
@@ -2341,7 +2356,7 @@ a pass, and never a regression.
 
 What it does **not** measure: a leak neither detector can see (#22, #24, #67),
 and typed-PII survivors, which the scrub's survivor guard does not cover yet.
-Four passing checks mean "no damage these checks can see", not "no leak".
+Five passing checks mean "no damage these checks can see", not "no leak".
 
 ### Phase 4 -- Classify Auth
 
