@@ -10,11 +10,11 @@
 // browser -- after which a request the browser still held would be released
 // and sent. A file of its own to stay inside the runner's per-file limit.
 //
-// A GUARD, NOT A FALSIFIER. At 6bd1094 this path happened to abort too: on the
-// recorder's CDP-attached persistent context the abort reached the browser
-// before the route was removed, where on a plain `browser.newContext()` it did
-// not (capture-pause.test.js E1 fails there). The order is now right by
-// construction; this pins the outcome where it matters.
+// A GUARD, NOT A FALSIFIER. At 6bd1094 this run happened to abort too, in the
+// author's runs -- why is not established: the independent re-review saw the
+// old hold SEND the request on a persistent context. The order is now right
+// by construction, and capture-pause.test.js E1 (red at 6bd1094) is the
+// falsifier; this pins the outcome on the recorder's own path.
 //
 //   K1  the agent's second click is HELD by a long pause; the recording is
 //       stopped mid-pause; the held request is ABORTED -- the site never sees
