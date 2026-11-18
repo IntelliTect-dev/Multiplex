@@ -181,7 +181,8 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _services.Logger.LogError("Live sign-in for {Site} failed: {Error}: {Message}", Slug, ex.GetType().Name, ex.Message);
+            // The type only: a message can carry paths, URLs or text from the site's page.
+            _services.Logger.LogError("Live sign-in for {Site} failed: {Error}", Slug, ex.GetType().Name);
             await EndAsync(AttemptState.Failed, "Something went wrong while signing in. Please start again.");
         }
         finally
