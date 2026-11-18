@@ -15,10 +15,14 @@
  *
  *   THROTTLING. Every response the recorder records is offered to a monitor.
  *   A 429, a 503 that names a Retry-After, a small HTML 403 from a CDN, or a
- *   challenge page is a signal. A throttle PAUSES (Retry-After when the site
- *   names one, else exponential backoff with jitter); a throttle that persists,
- *   a block, or a challenge HANDS OVER: whatever is driving stops, and the
- *   human -- whose browser it is, and which is on screen -- decides.
+ *   challenge page is a signal. A throttle PAUSES THE WHOLE CAPTURE -- for
+ *   exactly the Retry-After the site names (up to a day), or for a backoff
+ *   with jitter when it names none -- and then it carries on by itself. A
+ *   block, a challenge, or throttling that goes on for an hour with no page
+ *   loading in between HANDS OVER: whatever is driving is told to wait, and
+ *   the human -- whose browser it is -- decides. capture-pause.js holds the
+ *   browser's requests to the site for the length of a pause, and tells the
+ *   agent; nothing here ever ends a process.
  *
  * THE BOUNDARY, stated once here and in SKILL.md. Polite pacing and honouring
  * a site's throttling are in. Anything whose PURPOSE is hiding automation from
@@ -148,6 +152,7 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *                  ends. Applied even with the pace off -- honouring a site's
  *                  Retry-After is not pacing, and turning pacing off for a test
  *                  must not turn it off
+ *   resumeNow()    the pause is over early -- a person handed the browser back
  *
  * The gap is measured from the END of the previous step, and time already
  * spent since then counts towards it: a person who read the page for ten
@@ -215,6 +220,12 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
             if (ms > 0) pausedUntil = Math.max(pausedUntil, now() + ms);
             return pausedUntil;
         },
+        /**
+         * End a pause early. A step already asleep finishes its sleep -- a
+         * person handing back is rarely a matter of milliseconds -- but no
+         * step waits on the pause from here on.
+         */
+        resumeNow() { pausedUntil = 0; },
         pausedUntil: () => pausedUntil,
         /** Every wait taken, for tests and the verbose log. */
         waits: () => waits.slice()
@@ -225,8 +236,41 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
 // Throttling
 // ---------------------------------------------------------------------------
 
-/** The longest Retry-After waited out inline. Longer, and a person decides. */
-const DEFAULT_RETRY_AFTER_CAP_MS = 60000;
+/**
+ * THE LONGEST WAIT A SITE MAY NAME AND STILL BE WAITED OUT. A sanity ceiling,
+ * not a cap: anything up to it is waited IN FULL, because "just pause" means
+ * pause until the time is up and then carry on. A Retry-After beyond a day is
+ * not a pause any more, and a person decides.
+ */
+const RETRY_AFTER_CEILING_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * THE BACKOFF WHEN A SITE THROTTLES AND NAMES NO WAIT: about 1, 2, 4 and 8
+ * minutes, then 15 minutes every time after. Each wait takes up to
+ * BACKOFF_JITTER of its step off at random, so it is never in lockstep with
+ * another client throttled at the same moment, and never longer than the cap.
+ */
+const BACKOFF_BASE_MS = 60 * 1000;
+const BACKOFF_MAX_MS = 15 * 60 * 1000;
+const BACKOFF_JITTER = 0.2;
+
+/**
+ * HOW LONG A SITE MAY GO ON THROTTLING, NAMING NO WAIT, BEFORE A PERSON
+ * DECIDES: an hour without one page of the site loading. Counted from the
+ * first throttle after the last page that loaded, so a pause that worked --
+ * a page loads afterwards -- starts the count again. A site that NAMES its
+ * wait is taken at its word every time (up to RETRY_AFTER_CEILING_MS a wait):
+ * this rule is for a site that only ever says no.
+ */
+const THROTTLE_GIVE_UP_MS = 60 * 60 * 1000;
+
+/**
+ * THE BURST WINDOW. A throttle that arrives while a pause is already running,
+ * or within this of its start, and names a wait that ends no more than this
+ * after the pause does, is the same pause: the spread of one page's requests
+ * being refused together, not news.
+ */
+const PAUSE_EXTEND_TOLERANCE_MS = 2000;
 
 /**
  * A response header, from either shape the recorder sees: Playwright's
@@ -265,16 +309,19 @@ function parseRetryAfter(value, nowMs = Date.now()) {
 }
 
 /**
- * Exponential backoff with "equal" jitter: half the step, plus a random part of
- * the other half. Never zero, so a backoff is always a real wait, and never in
- * lockstep with another client that was throttled at the same moment.
+ * Exponential backoff with jitter: the step doubles from BACKOFF_BASE_MS to
+ * BACKOFF_MAX_MS, and up to BACKOFF_JITTER of it is taken off at random. Never
+ * zero, so a backoff is always a real wait; never above the cap, so "15 minutes
+ * at most" is a promise; and never in lockstep with another client that was
+ * throttled at the same moment.
  */
 function backoffMs(attempt, opts = {}) {
-    const baseMs = opts.baseMs === undefined ? 2000 : opts.baseMs;
-    const maxMs = opts.maxMs === undefined ? DEFAULT_RETRY_AFTER_CAP_MS : opts.maxMs;
+    const baseMs = opts.baseMs === undefined ? BACKOFF_BASE_MS : opts.baseMs;
+    const maxMs = opts.maxMs === undefined ? BACKOFF_MAX_MS : opts.maxMs;
+    const jitter = opts.jitter === undefined ? BACKOFF_JITTER : opts.jitter;
     const rng = opts.rng || Math.random;
     const step = Math.min(maxMs, baseMs * 2 ** Math.max(0, attempt - 1));
-    return Math.round(step / 2 + rng() * (step / 2));
+    return Math.max(1, Math.round(step * (1 - jitter * rng())));
 }
 
 // The body of a block or challenge page is small; a real page that merely
@@ -499,40 +546,72 @@ function classifyResponse(r, nowMs = Date.now()) {
 }
 
 /**
+ * Is this response a page of the site that LOADED -- the progress that ends a
+ * run of throttling? A main-frame document that answered 2xx or 3xx and is not
+ * itself a block or a challenge. A sub-resource that succeeds is not progress:
+ * a site metering its API can go on serving its images and analytics.
+ */
+function isPageLoad(r, nowMs = Date.now()) {
+    if (!r || !r.isDocument) return false;
+    const status = Number(r.status) || 0;
+    return status >= 200 && status < 400 && classifyResponse(r, nowMs) === null;
+}
+
+/**
  * Decide what each signal means for whatever is driving.
  *
- *   { action: 'pause', waitMs }   a throttle: wait out Retry-After (or a
- *                                  backoff with jitter), then carry on
- *   { action: 'hand-over', why }  stop driving; the human decides
- *   { action: 'none' }            part of a throttle already being handled
+ *   { action: 'pause', waitMs, until, named }
+ *                       a throttle: the WHOLE capture waits -- for exactly the
+ *                       Retry-After the site named (`named`), or for a backoff
+ *                       with jitter -- and then carries on by itself.
+ *                       `extended` when it lengthens a pause already running
+ *   { action: 'hand-over', why }
+ *                       a person decides; whatever drives is told to wait
+ *   { action: 'none' }  part of a pause already running, or after a
+ *                       hand-over nobody has handed back yet
  *
- * WHEN A THROTTLE BECOMES A HAND-OVER:
- *   - it persists: `maxEpisodes` throttle episodes inside `windowMs`;
- *   - the driver kept going through a pause: another throttle after the
- *     opening burst of an episode but before its pause ended (an agent the
- *     recorder cannot slow down looks exactly like this);
- *   - the site asks for longer than `retryAfterCapMs`.
+ * WHEN A THROTTLE BECOMES A HAND-OVER -- only these, and never sooner:
+ *   - the site names a wait longer than RETRY_AFTER_CEILING_MS (a day);
+ *   - the site names NO wait, and has gone on throttling for
+ *     THROTTLE_GIVE_UP_MS (an hour) with no page loading in between
+ *     (`progress()` is told of every page that loads).
  * A block or a challenge hands over at once. Nothing here ever retries them.
  *
- * Several requests on one page load can be throttled together. Signals within
- * `burstMs` of an episode's first are that same episode, not persistence.
+ * A THROTTLE DURING A PAUSE IS THE SAME PAUSE. The browser holds the site's
+ * requests while a pause runs (capture-pause.js), so what still arrives then
+ * was already in flight when it began -- one page's requests refused together.
+ * It lengthens the pause if it names a longer wait, and is otherwise nothing.
+ * (This used to hand over as "the driver ignored the pause". With the hold, a
+ * driver cannot reach the site during a pause, so that is no longer evidence
+ * of anything but timing.)
+ *
+ * `handedBack()` re-arms the monitor after a person hands the browser back: a
+ * second bot check later in the same recording is a second hand-over.
  */
 function createThrottleMonitor(opts = {}) {
     const now = opts.now || Date.now;
     const rng = opts.rng || Math.random;
-    const maxEpisodes = opts.maxEpisodes || 3;
-    const windowMs = opts.windowMs || 10 * 60000;
-    const burstMs = opts.burstMs === undefined ? 2000 : opts.burstMs;
-    const capMs = opts.retryAfterCapMs === undefined ? DEFAULT_RETRY_AFTER_CAP_MS : opts.retryAfterCapMs;
-    const backoff = { baseMs: opts.backoffBaseMs, maxMs: capMs, rng };
-    const episodes = [];
+    const ceilingMs = opts.retryAfterCeilingMs === undefined ? RETRY_AFTER_CEILING_MS : opts.retryAfterCeilingMs;
+    const giveUpMs = opts.giveUpMs === undefined ? THROTTLE_GIVE_UP_MS : opts.giveUpMs;
+    const toleranceMs = opts.extendToleranceMs === undefined ? PAUSE_EXTEND_TOLERANCE_MS : opts.extendToleranceMs;
+    const backoff = { baseMs: opts.backoffBaseMs, maxMs: opts.backoffMaxMs, jitter: opts.backoffJitter, rng };
+    let episodes = 0;
+    let attempt = 0;
+    let throttledSince = null;
     let current = null;
     let handedOver = null;
     const signals = [];
 
     function handOver(signal, why) {
         handedOver = { signal, why, at: now() };
+        current = null;
         return { action: 'hand-over', why, signal };
+    }
+
+    function pause(signal, t, waitMs, extended) {
+        current = { startedAt: extended ? current.startedAt : t, pausedUntil: t + waitMs };
+        return { action: 'pause', waitMs, until: t + waitMs, named: signal.retryAfterMs !== null, signal,
+            episode: episodes, ...(extended ? { extended: true } : {}) };
     }
 
     function observe(signal) {
@@ -541,38 +620,46 @@ function createThrottleMonitor(opts = {}) {
         if (handedOver) return { action: 'none', signal };
         if (signal.kind === 'blocked' || signal.kind === 'challenge') return handOver(signal, signal.kind);
         const t = now();
-        // THE BURST FIRST, the pause second: a burst is one episode whether or
-        // not its pause is still running. A Retry-After of 0 names a pause that
-        // is over the moment it starts, and the rest of that page load's
-        // refusals are still the same burst.
-        if (current && t - current.startedAt <= burstMs) {
-            if (signal.retryAfterMs !== null && signal.retryAfterMs > capMs) {
-                return handOver(signal, 'retry-after-too-long');
-            }
-            // The same burst naming a LONGER wait than the episode's: the
-            // longer one is what the site wants, and it is news. One that
-            // only differs by the burst's own spread is not.
-            if (signal.retryAfterMs !== null && t + signal.retryAfterMs > current.pausedUntil + burstMs) {
-                current.pausedUntil = t + signal.retryAfterMs;
-                return { action: 'pause', waitMs: signal.retryAfterMs, signal, episode: episodes.length };
+        const named = signal.retryAfterMs !== null;
+        if (named && signal.retryAfterMs > ceilingMs) return handOver(signal, 'retry-after-too-long');
+        // THE SAME PAUSE: one that is still running, or -- the burst rule --
+        // one that began within the burst window. A burst is one episode
+        // whether or not its pause is still running: a Retry-After of 0 names a
+        // pause that is over the moment it starts, and the rest of that page
+        // load's refusals are still the same burst.
+        if (current && (t < current.pausedUntil || t - current.startedAt <= toleranceMs)) {
+            // A longer named wait is what the site wants now.
+            if (named && t + signal.retryAfterMs > current.pausedUntil + toleranceMs) {
+                return pause(signal, t, signal.retryAfterMs, true);
             }
             return { action: 'none', signal };
         }
-        if (current && t < current.pausedUntil) return handOver(signal, 'ignored-pause');
-        while (episodes.length && episodes[0] <= t - windowMs) episodes.shift();
-        episodes.push(t);
-        if (episodes.length >= maxEpisodes) return handOver(signal, 'persistent');
-        if (signal.retryAfterMs !== null && signal.retryAfterMs > capMs) {
-            return handOver(signal, 'retry-after-too-long');
-        }
-        const waitMs = signal.retryAfterMs !== null ? signal.retryAfterMs : backoffMs(episodes.length, backoff);
-        current = { startedAt: t, pausedUntil: t + waitMs };
-        return { action: 'pause', waitMs, signal, episode: episodes.length };
+        if (throttledSince === null) throttledSince = t;
+        episodes++;
+        if (named) return pause(signal, t, signal.retryAfterMs, false);
+        if (t - throttledSince >= giveUpMs) return handOver(signal, 'persistent');
+        attempt++;
+        return pause(signal, t, backoffMs(attempt, backoff), false);
     }
 
     return {
         observe,
+        /** A page of the site loaded: whatever throttling there was is over. */
+        progress() {
+            throttledSince = null;
+            attempt = 0;
+        },
+        /** A person handed the browser back after a hand-over: watch again. */
+        handedBack() {
+            handedOver = null;
+            current = null;
+            throttledSince = null;
+            attempt = 0;
+        },
+        /** The pause ended early (the recording is ending, or a person took over). */
+        endPause() { current = null; },
         handedOver: () => handedOver,
+        throttledSince: () => throttledSince,
         signals: () => signals.slice()
     };
 }
@@ -614,90 +701,166 @@ function whereOf(url) {
     }
 }
 
-function describeWait(ms) {
+/**
+ * A length of time as a person says it: "45 s", "5 min", "4 min 30 s",
+ * "1 h 5 min". Never milliseconds -- nobody waits 52341 of anything.
+ */
+function describeDuration(ms) {
     if (ms === null || ms === undefined) return 'an unspecified time';
-    return ms >= 1000 ? `${seconds(Math.round(ms / 100) * 100)} s` : `${ms} ms`;
+    const totalS = Math.max(0, Math.round(ms / 1000));
+    if (totalS < 60) return `${totalS} s`;
+    const totalMin = Math.floor(totalS / 60);
+    if (totalMin < 60) {
+        const s = totalS % 60;
+        return s ? `${totalMin} min ${s} s` : `${totalMin} min`;
+    }
+    const totalMinRounded = Math.round(totalS / 60);
+    const h = Math.floor(totalMinRounded / 60);
+    const m = totalMinRounded % 60;
+    return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+/**
+ * The local wall-clock time a pause ends at, as the operator reads a clock:
+ * "10:42", or "Nov 18 10:42" when it is not today. `nowMs` is when it is said.
+ */
+function formatClock(ms, nowMs = Date.now()) {
+    const d = new Date(ms);
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    if (d.toDateString() === new Date(nowMs).toDateString()) return hm;
+    return `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()} ${hm}`;
 }
 
 const WHY = {
-    challenge: 'the site put up a bot check',
+    challenge: 'the site put up a bot check (a "prove you\'re human" page)',
     blocked: 'the site refused the visitor',
-    persistent: 'the site kept throttling after repeated pauses',
-    'ignored-pause': 'the site went on throttling while the drive should have been paused',
-    'retry-after-too-long': 'the site asked for a longer wait than is waited out automatically'
+    persistent: 'the site has gone on throttling for an hour without one page loading',
+    'retry-after-too-long': 'the site asked for a wait of more than a day'
 };
+
+/** Why a hand-over happened, in a phrase. */
+function handOverReason(decision) {
+    return WHY[decision.why] || 'the site is throttling or blocking this session';
+}
+
+/** "HTTP 429", or the signature when the status says nothing (a 200 challenge). */
+function httpOf(signal) {
+    return signal.status && signal.status !== 200 ? `HTTP ${signal.status}` : signal.signature;
+}
 
 /**
  * What the operator is told. `who` is what was driving:
  *
- *   'agent'   an -AI agent: the recorder cannot slow it down, so a pause is a
- *             warning, and a hand-over means the agent has been stopped
+ *   'agent'   an -AI agent the recorder can message: on a pause the browser
+ *             holds the site's requests and the agent is told to wait; on a
+ *             hand-over it is told a person is taking over
+ *   'agent-unmessaged'  an agent the recorder cannot message: the browser
+ *             still holds the site's requests, and that is all
  *   'agent-unstarted'  an -AI run whose agent had not been launched yet (the
- *             start page itself refused): it never will be
- *   'script'  this tooling's own navigation: a pause is taken, and a
- *             hand-over means it stopped
- *   'you'     a person browsing by hand, who gets advice rather than a
- *             hand-over -- it is already their browser
+ *             start page itself was refused or throttled)
+ *   'script'  this tooling's own navigation: the next step waits
+ *   'you'     a person browsing by hand, who gets advice rather than a pause
+ *             or a hand-over -- it is already their browser
  *
- * `opts.tool` names the speaker (default capture-har); `opts.finish` says how
- * the person ends the recording once they have taken over; `opts.noHuman`,
- * when there is nobody to hand the browser to (a headless run), replaces the
- * hand-over with what happens instead; `opts.noNextStep`, when the script has
- * no step left for a pause to hold, replaces "Pausing ..." with what the site
- * asked for and what happens instead.
+ * `opts.tool` names the speaker (default capture-har); `opts.clock(ms)` and
+ * `opts.now` render the end of a pause (injected so tests are deterministic);
+ * `opts.link` is the private phone link for a hand-over, `opts.noLink` why
+ * there is none; `opts.finish` says how the person ends or hands back once
+ * they have taken over; `opts.noHuman`, when there is nobody to hand the
+ * browser to (a headless run), replaces the hand-over with what happens;
+ * `opts.noNextStep`, when the script has no step left for a pause to hold,
+ * replaces the pause line with what the site asked for and what happens
+ * instead -- no pause is claimed.
  *
  * @returns {Array<[level, text]>} in the recorder's renderLines shape
  */
 function throttleLines(decision, who = 'you', opts = {}) {
     const tool = opts.tool || 'capture-har';
-    const finish = opts.finish || 'press ENTER here (or close the window) to finish';
+    const nowMs = opts.now === undefined ? Date.now() : opts.now;
+    const clock = opts.clock || ((ms) => formatClock(ms, nowMs));
+    const finish = opts.finish || 'press ENTER here (or close the window) to end the recording';
     const s = decision.signal;
     const at = `${s.signature} on ${whereOf(s.url)}`;
     if (decision.action === 'pause') {
-        const wait = describeWait(decision.waitMs);
-        const named = s.retryAfterMs !== null ? 'the wait the site named' : 'a backoff with jitter';
-        const head = `${tool}: the site is throttling this session (${at}).\n`;
-        if (who === 'you') return [['warn', `${head}  Wait at least ${wait} (${named}) before your next action.`]];
-        if (who === 'agent') {
-            return [['warn', `${head}  It asked for ${wait} (${named}); the agent is told to stop and hand back when a\n` +
-                '  page says so, and the recorder cannot slow it down. If the site throttles again\n' +
-                '  before then, or keeps throttling, the agent is stopped and the browser is yours.']];
+        const wait = describeDuration(decision.waitMs);
+        const until = clock(decision.until === undefined ? nowMs + decision.waitMs : decision.until);
+        if (who === 'you') {
+            const named = s.retryAfterMs !== null ? 'the wait the site named' : 'a backoff with jitter';
+            return [['warn', `${tool}: the site is throttling this session (${at}).\n` +
+                `  Wait at least ${wait} (${named}, until ${until}) before your next action.`]];
         }
         if (opts.noNextStep) {
             const asked = s.retryAfterMs !== null
-                ? `The site asked for a wait of ${describeWait(s.retryAfterMs)}` : 'The site named no wait';
-            return [['warn', `${head}  ${asked}; ${opts.noNextStep}`]];
+                ? `The site asked for a wait of ${describeDuration(s.retryAfterMs)}` : 'The site named no wait';
+            return [['warn', `${tool}: the site is throttling this session (${at}).\n  ${asked}; ${opts.noNextStep}`]];
         }
-        return [['warn', `${head}  Pausing ${wait} (${named}) before the next step.`]];
+        const head = decision.extended ? `${tool}: Pause extended until ${until}` : `${tool}: Paused until ${until}`;
+        const why = s.retryAfterMs !== null
+            ? `the site asked us to wait ${wait} (${httpOf(s)})`
+            : `the site is throttling (${httpOf(s)}) and named no wait, so backing off ${wait}`;
+        const holds = {
+            agent: 'the browser holds this capture\'s requests to the site, and the agent has been told to wait',
+            'agent-unmessaged': 'the browser holds this capture\'s requests to the site (this agent cannot be messaged)',
+            'agent-unstarted': 'the browser holds this capture\'s requests to the site, and the agent starts after it'
+        }[who] || 'the browser holds this capture\'s requests to the site, and the next step waits';
+        return [['warn', `${head} -- ${why}\n` +
+            `  ${at}. Nothing reaches the site until then:\n  ${holds}. It carries on by itself when the time is up.`]];
     }
     if (decision.action !== 'hand-over') return [];
-    const why = WHY[decision.why] || 'the site is throttling or blocking this session';
-    const wait = s.retryAfterMs !== null ? ` It asked for ${describeWait(s.retryAfterMs)} before the next request.` : '';
-    const head = `${tool}: ${why} (${at}).${wait}`;
+    const why = handOverReason(decision);
+    const wait = s.retryAfterMs !== null ? ` It asked for ${describeDuration(s.retryAfterMs)} before the next request.` : '';
     const evade = 'Nothing here retries it, solves it or works around it.';
     if (who === 'you') {
-        return [['warn', `${head}\n  ${evade} Answer it yourself in the browser if you choose\n` +
+        return [['warn', `${tool}: ${why} (${at}).${wait}\n  ${evade} Answer it yourself in the browser if you choose\n` +
             '  to, or end the recording; what was recorded so far is kept.']];
     }
-    const stopped = {
-        agent: 'The agent has been stopped',
-        'agent-unstarted': 'The agent was not started, and will not be'
+    const told = {
+        agent: 'The agent has been told to wait',
+        'agent-unmessaged': 'This agent cannot be messaged; its instructions tell it to stop at a check like this',
+        'agent-unstarted': 'The agent has not been started, and will not be unless you hand back'
     }[who] || 'Automated browsing has stopped';
     if (opts.noHuman) {
-        return [['warn', `${head}\n  ${stopped}. ${evade}\n  ${opts.noHuman} What was recorded is kept.`]];
+        return [['warn', `${tool}: ${why} (${at}).${wait}\n  ${told}. ${evade}\n  ${opts.noHuman} What was recorded is kept.`]];
     }
-    return [['warn', `${head}\n` +
-        `  ${stopped}. ${evade}\n` +
-        '  THE BROWSER IS YOURS: it is still open, and still recording. Take over there --\n' +
-        '  answer the check yourself if you choose to, or wait and carry on by hand -- then\n' +
+    const phone = opts.link ? ` Open on your phone: ${opts.link}` : '';
+    const noLink = !opts.link && opts.noLink ? `\n  ${opts.noLink}` : '';
+    return [['warn', `${tool}: Handed over to you: ${why}.${phone}\n` +
+        `  ${at}.${wait}${noLink}\n` +
+        `  ${told}. ${evade}\n` +
+        '  THE BROWSER IS YOURS: it is still open, and still recording. Take over there' +
+        (opts.link ? ' or on\n  your phone' : '') + ' -- answer the check yourself if you choose to -- then\n' +
         `  ${finish}. What was recorded is kept.`]];
+}
+
+/**
+ * What the operator is told when a pause or a hand-over ends and the capture
+ * carries on. `record` is the pause as capture-pause.js records it.
+ */
+function resumeLines(record, opts = {}) {
+    const tool = opts.tool || 'capture-har';
+    const after = describeDuration(record.pausedMs);
+    const by = {
+        phone: ' -- you handed the browser back on your phone',
+        terminal: ' -- you handed the browser back at the terminal'
+    }[record.resumedBy] || '';
+    const next = {
+        agent: '; the agent has been told to carry on',
+        'agent-unmessaged': '; the browser no longer holds the site\'s requests',
+        'agent-unstarted': '; the agent starts now'
+    }[record.driver] || '';
+    return [['warn', `${tool}: Resumed after ${after}${by}${next}.`]];
 }
 
 module.exports = {
     DEFAULT_PACE,
     PACE_OFF,
     MAX_PACE_WAIT_MS,
-    DEFAULT_RETRY_AFTER_CAP_MS,
+    RETRY_AFTER_CEILING_MS,
+    BACKOFF_BASE_MS,
+    BACKOFF_MAX_MS,
+    BACKOFF_JITTER,
+    THROTTLE_GIVE_UP_MS,
+    PAUSE_EXTEND_TOLERANCE_MS,
     CHALLENGE_BODY_MAX,
     INTERSTITIAL_BODY_MAX,
     parsePace,
@@ -708,8 +871,13 @@ module.exports = {
     parseRetryAfter,
     backoffMs,
     classifyResponse,
+    isPageLoad,
     createThrottleMonitor,
     createRateWatch,
     throttleLines,
+    resumeLines,
+    handOverReason,
+    describeDuration,
+    formatClock,
     whereOf
 };
