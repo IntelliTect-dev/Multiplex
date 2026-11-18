@@ -114,7 +114,7 @@ public sealed partial class OAuthClients(
 
         var now = time.GetUtcNow();
         var client = new RegisteredClient(OAuthCrypto.NewId(), name.Length > 0 ? name : null, redirectUris, now, now);
-        await store.WriteAsync(s => s.Clients[client.ClientId] = client, ct);
+        await store.WriteAsync(s => StoreWrite.Changed(s.Clients[client.ClientId] = client), ct);
 
         LogRegistered(logger, client.ClientId, client.ClientName ?? "", requestedAuth ?? "(none given)");
 

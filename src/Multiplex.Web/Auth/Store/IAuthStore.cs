@@ -10,8 +10,25 @@ public interface IAuthStore
     /// <summary>Reads without persisting. The delegate must not mutate the state.</summary>
     Task<T> ReadAsync<T>(Func<AuthState, T> read, CancellationToken ct);
 
-    /// <summary>Prunes expired entries, runs <paramref name="write"/>, then persists the state.</summary>
-    Task<T> WriteAsync<T>(Func<AuthState, T> write, CancellationToken ct);
+    /// <summary>
+    /// Prunes expired entries, runs <paramref name="write"/>, then persists the state only when the delegate
+    /// reports a change, so a refused or no-op request costs no encrypt and fsync under the lock. A delegate
+    /// that mutates the state must return <see cref="StoreWrite.Changed{T}"/> (refusals that revoke something
+    /// included); one that returns <see cref="StoreWrite.Unchanged{T}"/> must not have mutated it.
+    /// </summary>
+    Task<T> WriteAsync<T>(Func<AuthState, StoreWrite<T>> write, CancellationToken ct);
+}
+
+/// <summary>What an <see cref="IAuthStore.WriteAsync{T}"/> delegate returns, and whether it changed the state.</summary>
+public readonly record struct StoreWrite<T>(T Result, bool Changed);
+
+public static class StoreWrite
+{
+    /// <summary>The delegate changed the state, so it is persisted.</summary>
+    public static StoreWrite<T> Changed<T>(T result) => new(result, true);
+
+    /// <summary>The delegate left the state as it was, so nothing is written.</summary>
+    public static StoreWrite<T> Unchanged<T>(T result) => new(result, false);
 }
 
 /// <summary>Locking, pruning and rollback shared by the store implementations.</summary>
@@ -36,7 +53,7 @@ public abstract class AuthStoreBase(TimeProvider time) : IAuthStore, IDisposable
         }
     }
 
-    public async Task<T> WriteAsync<T>(Func<AuthState, T> write, CancellationToken ct)
+    public async Task<T> WriteAsync<T>(Func<AuthState, StoreWrite<T>> write, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
@@ -44,9 +61,10 @@ public abstract class AuthStoreBase(TimeProvider time) : IAuthStore, IDisposable
             _state ??= await LoadAsync(ct);
             try
             {
+                // Pruning alone is not saved: expired entries are dropped again after a reload.
                 _state.Prune(Time.GetUtcNow());
-                var result = write(_state);
-                await SaveAsync(_state, CancellationToken.None);
+                var (result, changed) = write(_state);
+                if (changed) await SaveAsync(_state, CancellationToken.None);
                 return result;
             }
             catch
@@ -65,7 +83,7 @@ public abstract class AuthStoreBase(TimeProvider time) : IAuthStore, IDisposable
     /// <summary>Loads the persisted state, or a new empty one.</summary>
     protected abstract Task<AuthState> LoadAsync(CancellationToken ct);
 
-    /// <summary>Persists the state after a write.</summary>
+    /// <summary>Persists the state after a write that changed it.</summary>
     protected abstract Task SaveAsync(AuthState state, CancellationToken ct);
 
     public void Dispose()

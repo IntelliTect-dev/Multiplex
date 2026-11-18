@@ -56,11 +56,11 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
         var refresh = OAuthCrypto.NewToken();
         var codeHash = OAuthCrypto.Hash(code);
 
-        var (grant, failure) = await store.WriteAsync<(GrantRecord?, OAuthResponse?)>(s =>
+        var (grant, failure) = await store.WriteAsync(s =>
         {
             if (!s.AuthorizationCodes.TryGetValue(codeHash, out var c) || c.ExpiresAt <= now)
             {
-                return (null, OAuthResponse.Error("invalid_grant", "The authorization code is invalid or has expired."));
+                return TokenWrite.Refused("invalid_grant", "The authorization code is invalid or has expired.");
             }
             if (c.RedeemedGrantId is { } earlier)
             {
@@ -68,19 +68,19 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
                 s.RevokeGrant(earlier);
                 s.AuthorizationCodes.Remove(codeHash);
                 LogCodeReused(logger, c.ClientId, c.Site, c.AccountId);
-                return (null, OAuthResponse.Error("invalid_grant", "The authorization code was already used."));
+                return TokenWrite.RefusedAfterRevoking("The authorization code was already used.");
             }
-            if (c.ClientId != clientId) return (null, OAuthResponse.Error("invalid_grant", "The authorization code was issued to another client."));
-            if (c.RedirectUri != redirectUri) return (null, OAuthResponse.Error("invalid_grant", "redirect_uri does not match the authorization request."));
-            if (!OAuthCrypto.VerifyS256(verifier!, c.CodeChallenge)) return (null, OAuthResponse.Error("invalid_grant", "code_verifier does not match the code_challenge."));
-            if (resource is not null && resource != c.Resource) return (null, OAuthResponse.Error("invalid_target", "resource does not match the authorization request."));
+            if (c.ClientId != clientId) return TokenWrite.Refused("invalid_grant", "The authorization code was issued to another client.");
+            if (c.RedirectUri != redirectUri) return TokenWrite.Refused("invalid_grant", "redirect_uri does not match the authorization request.");
+            if (!OAuthCrypto.VerifyS256(verifier!, c.CodeChallenge)) return TokenWrite.Refused("invalid_grant", "code_verifier does not match the code_challenge.");
+            if (resource is not null && resource != c.Resource) return TokenWrite.Refused("invalid_target", "resource does not match the authorization request.");
 
             var g = new GrantRecord(OAuthCrypto.NewId(), c.ClientId, c.Site, c.AccountId, c.Resource, c.Scope, now);
             s.Grants[g.Id] = g;
             s.AuthorizationCodes[codeHash] = c with { RedeemedGrantId = g.Id };
             Issue(s, g, access, refresh, now);
             OAuthClients.Touch(s, clientId, now);
-            return (g, null);
+            return TokenWrite.IssuedIn(g);
         }, ct);
 
         if (failure is not null)
@@ -103,26 +103,26 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
         var refresh = OAuthCrypto.NewToken();
         var hash = OAuthCrypto.Hash(token);
 
-        var (grant, failure) = await store.WriteAsync<(GrantRecord?, OAuthResponse?)>(s =>
+        var (grant, failure) = await store.WriteAsync(s =>
         {
             if (!s.RefreshTokens.TryGetValue(hash, out var r) || r.ExpiresAt <= now || !s.Grants.TryGetValue(r.GrantId, out var g))
             {
-                return (null, OAuthResponse.Error("invalid_grant", "The refresh token is invalid, expired or revoked."));
+                return TokenWrite.Refused("invalid_grant", "The refresh token is invalid, expired or revoked.");
             }
-            if (r.ClientId != clientId) return (null, OAuthResponse.Error("invalid_grant", "The refresh token was issued to another client."));
+            if (r.ClientId != clientId) return TokenWrite.Refused("invalid_grant", "The refresh token was issued to another client.");
             if (r.Used)
             {
                 // Rotation: a used refresh token presented again means it leaked; end the whole family.
                 s.RevokeGrant(r.GrantId);
                 LogRefreshReused(logger, g.ClientId, g.Site, g.AccountId);
-                return (null, OAuthResponse.Error("invalid_grant", "The refresh token was already used; the grant has been revoked."));
+                return TokenWrite.RefusedAfterRevoking("The refresh token was already used; the grant has been revoked.");
             }
-            if (resource is not null && resource != g.Resource) return (null, OAuthResponse.Error("invalid_target", "resource does not match the grant."));
+            if (resource is not null && resource != g.Resource) return TokenWrite.Refused("invalid_target", "resource does not match the grant.");
 
             s.RefreshTokens[hash] = r with { Used = true };
             Issue(s, g, access, refresh, now);
             OAuthClients.Touch(s, clientId, now);
-            return (g, null);
+            return TokenWrite.IssuedIn(g);
         }, ct);
 
         if (failure is not null)
@@ -150,14 +150,14 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
             if (s.RefreshTokens.TryGetValue(hash, out var r) && (clientId is null || r.ClientId == clientId))
             {
                 s.RevokeGrant(r.GrantId);
-                return r.ClientId;
+                return StoreWrite.Changed<string?>(r.ClientId);
             }
             if (s.AccessTokens.TryGetValue(hash, out var a) && (clientId is null || a.ClientId == clientId))
             {
                 s.AccessTokens.Remove(hash);
-                return a.ClientId;
+                return StoreWrite.Changed<string?>(a.ClientId);
             }
-            return null;
+            return StoreWrite.Unchanged<string?>(null);
         }, ct);
 
         if (revoked is not null) LogRevokedByClient(logger, revoked);
@@ -172,15 +172,12 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
             foreach (var id in ids) s.RevokeGrant(id);
 
             // Tokens of grants already pruned, and codes not yet redeemed, must not outlive the account either.
-            foreach (var key in s.AccessTokens.Where(kv => kv.Value.Site == site && kv.Value.AccountId == accountId).Select(kv => kv.Key).ToList())
-            {
-                s.AccessTokens.Remove(key);
-            }
-            foreach (var key in s.AuthorizationCodes.Where(kv => kv.Value.Site == site && kv.Value.AccountId == accountId).Select(kv => kv.Key).ToList())
-            {
-                s.AuthorizationCodes.Remove(key);
-            }
-            return ids.Count;
+            var tokens = s.AccessTokens.Where(kv => kv.Value.Site == site && kv.Value.AccountId == accountId).Select(kv => kv.Key).ToList();
+            foreach (var key in tokens) s.AccessTokens.Remove(key);
+            var codes = s.AuthorizationCodes.Where(kv => kv.Value.Site == site && kv.Value.AccountId == accountId).Select(kv => kv.Key).ToList();
+            foreach (var key in codes) s.AuthorizationCodes.Remove(key);
+
+            return new StoreWrite<int>(ids.Count, Changed: ids.Count + tokens.Count + codes.Count > 0);
         }, ct);
 
         LogAccountRevoked(logger, site, accountId, grants);
@@ -218,6 +215,19 @@ public sealed partial class TokenService(IAuthStore store, TimeProvider time, IL
         s.AccessTokens[OAuthCrypto.Hash(access)] = new AccessTokenRecord(
             g.Id, g.ClientId, g.Site, g.AccountId, g.Resource, g.Scope, now + AuthLifetimes.AccessToken);
         s.RefreshTokens[OAuthCrypto.Hash(refresh)] = new RefreshTokenRecord(g.Id, g.ClientId, now + AuthLifetimes.RefreshToken);
+    }
+
+    /// <summary>What a token store write produced: the grant tokens were issued in, or the refusal.</summary>
+    private readonly record struct TokenWrite(GrantRecord? Grant, OAuthResponse? Failure)
+    {
+        public static StoreWrite<TokenWrite> IssuedIn(GrantRecord grant) => StoreWrite.Changed(new TokenWrite(grant, null));
+
+        public static StoreWrite<TokenWrite> Refused(string error, string description) =>
+            StoreWrite.Unchanged(new TokenWrite(null, OAuthResponse.Error(error, description)));
+
+        /// <summary>Refused after revoking a leaked grant; the revocation must still be persisted.</summary>
+        public static StoreWrite<TokenWrite> RefusedAfterRevoking(string description) =>
+            StoreWrite.Changed(new TokenWrite(null, OAuthResponse.Error("invalid_grant", description)));
     }
 
     private static OAuthResponse Success(string access, string refresh, string scope) =>

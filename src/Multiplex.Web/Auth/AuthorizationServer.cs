@@ -86,7 +86,7 @@ public sealed partial class AuthorizationServer(
         {
             st.PendingAuthorizations[pending.Id] = pending;
             OAuthClients.Touch(st, client.ClientId, now);
-            return true;
+            return StoreWrite.Changed(true);
         }, ct);
 
         LogStarted(logger, client.ClientId, endpoint.Slug);
@@ -112,17 +112,20 @@ public sealed partial class AuthorizationServer(
 
         var now = time.GetUtcNow();
         var code = OAuthCrypto.NewToken();
-        var (pending, problem) = await store.WriteAsync<(PendingAuthorizationRecord?, string?)>(s =>
+        var (pending, problem) = await store.WriteAsync(s =>
         {
-            if (!s.PendingAuthorizations.TryGetValue(pendingId, out var p)) return (null, "unknown");
-            if (p.ExpiresAt <= now) return (p, "expired");
-            if (!string.Equals(p.Site, account.Site, StringComparison.Ordinal)) return (p, "site");
-
-            s.PendingAuthorizations.Remove(pendingId);
-            s.AuthorizationCodes[OAuthCrypto.Hash(code)] = new AuthorizationCodeRecord(
-                p.ClientId, p.RedirectUri, p.CodeChallenge, p.Resource, p.Scope, p.Site, account.AccountId,
-                now + AuthLifetimes.AuthorizationCode);
-            return (p, null);
+            var problem = !s.PendingAuthorizations.TryGetValue(pendingId, out var p) ? "unknown"
+                : p.ExpiresAt <= now ? "expired"
+                : !string.Equals(p.Site, account.Site, StringComparison.Ordinal) ? "site"
+                : null;
+            if (problem is null)
+            {
+                s.PendingAuthorizations.Remove(pendingId);
+                s.AuthorizationCodes[OAuthCrypto.Hash(code)] = new AuthorizationCodeRecord(
+                    p!.ClientId, p.RedirectUri, p.CodeChallenge, p.Resource, p.Scope, p.Site, account.AccountId,
+                    now + AuthLifetimes.AuthorizationCode);
+            }
+            return new StoreWrite<(PendingAuthorizationRecord?, string?)>((p, problem), Changed: problem is null);
         }, ct);
 
         switch (problem)
@@ -149,7 +152,11 @@ public sealed partial class AuthorizationServer(
         ArgumentException.ThrowIfNullOrEmpty(error);
 
         // An expired authorization can still be failed, so the person is sent back to their app.
-        var pending = await store.WriteAsync(s => s.PendingAuthorizations.Remove(pendingId, out var p) ? p : null, ct)
+        var pending = await store.WriteAsync(s =>
+            {
+                var removed = s.PendingAuthorizations.Remove(pendingId, out var p);
+                return new StoreWrite<PendingAuthorizationRecord?>(p, Changed: removed);
+            }, ct)
             ?? throw new InvalidOperationException("The pending authorization is unknown or has already ended.");
 
         LogFailed(logger, pending.ClientId, pending.Site, error);
