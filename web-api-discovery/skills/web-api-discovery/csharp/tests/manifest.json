@@ -38,6 +38,13 @@
       ]
     },
     {
+      "file": "ToolSessionTests.cs.tmpl",
+      "requiredTokens": [
+        "Namespace",
+        "ProjectName"
+      ]
+    },
+    {
       "file": "MockHandler.cs.tmpl",
       "requiredTokens": [
         "Namespace"

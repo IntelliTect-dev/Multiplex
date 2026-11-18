@@ -49,6 +49,7 @@ Describe "tests-templates directory exists" {
             "ClientTests.cs.tmpl",
             "MockHandler.cs.tmpl",
             "PacingHandlerTests.cs.tmpl",
+            "ToolSessionTests.cs.tmpl",
             "pester/Mcp.Tests.ps1.tmpl",
             "pester/run-pester.ps1.tmpl"
         ) | Sort-Object
@@ -150,6 +151,27 @@ Describe "Codegen integration: emits test project" {
         }
         $body | Should -Match 'ExampleExThrottledException' -Because 'the exception carries the project name'
         $body | Should -Match 'new ExampleExClient\(creds, Unspaced, site\)' -Because 'one fact proves the client is wired through the handler'
+    }
+    It "emits ToolSessionTests.cs, so every wrapper tests when its MCP server reads the session" {
+        $file = Join-Path $script:TestProjDir "ToolSessionTests.cs"
+        Test-Path $file | Should -BeTrue
+        $body = Get-Content $file -Raw
+        $body | Should -Not -Match '\{\{' -Because 'every token is substituted'
+        # What the tool session promises, each pinned by its own fact. They run
+        # in "Buildable + runnable test project" below.
+        foreach ($fact in @(
+            'Creating_the_tool_session_reads_no_saved_session',
+            'The_first_call_reads_the_saved_session_and_later_calls_reuse_its_client',
+            'Without_a_saved_session_a_call_fails_in_words_the_model_can_pass_on',
+            'A_session_saved_after_a_failed_call_is_used_without_a_restart',
+            'An_expired_session_is_reported_and_the_next_call_reads_the_store_again',
+            'A_refusal_from_the_site_reaches_the_caller_and_keeps_the_session',
+            'An_answer_that_is_not_the_expected_json_does_not_claim_nothing_happened',
+            'Any_other_failure_is_left_for_the_server_to_report_without_its_detail',
+            'A_call_after_the_tool_session_is_disposed_is_refused')) {
+            $body | Should -Match ([regex]::Escape($fact)) -Because "ToolSessionTests must keep the fact $fact"
+        }
+        $body | Should -Match 'class ExampleExToolSessionTests' -Because 'the test class carries the project name'
     }
     It "keeps the pacing facts out of the one-[Fact]-per-endpoint ClientTests.* files" {
         Get-ChildItem $script:TestProjDir -Filter "ClientTests.*.cs" | ForEach-Object {

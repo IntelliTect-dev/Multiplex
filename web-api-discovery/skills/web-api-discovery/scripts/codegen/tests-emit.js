@@ -9,6 +9,7 @@
 //       FixtureLoader.cs
 //       MockHandler.cs
 //       PacingHandlerTests.cs     (the client's pacing + throttling handler)
+//       ToolSessionTests.cs       (the MCP server's lazily read session)
 //       ClientTests.<Group>.cs    (one per resource group; [Fact] per endpoint)
 //       pester/
 //         Mcp.Tests.ps1
@@ -136,6 +137,11 @@ function emitTestScaffold(args) {
     // that glob is one [Fact] per endpoint, and these are not endpoints.
     const phTmpl = fs.readFileSync(path.join(tmplDir, 'PacingHandlerTests.cs.tmpl'), 'utf8');
     fs.writeFileSync(path.join(testProjDir, 'PacingHandlerTests.cs'), substitute(phTmpl, baseTokens));
+
+    // ToolSessionTests.cs -- the MCP server's tool session: the saved session is
+    // read at the first tool call, and a call with none is told so in words.
+    const tsTmpl = fs.readFileSync(path.join(tmplDir, 'ToolSessionTests.cs.tmpl'), 'utf8');
+    fs.writeFileSync(path.join(testProjDir, 'ToolSessionTests.cs'), substitute(tsTmpl, baseTokens));
 
     // ClientTests.<Group>.cs (per group)
     const clientName = projectName + 'Client';

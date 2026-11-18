@@ -71,6 +71,7 @@ Describe "C# template manifest" {
             "DpapiSessionStore.cs.tmpl",
             "UserSecretsSessionStore.cs.tmpl",
             "McpProgram.cs.tmpl",
+            "ToolSession.cs.tmpl",
             "OAuthPkceAuthenticator.cs.tmpl",
             "CrossPlatformSessionStore.cs.tmpl",
             "README.SSO.md.tmpl",
@@ -95,6 +96,7 @@ Describe "Per-template token contract" {
         @{ file = "DpapiSessionStore.cs.tmpl" }
         @{ file = "UserSecretsSessionStore.cs.tmpl" }
         @{ file = "McpProgram.cs.tmpl" }
+        @{ file = "ToolSession.cs.tmpl" }
     ) {
         $entry = $script:Manifest.templates | Where-Object { $_.file -eq $file }
         $entry | Should -Not -BeNullOrEmpty -Because "manifest must list $file"
