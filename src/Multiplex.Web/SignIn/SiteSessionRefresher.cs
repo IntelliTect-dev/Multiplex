@@ -12,7 +12,7 @@ public sealed class SiteRefreshException(string message, Exception? inner = null
 /// <see cref="ISiteSessionRefresher"/>: relaunches the account's persistent profile, loads the
 /// site's refresh page and re-reads the session. Three outcomes, never more:
 /// signed in → new snapshot stored and returned; on the site's login page → session removed,
-/// grants revoked, <c>null</c>; anything else (block page, timeout, launch failure) →
+/// grants revoked, browser profile deleted, <c>null</c>; anything else (block page, timeout, launch failure) →
 /// <see cref="SiteRefreshException"/> with nothing touched. One refresh per account at a time,
 /// and a repeat within <see cref="SignInOptions.RefreshCooldown"/> returns the last result.
 /// </summary>
@@ -65,6 +65,7 @@ public sealed class SiteSessionRefresher(
             throw new SiteRefreshException($"No browser profile is kept for this {definition.DisplayName} account.");
 
         IBrowser? browser = null;
+        var signedOut = false;
         try
         {
             try
@@ -86,6 +87,7 @@ public sealed class SiteSessionRefresher(
                     logger.LogWarning("The {Site} profile for account {AccountId} is now signed in as {Other}; treating {AccountId} as signed out.",
                         site, accountId, account.AccountId, accountId);
                     await SignedOutAsync(site, accountId, ct);
+                    signedOut = true;
                     return null;
                 }
 
@@ -99,6 +101,7 @@ public sealed class SiteSessionRefresher(
             if (outcome.SignedOut)
             {
                 await SignedOutAsync(site, accountId, ct);
+                signedOut = true;
                 return null;
             }
 
@@ -108,6 +111,22 @@ public sealed class SiteSessionRefresher(
         finally
         {
             await manager.CloseAsync(browser);
+            // Only once Chrome has exited can its profile go; it is of no use to a signed-out account.
+            if (signedOut) await DeleteProfileAsync(site, accountId, profile);
+        }
+    }
+
+    /// <summary>Best effort: the sign-out itself (session removed, grants revoked) already stands.</summary>
+    private async Task DeleteProfileAsync(string site, string accountId, string profile)
+    {
+        try
+        {
+            await manager.DeleteProfileAsync(profile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            logger.LogWarning("Could not delete the browser profile of signed-out {Site} account {AccountId}: {Error}",
+                site, accountId, ex.GetType().Name);
         }
     }
 
