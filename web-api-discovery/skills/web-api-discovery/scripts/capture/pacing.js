@@ -641,7 +641,9 @@ const WHY = {
  * `opts.tool` names the speaker (default capture-har); `opts.finish` says how
  * the person ends the recording once they have taken over; `opts.noHuman`,
  * when there is nobody to hand the browser to (a headless run), replaces the
- * hand-over with what happens instead.
+ * hand-over with what happens instead; `opts.noNextStep`, when the script has
+ * no step left for a pause to hold, replaces "Pausing ..." with what the site
+ * asked for and what happens instead.
  *
  * @returns {Array<[level, text]>} in the recorder's renderLines shape
  */
@@ -659,6 +661,11 @@ function throttleLines(decision, who = 'you', opts = {}) {
             return [['warn', `${head}  It asked for ${wait} (${named}); the agent is told to stop and hand back when a\n` +
                 '  page says so, and the recorder cannot slow it down. If the site throttles again\n' +
                 '  before then, or keeps throttling, the agent is stopped and the browser is yours.']];
+        }
+        if (opts.noNextStep) {
+            const asked = s.retryAfterMs !== null
+                ? `The site asked for a wait of ${describeWait(s.retryAfterMs)}` : 'The site named no wait';
+            return [['warn', `${head}  ${asked}; ${opts.noNextStep}`]];
         }
         return [['warn', `${head}  Pausing ${wait} (${named}) before the next step.`]];
     }

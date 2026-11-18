@@ -64,12 +64,15 @@ function parseArgs(argv) {
  * navigates once, to the start page, and the person at the window browses from
  * there: they get advice -- what the site did, how long it asked them to wait
  * -- because nothing of the script's is left to pause or stop. HEADLESS,
- * nobody is there, and a hand-over ends the run (exit 3).
+ * nobody is there, and a hand-over ends the run (exit 3). A throttle is said
+ * as what it is: the one navigation is the whole run, so no pause is taken --
+ * there is no later request of the script's for one to hold.
  */
 function throttleAudience(args) {
     return args.headless
         ? { who: 'script', say: { tool: 'capture-cdp',
-            noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' } }
+            noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).',
+            noNextStep: 'this run makes no further requests of its own.' } }
         : { who: 'you', say: { tool: 'capture-cdp' } };
 }
 

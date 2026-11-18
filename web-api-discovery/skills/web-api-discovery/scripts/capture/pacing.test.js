@@ -41,6 +41,8 @@
 //   D1  capture-cdp.js: --throttle-ms 0 means zero, and --pace is validated
 //   D2  capture-cdp.js reads the body of a JSON refusal, so C8 can see it
 //   D3  headed, capture-cdp.js advises the person browsing; it claims no pause
+//   D4  headless, capture-cdp.js claims no pause either: the site asked for a
+//       wait (or named none), and the run makes no further requests of its own
 
 'use strict';
 
@@ -760,6 +762,25 @@ test('D3: headed, capture-cdp tells the person browsing what to do; it claims no
     const headless = throttleAudience({ headless: true });
     const ended = pacing.throttleLines(block, headless.who, headless.say).map(([, t]) => t).join('\n');
     assert.match(ended, /Nobody can take over a headless browser, so this run ends \(exit 3\)/);
+});
+
+test('D4: headless, capture-cdp claims no pause: the site asked for a wait, and the run makes no more requests', () => {
+    const { throttleAudience } = require(path.join(__dirname, 'capture-cdp.js'));
+    const headless = throttleAudience({ headless: true });
+    const say = (signal, waitMs) => pacing.throttleLines({ action: 'pause', waitMs, signal }, headless.who, headless.say)
+        .map(([, t]) => t).join('\n');
+    // Headless, the one navigation is the whole run: nothing comes after it to
+    // hold, so "Pausing ... before the next step" described a wait never taken.
+    const named = say(throttle(30000), 30000);
+    assert.doesNotMatch(named, /Pausing|before the next step/, `a pause nothing takes:\n${named}`);
+    assert.match(named, /^capture-cdp: the site is throttling this session/);
+    assert.match(named, /The site asked for a wait of 30 s/);
+    assert.match(named, /this run makes no further requests of its own/);
+    // With no Retry-After the site named no wait, so none is claimed for it.
+    const unnamed = say(throttle(null), 2000);
+    assert.doesNotMatch(unnamed, /Pausing|before the next step|asked for/, `a wait the site never named:\n${unnamed}`);
+    assert.match(unnamed, /The site named no wait/);
+    assert.match(unnamed, /this run makes no further requests of its own/);
 });
 
 test('D2: capture-cdp reads the body of any refusal from the site, JSON included', () => {
