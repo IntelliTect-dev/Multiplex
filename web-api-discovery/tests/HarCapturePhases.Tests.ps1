@@ -228,7 +228,11 @@ BeforeAll {
             $code = $LASTEXITCODE
         }
         finally { Pop-Location }
-        [pscustomobject]@{ ExitCode = $code; Text = ($out | Out-String) }
+        # A child pwsh colours its WARNING lines when the host says it may
+        # (hosted CI on Linux, Git Bash): strip the escape codes so a match on
+        # '^WARNING:' reads what the operator reads, not the terminal's markup.
+        $text = ($out | Out-String) -replace "`e\[[0-9;?]*[A-Za-z]", ''
+        [pscustomobject]@{ ExitCode = $code; Text = $text }
     }
 
     # The front door IN this process, for what a child process flattens to
@@ -1422,7 +1426,8 @@ Describe 'a re-scrub uses the operator profile the recording scrubbed with (#24 
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
             -Body ('{"account":"' + $script:Literal + '"}') -ScrubProfilePath $script:SubProfile
         $before = (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash
-        Remove-Item -LiteralPath $script:SubProfile
+        # -Force: on Linux a dot-file is hidden, and Remove-Item refuses a hidden item without it.
+        Remove-Item -LiteralPath $script:SubProfile -Force
 
         $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
 
