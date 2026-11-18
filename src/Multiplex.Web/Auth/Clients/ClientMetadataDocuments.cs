@@ -9,9 +9,11 @@ namespace Multiplex.Web.Auth.Clients;
 /// Fetches OAuth client ID metadata documents (an HTTPS URL used as <c>client_id</c>, e.g. ChatGPT's
 /// <c>https://chatgpt.com/oauth/client.json</c> or Claude's). Bounded: 15 s for the whole fetch
 /// including redirects (a busy PC took over 5 s for Claude's), 64 KB, HTTPS only (redirects too).
-/// Cached 10 minutes; a definite failure (a 4xx, a bad document) 1 minute. A failure for the moment
-/// (a timeout, a connection error, a 5xx or 429) is not cached, and falls back to the last good
-/// document for up to a day, so a slow or briefly down host never blocks a connect it served before.
+/// Cached 10 minutes; a definite failure (a 4xx, a bad document, a name that does not resolve, a
+/// bad certificate, a host that is not public) 1 minute, and it withdraws the last good document.
+/// A failure for the moment (a timeout, a refused or dropped connection, a 5xx or 429) is not
+/// cached; it falls back to the last good document for up to 6 hours (reused for a minute), so a
+/// slow or briefly down host never blocks a connect it served before.
 /// </summary>
 public sealed partial class ClientMetadataDocuments(
     IHttpClientFactory httpClients,
@@ -25,7 +27,8 @@ public sealed partial class ClientMetadataDocuments(
     private const int MaxCacheEntries = 1000;
     private static readonly TimeSpan SuccessLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan FailureLifetime = TimeSpan.FromMinutes(1);
-    private static readonly TimeSpan LastGoodLifetime = TimeSpan.FromDays(1);
+    private static readonly TimeSpan LastGoodLifetime = TimeSpan.FromHours(6);
+    private static readonly TimeSpan FallbackLifetime = TimeSpan.FromMinutes(1);
 
     /// <summary>The whole fetch, redirects included.</summary>
     internal TimeSpan FetchTimeout { get; set; } = TimeSpan.FromSeconds(15);
@@ -55,22 +58,36 @@ public sealed partial class ClientMetadataDocuments(
         }
         else if (transient)
         {
-            // Not cached: the next attempt fetches again. A document that was good recently still serves.
+            // A document that was good recently still serves, and is reused for a minute so every
+            // request during an outage does not wait out the fetch again. Without one, nothing is
+            // cached: the next attempt fetches again.
             if (_lastGood.TryGetValue(clientId, out var good) && now - good.FetchedAt < LastGoodLifetime)
             {
                 LogUsingLastGood(logger, clientId);
+                Remember(clientId, good.Result, now + FallbackLifetime, now);
                 return good.Result;
             }
             return result;
         }
+        else
+        {
+            // A definite answer (gone, invalid) withdraws the last good document: a later outage
+            // must not bring it back.
+            _lastGood.TryRemove(clientId, out _);
+        }
 
+        Remember(clientId, result, now + (result.Client is null ? FailureLifetime : SuccessLifetime), now);
+        return result;
+    }
+
+    private void Remember(string clientId, ClientLookup result, DateTimeOffset expires, DateTimeOffset now)
+    {
         if (_cache.Count >= MaxCacheEntries)
         {
             foreach (var stale in _cache.Where(kv => kv.Value.Expires <= now).Select(kv => kv.Key).ToList()) _cache.TryRemove(stale, out _);
             if (_cache.Count >= MaxCacheEntries) _cache.Clear();
         }
-        _cache[clientId] = (result, now + (result.Client is null ? FailureLifetime : SuccessLifetime));
-        return result;
+        _cache[clientId] = (result, expires);
     }
 
     /// <summary>The lookup, and whether a failure is only for the moment (worth trying again soon).</summary>
@@ -119,9 +136,22 @@ public sealed partial class ClientMetadataDocuments(
         }
         catch (HttpRequestException ex)
         {
-            return (Failed(clientId, $"could not be fetched ({ex.HttpRequestError})"), true);
+            // A name that does not resolve, a bad certificate, or a host refused as not public will
+            // not start working on the next request; anything else (a refused or reset
+            // connection) may.
+            var definite = ex.HttpRequestError is HttpRequestError.NameResolutionError or HttpRequestError.SecureConnectionError
+                || ex.InnerException is NotPublicAddressException;
+            return (Failed(clientId, $"could not be fetched ({ex.HttpRequestError})"), !definite);
+        }
+        catch (IOException)
+        {
+            // The connection dropped while the document was being read.
+            return (Failed(clientId, "could not be read (the connection dropped)"), true);
         }
     }
+
+    /// <summary>The document's host resolves only to addresses this server must not connect to.</summary>
+    private sealed class NotPublicAddressException() : IOException("The host does not resolve to a public address.");
 
     private static async Task<byte[]?> ReadBoundedAsync(HttpContent content, CancellationToken ct)
     {
@@ -189,7 +219,7 @@ public sealed partial class ClientMetadataDocuments(
         var addresses = (await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct)).Where(IsPublic).ToList();
         if (addresses.Count == 0)
         {
-            throw new HttpRequestException(HttpRequestError.ConnectionError, "The host does not resolve to a public address.");
+            throw new HttpRequestException(HttpRequestError.ConnectionError, "The host does not resolve to a public address.", new NotPublicAddressException());
         }
 
         // Try each public address in turn, so an unreachable first one (often IPv6) does not fail the fetch.
