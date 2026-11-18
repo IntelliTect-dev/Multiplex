@@ -773,6 +773,19 @@ test('M7: a named wait of zero (or a date already past) is a short real pause --
     t2.advance(2000);
     assert.strictEqual(m2.observe(throttle(0)).action, 'hand-over', 'three inside ten minutes');
 
+    // A NAMED WAIT OF A SECOND IS A WAIT. Shorter than the burst window, it is
+    // floored to it, like any pause -- but it is never "no wait": only 0 and a
+    // date already past count towards the hand-over.
+    const t4 = fakeTime();
+    const m4 = pacing.createThrottleMonitor({ now: t4.now });
+    for (let i = 0; i < 5; i++) {
+        const d = m4.observe(throttle(1000));
+        assert.strictEqual(d.action, 'pause', `Retry-After: 1, time ${i + 1}: ${JSON.stringify(d)}`);
+        assert.strictEqual(d.waitMs, pacing.SHORT_WAIT_MIN_MS, 'floored to the burst window');
+        t4.advance(d.waitMs);
+    }
+    assert.strictEqual(m4.handedOver(), null, 'a site that names a real wait is taken at its word, every time');
+
     // ONE BURST IS ONE EPISODE, and is counted once: the rest of a page load's
     // refusals land inside the short pause.
     const t3 = fakeTime();
