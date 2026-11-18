@@ -54,8 +54,8 @@
 //       `where`/`which` finds but spawn() cannot run is not an agent, and is
 //       refused before a browser is launched
 //   I2  the stop command ending the recording while the agent is still
-//       running: endedBy is the stop, the operator is told the agent's pid, and
-//       nothing claims the agent finished
+//       running: endedBy is the stop, the agent is TOLD the capture ended and
+//       its input closed, it exits by itself, and nothing claims it finished
 //   I1  A STUB AGENT, driving the real CDP endpoint of a real capture, proves
 //       the whole hand-off: the recorder waits for it, its traffic is in
 //       raw.har, its step log is beside the session, the recording ends with
@@ -65,13 +65,17 @@
 //   A18 the prompt and the banner carry this run's pace -- the numbers the
 //       recorder paces its own steps by
 //   A19 --pace is recorded on every session, and an unreadable one is refused
-//   A20 a hand-over stops the agent once, through the handle the drive holds,
-//       and the agent's exit is then not an ending
-//   A21 a site that refused the start page means the agent is never started
-//   I3  a site that keeps throttling the agent: the first 429 pauses, the next
-//       one inside the pause stops the agent and hands over; with nobody at
-//       the terminal the recording ends `handed-over`, is post-processed, and
-//       the browser is left running
+//   A21 a site that refused the start page means the agent is not started --
+//       unless a person took over and handed back
+//   (The conversation with the agent -- pause, resume, hand-over, the end, and
+//   never a kill -- is pinned against a fake agent in capture-agent-messaging.test.js.)
+//   I3  a site that throttles the agent PAUSES THE WHOLE CAPTURE: the agent is
+//       told, the browser holds its next click until the Retry-After is up, the
+//       capture carries on by itself, and the agent finishes -- never killed
+//   I4  a bot check hands over: the agent is told a person is taking over;
+//       with nobody at the terminal and no tailnet the recording ends
+//       `handed-over`, the agent is told the capture ended and exits by itself,
+//       and the browser is left running
 //
 // GUARDS (passed before this change; they must keep passing):
 //   G1  a run with no --ai is untouched: no agent, no prompt, no step log
@@ -368,10 +372,14 @@ test('A4: the generated prompt carries every safety rule the issue lists', () =>
         { name: 'no CAPTCHA solving', phrase: 'solve or get around a captcha' },
         // THROTTLING (this change): a refusal is the person's to answer, like a
         // bot check -- never retried, never waited out and resumed by the agent.
-        { name: 'stop and hand back on throttling or a block',
-            phrase: 'stop and hand back when the site throttles or blocks you.' },
-        { name: 'do not wait out a throttle and carry on',
-            phrase: 'do not retry, do not reload, and do not wait it out and carry on' },
+        // PAUSE AND TELL (owner decision): the RECORDER waits a throttle out
+        // and tells the agent when to continue -- the agent never decides to.
+        { name: 'stop on throttling or a block',
+            phrase: 'stop when the site throttles or blocks you.' },
+        { name: 'do not wait out a throttle on your own',
+            phrase: 'do not retry, do not reload, and do not wait it out on your own' },
+        { name: 'the recorder\'s messages are instructions; a wait means no browser at all',
+            phrase: 'do not use the browser at all, end your turn, and wait' },
         { name: 'keep the site\'s tab in front', phrase: 'keep the site\'s tab in front' },
         // An extension-driven tab that is not its window's active tab is
         // "hidden": typing and screenshots fail (#76's lessons).
@@ -507,9 +515,19 @@ test('A6: the agent runs non-interactively as `claude -p <prompt>`', () => {
     // `--chrome` (#117): `claude --help` lists it as "Enable Claude in Chrome
     // integration". Without it a `-p` child need not load the extension's tools
     // at all, and the preferred driver silently becomes the fallback.
+    // STREAM-JSON BOTH WAYS (owner decision: pause and tell, never kill). The
+    // prompt is no longer an argument: it is the first message on stdin, which
+    // stays open so the recorder can say "the site asked us to wait", "carry
+    // on", "a person is taking over", "the capture has ended". `--verbose` is
+    // required by the CLI for stream-json output under -p (measured, 2.1.325);
+    // `--replay-user-messages` is how the recorder knows a message landed.
     assert.deepStrictEqual(child.args,
-        ['-p', 'PROMPT TEXT', '--permission-mode', 'auto', '--chrome', '--allowedTools', ...allowed],
-        'the prompt, auto mode, the Chrome integration, then the browser-only allowlist -- and nothing else');
+        ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+            '--replay-user-messages', '--permission-mode', 'auto', '--chrome', '--allowedTools', ...allowed],
+        'stream-json in and out, auto mode, the Chrome integration, then the browser-only allowlist -- and nothing else');
+    assert.strictEqual(child.messaging, 'stream-json', 'this agent can be talked to');
+    assert.strictEqual(child.firstMessage, 'PROMPT TEXT', 'the prompt is the first message it is sent');
+    assert.ok(!child.args.includes('PROMPT TEXT'), 'and not an argument any more');
     assert.ok(!child.args.includes('mcp__claude-in-chrome__switch_browser'),
         'switch_browser pairs with whichever Chrome a human clicks Connect in -- not a selection');
 
@@ -519,7 +537,7 @@ test('A6: the agent runs non-interactively as `claude -p <prompt>`', () => {
     assert.ok(!/--dangerously-skip-permissions|--allow-dangerously|bypassPermissions|acceptEdits/.test(argv),
         'no skip flag and no mode that approves without judging');
     for (const machineTool of ['Bash', 'Write', 'Edit', 'NotebookEdit', 'WebFetch']) {
-        assert.ok(!child.args.slice(5).includes(machineTool),
+        assert.ok(!child.args.slice(child.args.indexOf('--allowedTools')).includes(machineTool),
             `${machineTool} acts on the machine, not the browser`);
     }
 
@@ -551,7 +569,8 @@ test('A6b: browser-only removes every built-in tool with `--tools ""`', () => {
     assert.ok(allowed.length > 0 && allowed.every((t) => t.startsWith('mcp__')),
         'browser-only still pre-approves the browser tools, and only them');
     assert.deepStrictEqual(browserOnly.args,
-        ['-p', 'PROMPT TEXT', '--permission-mode', 'auto', '--chrome', '--tools', '', '--allowedTools', ...allowed],
+        ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+            '--replay-user-messages', '--permission-mode', 'auto', '--chrome', '--tools', '', '--allowedTools', ...allowed],
         'the empty string is its own argv element, before the variadic allowlist');
     const autoArgs = capture.agentChildCommand('PROMPT TEXT').args;
     assert.deepStrictEqual(allowed, autoArgs.slice(autoArgs.indexOf('--allowedTools') + 1),
@@ -1160,10 +1179,15 @@ test('A12: an agent exiting after the recording ended neither warns nor rewrites
     assert.strictEqual(failed.reason, 'agent-failed');
     assert.match(failed.warning, /exited 3/, 'a failed driver is said, with its status');
 
-    // AN AGENT THE RECORDER STOPPED (a hand-over) ended nothing either: the
-    // recording carries on for the human the browser was handed to.
-    assert.strictEqual(capture.agentExitEnding({ status: 1, signal: 'SIGTERM', stoppedFor: 'hand-over' }, null),
-        null, 'the recorder stopped it to hand over; its exit must not end the human\'s recording');
+    // AN AGENT THAT EXITS WHILE A PERSON HAS THE BROWSER ended nothing either:
+    // the recording carries on for the human the browser was handed to.
+    assert.strictEqual(capture.agentExitEnding({ status: 0 }, null, { handedOver: true }), null,
+        'a person has the browser; the agent leaving must not end their recording');
+    // A TURN THAT ENDED IN AN ERROR is a failure, though the CLI exits 0 once
+    // its input is closed (stream-json): the stream said so.
+    const errored = capture.agentExitEnding({ status: 0, turnError: 'error_max_turns' }, null);
+    assert.strictEqual(errored.reason, 'agent-failed');
+    assert.match(errored.warning, /error_max_turns/);
 });
 
 // ---------------------------------------------------------------------------
@@ -1183,7 +1207,9 @@ test('A18: the prompt carries this run\'s pace -- the numbers the recorder paces
     // And the banner tells the operator the same thing, with what happens on a block.
     const banner = capture.agentBannerLines(fakeSession()).map(([, l]) => l).join('\n');
     assert.match(banner, /1\.5-4 s between navigations/);
-    assert.match(banner, /throttles or blocks the drive, the agent is stopped and the browser is\s+handed to you/);
+    assert.match(banner, /the whole capture pauses -- the agent included -- for as long\s+as the site asks/);
+    assert.match(banner, /the agent is told to wait and the browser is handed to you/);
+    assert.doesNotMatch(banner, /agent is stopped/, 'nothing stops the agent: it is told');
 });
 
 test('A19: --pace is recorded on the session, and refused when it cannot be read', () => {
@@ -1209,52 +1235,6 @@ test('A19: --pace is recorded on the session, and refused when it cannot be read
     }
 });
 
-/**
- * driveWithAgent against a fake child that stays running until it is KILLED --
- * the hand-over case -- in a process of its own, like driveFakeAgent.
- */
-function driveAndStopFakeAgent() {
-    const dir = scratch('fake-agent-stopped');
-    const logPath = path.join(dir, 'agent-log.txt');
-    const script = `
-        const { EventEmitter } = require('events');
-        const capture = require(${JSON.stringify(captureJs)});
-        const [logPath, dir] = process.argv.slice(1);
-        const proc = new EventEmitter();
-        proc.pid = 4343;
-        proc.stdout = new EventEmitter();
-        proc.stderr = new EventEmitter();
-        let kills = 0;
-        proc.kill = () => {
-            kills++;
-            setTimeout(() => { proc.emit('exit', null, 'SIGTERM'); proc.emit('close', null, 'SIGTERM'); }, 20);
-            return true;
-        };
-        const control = {};
-        const session = { agent: 'claude', agentLogPath: logPath, sessionDir: dir };
-        capture.driveWithAgent(session, 'PROMPT', { spawn: () => proc, drainMs: 300, control })
-            .then((result) => {
-                const again = control.stop('hand-over');
-                setTimeout(() => process.stdout.write(JSON.stringify({ result, kills, again,
-                    ending: capture.agentExitEnding(result, null) })), 100);
-            });
-        setTimeout(() => {
-            proc.stdout.emit('data', 'STEP: searched; the page says Too Many Requests\\n');
-            const first = control.stop('hand-over');
-            if (!first) process.exit(9);
-        }, 50);
-    `;
-    const r = spawnSync(process.execPath, ['-e', script, logPath, dir], {
-        encoding: 'utf8', windowsHide: true, timeout: 30000
-    });
-    return {
-        status: r.status,
-        stderr: r.stderr || '',
-        out: r.status === 0 && r.stdout ? JSON.parse(r.stdout) : null,
-        log: fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
-    };
-}
-
 test('A21: a site that refused the START page means the agent is never started', () => {
     // FOUND IN REVIEW. Under --ai the start page loads before the agent is
     // launched. A block there used to set the hand-over, find no agent to stop,
@@ -1273,21 +1253,11 @@ test('A21: a site that refused the START page means the agent is never started',
     // And a recording that has already ended has nothing left for an agent to do.
     assert.match(capture.agentStartRefusal(fakeSession(), 'sign-in-needed').map(([, t]) => t).join('\n'),
         /already ended \(sign-in-needed\)/);
-});
-
-test('A20: a hand-over stops the agent through its own handle, once, and that is not an ending', () => {
-    // THE ONE PROCESS THE RECORDER EVER ENDS, and only for this: the site is
-    // throttling or blocking the drive, and continuing would be hammering it or
-    // evading it. Through the handle driveWithAgent holds -- never a pid lookup.
-    const r = driveAndStopFakeAgent();
-    assert.strictEqual(r.status, 0, `the drive could not be stopped (status ${r.status}):\n${r.stderr}`);
-    assert.strictEqual(r.out.kills, 1, 'stopped exactly once, through the child\'s own handle');
-    assert.strictEqual(r.out.again, false, 'a second stop after the agent has gone does nothing');
-    assert.strictEqual(r.out.result.stoppedFor, 'hand-over', 'the result says the recorder stopped it, and why');
-    assert.strictEqual(r.out.ending, null, 'and so its exit ends nothing -- the human has the recording now');
-    assert.match(r.log, /the recorder stopped the agent .*\(hand-over\): the site is throttling or blocking/,
-        `the step log must say the drive was stopped and why:\n${r.log}`);
-    assert.match(r.log, /Too Many Requests/, 'what the agent said before it was stopped is kept');
+    // A PERSON WHO TOOK OVER AND HANDED BACK has answered the check: the agent starts.
+    assert.strictEqual(capture.agentStartRefusal(fakeSession({ handOver: {
+        signature: 'Cloudflare challenge', url: 'https://www.example.com/', by: 'agent-not-started',
+        resolved: 'handed-back-phone'
+    } }), null), null, 'handed back on the start page: start the agent');
 });
 
 // ---------------------------------------------------------------------------
@@ -1387,7 +1357,7 @@ function driverEnv(over) {
         if (replacingPath && key.toUpperCase() === 'PATH') continue;
         env[key] = value;
     }
-    return Object.assign(env, { NODE_PATH: driverNodePath() }, over || {});
+    return Object.assign(env, { NODE_PATH: driverNodePath(), HAR_CAPTURE_TAILSCALE: NO_TAILSCALE }, over || {});
 }
 
 function integrationBlocker(cwd) {
@@ -1496,17 +1466,33 @@ const STUB_AGENT_PRELOAD = path.join(__dirname, 'capture-ai-stub-agent.test-supp
  * nothing else in these runs clicks anything.
  */
 async function fixtureServer() {
+    // When each request to the metered endpoint reached the SITE -- the
+    // server, not the browser: a click the browser held is not here until the
+    // hold lets it go.
+    const limitedHits = [];
     const server = http.createServer((req, res) => {
         if (req.url.startsWith('/api/search')) {
             res.writeHead(200, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ results: [{ id: 1, name: 'fixture rate' }] }));
             return;
         }
-        // The site metering a visitor (I3): always throttled, and it says for
-        // how long.
+        // The site metering a visitor (I3): the first request is throttled,
+        // and it says for how long; after that it answers.
         if (req.url.startsWith('/api/limited')) {
-            res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '30' });
-            res.end(JSON.stringify({ error: 'too many requests' }));
+            limitedHits.push(Date.now());
+            if (limitedHits.length === 1) {
+                res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '3' });
+                res.end(JSON.stringify({ error: 'too many requests' }));
+                return;
+            }
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+        }
+        // A bot-check interstitial standing in for the page (I4).
+        if (req.url.startsWith('/challenge')) {
+            res.writeHead(200, { 'content-type': 'text/html' });
+            res.end('<html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>');
             return;
         }
         res.writeHead(200, { 'content-type': 'text/html' });
@@ -1516,8 +1502,12 @@ async function fixtureServer() {
             '</body></html>');
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
-    return { server, uri: `http://127.0.0.1:${server.address().port}/` };
+    return { server, uri: `http://127.0.0.1:${server.address().port}/`, limitedHits };
 }
+
+// No test reaches a real tailnet: the recorder is pointed at a Tailscale CLI
+// that is not there, so a hand-over in these runs is the PC-only one.
+const NO_TAILSCALE = path.join(os.tmpdir(), 'no-such-dir-for-tests', 'tailscale-not-here.exe');
 
 /** The recorder, started under -AI with the stub agent and a headless browser. */
 function startStubDrivenCapture(repo, uri, env) {
@@ -1634,6 +1624,17 @@ test('I1: a stub agent drives a real capture -- hand-off, stop and post-processi
                 `the step log holds no record of what the agent did:\n${stepLog}`);
             assert.match(stepLog, /SUMMARY/,
                 'the log has to carry where the agent stopped, not only that it ran');
+            // STREAM-JSON IN, A READABLE LOG OUT. The prompt went in as the
+            // first message; the log is rendered from the events, and the raw
+            // events sit beside it.
+            assert.match(stepLog, /capture-har -> agent: \(the prompt in agent-prompt\.md\)/);
+            assert.match(stepLog, /\[agent\] turn ended \(success\)/);
+            assert.match(stepLog, /the agent has finished; closing its session/);
+            assert.ok(!stepLog.split('\n').some((l) => l.startsWith('{')),
+                `the step log must be text, not JSON events:\n${stepLog}`);
+            assert.ok(fs.existsSync(session.agentStreamPath) &&
+                fs.readFileSync(session.agentStreamPath, 'utf8').includes('"type":"result"'),
+            'the raw events are kept beside the log');
 
             // POST-PROCESSING RAN, unchanged: the scrub -> verify -> digest ->
             // catalogue tail follows an agent-driven ending exactly as it follows
@@ -1719,11 +1720,17 @@ test('I2: the stop command ends the recording while the agent is still driving',
             assert.strictEqual(finalSession.endedBy, 'stop-command',
                 `the stop command arrived first, and it is the ending:\n${recorderErr}`);
             assert.strictEqual(finalSession.agentExitCode, undefined,
-                'the agent had not exited, so no exit code may be recorded for it');
-            assert.ok(Number.isInteger(agentPid) && pidAlive(agentPid),
-                `the agent (pid ${agentPid}) must still be running -- the recorder kills nothing`);
-            assert.ok(recorderErr.includes(`still running (pid ${agentPid})`),
-                `the operator was not told the agent is still running, with its pid:\n${recorderErr}`);
+                'the recording ended first, so the agent\'s exit is not recorded as an ending');
+            // TOLD, NEVER KILLED. The agent is told the capture ended and its
+            // input is closed; it ends its turn and exits 0 by itself -- the
+            // exit code in its step log is its own, not a signal's.
+            const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
+            assert.match(stepLog, /capture-har -> agent: The capture has ended; stop\./,
+                `the agent was not told the capture ended:\n${stepLog}`);
+            assert.match(stepLog, /told the capture ended; stopping/, 'and it heard');
+            assert.match(stepLog, /agent ended .* \(exit 0\)/, `it exited by itself, 0:\n${stepLog}`);
+            assert.ok(await waitFor(() => !pidAlive(agentPid), 15000),
+                `the agent (pid ${agentPid}) did not end after its input was closed`);
             assert.ok(!/the agent exited/.test(recorderErr),
                 `nothing may claim the agent ended the recording:\n${recorderErr}`);
             // The traffic the agent caused before the stop is kept and processed.
@@ -1739,20 +1746,20 @@ test('I2: the stop command ends the recording while the agent is still driving',
         }
     });
 
-test('I3: a site that keeps throttling the agent ends the drive and hands the browser over',
+test('I3: a site that throttles the agent pauses the WHOLE capture, holds the browser, and carries on',
     async () => {
-        // THE HAND-OVER, end to end. The fixture answers /api/limited with 429
-        // and Retry-After: 30, and the stub agent -- standing in for an agent the
-        // recorder cannot slow down -- clicks it again every few seconds. The
-        // first 429 is a pause; the next one, arriving inside that pause, is the
-        // driver not waiting, and the recorder stops it. Nobody is at this
-        // terminal, so the recording then ends as `handed-over` and is
-        // post-processed; the browser is left running, as every ending leaves it.
+        // THE OWNER'S "JUST PAUSE", end to end. The fixture answers the first
+        // /api/limited with 429 and Retry-After: 3, and the stub agent clicks
+        // it again at once -- an agent that does not wait when told. The
+        // recorder must: pause the capture, TELL the agent, HOLD the second
+        // click in the browser until the three seconds are up (the server is
+        // the witness: it must not see it sooner), carry on by itself, tell the
+        // agent to continue, and let it finish -- never killing it.
         const repo = makeRepo('ai-throttled');
         plantOperatorProfile(repo);
         if (blockedOrSkipped('I3', integrationBlocker(repo))) return;
 
-        const { server, uri } = await fixtureServer();
+        const { server, uri, limitedHits } = await fixtureServer();
         const pruned = pathWithoutAgent();
         assert.ok(!agentOnPath(pruned), 'the agent must be reachable only through the stub');
         const childEnv = driverEnv({ PATH: pruned, HAR_STUB_AGENT_MODE: 'throttled' });
@@ -1763,8 +1770,9 @@ test('I3: a site that keeps throttling the agent ends the drive and hands the br
         try {
             recorder = startStubDrivenCapture(repo, uri, childEnv);
             let recorderErr = '';
+            let recorderOut = '';
             recorder.stderr.on('data', (d) => { recorderErr += d; });
-            recorder.stdout.on('data', () => {});
+            recorder.stdout.on('data', (d) => { recorderOut += d; });
 
             const { sessionDir, session } =
                 await waitForRecordingSession(repo, recorder, () => recorderErr);
@@ -1772,45 +1780,120 @@ test('I3: a site that keeps throttling the agent ends the drive and hands the br
             assert.deepStrictEqual(session.pace.navigation, [1500, 4000], 'human pace is the default');
 
             const ended = await waitFor(() => recorder.exitCode !== null, 180000);
-            assert.ok(ended, `the recording never ended -- nothing noticed the site throttling:\n${recorderErr}`);
+            assert.ok(ended, `the recording never ended:\n${recorderErr}`);
 
             const finalSession = readJson(path.join(sessionDir, 'session.json'));
             agentPid = finalSession.agentPid;
-            assert.strictEqual(finalSession.endedBy, 'handed-over',
-                `the hand-over, with nobody at the terminal, is the ending:\n${recorderErr}`);
-            assert.strictEqual(finalSession.agentStopped, 'hand-over');
-            assert.ok(finalSession.handOver && finalSession.handOver.why === 'ignored-pause',
-                `the hand-over must say why: ${JSON.stringify(finalSession.handOver)}`);
-            assert.strictEqual(finalSession.handOver.status, 429);
-            assert.ok(!/\?/.test(finalSession.handOver.url), 'session.json records where, never the query');
-            const signals = finalSession.throttle || [];
-            assert.ok(signals.length >= 2 && signals[0].action === 'pause' && signals[0].waitMs === 30000,
-                `the first 429 is a pause for the Retry-After it named: ${JSON.stringify(signals)}`);
 
-            // THE AGENT WAS STOPPED, and long before its ten clicks were done.
-            const stoppedDead = await waitFor(() => !pidAlive(agentPid), 15000);
-            assert.ok(stoppedDead, `the agent (pid ${agentPid}) is still running after the hand-over`);
+            // NOTHING REACHED THE SITE DURING THE PAUSE.
+            assert.strictEqual(limitedHits.length, 2, `two clicks, two requests: ${limitedHits.length}`);
+            const gap = limitedHits[1] - limitedHits[0];
+            assert.ok(gap >= 2800, `the held click reached the site ${gap} ms after the 429 -- inside the 3 s pause`);
+
+            // THE PAUSE, RECORDED: why, how long, who was driving, how it ended.
+            const pauses = finalSession.pauses || [];
+            assert.strictEqual(pauses.length, 1, `one pause: ${JSON.stringify(pauses)}`);
+            const [p] = pauses;
+            assert.strictEqual(p.kind, 'pause');
+            assert.strictEqual(p.status, 429);
+            assert.strictEqual(p.waitMs, 3000, 'exactly as long as the site asked');
+            assert.strictEqual(p.named, true);
+            assert.strictEqual(p.driver, 'agent');
+            assert.strictEqual(p.resumedBy, 'timer', 'it carried on by itself');
+            assert.strictEqual(p.outcome, 'continued');
+            assert.ok(p.startedUtc && p.untilUtc && p.endedUtc, JSON.stringify(p));
+            assert.ok(!/\?/.test(p.url), 'session.json records where, never the query');
+            assert.ok(!finalSession.handOver, 'a pause is not a hand-over');
+
+            // THE AGENT WAS TOLD, AND FINISHED -- the capture was never ended for it.
+            assert.strictEqual(finalSession.endedBy, 'agent-finished',
+                `the agent finishing is the ending, after the pause:\n${recorderErr}`);
+            assert.strictEqual(finalSession.agentExitCode, 0);
             const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
-            assert.match(stepLog, /the recorder stopped the agent .*\(hand-over\)/);
-            assert.doesNotMatch(stepLog, /never stopped/, `the agent ran to the end:\n${stepLog}`);
+            assert.match(stepLog, /capture-har -> agent: The site asked us to slow down \(HTTP 429, wait 3 s\)\. The capture is paused until \d\d:\d\d local\. Don't use the browser; end your turn and wait; I'll tell you when to continue\./,
+                `the pause message:\n${stepLog}`);
+            assert.match(stepLog, /capture-har -> agent: The wait is over \(paused 3 s\)\. Re-check the page, then continue where you left off\./);
+            assert.match(stepLog, /the recorder told me to wait/);
+            assert.match(stepLog, /agent ended .* \(exit 0\)/, 'it exited by itself');
+            assert.ok(await waitFor(() => !pidAlive(agentPid), 15000), `the agent (pid ${agentPid}) is still running`);
 
-            // THE OPERATOR WAS TOLD -- what the site did, that nothing evades it,
-            // and that the browser is theirs.
-            assert.match(recorderErr, /The agent has been stopped/);
-            assert.match(recorderErr, /THE BROWSER IS YOURS/);
-            assert.match(recorderErr, /Nothing here retries it, solves it or works around it/);
-            assert.ok(!recorderErr.includes('still running (pid'),
-                'an agent the recorder stopped is not reported as still driving');
+            // THE OPERATOR -- and the PowerShell front door -- WAS TOLD.
+            assert.match(recorderErr, /capture-har: Paused until \d\d:\d\d -- the site asked us to wait 3 s \(HTTP 429\)/);
+            assert.match(recorderErr, /capture-har: Resumed after 3 s; the agent has been told to carry on\./);
+            assert.match(recorderErr, /this capture paused once \(3 s in all\)/);
+            const line = recorderOut.trim().split('\n').map((l) => { try { return JSON.parse(l); } catch (e) { return null; } })
+                .find((d) => d && d.capture === 'complete');
+            assert.ok(line, `no machine-readable line:\n${recorderOut}`);
+            assert.deepStrictEqual({ count: line.pauses.count, handOvers: line.pauses.handOvers }, { count: 1, handOvers: 0 });
 
-            // The refusals are in the capture, and it was post-processed.
+            // The 429 is in the capture, and it was post-processed.
             const har = readJson(path.join(sessionDir, 'raw.har'));
             assert.ok(har && har.log.entries.some((e) =>
                 e.request.url.includes('/api/limited') && e.response.status === 429),
-            'the 429s the site answered must be in the capture -- they are part of its error taxonomy');
-            assert.ok(finalSession.postProcess, 'a handed-over capture is post-processed as usual');
+            'the 429 the site answered must be in the capture -- it is part of its error taxonomy');
+            assert.ok(finalSession.postProcess, 'a paused capture is post-processed as usual');
+            assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid), 'the browser is left running');
+        } finally {
+            server.close();
+            if (agentPid && pidAlive(agentPid)) killTree(agentPid);
+            if (browserPid) killTree(browserPid);
+            if (recorder && recorder.exitCode === null) recorder.kill();
+        }
+    });
 
+test('I4: a bot check hands over -- the agent is told, and with nobody to take over it is told the end',
+    async () => {
+        // A "Just a moment..." interstitial on the site. The agent is told a
+        // person is taking over. Nobody is at this terminal and there is no
+        // tailnet (the tests point the recorder at a Tailscale that is not
+        // there), so nobody can take over: the recording ends `handed-over`,
+        // the agent is told the capture ended, and it exits by itself.
+        const repo = makeRepo('ai-challenge');
+        plantOperatorProfile(repo);
+        if (blockedOrSkipped('I4', integrationBlocker(repo))) return;
+
+        const { server, uri } = await fixtureServer();
+        const pruned = pathWithoutAgent();
+        assert.ok(!agentOnPath(pruned), 'the agent must be reachable only through the stub');
+        const childEnv = driverEnv({ PATH: pruned, HAR_STUB_AGENT_MODE: 'challenge' });
+
+        let recorder = null;
+        let browserPid = null;
+        let agentPid = null;
+        try {
+            recorder = startStubDrivenCapture(repo, uri, childEnv);
+            let recorderErr = '';
+            recorder.stderr.on('data', (d) => { recorderErr += d; });
+            recorder.stdout.on('data', () => {});
+            const { sessionDir, session } =
+                await waitForRecordingSession(repo, recorder, () => recorderErr);
+            browserPid = session.browserPid;
+
+            const ended = await waitFor(() => recorder.exitCode !== null, 180000);
+            assert.ok(ended, `the recording never ended:\n${recorderErr}`);
+            const finalSession = readJson(path.join(sessionDir, 'session.json'));
+            agentPid = finalSession.agentPid;
+            assert.strictEqual(finalSession.endedBy, 'handed-over',
+                `the hand-over, with nobody to take over, is the ending:\n${recorderErr}`);
+            assert.strictEqual(finalSession.handOver.why, 'challenge');
+            const [h] = finalSession.pauses || [];
+            assert.ok(h && h.kind === 'hand-over' && h.driver === 'agent' && h.outcome === 'ended' && h.phone === false,
+                `the hand-over is recorded: ${JSON.stringify(finalSession.pauses)}`);
+
+            assert.match(recorderErr, /capture-har: Handed over to you: the site put up a bot check/);
+            assert.match(recorderErr, /No phone link: Tailscale is not installed on this PC\./);
+            assert.match(recorderErr, /The agent has been told to wait/);
+            assert.match(recorderErr, /Nothing here retries it, solves it or works around it/);
+
+            const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
+            assert.match(stepLog, /capture-har -> agent: The site showed a "prove you're human" check\. A person is taking over the browser\. Don't use the browser; end your turn and wait\./,
+                `the hand-over message:\n${stepLog}`);
+            assert.match(stepLog, /capture-har -> agent: The capture has ended; stop\./);
+            assert.match(stepLog, /agent ended .* \(exit 0\)/, `it exited by itself:\n${stepLog}`);
+            assert.ok(await waitFor(() => !pidAlive(agentPid), 15000), `the agent (pid ${agentPid}) is still running`);
+            assert.ok(finalSession.postProcess, 'a handed-over capture is post-processed as usual');
             assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid),
-                'a hand-over stops the agent, never the browser');
+                'a hand-over never touches the browser');
         } finally {
             server.close();
             if (agentPid && pidAlive(agentPid)) killTree(agentPid);

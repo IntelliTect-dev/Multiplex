@@ -130,17 +130,28 @@
  *
  * EVERY RECORDED RESPONSE IS READ FOR THROTTLING -- only the site's own (a
  * main-frame document, or the capture's host), because trackers answer 429 all
- * day. A 429 or a 503 with Retry-After PAUSES (Retry-After, or a backoff with
- * jitter); throttling that persists, throttling through a pause, a small HTML
- * 403 from a CDN, or a challenge page HANDS OVER.
+ * day. A 429 or a 503 with Retry-After PAUSES THE WHOLE CAPTURE -- for exactly
+ * the Retry-After (up to a day), or a backoff of about 1, 2, 4, 8 then 15
+ * minutes -- and it carries on by itself when the time is up. A small HTML 403
+ * from a CDN, a challenge page, or throttling with no page loading for an hour
+ * HANDS OVER.
  *
- * A HAND-OVER UNDER --ai STOPS THE AGENT -- the one process this file ever
- * signals, and only for this. Nothing about it ends the browser or the
- * recording: the operator is told what the site did and where, the window is
- * theirs, and the recording goes on until they end it. With nobody at the
- * terminal, nobody can take over, so the recording ends as `handed-over` and is
- * post-processed like any other. By hand, a hand-over is advice -- the browser
- * is already the operator's.
+ * A PAUSE IS ENFORCED AT THE BROWSER (capture-pause.js): this capture's
+ * requests to the site wait in a route handler until it ends -- the recorder's
+ * own steps, the agent's clicks, anything -- and requests already in flight
+ * finish. An -AI agent is TOLD, through its open stdin (agent-stream.js): the
+ * site asked us to wait until 10:42; the wait is over; a person is taking
+ * over; the person is done; the capture has ended. The operator is told the
+ * same on stderr, and session.json records each pause under `pauses`.
+ *
+ * A HAND-OVER NEVER ENDS ANYTHING. The agent is told to wait; the browser is
+ * the operator's, on this PC and -- when this PC is on a Tailscale tailnet --
+ * on their phone, through a private live view (mirror.js); the recording goes
+ * on until they hand back (`continue` here, or the phone's button) or end it.
+ * With nobody at the terminal and no phone view, nobody can take over, so the
+ * recording ends as `handed-over` and is post-processed like any other. By
+ * hand, a pause or a hand-over is advice -- the browser is already the
+ * operator's.
  *
  * WHAT IS NOT HERE YET, deliberately: `-SignInFirst` (#75) and multi-site (#74).
  * Without #75 the agent stops at the first sign-in prompt and hands back, which
@@ -355,6 +366,13 @@ const signIn = require(path.join(__dirname, 'sign-in.js'));
 // Human-scale pacing for what this process does to a page, and the reading of
 // a site's throttling and blocking in what it records. See "## Pacing" above.
 const pacing = require(path.join(__dirname, 'pacing.js'));
+// Pausing the whole capture (the browser holds the site's requests), and the
+// record of every pause and hand-over. See "## Pacing" above.
+const capturePause = require(path.join(__dirname, 'capture-pause.js'));
+// The -AI agent's stream-json: the messages it is sent, and its step log.
+const agentStream = require(path.join(__dirname, 'agent-stream.js'));
+// The private phone view of the browser during a hand-over.
+const mirror = require(path.join(__dirname, 'mirror.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -412,6 +430,10 @@ const CATALOGUE_FILE = 'catalogue.json';
 // segmentation has a record of the actions taken.
 const AGENT_PROMPT_FILE = 'agent-prompt.md';
 const AGENT_LOG_FILE = 'agent-log.txt';
+// The agent's raw stream-json, beside its readable log (agent-stream.js). The
+// log is rendered from it; this keeps the events themselves for anyone who
+// needs more than the log says. Screenshots' base64 is dropped from it.
+const AGENT_STREAM_FILE = 'agent-stream.jsonl';
 // The static halves of the generated prompt. Two files rather than one, and the
 // split is the point: DISCOVERY_CHECKLIST is the text issue #76 owns and will
 // move into SKILL.md, so it lives alone and is read rather than inlined -- #76
@@ -530,6 +552,19 @@ const AGENT_SETTLE_MAX_MS = 15000;
 // drain within milliseconds of 'exit'; this bounds the case where a grandchild
 // holds one open, so a stray process cannot keep the recording running.
 const AGENT_DRAIN_MAX_MS = 5000;
+// HOW LONG A TURN'S END WAITS FOR A MESSAGE THE AGENT HAS NOT ACKNOWLEDGED.
+// A message written as a turn is ending starts the next turn instead, so a
+// `result` with one outstanding is not "finished" -- but an acknowledgement
+// that never comes must not keep a finished agent's session open for ever.
+const AGENT_ACK_GRACE_MS = 30000;
+// HOW LONG A HAND-OVER WAITS FOR A PERSON NOBODY IS AT THE TERMINAL FOR. With
+// a phone link the person may be anywhere; without an answer from it in this
+// long, the recording ends as `handed-over` and is post-processed.
+const HAND_OVER_UNATTENDED_MS = 30 * 60 * 1000;
+// HOW LONG AN AGENT TOLD "the capture has ended" IS GIVEN to end its turn, so its
+// last words reach the step log before the recorder moves on. Not waited past:
+// the recording is already over, and nothing ends the agent.
+const AGENT_END_WAIT_MS = 10000;
 // HOW LONG `claude --version` MAY TAKE before the agent counts as not usable.
 const AGENT_PROBE_TIMEOUT_MS = 30000;
 
@@ -2367,8 +2402,8 @@ function isMainFrameDocument(request) {
  * which in a browser this run launched is the same set as "this capture".
  *
  * `opts.onResponse(info)`, when given, is shown every RECORDED response once
- * its entry is written -- url, status, headers, mime type, body and whether it
- * was a main-frame document -- so throttling and blocks are read from exactly
+ * its entry is written -- url, status, headers, mime type, body, whether it
+ * was a main-frame document, and its page -- so throttling and blocks are read from exactly
  * what the capture holds (pacing.js). It is told after the entry is added, and
  * guarded, so an observer that throws can never cost the capture an entry.
  */
@@ -2426,6 +2461,8 @@ function attachRecorder(context, recorder, scope, opts = {}) {
             }));
             if (opts.onResponse && response) {
                 try {
+                    let page = null;
+                    try { const frame = request.frame(); page = frame ? frame.page() : null; } catch (e) { void e; }
                     opts.onResponse({
                         url: request.url(),
                         method: request.method(),
@@ -2433,7 +2470,9 @@ function attachRecorder(context, recorder, scope, opts = {}) {
                         headers: respHeaders || {},
                         mimeType: (respHeaders && respHeaders['content-type']) || '',
                         body,
-                        isDocument: isMainFrameDocument(request)
+                        isDocument: isMainFrameDocument(request),
+                        // The tab it came from: the one a hand-over shows on the phone.
+                        page
                     });
                 } catch (e) {
                     log.verbose(`capture-har: the throttle check skipped a response: ${e.message}`);
@@ -3010,9 +3049,22 @@ function resolveAgent(ctx = {}) {
 
 /**
  * The agent child:
- *   `claude -p <prompt> --permission-mode auto --chrome|--no-chrome [--tools ""] --allowedTools <tools>`.
+ *   `claude -p --input-format stream-json --output-format stream-json --verbose
+ *    --replay-user-messages --permission-mode auto --chrome|--no-chrome
+ *    [--tools ""] --allowedTools <tools>`,
+ *   with the prompt as the first stream-json message on its stdin.
  *   (`--no-chrome`, and no extension tools in the allowlist, when the capture
  *   profile has no extension -- see agentAllowedTools.)
+ *
+ * STREAM-JSON BOTH WAYS, so the recorder can TALK to the agent instead of
+ * ending it (agent-stream.js has what was measured): the prompt goes in as the
+ * first message, stdin stays open, and a pause, its end, a hand-over and the
+ * end of the capture are each a message. `--verbose` because the CLI refuses
+ * stream-json output in print mode without it; `--replay-user-messages`
+ * because the echo is how the recorder knows a message was taken in. The
+ * returned `messaging` says the child speaks this protocol: an agent that
+ * did not would get its prompt as an argument, no messages, and only the
+ * browser hold to keep it from the site during a pause.
  *
  * `--chrome` in both modes (#117): "Enable Claude in Chrome integration". The
  * extension is the preferred driver, and a `-p` child without the flag may have
@@ -3063,8 +3115,14 @@ function agentChildCommand(prompt, opts = {}) {
     // `<tools...>`, variadic, so anything after it would be read as a tool name.
     return {
         command: AGENT_CLAUDE,
+        messaging: 'stream-json',
+        firstMessage: prompt,
         args: [
-            '-p', prompt,
+            '-p',
+            '--input-format', 'stream-json',
+            '--output-format', 'stream-json',
+            '--verbose',
+            '--replay-user-messages',
             '--permission-mode', 'auto',
             // Boolean, so it may sit anywhere before the variadic flags: without
             // it a `-p` child need not load the extension's tools at all (#117).
@@ -3081,14 +3139,18 @@ function agentChildCommand(prompt, opts = {}) {
 }
 
 /**
- * Run the agent against the recording, and keep every word it says.
+ * Run the agent against the recording, keep every word it says, and keep a
+ * line open to it.
  *
- * TEED, not captured: each chunk goes to the step log beside the capture AND to
- * this process's stderr. The log is for the cataloguing step, which the issue
- * asks to be able to read what the agent did and where it stopped; the terminal
- * copy is for the operator, who is otherwise watching a browser move on its own
- * with no account of why. stderr rather than stdout because stdout carries this
- * script's one machine-readable line and nothing else.
+ * TEED, not captured: everything the agent says goes to the step log beside
+ * the capture AND to this process's stderr. The log is for the cataloguing
+ * step, which the issue asks to be able to read what the agent did and where
+ * it stopped; the terminal copy is for the operator, who is otherwise watching
+ * a browser move on its own with no account of why. stderr rather than stdout
+ * because stdout carries this script's one machine-readable line and nothing
+ * else. The agent speaks stream-json, so the log is RENDERED from its events
+ * (agent-stream.js): its words as they are, one short line per tool call and
+ * per turn, and the raw events in agent-stream.jsonl beside it.
  *
  * It NEVER REJECTS. A driver that could not be started, or that died, is an
  * ending like any other: the traffic recorded up to that point is real, and
@@ -3108,64 +3170,88 @@ function agentChildCommand(prompt, opts = {}) {
  * 'close' would turn that into a recording that never ends. After 'exit' the
  * drain is given `opts.drainMs`, then the drive ends with what arrived.
  *
- * `opts.control`, when given, receives `stop(why)`: the recorder's way to end
- * the DRIVE -- never the recording -- when the site throttles or blocks it
- * (see "## Pacing" at the top). It ends the child this call spawned, through
- * the handle it holds: never a pid looked up, never a process tree, never the
- * browser. The result then carries `stoppedFor`, which agentExitEnding reads
- * as "not an ending".
+ * THE AGENT IS TOLD, NEVER ENDED. Nothing here signals the child: its stdin
+ * stays open, and `opts.control` receives the recorder's half of the
+ * conversation --
+ *
+ *   wait(text)     a pause or a hand-over: from now until carryOn, a turn that
+ *                  ends means the agent YIELDED, not that it finished
+ *   carryOn(text)  the wait is over, or the person handed back
+ *   end(text)      the capture has ended: said, and then stdin is closed, so
+ *                  the session ends by itself after the agent's current turn
+ *   messaging      whether this agent can be talked to at all
+ *
+ * WHEN IS THE AGENT DONE? With stdin open it no longer exits when it is, so
+ * the drive reads it from the stream: a turn that ends (`result`) while
+ * nothing is waiting, with every message it was sent acknowledged (replayed),
+ * is the agent finishing. Its stdin is then closed and it exits, which ends
+ * the drive -- the same `agent-finished` ending as before. A turn that ends
+ * with a message still unacknowledged is waited past: that message starts the
+ * next turn (AGENT_ACK_GRACE_MS bounds the wait for one that never comes).
  */
 function driveWithAgent(session, prompt, opts = {}) {
     const spawnFn = opts.spawn || spawn;
     const drainMs = opts.drainMs === undefined ? AGENT_DRAIN_MAX_MS : opts.drainMs;
+    const ackGraceMs = opts.ackGraceMs === undefined ? AGENT_ACK_GRACE_MS : opts.ackGraceMs;
     const child = agentChildCommand(prompt, {
         tools: session.agentTools, chrome: session.chromeExtension !== false
     });
+    const messaging = child.messaging === 'stream-json';
+    const control = opts.control || {};
     return new Promise((resolve) => {
         let settled = false;
-        let stoppedFor = null;
         let stream = null;
-        // The log is closed exactly once, and nothing is written after that:
+        let rawStream = null;
+        // The logs are closed exactly once, and nothing is written after that:
         // `say` checks this rather than trusting the order events arrive in.
         let logEnded = false;
         const finish = (result) => {
             if (settled) return;
             settled = true;
-            if (stream && !logEnded) {
-                // Resolved once the log is FLUSHED, because `start` ends in
-                // process.exit and a write still queued then is a write lost.
-                // 'close' rather than the end() callback: it also fires when
-                // the stream fails, so the drive cannot hang on a broken log.
-                logEnded = true;
-                stream.once('close', () => resolve(result));
-                stream.end();
-            } else {
-                resolve(result);
+            const open = [stream, rawStream].filter(Boolean);
+            logEnded = true;
+            if (!open.length) { resolve(result); return; }
+            // Resolved once the logs are FLUSHED, because `start` ends in
+            // process.exit and a write still queued then is a write lost.
+            // 'close' rather than the end() callback: it also fires when the
+            // stream fails, so the drive cannot hang on a broken log.
+            let left = open.length;
+            for (const s of open) {
+                s.once('close', () => { if (--left === 0) resolve(result); });
+                s.end();
             }
         };
-        try {
-            stream = fs.createWriteStream(session.agentLogPath, { flags: 'a' });
-            // A step log that cannot be written is a lost record, not a lost
-            // capture: said once, and the drive goes on without it.
-            stream.on('error', (e) => {
-                log.warn(`capture-har: the agent step log could not be written: ${e.message}`);
-                logEnded = true;
-                stream = null;
-            });
-            stream.write(`capture-har: agent (${session.agent}) started ` +
-                `${new Date().toISOString()}\n`);
-        } catch (e) {
-            log.warn(`capture-har: could not open the agent step log: ${e.message}`);
-        }
+        const openLog = (file, name) => {
+            if (!file) return null;
+            try {
+                const s = fs.createWriteStream(file, { flags: 'a' });
+                // A log that cannot be written is a lost record, not a lost
+                // capture: said once, and the drive goes on without it.
+                s.on('error', (e) => {
+                    log.warn(`capture-har: the agent ${name} could not be written: ${e.message}`);
+                    if (stream === s) stream = null;
+                    if (rawStream === s) rawStream = null;
+                });
+                return s;
+            } catch (e) {
+                log.warn(`capture-har: could not open the agent ${name}: ${e.message}`);
+                return null;
+            }
+        };
+        stream = openLog(session.agentLogPath, 'step log');
+        rawStream = messaging ? openLog(session.agentStreamPath, 'event log') : null;
+        if (stream) stream.write(`capture-har: agent (${session.agent}) started ${new Date().toISOString()}\n`);
         const say = (text) => {
             if (stream && !logEnded) stream.write(text);
             process.stderr.write(text);
         };
+        const keepRaw = (line) => { if (rawStream && !logEnded) rawStream.write(line); };
+
         let proc;
         try {
             proc = spawnFn(child.command, child.args, {
                 cwd: session.sessionDir,
-                stdio: ['ignore', 'pipe', 'pipe'],
+                stdio: [messaging ? 'pipe' : 'ignore', 'pipe', 'pipe'],
                 windowsHide: true
             });
         } catch (e) {
@@ -3173,45 +3259,111 @@ function driveWithAgent(session, prompt, opts = {}) {
             finish({ status: 127 });
             return;
         }
-        // RECORDED, and signalled in exactly ONE case -- never as an ending.
-        // The pid is here so the warning about an agent that outlived the
-        // recording can name a process the operator can actually find; the
-        // recorder does not end an agent because the RECORDING ended (see
-        // agentStillDrivingLines). The one exception is below: the site is
-        // throttling or blocking the drive, and continuing would be hammering
-        // or evading it.
+        // RECORDED, NEVER SIGNALLED. The pid is here so the warning about an
+        // agent that outlived the recording can name a process the operator
+        // can actually find. Nothing in this file ends a process: the agent is
+        // told what is happening, and the browser enforces a pause.
         session.agentPid = proc.pid === undefined ? null : proc.pid;
-        if (opts.control) {
-            opts.control.stop = (why) => {
-                if (settled || exited || stoppedFor) return false;
-                stoppedFor = why || 'stopped';
-                say(`capture-har: the recorder stopped the agent ${new Date().toISOString()} ` +
-                    `(${stoppedFor}): the site is throttling or blocking this session.\n`);
-                try {
-                    proc.kill();
-                } catch (e) {
-                    say(`capture-har: the agent could not be stopped: ${e.message}\n`);
-                    return false;
-                }
-                return true;
-            };
+
+        // ---- the conversation (agent-stream.js) --------------------------------
+        let inputOpen = messaging && !!(proc.stdin && typeof proc.stdin.write === 'function');
+        let waiting = false;
+        let unacked = 0;
+        let replaySeen = false;
+        let doneWorking = false;
+        let lastResult = null;
+        let ackTimer = null;
+        const clearAck = () => { if (ackTimer) { clearTimeout(ackTimer); ackTimer = null; } };
+        if (inputOpen && typeof proc.stdin.on === 'function') {
+            // A child that is already gone turns the next write into EPIPE, and
+            // an unhandled stream error would take the recorder down with it.
+            proc.stdin.on('error', (e) => {
+                if (!inputOpen) return;
+                inputOpen = false;
+                say(`capture-har: the agent's input closed (${e.code || e.message}); it can no longer be told anything.\n`);
+            });
         }
-        if (proc.stdout) proc.stdout.on('data', say);
+        const send = (text, shown) => {
+            if (!inputOpen) return false;
+            try {
+                proc.stdin.write(agentStream.userMessage(text));
+            } catch (e) {
+                inputOpen = false;
+                return false;
+            }
+            unacked++;
+            say(`capture-har -> agent: ${shown === undefined ? text : shown}\n`);
+            return true;
+        };
+        const closeInput = () => {
+            if (!inputOpen) return;
+            inputOpen = false;
+            try { proc.stdin.end(); } catch (e) { void e; }
+        };
+        const doneWithWork = () => {
+            if (doneWorking) return;
+            doneWorking = true;
+            clearAck();
+            say('capture-har: the agent has finished; closing its session.\n');
+            closeInput();
+        };
+        const onEvent = (ev) => {
+            if (ev.type === 'user' && ev.isReplay) {
+                replaySeen = true;
+                unacked = Math.max(0, unacked - 1);
+                return;
+            }
+            if (ev.type !== 'result') {
+                // Anything else means a turn is under way: not finished.
+                clearAck();
+                return;
+            }
+            lastResult = { subtype: ev.subtype || null, isError: !!ev.is_error };
+            if (waiting || doneWorking) return;
+            if (replaySeen && unacked > 0) {
+                clearAck();
+                ackTimer = setTimeout(() => { ackTimer = null; if (!waiting) doneWithWork(); }, ackGraceMs);
+                if (typeof ackTimer.unref === 'function') ackTimer.unref();
+                return;
+            }
+            doneWithWork();
+        };
+        control.messaging = inputOpen;
+        control.wait = (text) => { waiting = true; clearAck(); return send(text); };
+        control.carryOn = (text) => { waiting = false; return send(text); };
+        control.end = (text) => {
+            waiting = true;
+            clearAck();
+            const said = text ? send(text) : false;
+            closeInput();
+            return said;
+        };
+        control.inputOpen = () => inputOpen;
+
+        const renderer = agentStream.createStreamRenderer({ write: say, raw: keepRaw, onEvent });
+        if (proc.stdout) proc.stdout.on('data', (d) => renderer.push(d));
         if (proc.stderr) proc.stderr.on('data', say);
         proc.once('error', (e) => {
+            inputOpen = false;
             say(`capture-har: the agent could not be started: ${e.message}\n`);
             finish({ status: 127 });
         });
+        if (messaging) send(child.firstMessage, `(the prompt in ${path.basename(session.agentPromptPath || AGENT_PROMPT_FILE)})`);
+
         let exited = null;
         let drainTimer = null;
         const ended = () => {
             if (drainTimer) clearTimeout(drainTimer);
+            clearAck();
             if (settled) return;
+            inputOpen = false;
+            renderer.flush();
             const { code, signal } = exited || {};
             say(`capture-har: agent ended ${new Date().toISOString()}` +
                 (signal ? ` (${signal})` : ` (exit ${code})`) + '\n');
             finish(Object.assign({ status: code === null || code === undefined ? 1 : code, signal: signal },
-                stoppedFor ? { stoppedFor } : {}));
+                lastResult && lastResult.isError ? { turnError: lastResult.subtype || 'error' } : {},
+                doneWorking ? { finishedWork: true } : {}));
         };
         proc.once('exit', (code, signal) => {
             exited = { code, signal };
@@ -3235,20 +3387,24 @@ function driveWithAgent(session, prompt, opts = {}) {
  * that it is "ending the recording", and it does not get to write its exit code
  * onto a session already recorded as ended by something else. So null.
  *
- * And an agent the RECORDER STOPPED (`result.stoppedFor`, a hand-over: the site
- * was throttling or blocking it) ended nothing either. Its exit is the
- * recorder's own doing, and the recording goes on for the human now driving.
+ * And an agent that exits WHILE A PERSON HAS THE BROWSER (`ctx.handedOver`)
+ * ended nothing either: the recording is theirs, and goes on until they end it.
+ *
+ * A TURN THAT ENDED IN AN ERROR (`result.turnError`, from the stream) is a
+ * failure even though the CLI exits 0 once its input is closed.
  *
  * @returns {null | {reason: string, warning: string|null}}
  */
-function agentExitEnding(result, recordingEndedBy) {
+function agentExitEnding(result, recordingEndedBy, ctx = {}) {
     if (recordingEndedBy) return null;
-    if (result.stoppedFor) return null;
-    if (result.status === 0) return { reason: 'agent-finished', warning: null };
+    if (ctx.handedOver) return null;
+    if (result.status === 0 && !result.turnError) return { reason: 'agent-finished', warning: null };
     return {
         reason: 'agent-failed',
-        warning: `capture-har: the agent exited ${result.status} -- ending the recording ` +
-            'and post-processing what it did record.'
+        warning: (result.status === 0
+            ? `capture-har: the agent's last turn ended in an error (${result.turnError})`
+            : `capture-har: the agent exited ${result.status}`) +
+            ' -- ending the recording and post-processing what it did record.'
     };
 }
 
@@ -3256,18 +3412,18 @@ function agentExitEnding(result, recordingEndedBy) {
  * May the agent still be started? Asked immediately before it would be.
  *
  * Under --ai the start page loads BEFORE the agent is launched, so the site can
- * refuse -- a block, a bot check -- before there is an agent to stop. Starting
- * one then would put an agent to work on a page that has already said no, and
- * nothing would ever stop it: the hand-over has been made. Likewise a
- * recording that already ended (an unattended sign-in wall, ENTER, a closed
- * window) has nothing left for an agent to do, and anything it did would go
- * unrecorded.
+ * refuse -- a block, a bot check -- before there is an agent to tell. Starting
+ * one then would put an agent to work on a page that has already said no. A
+ * person who took over and HANDED BACK (`session.handOver.resolved`) has
+ * answered that: the agent starts. Likewise a recording that already ended
+ * (an unattended sign-in wall, ENTER, a closed window) has nothing left for an
+ * agent to do, and anything it did would go unrecorded.
  *
  * @returns {null | Array<[level, text]>} null to start it; otherwise what the
  *          operator is told instead
  */
 function agentStartRefusal(session, recordingEndedBy) {
-    if (session.handOver) {
+    if (session.handOver && !session.handOver.resolved) {
         return [['warn', 'capture-har: the agent was not started: the site refused the start page ' +
             `(${session.handOver.signature} on ${session.handOver.url}).\n` +
             '  The browser is yours; nothing will drive it.']];
@@ -3280,13 +3436,14 @@ function agentStartRefusal(session, recordingEndedBy) {
 }
 
 /**
- * Is an -AI agent driving the browser right now: launched, and neither
- * finished nor stopped? Before launch the page loads are the recorder's own
- * first navigation -- or, when the start page was refused, a person's -- and
- * neither is the agent's to be warned about or stopped.
+ * Is an -AI agent driving the browser right now: launched, and still running?
+ * Before launch the page loads are the recorder's own first navigation -- or,
+ * when the start page was refused, a person's -- and neither is the agent's to
+ * be watched for its rate. (Nothing stops an agent any more: it is told, and
+ * runs until it exits.)
  */
-function agentDriving({ ai, agentLaunched, session }) {
-    return !!ai && !!agentLaunched && session.agentExitCode === undefined && !session.agentStopped;
+function agentDriving({ ai, agentLaunched, agentRunning }) {
+    return !!ai && !!agentLaunched && !!agentRunning;
 }
 
 /**
@@ -3330,13 +3487,12 @@ async function settleRecorder(recorder, opts = {}) {
  * win the same race -- and then an agent is still browsing while nothing is being
  * recorded any more.
  *
- * NOT KILLED. "Nothing in this file kills a process" is older and wider than this
- * feature, and an agent mid-action is a process whose work is somebody's live
- * account. So the operator is told, with the pid, because a warning about a
- * process nobody can find is not actionable. (The recording ending is never a
- * reason to stop an agent. The one thing that is -- the site throttling or
- * blocking the drive while the recording goes on -- is driveWithAgent's
- * `control.stop`, and an agent stopped that way is not "still running".)
+ * NOT KILLED. Nothing in this file kills a process, and an agent mid-action is a
+ * process whose work is somebody's live account. It has been TOLD the capture
+ * ended, and its input closed, so its session ends by itself after its current
+ * step; this is said when it had not done so within AGENT_END_WAIT_MS. The pid
+ * is given because a warning about a process nobody can find is not
+ * actionable.
  */
 function agentStillDrivingLines(session) {
     return [
@@ -3344,8 +3500,8 @@ function agentStillDrivingLines(session) {
             `${session.agentPid === undefined || session.agentPid === null
                 ? 'unknown' : session.agentPid}) and what it ` +
             'does from here is no longer being recorded.\n' +
-            '  This run ended the recording first and killed nothing. End the agent yourself ' +
-            'if\n  you are done with it.'],
+            '  It has been told the capture ended, and its input is closed, so it ends by itself\n' +
+            '  after its current step. This run ended the recording first and killed nothing.'],
         ['warn', `  Its step log, up to this point: ${session.agentLogPath}`]
     ];
 }
@@ -3370,8 +3526,10 @@ function agentBannerLines(session) {
         ['info', '  The recording ends when the agent finishes or hands back. Press ENTER here ' +
             'to\n  end it sooner.'],
         ['info', `  Pace: ${pacing.describePace(session.pace || pacing.DEFAULT_PACE)}.\n` +
-            '  If the site throttles or blocks the drive, the agent is stopped and the browser is\n' +
-            '  handed to you -- nothing retries a block or works around a bot check.']
+            '  If the site throttles, the whole capture pauses -- the agent included -- for as long\n' +
+            '  as the site asks, then carries on by itself. If it blocks or puts up a bot check,\n' +
+            '  the agent is told to wait and the browser is handed to you (on your phone too, over\n' +
+            '  Tailscale) -- nothing retries a block or works around a bot check.']
     ];
 }
 
@@ -4689,6 +4847,7 @@ async function start(args) {
         session.agent = AGENT_CLAUDE;
         session.agentPromptPath = path.join(paths.sessionDir, AGENT_PROMPT_FILE);
         session.agentLogPath = path.join(paths.sessionDir, AGENT_LOG_FILE);
+        session.agentStreamPath = path.join(paths.sessionDir, AGENT_STREAM_FILE);
         // Only when browser-only, like `ai` itself: auto is the default (#112).
         if (args['ai-tools'] === AGENT_TOOLS_BROWSER_ONLY) session.agentTools = AGENT_TOOLS_BROWSER_ONLY;
         // IS THE PREFERRED DRIVER THERE (#117) -- asked before the browser
@@ -4974,15 +5133,20 @@ async function start(args) {
     // PACING AND THROTTLING (pacing.js; "## Pacing" at the top). The pacer
     // times what THIS process does to a page; the monitor reads every recorded
     // response from the site; the rate watch only WATCHES an agent, whose
-    // actions are its own.
+    // actions are its own -- except during a pause, when the browser holds the
+    // site's requests whoever makes them (capture-pause.js).
     const pacer = pacing.createPacer(pace);
     const throttleMonitor = pacing.createThrottleMonitor();
     const agentRate = ai ? pacing.createRateWatch(pace.perMinute) : null;
+    // The recorder's half of the conversation with the agent (driveWithAgent).
     const agentControl = {};
-    // Whether the agent child has been launched. Under --ai the start page
-    // loads BEFORE it is, and a refusal there must stop it from ever starting
-    // (agentStartRefusal) rather than "stop" an agent that does not exist yet.
+    // Whether the agent child has been launched, and whether it is still
+    // running. Under --ai the start page loads BEFORE it is, and a refusal
+    // there must keep it from starting (agentStartRefusal) until a person
+    // hands back.
     let agentLaunched = false;
+    let agentRunning = false;
+    let agentDrive = null;
     const site = captureSite(args.uri);
     const writeSession = () => writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     const nobodyToTakeOver = () => {
@@ -4990,7 +5154,128 @@ async function start(args) {
             'ends here and what it holds is post-processed.');
         settle('handed-over');
     };
-    const onThrottle = (decision) => {
+
+    // THE WHOLE CAPTURE PAUSES. During a pause the site's requests from this
+    // capture's tabs wait in the browser -- the recorder's own steps, the
+    // agent's clicks, anything -- and go on when it ends. Only the site's: its
+    // host and subdomains, and any page load (the same requests a signal is
+    // read from). Installed for the pause, removed after it.
+    const hold = capturePause.createSiteHold({
+        install: (handler) => context.route('**/*', handler),
+        uninstall: (handler) => context.unroute('**/*', handler),
+        holds: async (request) => {
+            if (scope && !(await scope.admits(request))) return false;
+            return onCaptureSite(site, request.url()) || isMainFrameDocument(request);
+        }
+    });
+    const syncPauses = () => {
+        session.pauses = pauses.records();
+        writeSession();
+    };
+    // Who is driving decides what a signal MEANS: an agent is told and the
+    // browser holds; an agent not launched yet waits to be; anything else is
+    // a person's browser, and gets advice.
+    const driverNow = () => {
+        if (ai && !agentLaunched) return 'agent-unstarted';
+        if (ai && agentRunning) return agentControl.messaging ? 'agent' : 'agent-unmessaged';
+        return 'you';
+    };
+    const pauses = capturePause.createCapturePause({
+        hold,
+        pacer,
+        // THE PAUSE RAN OUT: carry on, and say so -- to the operator, and to
+        // the agent, which was told to wait for exactly this message.
+        onTimerResume: (record) => {
+            if (reason) return;
+            log.lines(pacing.resumeLines(record));
+            if (record.driver === 'agent' && agentRunning && agentControl.carryOn) {
+                agentControl.carryOn(agentStream.agentMessages.resume({ pausedMs: record.pausedMs }));
+            }
+            syncPauses();
+        }
+    });
+
+    // THE HAND-OVER: a person decides. Whatever drives is told to wait; the
+    // browser is theirs on this PC, and -- when this PC is on a tailnet -- on
+    // their phone too, through a private live view (mirror.js). Whichever
+    // they use first wins: ENTER here ends the recording, `continue` + ENTER
+    // hands back; the phone's two buttons do the same.
+    let handOver = null;
+    const closePhoneView = (h) => {
+        if (h && h.timer) clearTimeout(h.timer);
+        if (h && h.phone) {
+            const view = h.phone;
+            h.phone = null;
+            void view.close().catch(() => {});
+        }
+    };
+    const handBack = (by) => {
+        if (!handOver || reason) return false;
+        const h = handOver;
+        handOver = null;
+        closePhoneView(h);
+        const record = pauses.resume(by);
+        throttleMonitor.handedBack();
+        if (session.handOver) session.handOver.resolved = `handed-back-${by}`;
+        if (record) log.lines(pacing.resumeLines(record));
+        if (h.who === 'agent' && agentRunning && agentControl.carryOn) {
+            agentControl.carryOn(agentStream.agentMessages.handBack());
+        }
+        syncPauses();
+        return true;
+    };
+    const startHandOver = async (decision, who, info) => {
+        const h = { who, phone: null, timer: null };
+        handOver = h;
+        const record = pauses.handOver(decision, who);
+        if (who === 'agent' && agentControl.wait) {
+            agentControl.wait(agentStream.agentMessages.handOver({ reason: agentStream.handOverPhrase(decision) }));
+        }
+        // THE PHONE VIEW, private to the owner's tailnet: bound to this PC's
+        // Tailscale address only, behind a one-time token. No Tailscale, no
+        // link -- and the PC hand-over is exactly what it was.
+        let noLink = null;
+        const tailnet = mirror.findTailnetAddress({ env: process.env });
+        if (!tailnet.address) {
+            noLink = `No phone link: ${tailnet.reason}.`;
+        } else {
+            try {
+                const page = (info && info.page && !info.page.isClosed()) ? info.page
+                    : context.pages().find((p) => !p.isClosed());
+                const cdp = await context.newCDPSession(page);
+                h.phone = await mirror.startMirror({
+                    host: tailnet.address,
+                    cdp,
+                    status: mirror.handOverStatus(record),
+                    onDone: () => handBack('phone'),
+                    onEnd: () => { if (handOver === h) settle('ended-on-phone'); }
+                });
+            } catch (e) {
+                noLink = `No phone link: the phone view could not start (${e.message}).`;
+            }
+        }
+        if (handOver !== h || reason) { closePhoneView(h); return; }
+        record.phone = !!h.phone;
+        const finish = humanAtTerminal
+            ? 'press ENTER here to end the recording, or type continue and press ENTER to hand the\n' +
+              `  browser back${who === 'agent' || who === 'agent-unstarted' ? ' to the agent' : ''}`
+            : `use the phone page's buttons; with no answer within ${pacing.describeDuration(HAND_OVER_UNATTENDED_MS)} ` +
+              'the recording\n  ends';
+        log.lines(pacing.throttleLines(decision, who, { link: h.phone && h.phone.url, noLink, finish }));
+        syncPauses();
+        if (!humanAtTerminal) {
+            if (!h.phone) { nobodyToTakeOver(); return; }
+            h.timer = setTimeout(() => {
+                if (handOver !== h || reason) return;
+                log.warn(`capture-har: nobody took over within ${pacing.describeDuration(HAND_OVER_UNATTENDED_MS)}; ` +
+                    'the recording ends here and what it holds is post-processed.');
+                settle('handed-over');
+            }, HAND_OVER_UNATTENDED_MS);
+            if (typeof h.timer.unref === 'function') h.timer.unref();
+        }
+    };
+
+    const onThrottle = (decision, info) => {
         if (!decision || decision.action === 'none' || reason) return;
         const s = decision.signal;
         const record = {
@@ -5000,39 +5285,46 @@ async function start(args) {
         if (decision.action === 'pause') record.waitMs = decision.waitMs;
         if (decision.why) record.why = decision.why;
         (session.throttle = session.throttle || []).push(record);
-        // Who is driving decides what a signal MEANS. An agent running is
-        // stopped on a hand-over; one not launched yet never will be; anything
-        // else is a person's browser, and gets advice.
-        const driving = agentDriving({ ai, agentLaunched, session });
-        const agentPending = ai && !agentLaunched;
-        if (decision.action === 'pause') {
-            pacer.pauseFor(decision.waitMs);
-            log.lines(pacing.throttleLines(decision, driving ? 'agent' : agentPending ? 'script' : 'you'));
-        } else if (driving) {
-            session.handOver = Object.assign({}, record, { by: 'agent-stopped' });
-            session.agentStopped = 'hand-over';
-            if (agentControl.stop) agentControl.stop('hand-over');
-            log.lines(pacing.throttleLines(decision, 'agent'));
-            if (!humanAtTerminal) nobodyToTakeOver();
-        } else if (agentPending) {
-            session.handOver = Object.assign({}, record, { by: 'agent-not-started' });
-            log.lines(pacing.throttleLines(decision, 'agent-unstarted'));
-            if (!humanAtTerminal) nobodyToTakeOver();
-        } else {
-            session.handOver = Object.assign({}, record, { by: 'advice' });
+        const who = driverNow();
+        if (who === 'you') {
+            if (decision.action === 'hand-over') session.handOver = Object.assign({}, record, { by: 'advice' });
             log.lines(pacing.throttleLines(decision, 'you'));
+            writeSession();
+            return;
         }
+        if (decision.action === 'pause') {
+            if (!pauses.pause(decision, who)) return;
+            log.lines(pacing.throttleLines(decision, who));
+            if (who === 'agent' && agentControl.wait) {
+                const until = pacing.formatClock(decision.until);
+                agentControl.wait(decision.extended
+                    ? agentStream.agentMessages.extend({ until })
+                    : agentStream.agentMessages.pause({ status: s.status, waitMs: decision.waitMs, until,
+                        named: decision.named }));
+            }
+            syncPauses();
+            return;
+        }
+        session.handOver = Object.assign({}, record,
+            { by: who === 'agent-unstarted' ? 'agent-not-started' : 'person' });
         writeSession();
+        void startHandOver(decision, who, info).catch((e) => {
+            log.warn(`capture-har: the hand-over could not be set up fully: ${e.message}`);
+        });
     };
     attachRecorder(context, recorder, scope, {
         onResponse: (info) => {
-            if (agentRate && info.isDocument && agentDriving({ ai, agentLaunched, session }) && agentRate.note()) {
+            if (agentRate && info.isDocument && agentDriving({ ai, agentLaunched, agentRunning }) && !pauses.active() &&
+                agentRate.note()) {
                 log.warn(`capture-har: the agent is navigating faster than the pace allows (more than ` +
                     `${pace.perMinute} pages in a minute).\n  It is told to keep to the pace; the ` +
                     'recorder can watch it, not slow it down.');
             }
-            onThrottle(throttleMonitor.observe(pacing.classifyResponse(
-                Object.assign({}, info, { onSite: onCaptureSite(site, info.url) }))));
+            const response = Object.assign({}, info, { onSite: onCaptureSite(site, info.url) });
+            const signal = pacing.classifyResponse(response);
+            // A PAGE THAT LOADED is the throttling over: the backoff starts again.
+            if (!signal && response.onSite && pacing.isPageLoad(response)) throttleMonitor.progress();
+            onThrottle(throttleMonitor.observe(signal), info);
         }
     });
     recorder.start();
@@ -5071,6 +5363,12 @@ async function start(args) {
     if (rl) {
         enterPressed = new Promise((resolve) => rl.on('line', (line) => {
             if (terminal.take(line)) return;
+            // DURING A HAND-OVER, `continue` hands the browser back; a bare
+            // ENTER still ends the recording, as it always has.
+            if (handOver && /^\s*c(ontinue)?\s*$/i.test(line)) {
+                handBack('terminal');
+                return;
+            }
             settle('enter');
             resolve();
         }));
@@ -5165,18 +5463,20 @@ async function start(args) {
     // hands the agent that file's path and an agent that read it a moment early
     // would find no `startedUtc` and no endpoint.
     //
-    // NOT AT ALL when the site already refused (agentStartRefusal). And not
-    // before a throttle on the start page has run out: the agent cannot be
-    // slowed once it is going, so its first step is the one the recorder can
-    // still hold back. ENTER, the stop command and a closed window all still
-    // end the wait.
+    // NOT WHILE THE START PAGE IS PAUSED OR HANDED OVER: it starts when the
+    // pause runs out, or when the person hands back. NOT AT ALL when the site
+    // refused and nobody handed back (agentStartRefusal). ENTER, the stop
+    // command and a closed window all still end the wait.
     if (ai) {
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
-        if (!reason && !session.handOver && pacer.pausedUntil() > Date.now()) {
-            log.info('capture-har: the site asked for a pause on the start page; the agent starts ' +
-                'when it is over.');
-            while (!reason && !session.handOver && Date.now() < pacer.pausedUntil()) await sleep(POLL_MS);
+        // A hand-over is set up asynchronously; give one in progress a moment
+        // to register before asking whether anything is paused.
+        await sleep(0);
+        if (!reason && pauses.active()) {
+            log.info('capture-har: the start page is paused or handed over; the agent starts when ' +
+                'that is over.');
+            while (!reason && pauses.active()) await sleep(POLL_MS);
         }
     }
     const refusal = ai ? agentStartRefusal(session, reason) : null;
@@ -5186,23 +5486,32 @@ async function start(args) {
         log.lines(refusal);
     } else if (ai) {
         agentLaunched = true;
+        agentRunning = true;
         const prompt = fs.readFileSync(session.agentPromptPath, 'utf8');
         log.lines(agentBannerLines(session));
-        endings.push(driveWithAgent(session, prompt, { control: agentControl }).then((result) => {
-            // AN AGENT THE RECORDER STOPPED ENDED NOTHING EITHER (a hand-over:
-            // the site was throttling or blocking it). The recording is the
-            // human's now, and goes on until THEY end it -- so this promise must
-            // not resolve the race. It waits for whatever ending does.
-            if (result.stoppedFor) {
-                session.agentExitCode = result.status;
-                return (async () => { while (!reason) await sleep(POLL_MS); })();
+        agentDrive = driveWithAgent(session, prompt, { control: agentControl });
+        if (!agentControl.messaging) {
+            log.warn(`capture-har: the ${session.agent} agent cannot be messaged, so a pause is enforced ` +
+                'at the browser only: it will not be told to wait, or when to carry on.');
+        }
+        endings.push(agentDrive.then((result) => {
+            agentRunning = false;
+            // AN AGENT THAT EXITS WHILE A PERSON HAS THE BROWSER ended nothing
+            // (agentExitEnding): the recording is theirs now, and goes on until
+            // THEY end it -- so this promise must not resolve the race.
+            //
+            // AN AGENT THAT OUTLIVED THE RECORDING ENDED NOTHING EITHER. When
+            // ENTER, the stop command or a closed window got there first, the
+            // agent was already told the capture ended, and the session is
+            // already recorded as ended by that.
+            const ending = agentExitEnding(result, reason, { handedOver: !!handOver });
+            if (!ending) {
+                if (!reason) {
+                    session.agentExitCode = result.status;
+                    return (async () => { while (!reason) await sleep(POLL_MS); })();
+                }
+                return undefined;
             }
-            // AN AGENT THAT OUTLIVED THE RECORDING ENDED NOTHING. When ENTER, the
-            // stop command or a closed window got there first, the operator was
-            // already told the agent is still running (agentStillDrivingLines),
-            // and the session is already recorded as ended by that.
-            const ending = agentExitEnding(result, reason);
-            if (!ending) return;
             session.agentExitCode = result.status;
             // A DRIVER THAT FAILED IS STILL AN ENDING. The traffic recorded up to
             // that point is real and cannot be re-recorded, so the run post-
@@ -5213,11 +5522,26 @@ async function start(args) {
                 log.warn(`${ending.warning}\n  Its step log: ${session.agentLogPath}`);
             }
             settle(ending.reason);
+            return undefined;
         }));
     }
 
     await Promise.race(endings);
     if (rl) rl.close();
+
+    // THE CAPTURE HAS ENDED, so whatever was paused or handed over ends with
+    // it: nothing the browser held is sent, the phone view closes, and an agent
+    // still running is TOLD -- and its input closed, so its session ends by
+    // itself after its current turn. Never ended by this process.
+    const endedBy = { enter: 'terminal', 'ended-on-phone': 'phone' }[reason] || 'recording-ended';
+    if (pauses.end(endedBy) || (session.pauses && session.pauses.length)) syncPauses();
+    if (handOver) { closePhoneView(handOver); handOver = null; }
+    if (agentRunning && agentControl.end) {
+        agentControl.end(agentStream.agentMessages.ended());
+        // A moment for it to say its last words into the step log: told the
+        // capture ended, an agent ends its turn at its next step.
+        await Promise.race([agentDrive, sleep(AGENT_END_WAIT_MS)]);
+    }
 
     // Ctrl+C is ambiguous in a way ENTER is not: it can mean "I'm done" or "I
     // hit the wrong key". Cancel keeps the raw and skips post-processing, so a
@@ -5243,7 +5567,7 @@ async function start(args) {
     // AND THE OTHER DIRECTION: this run ended first, and the agent did not. Said
     // before the recorder is torn down, because from here on what the agent does
     // is not being recorded -- and nothing killed it (see agentStillDrivingLines).
-    if (agentLaunched && session.agentExitCode === undefined && !session.agentStopped) {
+    if (agentLaunched && agentRunning) {
         log.lines(agentStillDrivingLines(session));
     }
 
@@ -5355,6 +5679,13 @@ async function start(args) {
     }
 
     log.info(`\ncapture-har: stopped (${reason}) -- ${describeSummary(summary)}`);
+    // Said in the closing summary as well as when it happened: whoever reads
+    // only the end of the output still learns the capture waited, and why.
+    const pauseText = capturePause.pauseSummaryText(pauses.summary());
+    if (pauseText) {
+        log.warn(`capture-har: this capture ${pauseText}; each pause, with its reason, start, end ` +
+            'and who was driving,\n  is under `pauses` in session.json.');
+    }
     // Said out loud, because the operator is about to wonder. Every other mode
     // ends with the browser gone, so a window still sitting there looks like
     // something that failed to clean up rather than the contract (#73) -- and an
@@ -5385,7 +5716,10 @@ async function start(args) {
         capture: 'complete',
         sessionDir: paths.sessionDir,
         outputPath: session.outputPath,
-        cataloguePath: (session.postProcess.catalogue && session.postProcess.catalogue.path) || null
+        cataloguePath: (session.postProcess.catalogue && session.postProcess.catalogue.path) || null,
+        // How often the capture paused or was handed over, and for how long
+        // in all -- so a front door can say so without reading session.json.
+        pauses: pauses.summary()
     }) + '\n');
 
     // `assembled` is only NEWS where recordHar could have won. See
