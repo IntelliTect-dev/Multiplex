@@ -148,6 +148,96 @@ Describe 'Remove-HarCapture under -WhatIf' {
     }
 }
 
+Describe 'Remove-HarCapture and the run a capture belongs to' {
+
+    # Issue #26. Deleting is the one bulk action whose mistake cannot be undone,
+    # and "the captures from that hour" is how another session's recording gets
+    # deleted in a shared store. There is still no bulk delete: a run is
+    # selected from the LIST, and each of its captures is removed on purpose,
+    # one at a time, through the same one-capture command.
+
+    BeforeAll {
+        function script:New-RunRemoveFixture {
+            param([Parameter(Mandatory)][string]$Name)
+
+            $root = Join-Path $TestDrive $Name | Join-Path -ChildPath '.har-captures'
+            $hostDir = Join-Path $root 'app.example.test'
+            $record = {
+                param($stamp, [hashtable]$Identity)
+                $dir = Join-Path $hostDir $stamp
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                Set-Content -LiteralPath (Join-Path $dir 'raw.har') -Encoding utf8 -Value '{"log":{"entries":[]}}'
+                $body = [ordered]@{
+                    uri        = 'https://app.example.test/'
+                    sessionDir = $dir
+                    describe   = 'the same description on every one'
+                    startedUtc = '2026-01-01T00:00:00.000Z'
+                    endedUtc   = '2026-01-01T00:05:00.000Z'
+                }
+                foreach ($key in $Identity.Keys) { $body[$key] = $Identity[$key] }
+                Set-Content -LiteralPath (Join-Path $dir 'session.json') -Encoding utf8 `
+                    -Value ($body | ConvertTo-Json -Depth 6)
+                return $dir
+            }
+            $runA = @{ id = 'aaaaaaaaaaaa'; basis = 'process'; lineage = @('aaaaaaaaaaaa') }
+            $runB = @{ id = 'bbbbbbbbbbbb'; basis = 'process'; lineage = @('bbbbbbbbbbbb') }
+            [pscustomobject]@{
+                Root = $root
+                # Interleaved by stamp, as two sessions recording at once are.
+                A1   = & $record '2026-04-01-000001' @{ captureId = 'capture-a1'; run = $runA }
+                B1   = & $record '2026-04-01-000002' @{ captureId = 'capture-b1'; run = $runB }
+                A2   = & $record '2026-04-01-000003' @{ captureId = 'capture-a2'; run = $runA }
+                B2   = & $record '2026-04-01-000004' @{ captureId = 'capture-b2'; run = $runB }
+                Old  = & $record '2026-04-01-000005' @{}
+            }
+        }
+    }
+
+    It 'removes one run''s captures, each on purpose, and leaves every other capture' {
+        $fx = script:New-RunRemoveFixture -Name 'byrun'
+        $run = 'aaaaaaaaaaaa'
+        @(& $script:ListPs1 -Path $fx.Root) |
+            Where-Object { $_.RunId -and $_.RunId -eq $run } |
+            ForEach-Object { & $script:RemovePs1 -Capture $_ -Confirm:$false }
+
+        Test-Path -LiteralPath $fx.A1 | Should -BeFalse
+        Test-Path -LiteralPath $fx.A2 | Should -BeFalse
+        Test-Path -LiteralPath $fx.B1 | Should -BeTrue -Because 'another run made it, in between the two that were removed'
+        Test-Path -LiteralPath $fx.B2 | Should -BeTrue
+        Test-Path -LiteralPath $fx.Old | Should -BeTrue -Because 'a capture with no run belongs to no selection by run'
+    }
+
+    It 'removes nothing when the run asked for is empty' {
+        # An unset variable in the filter must not turn into "every capture
+        # that has no run", which here is the one recorded before this change.
+        $fx = script:New-RunRemoveFixture -Name 'emptyrun'
+        $run = $null
+        @(& $script:ListPs1 -Path $fx.Root) |
+            Where-Object { $_.RunId -and $_.RunId -eq $run } |
+            ForEach-Object { & $script:RemovePs1 -Capture $_ -Confirm:$false }
+
+        foreach ($dir in $fx.A1, $fx.B1, $fx.A2, $fx.B2, $fx.Old) {
+            Test-Path -LiteralPath $dir | Should -BeTrue
+        }
+    }
+
+    It 'names the run in what it is about to delete' {
+        # The confirmation is where the decision is made. Two captures with one
+        # description are told apart there by the run that made them.
+        $fx = script:New-RunRemoveFixture -Name 'saysrun'
+        $out = (& $script:RemovePs1 -Capture $fx.B1 -WhatIf 6>&1 3>&1 2>&1) | Out-String
+        $out | Should -Match 'run bbbbbbbbbbbb'
+        $out | Should -Not -Match 'aaaaaaaaaaaa'
+        Test-Path -LiteralPath $fx.B1 | Should -BeTrue
+    }
+
+    It 'says a capture has no run recorded, rather than leaving it out' {
+        $fx = script:New-RunRemoveFixture -Name 'saysnorun'
+        $out = (& $script:RemovePs1 -Capture $fx.Old -WhatIf 6>&1 3>&1 2>&1) | Out-String
+        $out | Should -Match 'no run recorded'
+    }
+}
+
 Describe 'Remove-HarCapture refuses anything but one capture' {
 
     It 'refuses a wildcard' {

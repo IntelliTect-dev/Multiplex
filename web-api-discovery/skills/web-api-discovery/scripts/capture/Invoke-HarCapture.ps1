@@ -125,9 +125,13 @@
     FINISHED -- so with several sessions recording at once neither orders
     reliably, and a time window wide enough to hold your runs holds other
     people's too. The host directory groups by site, not by intent. In that
-    setting the description is the only reliable way to tell one capture from
-    another, and it is the one part of a capture that cannot be reconstructed
+    setting the description is the only thing that says what a capture was
+    FOR, and it is the one part of a capture that cannot be reconstructed
     afterwards: the bytes can be re-captured, what you were doing cannot.
+
+    WHO made a capture is a different question and is not asked of you: every
+    capture records its own id and the run that made it (#26), and this
+    command says both when the recording ends. `Get-HarCapture` lists them.
 
     It is never the source of action names -- those come from the traffic.
 
@@ -781,11 +785,29 @@ switch ($exit) {
 # recorder could report -- a cancel, or a recording nothing was written for.
 $cataloguePath = $null
 $pauses = $null
+$identity = $null
 foreach ($line in @($recorderStdout)) {
     if ($line -isnot [string] -or -not $line.TrimStart().StartsWith('{')) { continue }
     try { $report = $line | ConvertFrom-Json } catch { continue }
     if ($report.cataloguePath) { $cataloguePath = $report.cataloguePath }
     if ($report.PSObject.Properties['pauses']) { $pauses = $report.pauses }
+    if ($report.PSObject.Properties['captureId']) { $identity = $report }
+}
+
+# WHICH CAPTURE THIS WAS, AND WHICH RUN IT BELONGS TO (#26). The store is shared
+# and several sessions record into it at once, so a session selects its own
+# captures by run -- and it can only do that if it is told its run by its own
+# recording. Picking it out of a listing by description or time is the guess the
+# run exists to replace. The recorder's line is swallowed above, so it is said
+# here. A recorder that reports neither says nothing.
+if ($identity -and $identity.captureId) {
+    $runText = if ($identity.runId) {
+        "in run $($identity.runId). ``Get-HarCapture`` shows the run of every capture in the store."
+    }
+    else {
+        'and no run could be identified for it -- see `run` in session.json for why.'
+    }
+    Write-Information "This capture is $($identity.captureId), $runText"
 }
 
 # THE PAUSES, SUMMED UP (owner request: "communicate that back"). Each pause
