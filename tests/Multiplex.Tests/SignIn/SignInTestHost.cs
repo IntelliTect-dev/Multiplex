@@ -56,6 +56,10 @@ public sealed class SignInTestHost : IAsyncDisposable
     public string DataPath { get; } = Path.Combine(Path.GetTempPath(), "multiplex-signin-tests", Guid.NewGuid().ToString("N"));
     public FakeCompleter Completer { get; } = new();
     public FakeRevoker Revoker { get; } = new();
+
+    /// <summary>Every log entry the host writes.</summary>
+    public LogCapture Logs { get; } = new();
+
     public WebApplicationFactory<Program> Factory { get; }
     public StubSignInDefinition Definition { get; }
 
@@ -78,6 +82,7 @@ public sealed class SignInTestHost : IAsyncDisposable
 
             b.ConfigureTestServices(services =>
             {
+                services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(Logs);
                 services.AddSingleton<ISiteSignInDefinition>(Definition);
                 services.RemoveAll<IAuthorizationCompleter>();
                 services.AddSingleton<IAuthorizationCompleter>(Completer);
