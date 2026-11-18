@@ -87,6 +87,7 @@ async function main() {
         console.error('capture-cdp: ' + paced.error);
         process.exit(1);
     }
+    for (const note of paced.notes || []) console.error('capture-cdp: ' + note);
 
     // --validate-only: argument-validation mode. Does not launch the browser.
     // Verifies that the named --storage-state file exists (if provided) and

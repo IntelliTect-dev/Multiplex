@@ -172,6 +172,28 @@ test('P7: a pause that arrives while a step is already waiting holds that step t
         `the step ran at +${ranAt - (pacer.pausedUntil() - 30375)} ms, inside a pause that ends at +30375 ms`);
 });
 
+test('P8: a --pace wait is at most 10 minutes, and 0 everywhere is off', async () => {
+    // Node runs a setTimeout above 2^31-1 ms after 1 ms: nav=3000000000 was,
+    // in effect, no pacing at all.
+    const huge = pacing.parsePace('nav=3000000000');
+    assert.deepStrictEqual(huge.pace.navigation, [pacing.MAX_PACE_WAIT_MS, pacing.MAX_PACE_WAIT_MS]);
+    assert.strictEqual(pacing.MAX_PACE_WAIT_MS, 10 * 60 * 1000);
+    assert.ok(huge.notes && huge.notes.some((n) => /nav=3000000000/.test(n) && /10 minutes/.test(n)),
+        `the clamp is said, not silent: ${JSON.stringify(huge.notes)}`);
+    assert.deepStrictEqual(pacing.parsePace('action=500-900000').pace.action, [500, pacing.MAX_PACE_WAIT_MS]);
+    assert.deepStrictEqual(pacing.parsePace('nav=2000-5000').notes || [], [], 'a value in bounds says nothing');
+    const time = fakeTime();
+    const pacer = pacing.createPacer(huge.pace, { now: time.now, sleep: time.sleep, rng: fixed(0.5) });
+    await pacer.navigate(async () => {});
+    await pacer.navigate(async () => {});
+    assert.deepStrictEqual(time.slept, [pacing.MAX_PACE_WAIT_MS], 'the pacer waits the clamped 10 minutes');
+    // ZERO IS OFF, by either spelling, and says so.
+    assert.strictEqual(pacing.parsePace('0').pace, pacing.PACE_OFF);
+    const zeros = pacing.parsePace('nav=0,action=0,per-minute=0').pace;
+    assert.strictEqual(zeros, pacing.PACE_OFF, 'every wait zero and no ceiling is off, and is marked as test mode');
+    assert.match(pacing.describePace(zeros), /^off -- .*test mode/);
+});
+
 test('P6: --pace parses, and refuses what it cannot parse', () => {
     assert.strictEqual(pacing.parsePace(undefined).pace, pacing.DEFAULT_PACE, 'absent is the default');
     assert.strictEqual(pacing.parsePace('human').pace, pacing.DEFAULT_PACE);
@@ -630,6 +652,10 @@ test('D1: capture-cdp takes --throttle-ms 0 as zero and refuses a --pace it cann
         assert.strictEqual(r.status, 1, `${bad.join(' ')} must be refused, got ${r.status}`);
         assert.match(r.stderr, /--pace|--throttle-ms/);
     }
+    // A wait over the 10-minute bound is clamped, and the run says so.
+    const clamped = run(['--pace', 'nav=3000000000']);
+    assert.strictEqual(clamped.status, 0, clamped.stderr);
+    assert.match(clamped.stderr, /capture-cdp: .*nav=3000000000.*10 minutes/);
 });
 
 test('D2: capture-cdp reads the body of any refusal from the site, JSON included', () => {

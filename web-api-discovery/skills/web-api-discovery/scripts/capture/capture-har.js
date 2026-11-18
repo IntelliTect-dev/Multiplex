@@ -268,7 +268,8 @@
  *                    navigations, 0.3-1.2 s between clicks or typing steps, at
  *                    most 12 navigations a minute, each wait drawn at random.
  *                    `nav=MIN-MAX,action=MIN-MAX,per-minute=N` (milliseconds;
- *                    any subset) changes it; `off` makes every wait zero, for
+ *                    any subset; each wait at most 10 minutes, clamped and said
+ *                    so) changes it; `off` or `0` makes every wait zero, for
  *                    tests. A site's Retry-After is honoured either way.
  *   --port           default 9333, and it never has to be specified: a busy
  *                    port falls forward to the next free one.
@@ -4475,6 +4476,7 @@ async function start(args) {
     }
     const paced = pacing.parsePace(args.pace);
     if (paced.error) return usage(paced.error);
+    for (const note of paced.notes || []) log.warn('capture-har: ' + note);
     const pace = paced.pace;
     const attached = !!browserMode.attached;
     const nativeBrowser = browserMode.browser === BROWSER_NATIVE;

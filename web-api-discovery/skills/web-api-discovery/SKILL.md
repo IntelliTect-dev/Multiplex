@@ -708,9 +708,10 @@ looks like one. It is the default:
 |---|---|---|---|
 | *(absent)* or `human` | 1.5-4 s, random | 0.3-1.2 s, random | at most 12 |
 | `nav=2000-6000,action=500-1500,per-minute=6` | as given (any subset; the rest keep their defaults) | | |
-| `off` | 0 | 0 | no ceiling -- **for tests**, never a default |
+| `off`, or `0` | 0 | 0 | no ceiling -- **for tests**, never a default (a spec that sets every wait and the ceiling to 0 is the same) |
 
-A different wait is drawn each time, time already spent on the page counts
+Each wait is at most **10 minutes**: a larger value is clamped to that, and the
+run says so. A different wait is drawn each time, time already spent on the page counts
 towards it, and only one navigation is ever in flight. A site's `Retry-After`
 is honoured even with `--pace off`: that is not pacing, and turning pacing off
 for a test must not turn it off.
