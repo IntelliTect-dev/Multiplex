@@ -149,9 +149,12 @@
  * on their phone, through a private live view (mirror.js); the recording goes
  * on until they hand back (`continue` here, or the phone's button) or end it.
  * With nobody at the terminal and no phone view, nobody can take over, so the
- * recording ends as `handed-over` and is post-processed like any other. By
- * hand, a pause or a hand-over is advice -- the browser is already the
- * operator's.
+ * recording ends as `handed-over` and is post-processed like any other. An
+ * agent that exits while the person has the browser leaves nothing to hand
+ * back to: handing back ends the recording, the agent's exit its ending.
+ * WITHOUT -AI IT IS A PERSON'S CAPTURE, terminal or not (captureDriver): a
+ * pause or a hand-over is advice -- never a hold, never an ending on their
+ * behalf -- because the browser is already the operator's.
  *
  * WHAT IS NOT HERE YET, deliberately: `-SignInFirst` (#75) and multi-site (#74).
  * Without #75 the agent stops at the first sign-in prompt and hands back, which
@@ -3397,7 +3400,9 @@ function driveWithAgent(session, prompt, opts = {}) {
  * onto a session already recorded as ended by something else. So null.
  *
  * And an agent that exits WHILE A PERSON HAS THE BROWSER (`ctx.handedOver`)
- * ended nothing either: the recording is theirs, and goes on until they end it.
+ * ended nothing either: the recording is theirs, and goes on until they end it
+ * -- or hand back, when this is asked again without `handedOver` and its
+ * answer is the ending, because there is nothing left to hand back to.
  *
  * A TURN THAT ENDED IN AN ERROR (`result.turnError`, from the stream) is a
  * failure even though the CLI exits 0 once its input is closed.
@@ -3526,6 +3531,41 @@ function agentStillDrivingLines(session) {
 function terminalLineMeans(line, handOverActive) {
     if (handOverActive && /^\s*c(ontinue)?\s*$/i.test(String(line || ''))) return 'hand-back';
     return 'end';
+}
+
+/**
+ * Who is driving the capture -- which decides what a site's signal MEANS.
+ *
+ *   you               WITHOUT -AI IT IS A PERSON'S CAPTURE, whether or not a
+ *                     terminal is attached: no TTY is no evidence of
+ *                     automation, because an AI session or a scheduled task
+ *                     that starts the recorder for somebody to browse by hand
+ *                     has none either. Advice -- never a hold, never an ending
+ *                     on their behalf.
+ *   agent-unstarted   -AI, the agent not launched yet (the start page): a
+ *                     pause holds, and it starts once that is over
+ *   agent             -AI, the agent running with its input open: it is told,
+ *                     and the browser holds
+ *   agent-unmessaged  -AI, the agent running but its input closed (or never
+ *                     open): the browser holds, and nothing claims it was told
+ *   agent-gone        -AI, and the agent has exited: nothing is driving
+ *
+ * @param {{ai: boolean, agentLaunched: boolean, agentRunning: boolean, canMessage: boolean}} state
+ */
+function captureDriver(state) {
+    if (!state.ai) return 'you';
+    if (!state.agentLaunched) return 'agent-unstarted';
+    if (!state.agentRunning) return 'agent-gone';
+    return state.canMessage ? 'agent' : 'agent-unmessaged';
+}
+
+/**
+ * A pause record as the resume line may describe it: "the agent has been told
+ * to carry on" only when it was. Never written back -- session.json keeps who
+ * was driving.
+ */
+function untoldRecord(record) {
+    return record && record.driver === 'agent' ? Object.assign({}, record, { driver: 'nobody' }) : record;
 }
 
 /**
@@ -5201,7 +5241,7 @@ async function start(args) {
             }
             log.warn(`capture-har: the browser could NOT hold the site's requests for this pause (${e.message}).\n` +
                 '  Only the recorder\'s own steps wait' +
-                (agentRunning && agentControl.messaging ? ', and the agent has been told to wait' : '') + '.');
+                (driverNow() === 'agent' ? ', and the agent has been told to wait' : '') + '.');
         },
         holds: async (request) => {
             if (scope && !(await scope.admits(request))) return false;
@@ -5212,28 +5252,25 @@ async function start(args) {
         session.pauses = pauses.records();
         writeSession();
     };
-    // Who is driving decides what a signal MEANS: an agent is told and the
-    // browser holds; an agent not launched yet waits to be. Without --ai and
-    // with NOBODY AT THE TERMINAL, whatever drives is automation reaching the
-    // browser over CDP (the header's "an AI drives it over CDP"): the browser
-    // holds for it too, though it cannot be told. Anything else is a person
-    // browsing by hand, who gets advice -- it is their browser.
-    const driverNow = () => {
-        if (ai && !agentLaunched) return 'agent-unstarted';
-        if (ai && agentRunning) return agentControl.messaging ? 'agent' : 'agent-unmessaged';
-        if (!ai && !humanAtTerminal) return 'external';
-        return 'you';
-    };
+    // Who is driving decides what a signal MEANS (captureDriver): an agent is
+    // told and the browser holds; an agent not launched yet waits to be.
+    // Without --ai it is a person's capture, terminal or not: advice.
+    const driverNow = () => captureDriver({ ai, agentLaunched, agentRunning,
+        canMessage: !!(agentControl.inputOpen && agentControl.inputOpen()) });
+    // The agent's exit, kept for an ending that has to wait (a hand-over).
+    let agentExit = null;
     const pauses = capturePause.createCapturePause({
         hold,
         pacer,
         // THE PAUSE RAN OUT: carry on, and say so -- to the operator, and to
-        // the agent, which was told to wait for exactly this message.
+        // the agent, which was told to wait for exactly this message. The
+        // line says it was told only when it can be.
         onTimerResume: (record) => {
             if (reason) return;
-            log.lines(pacing.resumeLines(record));
-            if (record.driver === 'agent' && agentRunning && agentControl.carryOn) {
-                agentControl.carryOn(agentStream.agentMessages.resume({ pausedMs: record.pausedMs }));
+            const tell = record.driver === 'agent' && driverNow() === 'agent';
+            log.lines(pacing.resumeLines(tell ? record : untoldRecord(record)));
+            if (tell && !agentControl.carryOn(agentStream.agentMessages.resume({ pausedMs: record.pausedMs }))) {
+                log.warn('capture-har: the agent could not be told to carry on: its input has closed.');
             }
             syncPauses();
         }
@@ -5257,23 +5294,40 @@ async function start(args) {
         if (!handOver || reason) return false;
         const h = handOver;
         handOver = null;
-        closePhoneView(h, 'Handed back -- the capture carries on. You can close this page.');
+        // NOTHING TO HAND BACK TO: the agent exited while the person had the
+        // browser. Said, and the recording ends -- it does not wait for ever.
+        const gone = driverNow() === 'agent-gone';
+        closePhoneView(h, gone
+            ? 'Handed back -- but the agent is no longer running, so the capture ends here. ' +
+              'What was recorded is kept. You can close this page.'
+            : 'Handed back -- the capture carries on. You can close this page.');
         const record = pauses.resume(by);
         throttleMonitor.handedBack();
         if (session.handOver) session.handOver.resolved = `handed-back-${by}`;
-        if (record) log.lines(pacing.resumeLines(record));
-        if (h.who === 'agent' && agentRunning && agentControl.carryOn) {
-            agentControl.carryOn(agentStream.agentMessages.handBack());
+        const tell = h.who === 'agent' && driverNow() === 'agent';
+        if (record) log.lines(pacing.resumeLines(tell ? record : untoldRecord(record)));
+        if (tell && !agentControl.carryOn(agentStream.agentMessages.handBack())) {
+            log.warn('capture-har: the agent could not be told to carry on: its input has closed.');
         }
         syncPauses();
+        if (gone) {
+            const ending = agentExitEnding(agentExit || { status: 1 }, null);
+            log.warn('capture-har: the agent is no longer running -- it exited while you had the browser -- so ' +
+                'nothing drives it from here.\n  The recording ends, and what it holds is post-processed.');
+            if (ending.warning) log.warn(ending.warning);
+            settle(ending.reason);
+        }
         return true;
     };
     const startHandOver = async (decision, who, info) => {
         const h = { who, phone: null, timer: null };
         handOver = h;
         const record = pauses.handOver(decision, who);
-        if (who === 'agent' && agentControl.wait) {
-            agentControl.wait(agentStream.agentMessages.handOver({ reason: agentStream.handOverPhrase(decision) }));
+        // The line below says the agent was told only when it was.
+        let told = who;
+        if (who === 'agent' &&
+            !agentControl.wait(agentStream.agentMessages.handOver({ reason: agentStream.handOverPhrase(decision) }))) {
+            told = 'agent-unmessaged';
         }
         // THE PHONE VIEW, private to the owner's tailnet: bound to this PC's
         // Tailscale address only, behind a one-time token. No Tailscale, no
@@ -5305,12 +5359,10 @@ async function start(args) {
               `  browser back${who === 'agent' || who === 'agent-unstarted' ? ' to the agent' : ''}`
             : `use the phone page's buttons; with no answer within ${pacing.describeDuration(HAND_OVER_UNATTENDED_MS)} ` +
               'the recording\n  ends';
-        log.lines(pacing.throttleLines(decision, who, { link: h.phone && h.phone.url, noLink, finish }));
+        log.lines(pacing.throttleLines(decision, told, { link: h.phone && h.phone.url, noLink, finish }));
         syncPauses();
         if (!humanAtTerminal) {
-            // (Automation over CDP whose phone view failed to start is left
-            // to end the recording itself, as it always could.)
-            if (!h.phone) { if (who !== 'external') nobodyToTakeOver(); return; }
+            if (!h.phone) { nobodyToTakeOver(); return; }
             h.timer = setTimeout(() => {
                 if (handOver !== h || reason) return;
                 log.warn(`capture-har: nobody took over within ${pacing.describeDuration(HAND_OVER_UNATTENDED_MS)}; ` +
@@ -5332,7 +5384,9 @@ async function start(args) {
         if (decision.why) record.why = decision.why;
         (session.throttle = session.throttle || []).push(record);
         const who = driverNow();
-        if (who === 'you') {
+        // A PERSON'S CAPTURE (no -AI, terminal or not), or an -AI one whose
+        // agent has gone: advice. Nothing is held, nothing is ended for them.
+        if (who === 'you' || who === 'agent-gone') {
             if (decision.action === 'hand-over') session.handOver = Object.assign({}, record, { by: 'advice' });
             // The recorder's OWN steps -- the sign-in fills -- still wait out
             // what the site asked, in a hand-driven run as in any other.
@@ -5344,23 +5398,15 @@ async function start(args) {
         if (decision.action === 'pause') {
             if (!pauses.pause(decision, who)) return;
             log.lines(pacing.throttleLines(decision, who));
-            if (who === 'agent' && agentControl.wait) {
+            if (who === 'agent') {
                 const until = pacing.formatClock(decision.until);
-                agentControl.wait(decision.extended
+                const sent = agentControl.wait(decision.extended
                     ? agentStream.agentMessages.extend({ until })
                     : agentStream.agentMessages.pause({ status: s.status, waitMs: decision.waitMs, until,
                         named: decision.named }));
+                if (!sent) log.warn('capture-har: the agent could not be told to wait: its input has closed. The browser still holds.');
             }
             syncPauses();
-            return;
-        }
-        // Automation over CDP with no phone to hand to: there is nobody to
-        // hand over to and nothing that can be told, so it is what it always
-        // was -- advice on the output, and the driver ends the recording.
-        if (who === 'external' && !mirror.findTailnetAddress({ env: process.env }).address) {
-            session.handOver = Object.assign({}, record, { by: 'advice' });
-            log.lines(pacing.throttleLines(decision, 'you'));
-            writeSession();
             return;
         }
         session.handOver = Object.assign({}, record,
@@ -5552,6 +5598,7 @@ async function start(args) {
         }
         endings.push(agentDrive.then((result) => {
             agentRunning = false;
+            agentExit = result;
             // AN AGENT THAT EXITS WHILE A PERSON HAS THE BROWSER ended nothing
             // (agentExitEnding): the recording is theirs now, and goes on until
             // THEY end it -- so this promise must not resolve the race.
@@ -6346,6 +6393,7 @@ module.exports = {
     agentStartRefusal,
     agentDriving,
     terminalLineMeans,
+    captureDriver,
     claudeOnPath,
     driveWithAgent,
     settleRecorder,

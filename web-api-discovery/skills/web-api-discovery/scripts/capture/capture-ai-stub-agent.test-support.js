@@ -260,10 +260,18 @@ async function driveTheRecording(prompt) {
         // THE AGENT THAT MEETS A BOT CHECK, on request: it opens a page the
         // fixture serves as a "Just a moment..." interstitial, and then does
         // what it was told -- waits for the recorder.
-        if (process.env.HAR_STUB_AGENT_MODE === 'challenge') {
+        if (process.env.HAR_STUB_AGENT_MODE === 'challenge' || process.env.HAR_STUB_AGENT_MODE === 'challenge-exit') {
             await target.goto(new URL('/challenge', session.uri).href, { waitUntil: 'domcontentloaded' });
             step('opened /challenge');
             const told = await messageMatching(/A person is taking over/, 30000);
+            // THE AGENT THAT GOES AWAY DURING A HAND-OVER, on request: it
+            // crashes, or its session is closed, while the person has the
+            // browser. Nothing is left to hand back to.
+            if (process.env.HAR_STUB_AGENT_MODE === 'challenge-exit') {
+                step(told ? 'the recorder said a person is taking over; exiting instead of waiting' : 'nobody said anything');
+                say('SUMMARY: met a bot check and went away.');
+                return 'exit';
+            }
             step(told ? 'the recorder said a person is taking over; waiting' : 'nobody said anything');
             // Waits as told: until the person hands back, or the capture ends.
             await messageMatching(/The person has finished|The capture has ended/, 120000);
@@ -329,6 +337,12 @@ if (require.main === module) {
             code = 1;
         }
         turnActive = false;
+        if (code === 'exit') {
+            // Gone, with its stdin still open: the turn ends and the process with it.
+            endTurn();
+            setTimeout(() => process.exit(0), 100);
+            return;
+        }
         if (code !== 0) {
             emit({ type: 'result', subtype: 'error_during_execution', is_error: true });
             process.exit(code);

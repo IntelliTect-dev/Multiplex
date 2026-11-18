@@ -28,6 +28,9 @@
 //   G8  the messages say what the owner asked them to say
 //   G9  once the message the grace was waiting for is acknowledged, the agent
 //       is working: a quiet stretch longer than the grace does not end it
+//   G10 who is driving: without -AI it is a person, terminal or not (advice,
+//       never a hold); under -AI an agent whose input is closed is not told,
+//       and one that has exited is not driving
 
 'use strict';
 
@@ -299,6 +302,23 @@ test('G9: once the awaited message is acknowledged the agent is working, however
     await done;
     assert.strictEqual(fake.state.stdinEnded, true, 'the turn that ends with everything acknowledged is the end');
     assert.match(log(), /the agent has finished/);
+});
+
+test('G10: who is driving -- without -AI it is a person, terminal or not; an agent that cannot be told is not told', () => {
+    const d = (over) => capture.captureDriver(Object.assign(
+        { ai: false, agentLaunched: false, agentRunning: false, canMessage: false }, over));
+    // WITHOUT -AI IT IS A PERSON'S CAPTURE. No TTY is not evidence of
+    // automation: an AI session or a scheduled task that starts the recorder
+    // for somebody to browse by hand has none either. Advice, never a hold.
+    assert.strictEqual(d({}), 'you');
+    assert.strictEqual(capture.captureDriver({ ai: false, humanAtTerminal: false }), 'you', 'whatever else is said');
+    // Under -AI: not launched yet, running and reachable, running and not.
+    assert.strictEqual(d({ ai: true }), 'agent-unstarted');
+    assert.strictEqual(d({ ai: true, agentLaunched: true, agentRunning: true, canMessage: true }), 'agent');
+    assert.strictEqual(d({ ai: true, agentLaunched: true, agentRunning: true, canMessage: false }), 'agent-unmessaged',
+        'an agent whose input has closed is not "told to wait"');
+    assert.strictEqual(d({ ai: true, agentLaunched: true, agentRunning: false }), 'agent-gone',
+        'an agent that has exited is not driving');
 });
 
 test('G7: a child gone from under its stdin does not take the recorder down', async () => {

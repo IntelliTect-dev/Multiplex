@@ -213,13 +213,19 @@ function createE2eKit(prefix) {
         return { server, uri: `http://127.0.0.1:${server.address().port}/`, limitedHits };
     }
 
-    /** The recorder, under -AI, with the stub agent and a headless browser; no TTY. */
-    function startStubDrivenCapture(repo, uri, env) {
+    /**
+     * The recorder, under -AI, with the stub agent and a headless browser; no
+     * TTY. `opts.ai === false` starts it WITHOUT -AI -- a capture somebody
+     * browses by hand, here played by the test over CDP -- with the same
+     * preloads, so the stand-in Tailscale still applies.
+     */
+    function startStubDrivenCapture(repo, uri, env, opts = {}) {
+        const ai = opts.ai !== false;
         return spawn(process.execPath, [
             '-r', HEADLESS_PRELOAD, '-r', STUB_AGENT_PRELOAD, captureJs, 'start',
             '--uri', uri,
-            '--describe', 'ai drive: search once on the fixture page',
-            '--ai',
+            '--describe', ai ? 'ai drive: search once on the fixture page' : 'by hand: browse the fixture page',
+            ...(ai ? ['--ai'] : []),
             '--profile', path.join(repo, '.chrome-profile'),
             '--snapshot-seconds', '1',
             '--no-wait'
