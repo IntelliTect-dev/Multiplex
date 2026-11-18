@@ -228,6 +228,65 @@ public sealed class TripItServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Confirm_token_is_single_use_so_invitations_are_not_emailed_twice()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        _host.TripIt.OnJson($"/api/v2/get/trip/uuid/{TripUuid}", _ => TripJson("Iceland"));
+        _host.TripIt.OnJson("/api/v2/invite", _ => """{"timestamp":"1"}""");
+        var mcp = _host.McpFor("acct-a");
+        var args = new Dictionary<string, object?> { ["tripUuid"] = TripUuid, ["emails"] = "a@example.com", ["role"] = "viewer" };
+        var (_, previewText) = await mcp.CallAsync("tripit_add_participants", args);
+        args["confirm_token"] = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        var first = await mcp.CallAsync("tripit_add_participants", args);
+        var replay = await mcp.CallAsync("tripit_add_participants", args);
+
+        Assert.False(first.IsError, first.Text);
+        Assert.True(replay.IsError);
+        Assert.Contains("already been used", replay.Text, StringComparison.Ordinal);
+        Assert.Contains("Nothing was changed", replay.Text, StringComparison.Ordinal);
+        Assert.Equal(1, _host.TripIt.Count("POST", "/api/v2/invite"));
+    }
+
+    [Fact]
+    public async Task Confirm_token_cannot_delete_twice()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        _host.TripIt.OnJson($"/api/v2/get/trip/uuid/{TripUuid}/include_objects/true", _ => TripJson("Iceland"));
+        _host.TripIt.OnJson($"/api/v2/delete/trip/uuid/{TripUuid}", _ => """{"timestamp":"1"}""");
+        var mcp = _host.McpFor("acct-a");
+        var args = new Dictionary<string, object?> { ["tripUuid"] = TripUuid, ["confirmName"] = "Iceland" };
+        var (_, previewText) = await mcp.CallAsync("tripit_delete_trip", args);
+        args["confirm_token"] = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        Assert.False((await mcp.CallAsync("tripit_delete_trip", args)).IsError);
+        var (isError, text) = await mcp.CallAsync("tripit_delete_trip", args);
+
+        Assert.True(isError);
+        Assert.Contains("already been used", text, StringComparison.Ordinal);
+        Assert.Equal(1, _host.TripIt.Count("POST", $"/api/v2/delete/trip/uuid/{TripUuid}"));
+    }
+
+    [Fact]
+    public async Task Confirm_token_presented_with_other_arguments_is_not_used_up()
+    {
+        // A refused mismatch must not burn the token: the right request can still use it.
+        _host.SignIn("acct-a", "cookie-a");
+        _host.TripIt.OnJson($"/api/v2/get/trip/uuid/{TripUuid}/include_objects/true", _ => TripJson("Iceland"));
+        _host.TripIt.OnJson($"/api/v2/delete/trip/uuid/{TripUuid}", _ => """{"timestamp":"1"}""");
+        var mcp = _host.McpFor("acct-a");
+        var (_, previewText) = await mcp.CallAsync("tripit_delete_trip", new { tripUuid = TripUuid, confirmName = "Iceland" });
+        var token = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        var wrong = await mcp.CallAsync("tripit_delete_trip", new { tripUuid = TripUuid, confirmName = "Iceland (changed)", confirm_token = token });
+        var right = await mcp.CallAsync("tripit_delete_trip", new { tripUuid = TripUuid, confirmName = "Iceland", confirm_token = token });
+
+        Assert.True(wrong.IsError);
+        Assert.False(right.IsError, right.Text);
+        Assert.Equal(1, _host.TripIt.Count("POST", $"/api/v2/delete/trip/uuid/{TripUuid}"));
+    }
+
+    [Fact]
     public async Task Confirm_token_is_refused_for_other_arguments_or_another_account()
     {
         _host.SignIn("acct-a", "cookie-a");

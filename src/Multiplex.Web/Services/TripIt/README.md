@@ -63,10 +63,19 @@ The host is stateless, so it cannot ask the client mid-call. A confirm tool call
 again with the same arguments and the token. The existing guards stay (`confirmName` must be
 the trip's exact name, the owner cannot be removed).
 
-The token is an ASP.NET Data Protection time-limited payload (5 minutes) binding the account,
-the tool name and a SHA-256 of the canonical JSON of the other arguments (keys sorted, values
-after defaults). Another account, another tool, other arguments or an expired token are
-refused with a message telling the model to preview again and ask the person.
+The token is an ASP.NET Data Protection time-limited payload (5 minutes) carrying a random id
+and binding the account, the tool name and a SHA-256 of the canonical JSON of the other
+arguments (keys sorted, values after defaults). Another account, another tool, other arguments
+or an expired token are refused with a message telling the model to preview again and ask the
+person. A token works once: its id is recorded, per account and in memory until the token
+expires, before the change is attempted, so a replay (which for `tripit_add_participants`
+would email the invitations again) is refused. A token refused for other arguments is not used
+up. The record does not survive a restart of the server.
+
+A change TripIt answers with 302/401 (session expired or rotated) is not sent again after the
+session is renewed, because TripIt may already have made it; the tool error says to check
+before trying again. Only Akamai's 403 block page, which stops the request before TripIt sees
+it, is retried.
 
 ## Pacing and errors
 
