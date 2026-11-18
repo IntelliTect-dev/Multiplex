@@ -350,8 +350,18 @@ Remove-HarCapture refuses to delete anything outside a directory by that exact
 name. If the walk renames the store, that check stops matching the real store
 and the command refuses every legitimate delete.
 '@
+        # The literal lives with the guard, and the guard moved to the shared
+        # module when `Invoke-HarCapture -Scrub / -Catalogue` needed the same
+        # question answered (#24): one definition of "inside a capture store",
+        # asked by the command that deletes and by the command that scrubs.
+        $guard = Get-Content -LiteralPath (
+            Join-Path $script:ScriptsDir 'har/HarStoreBatch.psm1') -Raw
+        $guard | Should -Match "CapturesDirName\s*=\s*'\.har-captures'"
+        # And this command really does ask that guard, rather than keeping a
+        # copy the pin above would no longer be watching.
         $remove = Get-Content -LiteralPath $script:RemovePs1 -Raw
-        $remove | Should -Match "CapturesDirName\s*=\s*'\.har-captures'"
+        $remove | Should -Match 'Test-HarCaptureStorePath -Path'
+        $remove | Should -Not -Match 'function Test-HarCaptureStorePath'
     }
 
     It 'refuses a directory that is not a capture' {
