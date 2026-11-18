@@ -47,6 +47,13 @@
 //   S6  `status` gives the same state `stop` does, through the real command
 //   S7  `stop` prints its state even when it refuses the capture (exit 4)
 //   S8  a recorder that ended a run on purpose is not called one that died
+//   S9  `stop` says where the wait is every thirty seconds at the DEFAULT level
+//   S10 a `session.json.writing` left by a recorder killed mid-write is gone
+//       once `stop` has ended the capture
+//   F1  an ending write never leaves session.json empty or partial: it is
+//       staged beside it and renamed
+//   F2  a session.json that is briefly unreadable is read again, not reported
+//       missing -- by `stop` and by the ending's own reader
 //   R1  post-processing reports each phase as it STARTS, in order
 //   R2  the AI catalogue pass is its own phase, entered before the child runs
 //
@@ -810,6 +817,135 @@ test('S6: status gives the same state stop does, through the real command line',
     assert.strictEqual(stopUnregistered.status, 1, stopUnregistered.stderr);
     assert.strictEqual(jsonLine(stopUnregistered.stdout).stop, 'not-registered');
     assert.ok(!fs.existsSync(unregistered.harPath), 'nothing assembled under a live recorder');
+});
+
+test('S9: stop says where the wait has got every thirty seconds, at the default log level', async () => {
+    // Without a flag. A `stop` that sits silent for minutes is the very thing
+    // this issue was filed about; the line is only useful if it is SEEN.
+    const f = fixture('s9');
+    const partial = path.join(f.sessionDir, '.scrubbed.har.partial-4242');
+    writeAt(f.harPath, RAW_TEXT, Date.now());
+    Object.assign(f.session, { endedUtc: iso(Date.now()), endedBy: 'stop-command', summary: { exists: true, bytes: 2048 } });
+    const run = fakeRun();
+    enter(f, 'scrub', run.start, 'stop-command');
+    run.schedule({ at: 20 * SECOND, run: (t) => writeAt(partial, 'x'.repeat(100), t) });
+    run.schedule({ at: 40 * SECOND, run: (t) => writeAt(partial, 'x'.repeat(200), t) });
+    run.schedule({ at: 45 * SECOND, run: (t) => {
+        fs.unlinkSync(partial);
+        f.session.postProcess = { errors: [], warnings: [] };
+        enter(f, 'complete', t);
+    } });
+
+    const r = await runStop(f, run);
+
+    assert.strictEqual(r.code, 0, `got ${r.code}:\n${r.stderr}`);
+    assert.match(r.stderr, /post-processing is progressing -- [^\n]*Still waiting\./,
+        `no progress line at the default level in:\n${r.stderr}`);
+});
+
+test('S10: a session.json.writing left by a recorder killed mid-write is gone once stop has ended the capture', async () => {
+    // The recorder stages each ending write beside session.json and renames it.
+    // Killed between the two, it leaves the staged file -- and nothing that
+    // wrote it will ever come back for it.
+    const run = fakeRun();
+    run.alive = false;
+    const f = fixture('s10');
+    writeAt(f.harPath, RAW_TEXT, run.start - MINUTE);
+    Object.assign(f.session, {
+        endedUtc: iso(run.start - MINUTE), endedBy: 'enter',
+        postProcess: { errors: [], warnings: [] }
+    });
+    enter(f, 'complete', run.start - MINUTE, 'enter');
+    const leftover = `${f.sessionFile}.writing`;
+    fs.writeFileSync(leftover, '{"half": "a rec', 'utf8');
+
+    const r = await runStop(f, run, { 'min-bytes': 10 * MB });
+
+    assert.ok(r.json, r.stdout);
+    assert.ok(!fs.existsSync(leftover), `the staged write a killed recorder left is still there:\n${r.stderr}`);
+    assert.strictEqual(f.read().endedBy, 'enter', 'and session.json itself is untouched');
+});
+
+test('F1: an ending write never leaves session.json empty or partial, at any moment', () => {
+    // `stop` and `status` read session.json from another process WHILE the
+    // recorder rewrites it. A write is not instant: the file is truncated, then
+    // filled. This write stops halfway through every file it writes, and looks.
+    const f = fixture('f1');
+    const seen = [];
+    const look = (when) => {
+        let text;
+        try { text = fs.readFileSync(f.sessionFile, 'utf8'); } catch (e) { seen.push(`${when}: unreadable (${e.code})`); return; }
+        try { JSON.parse(text); } catch (e) { seen.push(`${when}: ${text.length} bytes, not whole`); }
+    };
+    const realWrite = fs.writeFileSync;
+    const realRename = fs.renameSync;
+    fs.writeFileSync = function (file, data, ...rest) {
+        if (typeof file === 'string' && typeof data === 'string' && data.length > 1) {
+            realWrite.call(fs, file, data.slice(0, Math.floor(data.length / 2)), ...rest);
+            look(`halfway through writing ${path.basename(file)}`);
+        }
+        return realWrite.call(fs, file, data, ...rest);
+    };
+    fs.renameSync = function (from, to) {
+        look(`before renaming ${path.basename(from)}`);
+        return realRename.call(fs, from, to);
+    };
+    try {
+        f.session.endedUtc = iso(T0);
+        f.session.postProcess = { errors: [], warnings: [] };
+        capture.writeSessionWhole(f.session);
+    } finally {
+        fs.writeFileSync = realWrite;
+        fs.renameSync = realRename;
+    }
+
+    assert.deepStrictEqual(seen, [], 'a reader found session.json half-written');
+    assert.deepStrictEqual(f.read().postProcess, { errors: [], warnings: [] }, 'the new record landed');
+    assert.ok(!fs.existsSync(`${f.sessionFile}.writing`), 'nothing is left staged');
+});
+
+/**
+ * Run `fn` with session.json reading as truncated -- empty -- for the first
+ * `ms` milliseconds after it is first read: the instant a rewrite in another
+ * process can be caught in.
+ */
+async function withSessionUnreadableFor(f, ms, fn) {
+    const realRead = fs.readFileSync;
+    let firstMs = null;
+    let empties = 0;
+    fs.readFileSync = function (file, ...rest) {
+        if (typeof file === 'string' && path.resolve(file) === path.resolve(f.sessionFile)) {
+            if (firstMs === null) firstMs = Date.now();
+            if (Date.now() - firstMs < ms) { empties++; return ''; }
+        }
+        return realRead.call(fs, file, ...rest);
+    };
+    try { return await fn(() => empties); } finally { fs.readFileSync = realRead; }
+}
+
+test('F2: a session.json that is briefly unreadable is read again, not reported missing', async () => {
+    const run = fakeRun();
+    run.alive = false;
+    const f = fixture('f2');
+    writeAt(f.harPath, RAW_TEXT, run.start - MINUTE);
+    Object.assign(f.session, {
+        endedUtc: iso(run.start - MINUTE), endedBy: 'enter',
+        postProcess: { errors: [], warnings: [] }
+    });
+    enter(f, 'complete', run.start - MINUTE, 'enter');
+
+    const read = await withSessionUnreadableFor(f, 60, async (empties) => {
+        const session = ending.readSession(f.sessionDir);
+        assert.ok(empties() > 0, 'the fault never fired: the test proves nothing');
+        return session;
+    });
+    assert.ok(read, 'the ending\'s reader gave up on a file that was unreadable for 60ms');
+    assert.strictEqual(read.endedBy, 'enter');
+
+    const r = await withSessionUnreadableFor(f, 60, () => runStop(f, run, { 'min-bytes': 10 * MB }));
+    assert.doesNotMatch(r.stderr, /has no session\.json/, 'stop reported a session.json it caught mid-write as missing');
+    assert.notStrictEqual(r.code, 3);
+    assert.strictEqual(r.code, 4, `the capture is refused as too small, as S7's is -- got ${r.code}:\n${r.stderr}`);
 });
 
 // ---------------------------------------------------------------------------

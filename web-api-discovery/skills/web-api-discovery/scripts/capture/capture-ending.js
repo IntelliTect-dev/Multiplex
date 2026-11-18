@@ -184,16 +184,33 @@ function notePhase(session, phase, opts = {}) {
 // What is on disk
 // ---------------------------------------------------------------------------
 
+// How long a session.json that is THERE but cannot be read is tried again
+// before it is given up on: about a quarter of a second in all.
+const READ_ATTEMPTS = 10;
+const READ_RETRY_MS = 25;
+
+function sleepSync(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
- * session.json, or null. Read up to three times: the recorder rewrites the file
- * in place, so a reader can land in the instant between truncate and write.
+ * session.json, or null.
+ *
+ * Another process writes this file while it is read. The recorder stages its
+ * ending writes and renames them, but a rename can briefly lock the file on
+ * Windows, and a write whose rename failed falls back to rewriting in place --
+ * truncate, then fill. So a file that is there and unreadable is tried again,
+ * a little later, for a bounded time: retries with no pause between them all
+ * land inside the same instant. One that is not there at all is not waited for.
  */
 function readSession(sessionDir) {
     const file = path.join(sessionDir, SESSION_FILE);
-    for (let attempt = 0; attempt < 3; attempt++) {
-        try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* mid-write, or absent */ }
+    for (let attempt = 1; ; attempt++) {
+        try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
+            if (e.code === 'ENOENT' || attempt >= READ_ATTEMPTS) return null;
+            sleepSync(READ_RETRY_MS);
+        }
     }
-    return null;
 }
 
 function statOrNull(file) {
@@ -582,6 +599,7 @@ function unfinishedLines(verdict, session) {
 
 module.exports = {
     notePhase,
+    readSession,
     readEvidence,
     evaluate,
     look,

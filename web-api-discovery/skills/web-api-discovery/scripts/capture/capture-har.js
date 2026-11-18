@@ -6261,22 +6261,40 @@ function noteEndingPhase(session, phase, by) {
  * session.json is read by another process WHILE this one works -- `stop` polls
  * it five times a second -- and a plain rewrite truncates first: a `stop` or
  * `status` reading in that instant finds an empty file and reports no session
- * at all. A rename puts the whole record there or leaves the old one. If the
- * rename cannot be made, the plain rewrite still lands the record.
+ * at all. A rename puts the whole record there or leaves the old one.
+ *
+ * The staged name is this function's own: a `.writing` already there is one a
+ * process killed between stage and rename left behind, and is overwritten.
+ *
+ * THE PLAIN REWRITE AFTER A FAILED RENAME STAYS, deliberately. A rename that
+ * still fails after its retries is a destination held open -- an editor, a
+ * scanner -- and without the fallback the record would not land at all: the
+ * file would go on saying the recording is unfinished, and a later `stop`
+ * would take over and re-run post-processing on a capture already done. A
+ * reader that catches the fallback mid-write retries (readSession), so the
+ * worse outcome is the lost record, not the instant of truncation.
  *
  * Used for every write from the ending onwards. The writes made while the
  * recording is still running are left as they were: nothing polls for those.
  */
-function writeSessionWhole(session) {
-    const file = path.join(session.sessionDir, SESSION_FILE);
-    const staged = `${file}.writing`;
+function writeSessionWhole(session, sessionDir = session.sessionDir) {
+    const file = path.join(sessionDir, SESSION_FILE);
+    const staged = stagedSessionWrite(sessionDir);
     try {
         writeJson(staged, session);
         renameWithRetry(staged, file);
     } catch (e) {
-        try { fs.unlinkSync(staged); } catch (_) { /* nothing more to do */ }
+        removeStagedSessionWrite(sessionDir);
         writeJson(file, session);
     }
+}
+
+function stagedSessionWrite(sessionDir) {
+    return path.join(sessionDir, `${SESSION_FILE}.writing`);
+}
+
+function removeStagedSessionWrite(sessionDir) {
+    try { fs.unlinkSync(stagedSessionWrite(sessionDir)); } catch (_) { /* not there, or nothing more to do */ }
 }
 
 /**
@@ -6293,7 +6311,10 @@ async function stop(args, deps = {}) {
         return 3;
     }
     const sessionFile = path.join(sessionDir, SESSION_FILE);
-    let session = readJson(sessionFile);
+    // Through the ending's reader, which tries again: the recorder may be
+    // rewriting this file this instant, and one caught mid-write is not a
+    // session that has no record.
+    let session = captureEnding.readSession(sessionDir);
     if (!session) {
         process.stderr.write(`capture-har: ${sessionDir} has no ${SESSION_FILE}\n`);
         return 3;
@@ -6361,6 +6382,11 @@ async function stop(args, deps = {}) {
     // already gone or went while this waited, nothing else will ever run what
     // it left undone, so the rest of this function does.
     const driverLost = waited.verdict.state === captureEnding.STATE_RECORDER_GONE;
+    // Whatever the recorder had staged and not yet renamed when it went is
+    // now nobody's: it was the only writer, and it is not coming back. Asked
+    // of the process, not the state -- a recorder killed between staging and
+    // renaming its LAST write leaves a session that reads as complete.
+    if (!waited.evidence.recorderAlive) removeStagedSessionWrite(sessionDir);
     if (driverLost && !session.endedUtc) {
         process.stderr.write(
             `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
@@ -6401,7 +6427,7 @@ async function stop(args, deps = {}) {
     // above rather than racing it. When the driver is gone, nothing else will
     // ever run those phases, so `stop` runs them itself -- and ONLY then: this
     // is reached with a live driver only when it already finished or cancelled.
-    session = readJson(sessionFile) || session;
+    session = captureEnding.readSession(sessionDir) || session;
     if (driverLost && !session.postProcess && !session.cancelled) {
         // `stop` runs in a DIFFERENT PROCESS from the recorder and holds no
         // in-memory index -- which is exactly why the descriptors are read
@@ -6412,7 +6438,8 @@ async function stop(args, deps = {}) {
         // annotated is left alone.
         annotateUnretainedBodies(session.harPath, session.recordLog);
         session.postProcess = postProcess(session);
-        writeJson(sessionFile, session);
+        // Whole, like the recorder's: a `status` may be reading it.
+        writeSessionWhole(session, sessionDir);
     }
 
     log.info(`capture-har: ${describeSummary(summary)}`);
@@ -6709,6 +6736,7 @@ module.exports = {
     uriFolder,
     resolveSession,
     stop,
+    writeSessionWhole,
     findProfileConflict,
     findFreePort,
     resolveBrowserMode,
