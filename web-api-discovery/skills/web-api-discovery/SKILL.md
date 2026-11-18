@@ -695,7 +695,10 @@ not watching a browser move with no account of why. It is **rendered** from the
 agent's events: its own words as they are, one line per tool call (`> navigate
 https://...` -- never what it typed, never a query string), one per turn, and
 every message the recorder sent it (`capture-har -> agent: ...`). The raw events
-are kept beside it as `agent-stream.jsonl`, with screenshots dropped.
+are kept beside it as `agent-stream.jsonl`, with screenshots dropped. That file
+holds what the step log leaves out -- what the agent typed, full URLs with their
+query strings, tool results -- so it is **as sensitive as `raw.har`**: keep it
+with the capture, and never share or commit it.
 
 **A drive is never a loss of control.** The agent's finishing is one ending among
 the usual set: ENTER here, `Stop-HarRecording` from another process, and closing
@@ -783,9 +786,13 @@ that: time spent honouring a named wait in between is not part of it.
 
 **What a pause holds -- everything, at the browser.** While a pause runs, this
 capture's requests to the site (its host and subdomains, and any page load)
-**wait in the browser** and go on, in order, when it ends: the tooling's own
-paced steps, the agent's clicks, anything. Requests already in flight when it
-began finish. The hold is enforced with Playwright request routing installed
+**wait in the browser**: the tooling's own paced steps, the agent's clicks,
+anything. When it ends they go on **one at a time, the action pace apart**, in
+the order they were asked for -- not all at once onto a site that has just
+asked for a slowdown. One pause holds at most **20**; past that a request is
+aborted at once rather than held (the site never sees it, and a page that
+needs it asks again), and the run says so once. Requests already in flight
+when it began finish. The hold is enforced with Playwright request routing installed
 for the pause and removed after it (routing disables the browser cache, so it
 is never left in place); in your own browser (native or attached) it covers
 only this capture's tabs. An `-AI` agent is also **told** -- "The site asked us
@@ -796,12 +803,12 @@ Under `-AI` the agent is not *launched* until a pause on the start page is over.
 A throttle that arrives during a pause was already in flight, so it is the same
 pause (lengthened if it names a later end), never a hand-over. If the browser
 cannot install the hold, the run **says so** rather than claiming a hold it does
-not have. Without `-AI` and with nobody at the terminal, whatever drives the
-browser is automation over CDP: the browser holds for it too, though nothing
-can tell it -- and a check is handed to your phone when there is a tailnet, or
-is advice on the output (as before) when there is not. A hand-driven run -- someone at the terminal -- is not held: you
-are told how long the site asked you to wait, and only the recorder's own steps
-(the sign-in fills) wait it out.
+not have. **Without `-AI` it is a person's capture**, whether or not anyone is
+at the terminal -- an AI session or a scheduled task that starts the recorder
+for you to browse by hand has no terminal either. Nothing is held and nothing
+is ended for you: you are told how long the site asked you to wait, or what
+check it put up, and only the recorder's own steps (the sign-in fills) wait it
+out. The recording ends when you end it.
 
 A burst of throttled requests on one page load is one pause, not three. A
 page that merely embeds a CAPTCHA widget (reCAPTCHA v3 runs invisibly on many
@@ -874,6 +881,10 @@ not sent). Then the browser is yours, still open and still recording:
   one, nobody can take over, so the recording ends (`endedBy: handed-over`), the
   agent is told the capture has ended, and what was recorded is post-processed
   as usual. "End the capture" on the phone ends it as `ended-on-phone`.
+- **If the agent has gone** -- it exited while you had the browser -- there is
+  nothing to hand back to. Handing back says so (it does not claim the agent
+  was told to carry on) and ends the recording, post-processed as usual, with
+  the agent's own exit as the ending (`agent-finished`, or `agent-failed`).
 
 If the start page itself is refused, the agent is **not started** -- unless you
 take over and hand back, and then it starts. `session.json` also records each
