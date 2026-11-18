@@ -1440,6 +1440,26 @@ function writeBackChangedSpan(raw, decoded, next, offsets) {
         raw.slice(rawEnd);
 }
 
+/**
+ * A URL component rewritten as plain text ON ITS RAW BYTES, with every fake
+ * that landed in it made fit for a URL (#66). The raw routes below write the
+ * replacement as-is, and a fake name holds a space: `#Zorblat` came back
+ * `#Yale Wilde`. The decode route needs none of this -- its write-back encodes
+ * each changed span already.
+ */
+function withUrlSafeFakes(raw, plainText) {
+    const spans = [];
+    const next = plainText(raw, spans);
+    if (next === raw || spans.length === 0) return next;
+    let out = '';
+    let at = 0;
+    for (const span of spans) {
+        out += raw.slice(at, span.from) + urlSafe(span.replacement);
+        at = span.to;
+    }
+    return out + raw.slice(at);
+}
+
 function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace, plainText) {
     // THE TWIN OF `detectInUrlComponent`, branching on the same predicate over
     // the same raw text. The two must agree about which treatment a component
@@ -1470,10 +1490,10 @@ function replaceUrlComponent(raw, replacements, policy, mayBeForm, plusIsSpace, 
     // pure cost -- it respelled `@` as `%40`, and where two values changed it
     // escaped the `=` and `&` between them. For this case `main` was simply
     // right, and this is the cheapest way to keep being right about it.
-    if (!/%[0-9A-Fa-f]{2}/.test(raw)) return text(raw);
+    if (!/%[0-9A-Fa-f]{2}/.test(raw)) return withUrlSafeFakes(raw, text);
     const offsets = [];
     const decoded = decodedOnceOrNull(raw, plusIsSpace === true, offsets);
-    if (decoded === null) return text(raw);
+    if (decoded === null) return withUrlSafeFakes(raw, text);
     const spans = [];
     const next = replaceJsonOrText(decoded, replacements, policy, 0, true,
         plusIsSpace === true, spans, text);
@@ -1807,11 +1827,13 @@ function summariseRetained(entries, replacedValues) {
         });
 }
 
-// Headers whose whole value is a scheme and authority -- the request URL's
-// origin, written a second time. Structure for the reason `replaceInUrl`'s
-// origin is (#66): the Host header must not disagree with the URL it names.
-// Other header values keep plain-text treatment; that is not a decision about
-// them, only the edge of this one.
+// Headers whose whole value is a host and port -- the request URL's authority,
+// written a second time, with no scheme in front for `markEmbeddedUrls` to
+// find. Structure for the reason `replaceInUrl`'s origin is (#66): the Host
+// header must not disagree with the URL it names. A header that carries a URL
+// with its scheme (Referer, Location, Link, a CORS origin) is read by the URL
+// rule inside `replaceAll`; a cookie header and `:path` by their own grammar
+// (`HEADER_GRAMMAR`).
 const AUTHORITY_HEADERS = new Set(['host', ':authority', 'origin']);
 
 function applyReplacementsToEntry(entry, replacements, policy) {
@@ -1821,8 +1843,10 @@ function applyReplacementsToEntry(entry, replacements, policy) {
         if (Array.isArray(hs)) {
             for (const h of hs) {
                 if (typeof h.value !== 'string') continue;
-                const authority = AUTHORITY_HEADERS.has(String(h.name).toLowerCase());
-                h.value = replaceAll(h.value, authority ? structureReplacements(replacements) : replacements);
+                const name = String(h.name).toLowerCase();
+                h.value = AUTHORITY_HEADERS.has(name)
+                    ? replaceAll(h.value, structureReplacements(replacements))
+                    : replaceAll(h.value, replacements, undefined, HEADER_GRAMMAR[name]);
             }
         }
     }
@@ -1924,13 +1948,15 @@ function replaceJsonOrText(text, replacements, policy, depth, noForm, plusIsSpac
                 if (p.empty) return '';
                 // The multi-layer refusal, mirroring the detection twin. A
                 // refused value is rewritten as PLAIN TEXT on its raw bytes, so
-                // it is neither half-decoded nor re-encoded.
+                // it is neither half-decoded nor re-encoded -- except the fakes
+                // written into it, which are wire text like the bytes around
+                // them: a raw space there broke a real request URL (#66).
                 const decodedValue = decodedOnceOrNull(p.raw, plusIsSpace);
                 const value = decodedValue === null ? p.raw : decodedValue;
                 // `plusIsSpace` threaded for the reason stated on the detection
                 // twin: it belongs to the component, not to this layer.
                 const nextValue = decodedValue === null
-                    ? replaceAll(p.raw, replacements)
+                    ? withUrlSafeFakes(p.raw, (t, spans) => replaceAll(t, replacements, spans))
                     : replaceJsonOrText(value, replacements, policy,
                         depth + 1, false, plusIsSpace);
 
@@ -2079,7 +2105,16 @@ function replaceNestedLeaf(text, parentKey, replacements, policy, depth) {
         }
         // The walk descends into this value next, at `node.depth` -- so a
         // document nested one layer further keeps its names too (#66).
-        return replaceLeafText(node.value, replacements, node.depth);
+        //
+        // A "parameter" whose name BEGINS WITH A URL is a URL the walk's form
+        // reading took apart: `https://h/ads;k=Mary%20Jo` has an escape and an
+        // `=`, so it reads as one form pair named `https://h/ads;k`. The `=` it
+        // split on sits in the URL's path or query, and the flat pass one level
+        // up already read that text as a URL and replaced what was payload in
+        // it. So the field-only kinds stay out of this "value" (#66).
+        const inUrl = typeof node.name === 'string' && URL_START.test(node.name);
+        return replaceLeafText(node.value, inUrl ? structureReplacements(replacements) : replacements,
+            node.depth);
         // `path` below is threaded even though this callback never reads it.
         // The twin passes it, and two functions documented as twins diverging
         // in their options bag is how the next person extending one to use
@@ -2159,7 +2194,7 @@ function newNode() {
     return { next: new Map(), hit: null };
 }
 
-function addNeedle(root, needle, replacement, boundary, priority) {
+function addNeedle(root, needle, replacement, boundary, priority, fieldOnly) {
     if (!needle) return;
     let node = root;
     for (let k = 0; k < needle.length; k++) {
@@ -2170,8 +2205,10 @@ function addNeedle(root, needle, replacement, boundary, priority) {
     }
     // First enrolment wins: the same literal can be detected under two types,
     // and the sequential loop applied whichever came first in the list.
+    // `fieldOnly` marks a needle whose only evidence was a field name, which
+    // the structure mask in `replaceAll` keeps out of URLs and names (#66).
     if (node.hit === null) {
-        node.hit = { length: needle.length, replacement, boundary, priority };
+        node.hit = { length: needle.length, replacement, boundary, priority, fieldOnly: fieldOnly === true };
     }
 }
 
@@ -2233,7 +2270,8 @@ function indexFor(replacements) {
         // (e.g. "Alice") that risk false-positive matches inside unrelated
         // text, so a purely alphabetic value only matches on word boundaries.
         const boundary = /^[A-Za-z]+( [A-Za-z]+)*$/.test(v);
-        addNeedle(root, v, r.replacement, boundary, priority++);
+        const fieldOnly = FIELD_ONLY_KINDS.has(r.type);
+        addNeedle(root, v, r.replacement, boundary, priority++, fieldOnly);
 
         // The same value can appear percent-encoded in the very same entry:
         // detection reads the decoded `queryString` pair, while the `url`
@@ -2242,7 +2280,7 @@ function indexFor(replacements) {
         // failure literal-value scrubbing exists to close (see har-literals.js).
         const encoded = encodeURIComponent(v);
         if (encoded !== v) {
-            addNeedle(root, encoded, encodeURIComponent(r.replacement), false, priority++);
+            addNeedle(root, encoded, encodeURIComponent(r.replacement), false, priority++, fieldOnly);
         }
     }
 
@@ -2271,11 +2309,23 @@ function indexFor(replacements) {
 // cannot sit in a host, and 160 of 651 request URLs stopped parsing. The
 // capture was signed out; every hit was a false positive.
 //
-// So where these values meet STRUCTURE -- a URL's scheme and authority, a bare
-// path segment, a parameter name, the keys of a JSON document carried as a
-// string -- they are left alone. A replace path fails toward a miss. PAYLOAD
-// keeps its reach: the value at its own field, and the same value in a query
-// value, a header, a cookie or free text, exactly as before.
+// So where these values meet STRUCTURE -- a URL's scheme, authority and path
+// segments wherever the URL is written, a parameter or cookie name, a cookie
+// attribute, the keys of a JSON document carried as a string -- they are left
+// alone. A replace path fails toward a miss. PAYLOAD keeps its reach: the
+// value at its own field, and the same value in a query value, a cookie value
+// or free text, as before -- percent-encoded where it lands inside a URL.
+//
+// Two mechanisms, one rule. Where the CALLER knows a whole string is structure
+// (an origin, a path segment, a parameter name, the Host header) it passes
+// `structureReplacements`. Where structure sits INSIDE text -- a URL in a
+// header, an attribute, a script, a cookie's attributes -- `replaceAll` marks
+// it (`markEmbeddedUrls`, `HEADER_GRAMMAR`) and refuses field-only needles
+// there.
+//
+// The gate cannot back this up: these kinds have no shape, so it has no
+// pattern for what the scrub leaves in structure. Only an operator literal in
+// `.har-profile.json` reaches one there. That is the trade, stated.
 //
 // NOT IN THE SET, deliberately: kinds with a SHAPE. An email, a card, an IBAN,
 // a MAC or an IP address carries its own evidence wherever it sits, and its
@@ -2438,6 +2488,7 @@ function collectMatches(text, idx, outStarts, outHits) {
 // a body of many small leaves from allocating two typed arrays per leaf.
 let CLAIMED = new Uint8Array(0);
 let ACCEPTED = new Uint8Array(0);
+let MASK = new Uint8Array(0);
 
 function scratch(buf, need) {
     if (buf.length < need) return new Uint8Array(need < 1024 ? 1024 : need * 2);
@@ -2445,7 +2496,21 @@ function scratch(buf, need) {
     return buf;
 }
 
-function replaceAll(text, replacements, spansOut) {
+/**
+ * Every literal replacement in `text`, in one walk (see above).
+ *
+ * THE STRUCTURE MASK (#66). A field-only needle -- a value whose only evidence
+ * was the field it sat in -- is not accepted where it would land in STRUCTURE:
+ * a URL's scheme, authority or path, or a parameter name, in any URL written
+ * anywhere in `text` (`markEmbeddedUrls`); and whatever `grammar(text, mask)`
+ * marks for a value whose own grammar the caller knows, such as a cookie
+ * header. Where such a needle lands in a URL's PAYLOAD -- a query value, a
+ * fragment -- its fake is percent-encoded, because a URL holds no raw space.
+ *
+ * The mask is built only when a field-only needle matched, so a string no
+ * such value touches pays nothing for it. Shaped needles never consult it.
+ */
+function replaceAll(text, replacements, spansOut, grammar) {
     const idx = indexFor(replacements);
     if (idx.empty || text.length === 0) return text;
 
@@ -2453,6 +2518,16 @@ function replaceAll(text, replacements, spansOut) {
     const hits = [];
     const count = collectMatches(text, idx, starts, hits);
     if (count === 0) return text;
+
+    let mask = null;
+    for (let k = 0; k < count; k++) {
+        if (!hits[k].fieldOnly) continue;
+        MASK = scratch(MASK, text.length);
+        mask = MASK;
+        markEmbeddedUrls(text, mask);
+        if (grammar) grammar(text, mask);
+        break;
+    }
 
     // Resolve highest priority first; ties (the same needle occurring more than
     // once) left to right, the order the global replace visited them in. The
@@ -2473,6 +2548,10 @@ function replaceAll(text, replacements, spansOut) {
         const m = order[k];
         const from = starts[m];
         const to = from + hits[m].length;
+        // Structure refuses a field-only needle outright, BEFORE it claims
+        // anything, so the span stays free for a shaped needle that has its
+        // own evidence there.
+        if (mask !== null && hits[m].fieldOnly && touches(mask, from, to, STRUCTURE)) continue;
         let free = true;
         for (let q = from; q < to; q++) {
             if (claimed[q]) { free = false; break; }
@@ -2487,17 +2566,231 @@ function replaceAll(text, replacements, spansOut) {
     for (let k = 0; k < count; k++) {
         if (!accepted[k]) continue;
         const from = starts[k];
-        out += text.slice(copiedTo, from) + hits[k].replacement;
+        const replacement = mask !== null && hits[k].fieldOnly && mask[from] === URL_PAYLOAD
+            ? urlSafe(hits[k].replacement) : hits[k].replacement;
+        out += text.slice(copiedTo, from) + replacement;
         copiedTo = from + hits[k].length;
         // WHERE each accepted match landed, for a caller that has to write the
         // result back into differently-encoded bytes. Arbitration already
         // happened above, so these spans are ascending and non-overlapping --
         // the invariant the per-span write-back relies on.
         if (spansOut) {
-            spansOut.push({ from, to: from + hits[k].length, replacement: hits[k].replacement });
+            spansOut.push({ from, to: from + hits[k].length, replacement });
         }
     }
     return copiedTo === 0 ? text : out + text.slice(copiedTo);
+}
+
+function touches(mask, from, to, mark) {
+    for (let q = from; q < to; q++) if (mask[q] === mark) return true;
+    return false;
+}
+
+// --- URLs written inside text (#66) ----------------------------------------
+//
+// `request.url` is one place a URL lives. The same host travels in a Referer,
+// a Location, a CORS origin, a Link header, an HTML attribute, a JSON string,
+// a script -- and the text pass reached every one of them, writing a spaced
+// fake into the authority there too (found by independent review). So the
+// rule is the URL's, not the field's: wherever the text pass runs, a URL in
+// the text is found and its STRUCTURE marked -- scheme, authority, path and
+// parameter names -- and its PAYLOAD marked separately, so a fake written
+// there is encoded.
+//
+// A URL here is `scheme://` or `scheme:\/\/` (a JSON-escaped slash, the way a
+// URL sits in an inline script), or a protocol-relative `//host` at the start
+// of a token. It runs over the characters a URL can carry in running text and
+// stops at anything else -- a quote, a bracket, whitespace. That is a reading
+// of free text, not a parser, and it fails toward a MISS: a URL read too long
+// withholds a field-only value from the text after it, never the reverse.
+// A scheme is at most 32 characters, so the backward walk is bounded and the
+// scan stays linear.
+
+const STRUCTURE = 1;
+const URL_PAYLOAD = 2;
+
+// Text that BEGINS with a URL, as `markEmbeddedUrls` recognises one.
+const URL_START = /^(?:[A-Za-z][A-Za-z0-9+.-]{0,31}:)?(?:\/\/|\\\/\\\/)[A-Za-z0-9.\-_~%:@[\]]/;
+
+const CHAR_SCHEME = 1, CHAR_AUTHORITY = 2, CHAR_SEGMENT = 4, CHAR_PARAMS = 8;
+const URL_CHARS = (() => {
+    const table = new Uint8Array(128);
+    const add = (chars, bit) => { for (const c of chars) table[c.charCodeAt(0)] |= bit; };
+    const alnum = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    add(alnum + '+.-', CHAR_SCHEME);
+    add(alnum + '-._~%:@[]', CHAR_AUTHORITY);
+    add(alnum + "-._~%!$&*+,;=:@", CHAR_SEGMENT);
+    add(alnum + "-._~%!$&*+,;=:@/?", CHAR_PARAMS);
+    return table;
+})();
+
+function isUrlChar(text, i, bit) {
+    const c = text.charCodeAt(i);
+    return c < 128 && (URL_CHARS[c] & bit) !== 0;
+}
+
+/** Length of the `/` or JSON-escaped `\/` at `i`, or 0. */
+function slashAt(text, i) {
+    if (text.charCodeAt(i) === 47) return 1;
+    if (text.charCodeAt(i) === 92 && text.charCodeAt(i + 1) === 47) return 2;
+    return 0;
+}
+
+const TOKEN_START = new Set(['"', "'", '=', '(', '<', ',', ' ', '\t', '\n', '\r']);
+
+function markEmbeddedUrls(text, mask) {
+    const re = /\/\/|\\\/\\\//g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        const at = m.index;
+        // The scheme's `:` spelled plainly or percent-encoded (`https%3A\/\/`,
+        // which inline page data carries).
+        const colon = text.charCodeAt(at - 1) === 58 ? 1
+            : /^%3a$/i.test(text.slice(at - 3, at)) ? 3 : 0;
+        let start;
+        if (colon > 0) {                                          // `scheme:`
+            const end = at - colon;
+            let s = end;
+            while (s > 0 && end - s < 32 && isUrlChar(text, s - 1, CHAR_SCHEME)) s--;
+            const first = text.charCodeAt(s);
+            if (s === end || !((first >= 65 && first <= 90) || (first >= 97 && first <= 122))) continue;
+            start = s;
+        } else if (at === 0 || TOKEN_START.has(text[at - 1])) {   // `//host`
+            start = at;
+        } else {
+            continue;
+        }
+        let i = at + m[0].length;
+        const authorityStart = i;
+        while (i < text.length && isUrlChar(text, i, CHAR_AUTHORITY)) i++;
+        if (i === authorityStart) continue;
+        // A protocol-relative reading needs a host that looks like one, or a
+        // `// comment` in a script would read as a URL.
+        if (start === at && text.slice(authorityStart, i).indexOf('.') < 0) continue;
+        const end = markUrlTail(text, mask, start, i);
+        re.lastIndex = Math.max(end, re.lastIndex);
+    }
+}
+
+/**
+ * Mark a URL whose scheme and authority span `[start, i)`, then its path,
+ * query and fragment from `i`. Returns where the URL ends.
+ *
+ * Path segments are structure, as they are in `request.url`. Query parameter
+ * names -- and a flag with no `=` -- are structure, their values payload. A
+ * fragment is read the same way when it carries `=`; otherwise it is one
+ * opaque value, payload, again as in `request.url`.
+ */
+function markUrlTail(text, mask, start, i) {
+    for (;;) {
+        const slash = slashAt(text, i);
+        if (slash === 0) break;
+        i += slash;
+        while (i < text.length && isUrlChar(text, i, CHAR_SEGMENT)) i++;
+    }
+    mask.fill(STRUCTURE, start, i);
+    if (text.charCodeAt(i) === 63) {                              // `?`
+        mask[i] = STRUCTURE;
+        i = markParams(text, mask, i + 1, true);
+    }
+    if (text.charCodeAt(i) === 35) {                              // `#`
+        mask[i] = STRUCTURE;
+        i = markParams(text, mask, i + 1, false);
+    }
+    return i;
+}
+
+/** `name=value&flag` from `from`; returns where the run ends. */
+function markParams(text, mask, from, isQuery) {
+    let end = from;
+    for (;;) {
+        if (end < text.length && isUrlChar(text, end, CHAR_PARAMS)) { end++; continue; }
+        const slash = slashAt(text, end);
+        if (slash === 2) { end += 2; continue; }
+        break;
+    }
+    const run = text.slice(from, end);
+    if (!isQuery && run.indexOf('=') < 0) {
+        mask.fill(URL_PAYLOAD, from, end);
+        return end;
+    }
+    markPairs(run, mask, from, '&', URL_PAYLOAD);
+    return end;
+}
+
+/**
+ * Mark `name=value<sep>name=value` laid out in `run`, which starts at `offset`
+ * in the masked text: each name, its `=` and each separator are structure,
+ * each value is `valueMark`. A part with no `=` is all name. Searches stay
+ * inside `run`, so marking is linear in it however large the text around it.
+ */
+function markPairs(run, mask, offset, sep, valueMark) {
+    let p = 0;
+    for (const part of run.split(sep)) {
+        const eq = part.indexOf('=');
+        const nameEnd = eq < 0 ? part.length : eq + 1;
+        mask.fill(STRUCTURE, offset + p, offset + p + nameEnd);
+        if (valueMark) mask.fill(valueMark, offset + p + nameEnd, offset + p + part.length);
+        p += part.length;
+        if (p < run.length) mask[offset + p] = STRUCTURE;
+        p += sep.length;
+    }
+}
+
+/**
+ * Mark a request target -- the `:path` pseudo-header, which is `request.url`'s
+ * path and query written a second time -- the way `markUrlTail` marks a URL's.
+ */
+function markRequestTarget(text, mask) {
+    if (slashAt(text, 0) === 0) return;
+    markUrlTail(text, mask, 0, 0);
+}
+
+/**
+ * Mark a `Cookie` header: `name=value; name=value`. Names are structure.
+ */
+function markCookieHeader(text, mask) {
+    markPairs(text, mask, 0, ';', 0);
+}
+
+/**
+ * Mark a `Set-Cookie` header -- one cookie per line, since a HAR joins several
+ * with `\n`. The cookie's name is structure and its value payload; every
+ * attribute after it -- `Domain` (a host), `Path`, `Expires`, `Secure` -- is
+ * structure, name and value alike.
+ */
+function markSetCookieHeader(text, mask) {
+    let line = 0;
+    for (const cookie of text.split('\n')) {
+        const semi = cookie.indexOf(';');
+        const pairEnd = semi < 0 ? cookie.length : semi;
+        const eq = cookie.indexOf('=');
+        mask.fill(STRUCTURE, line, line + (eq >= 0 && eq < pairEnd ? eq + 1 : pairEnd));
+        mask.fill(STRUCTURE, line + pairEnd, line + cookie.length);
+        line += cookie.length;
+        if (line < text.length) mask[line] = STRUCTURE;
+        line += 1;
+    }
+}
+
+// A relative `Location` (`/next?g=1`) has no scheme for `markEmbeddedUrls` to
+// find, and is a request target exactly as `:path` is; an absolute one is left
+// to the URL rule (`markRequestTarget` declines anything not starting `/`).
+const HEADER_GRAMMAR = {
+    cookie: markCookieHeader,
+    'set-cookie': markSetCookieHeader,
+    ':path': markRequestTarget,
+    location: markRequestTarget,
+    'content-location': markRequestTarget,
+};
+
+/**
+ * A fake as it may be written into a URL: what cannot stand raw in one -- a
+ * space above all -- percent-encoded, and nothing else touched, so a fake that
+ * is already wire form (the encoded-needle route) is not encoded twice.
+ */
+function urlSafe(s) {
+    return String(s).replace(/[\u0000- "<>\\^`{|}\u007F]|[^\u0000-\u007F]+/g, (c) => encodeURIComponent(c));
 }
 
 module.exports = {

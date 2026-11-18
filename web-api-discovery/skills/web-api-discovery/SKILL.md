@@ -1438,6 +1438,14 @@ incidental:
   and it must stay that way: the scrub fails toward a miss, and the gate refuses
   to pass what the scrub declined. A run carrying mixed evidence therefore keeps
   the value and then FAILS at the verify step, which is the loud outcome.
+- **The field-only kinds are the exception to that composition (#66).** A
+  person's name, street, city, region, postal code or country has no shape, so
+  the gate has no pattern for it and cannot refuse what the scrub leaves in
+  structure. Enrol `Zorblat` at a `name` field and `/users/Zorblat/profile`,
+  `?Zorblat=1`, a `Zorblat` JSON key inside a nested document and
+  `Host: Zorblat.test` all survive, and `verify-scrub` exits 0. Only an
+  operator literal in `.har-profile.json` catches such a value there. That is a
+  deliberate trade, not a gap the gate covers.
 
 Declining a replacement never hides the finding: it is still detected, still
 reported, the run says so, and a mixed-evidence decline says that it was mixed —
@@ -1677,13 +1685,28 @@ Implementation rules that mattered in practice:
   elsewhere is no evidence. `name` is such a key, and on a signed-out capture
   it enrolled ad slots and tags -- single letters, short words -- whose fakes
   then landed in hostnames: 160 of 651 request URLs stopped parsing. Those
-  values reach payload (a field value, a query value, a header, free text)
-  and not a scheme or authority (in the URL or the `Host`, `:authority` and
-  `Origin` headers), a bare path segment, a query, form or matrix parameter
-  name, or the keys of a JSON document carried inside a string. Shaped kinds
-  -- email, card, IP and the rest -- carry their own evidence and keep their
-  reach. The cost: a real username in a REST path (`/users/<name>`) is no
-  longer replaced there unless it is also an operator literal.
+  values reach payload (a field value, a query value, a cookie value, free
+  text) and not structure: a URL's scheme, authority and path segments, its
+  query, form, fragment and matrix parameter names, a cookie's name and its
+  attributes (`Domain`, `Path`), or the keys of a JSON document carried inside
+  a string. **A URL is structure wherever it is written** -- `request.url`, a
+  `Referer`, `Location`, `Link` or CORS header, an HTML attribute, a JSON
+  string, a script (`https:\/\/` and `https%3A\/\/` included), a
+  protocol-relative `//host` -- because the text pass finds URLs in any text it
+  rewrites. `Host` and `:authority` carry no scheme and are named as
+  authorities; `:path` and a relative `Location` are read as request targets.
+  A fake that lands in a URL's payload, or in a form value rewritten on its raw
+  bytes, is percent-encoded, so no raw space enters a URL or a form body.
+  Shaped kinds -- email, card, IP and the rest -- carry their own evidence and
+  keep their reach.
+
+  Only a HOST breaks parsing. Withholding these values from paths, keys and
+  parameter names is a semantic-preservation choice, not a parsing one: a
+  spaced fake in a path still parses, but it is a different endpoint, a
+  renamed key and a parameter nobody sent. The cost: a real username in a REST
+  path (`/users/<name>`) is no longer replaced there, and the gate cannot catch
+  it (see the field-only exception under identifier fields) -- only an
+  operator literal does.
 - **Never default or commit the literals.** They are the operator's own
   account identifiers, and baking a real identifier into a committed script
   is exactly what account hygiene forbids. They live in a gitignored
@@ -2390,8 +2413,10 @@ captures and asks five questions of each:
    bodies behind a `for (;;);` prefix, lines of line-delimited bodies, and
    JSON inside form fields such as `variables=`;
 4. the catalogue scaffold's rows account for every scrubbed entry;
-5. every request URL that parsed before the scrub still parses (#66) --
-   reported by entry index only, never by URL.
+5. every URL that parsed before the scrub still parses (#66) -- the request
+   URL, the redirect URL and the `Location`, `Referer`, `Content-Location`,
+   `Origin` and `Access-Control-Allow-Origin` headers -- reported by entry
+   index and place, never by URL.
 
 ```
 node har/pipeline-check.js --manifest <store>/_pipeline/pinned.json
