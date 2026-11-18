@@ -267,9 +267,9 @@ test('A2: --ai with a browser it cannot drive is a usage error, not a guess', ()
     const repo = makeRepo('ai-exclusivity');
     plantOperatorProfile(repo);
     const cases = [
-        // Honouring one flag while the operator typed both would drive the very
-        // browser `-AI` exists to avoid, and the evidence would be a 403 an
-        // afternoon later.
+        // Honouring one flag while the operator typed both would drive a
+        // test-automation launch instead of the ordinary browser `-AI` records
+        // in, and the evidence would be a 403 an afternoon later.
         { args: ['--ai', '--browser', 'playwright'], match: /--ai and --browser playwright/i },
         { args: ['--ai', '--isolated'], match: /--ai and --isolated/i }
     ];

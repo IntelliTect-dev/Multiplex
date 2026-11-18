@@ -15,16 +15,17 @@ The browser is an ordinary Chrome with no automation flags, listening on the CDP
 endpoint named below. Reach it in this order:
 
 1. **The Claude-in-Chrome extension, in that browser.** This is the preferred
-   driver: in the capture this feature was built from -- five car-rental sites
-   behind Imperva, Akamai, DataDome and PerimeterX -- it was the setup that was
-   not challenged. Use it only after you have selected the capture browser (see
+   driver: it works in the ordinary browser the person is watching, as an
+   extension they installed there, so they can see each step and take over at
+   any moment. Use it only after you have selected the capture browser (see
    **Select the capture browser**, below).
 2. **A Playwright MCP attached to the same CDP endpoint.** The fallback, for when
    the extension is not available: its `mcp__claude-in-chrome__*` tools are
    missing, or `list_connected_browsers` lists no browser at all. It adds no
-   automation flag to the browser, but it is still CDP-driven input, and a
-   bot-protected site may challenge it. If it is challenged, stop and hand back
-   (see the rules).
+   automation flag to the browser either, but it is CDP-driven input.
+
+With either driver, a site may challenge. A challenge is the person's to
+answer, not yours: stop and hand back (see the rules).
 
 The tools you may use are listed under **This capture**: the extension's
 `mcp__claude-in-chrome__*` page and browser-selection tools and Playwright MCP's
