@@ -253,18 +253,19 @@ public sealed class TripItWriteTools(TripItToolContext tripIt)
     [McpServerTool(Name = "tripit_delete_segment", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
     [Description(
         "PERMANENTLY deletes one leg (segment) of a flight, train, transfer or cruise, keeping the rest " +
-        "of the reservation. Use the segment_uuid from an itinerary line; pass the plan's type and " +
-        "object_uuid too so the preview can say which leg it is." + ConfirmStep)]
+        "of the reservation. Give the segment_uuid, type and object_uuid from the leg's itinerary line: " +
+        "the preview names the plan and the leg, and the leg is deleted only if it still belongs to that plan." +
+        ConfirmStep)]
     public Task<string> DeleteSegment(
-        [Description("The segment uuid.")] string segmentUuid,
-        [Description("The plan's type (air, rail, transport or cruise), to describe the leg.")] string? type = null,
-        [Description("The plan's object uuid, to describe the leg and check it belongs to that plan.")] string? objectUuid = null,
+        [Description("The segment uuid (segment_uuid in an itinerary line).")] string segmentUuid,
+        [Description("The plan's type: air, rail, transport or cruise.")] string type,
+        [Description("The plan's object uuid (object_uuid in the same itinerary line).")] string objectUuid,
         [Description(ConfirmTokenHelp)] string? confirm_token = null,
         CancellationToken ct = default)
         => tripIt.RunConfirmedAsync("tripit_delete_segment", confirm_token,
             Args(("segmentUuid", segmentUuid), ("type", type), ("objectUuid", objectUuid)),
             ops => ops.PreviewDeleteSegmentAsync(segmentUuid, type, objectUuid, ct),
-            ops => ops.DeleteSegmentAsync(segmentUuid, ct), ct);
+            ops => ops.DeleteSegmentAsync(segmentUuid, type, objectUuid, ct), ct);
 
     [McpServerTool(Name = "tripit_move_plan", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description(

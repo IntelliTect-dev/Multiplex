@@ -48,7 +48,7 @@ without `readOnlyHint`). Parameter names are camelCase (`tripUuid`, `confirmName
 | `tripit_add_flight`, `tripit_add_lodging`, `tripit_add_note`, `tripit_add_plan` | write | Dates `yyyy-MM-dd` only; assumptions (e.g. arrival date) are listed in the result |
 | `tripit_update_plan`, `tripit_move_plan` | write | A `Segment` array must name every existing leg |
 | `tripit_change_participant_role` | write | |
-| `tripit_delete_trip`, `tripit_delete_plan`, `tripit_delete_segment` | write, destructive, confirm | |
+| `tripit_delete_trip`, `tripit_delete_plan`, `tripit_delete_segment` | write, destructive, confirm | A leg is deleted only with its plan's `type` and `objectUuid`, and only while it still belongs to that plan |
 | `tripit_merge_trips`, `tripit_remove_participant` | write, destructive, confirm | |
 | `tripit_add_participants` | write, destructive, open-world, confirm | TripIt emails each address |
 

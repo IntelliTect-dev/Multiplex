@@ -286,6 +286,93 @@ public sealed class TripItServiceTests : IDisposable
         Assert.Equal(1, _host.TripIt.Count("POST", $"/api/v2/delete/trip/uuid/{TripUuid}"));
     }
 
+    private const string AirUuid = "22222222-bbbb-9000-0004-000000000002";
+    private const string LegOut = "44444444-dddd-9000-0005-000000000001";
+    private const string LegBack = "44444444-dddd-9000-0005-000000000002";
+
+    private static string AirJson(params string[] legs)
+    {
+        var segments = string.Join(",", legs.Select(leg => leg == LegOut
+            ? "{\"uuid\":\"" + LegOut + "\",\"StartDateTime\":{\"date\":\"2027-03-01\",\"time\":\"18:00:00\"},\"start_airport_code\":\"JFK\",\"end_airport_code\":\"LIS\",\"marketing_airline_code\":\"EX\",\"marketing_flight_number\":\"1\"}"
+            : "{\"uuid\":\"" + LegBack + "\",\"StartDateTime\":{\"date\":\"2027-03-05\",\"time\":\"10:00:00\"},\"start_airport_code\":\"LIS\",\"end_airport_code\":\"JFK\",\"marketing_airline_code\":\"EX\",\"marketing_flight_number\":\"2\"}"));
+        return "{\"AirObject\":{\"uuid\":\"" + AirUuid + "\",\"trip_uuid\":\"" + TripUuid +
+               "\",\"supplier_conf_num\":\"ABC123\",\"booking_site_name\":\"Example Air\",\"Segment\":[" + segments + "]}}";
+    }
+
+    [Fact]
+    public async Task Delete_segment_requires_the_plan_type_and_uuid()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        var mcp = _host.McpFor("acct-a");
+        await mcp.InitializeAsync();
+        var tool = (await mcp.ListToolsAsync()).Single(t => t.GetProperty("name").GetString() == "tripit_delete_segment");
+        var required = tool.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(r => r.GetString()).ToList();
+
+        var (isError, _) = await mcp.CallAsync("tripit_delete_segment", new { segmentUuid = LegOut });
+
+        Assert.Contains("type", required);
+        Assert.Contains("objectUuid", required);
+        Assert.True(isError);
+        Assert.DoesNotContain(_host.TripIt.Requests, r => r.Method == "POST");
+    }
+
+    [Fact]
+    public async Task Delete_segment_preview_names_the_plan_and_the_leg()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        _host.TripIt.OnJson($"/api/v2/get/air/uuid/{AirUuid}", _ => AirJson(LegOut, LegBack));
+
+        var (isError, text) = await _host.McpFor("acct-a").CallAsync("tripit_delete_segment",
+            new { segmentUuid = LegOut, type = "air", objectUuid = AirUuid });
+
+        Assert.False(isError, text);
+        var preview = JsonDocument.Parse(text).RootElement.GetProperty("preview").GetString()!;
+        Assert.Contains(AirUuid, preview, StringComparison.Ordinal);
+        Assert.Contains("ABC123", preview, StringComparison.Ordinal);
+        Assert.Contains("Flight EX 1 JFK → LIS", preview, StringComparison.Ordinal);
+        Assert.Contains("1 other leg", preview, StringComparison.Ordinal);
+        Assert.DoesNotContain(_host.TripIt.Requests, r => r.Method == "POST");
+    }
+
+    [Fact]
+    public async Task Delete_segment_deletes_the_leg_after_checking_it_is_still_in_the_plan()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        _host.TripIt.OnJson($"/api/v2/get/air/uuid/{AirUuid}", _ => AirJson(LegOut, LegBack));
+        _host.TripIt.OnJson($"/api/v2/delete/segment/uuid/{LegOut}", _ => """{"timestamp":"1"}""");
+        var mcp = _host.McpFor("acct-a");
+        var args = new Dictionary<string, object?> { ["segmentUuid"] = LegOut, ["type"] = "air", ["objectUuid"] = AirUuid };
+        var (_, previewText) = await mcp.CallAsync("tripit_delete_segment", args);
+        args["confirm_token"] = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        var (isError, text) = await mcp.CallAsync("tripit_delete_segment", args);
+
+        Assert.False(isError, text);
+        Assert.Equal(2, _host.TripIt.Count("GET", $"/api/v2/get/air/uuid/{AirUuid}"));
+        Assert.Equal(1, _host.TripIt.Count("POST", $"/api/v2/delete/segment/uuid/{LegOut}"));
+    }
+
+    [Fact]
+    public async Task Delete_segment_refuses_a_leg_that_is_no_longer_in_the_previewed_plan()
+    {
+        _host.SignIn("acct-a", "cookie-a");
+        var reads = 0;
+        // The leg is in the plan at preview time, and gone (moved or deleted elsewhere) at confirm time.
+        _host.TripIt.OnJson($"/api/v2/get/air/uuid/{AirUuid}", _ => Interlocked.Increment(ref reads) == 1 ? AirJson(LegOut, LegBack) : AirJson(LegBack));
+        _host.TripIt.OnJson($"/api/v2/delete/segment/uuid/{LegOut}", _ => """{"timestamp":"1"}""");
+        var mcp = _host.McpFor("acct-a");
+        var args = new Dictionary<string, object?> { ["segmentUuid"] = LegOut, ["type"] = "air", ["objectUuid"] = AirUuid };
+        var (_, previewText) = await mcp.CallAsync("tripit_delete_segment", args);
+        args["confirm_token"] = JsonDocument.Parse(previewText).RootElement.GetProperty("confirm_token").GetString();
+
+        var (isError, text) = await mcp.CallAsync("tripit_delete_segment", args);
+
+        Assert.True(isError);
+        Assert.Contains("is not a leg of", text, StringComparison.Ordinal);
+        Assert.Contains("Nothing was deleted", text, StringComparison.Ordinal);
+        Assert.Equal(0, _host.TripIt.Count("POST", $"/api/v2/delete/segment/uuid/{LegOut}"));
+    }
+
     [Fact]
     public async Task Confirm_token_is_refused_for_other_arguments_or_another_account()
     {

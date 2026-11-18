@@ -305,6 +305,42 @@ public sealed class SharedOperationsTests
         Assert.Equal(["/api/v2/get/profile", "/api/v2/create/trip"], handler.Requests.Select(r => r.Uri.AbsolutePath));
     }
 
+    private const string Leg1 = "44444444-dddd-9000-0005-000000000001";
+    private const string Leg2 = "44444444-dddd-9000-0005-000000000002";
+
+    private static string AirWithLegs(params string[] legs)
+        => $$$"""{"AirObject":{"uuid":"{{{Fixtures.AirUuid}}}","supplier_conf_num":"ABC123","Segment":[{{{string.Join(",", legs.Select(l =>
+            $$"""{"uuid":"{{l}}","start_airport_code":"JFK","end_airport_code":"LIS","marketing_airline_code":"EX","marketing_flight_number":"1"}"""))}}}]}}""";
+
+    [Fact]
+    public async Task Delete_segment_names_the_plan_and_deletes_only_a_leg_of_that_plan()
+    {
+        var (client, handler, _) = FakeTripIt.Create();
+        handler.OnJson($"/api/v2/get/air/uuid/{Fixtures.AirUuid}", AirWithLegs(Leg1, Leg2))
+               .OnJson($"/api/v2/delete/segment/uuid/{Leg1}", """{"timestamp":"1"}""");
+        var ops = new TripItOperations(client);
+
+        var preview = await ops.PreviewDeleteSegmentAsync(Leg1, "air", Fixtures.AirUuid, default);
+        await ops.DeleteSegmentAsync(Leg1, "air", Fixtures.AirUuid, default);
+
+        Assert.Contains($"plan {Fixtures.AirUuid} (confirmation ABC123)", preview, StringComparison.Ordinal);
+        Assert.Contains("Flight EX 1 JFK → LIS", preview, StringComparison.Ordinal);
+        Assert.Single(handler.Requests, r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == $"/api/v2/delete/segment/uuid/{Leg1}");
+    }
+
+    [Fact]
+    public async Task Delete_segment_refuses_a_leg_of_another_plan_without_deleting()
+    {
+        var (client, handler, _) = FakeTripIt.Create();
+        handler.OnJson($"/api/v2/get/air/uuid/{Fixtures.AirUuid}", AirWithLegs(Leg2));
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => new TripItOperations(client).DeleteSegmentAsync(Leg1, "air", Fixtures.AirUuid, default));
+
+        Assert.Contains("Nothing was deleted", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(handler.Requests, r => r.Method == HttpMethod.Post);
+    }
+
     [Fact]
     public async Task Delete_trip_preview_names_trip_dates_and_plan_count_and_changes_nothing()
     {
