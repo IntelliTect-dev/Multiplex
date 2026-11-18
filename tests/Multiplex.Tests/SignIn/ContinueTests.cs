@@ -13,30 +13,45 @@ public sealed class ContinueTests : IAsyncLifetime
     private static readonly SiteAccount s_account =
         new(StubSignInDefinition.SiteSlug, StubLoginSite.AccountId, [StubLoginSite.Email], StubLoginSite.DisplayName);
 
+    private static readonly SiteAccount s_otherAccount =
+        new(StubSignInDefinition.SiteSlug, StubLoginSite.OtherAccountId, [StubLoginSite.OtherEmail], StubLoginSite.OtherDisplayName);
+
     private readonly FakeRefresher _refresher = new();
     private SignInTestHost _host = null!;
 
-    public Task InitializeAsync() => StartAsync([StubLoginSite.Email]);
+    public Task InitializeAsync() => StartAsync();
 
-    private async Task StartAsync(string[] allowed)
+    private async Task StartAsync(Dictionary<string, string>? settings = null)
     {
         if (_host is not null) await _host.DisposeAsync();
-        _host = new SignInTestHost(new SignInTestOptions
+        var options = new SignInTestOptions
         {
             Refresher = _refresher,
-            AllowedAccounts = allowed,
             ExecutablePath = Path.Combine(Path.GetTempPath(), "no-such-chrome.exe"),
-        });
+        };
+        foreach (var (key, value) in settings ?? []) options.Settings[key] = value;
+        _host = new SignInTestHost(options);
     }
 
     public async Task DisposeAsync() => await _host.DisposeAsync();
 
     /// <summary>What a finished earlier sign-in leaves behind: index entry, stored session, kept profile.</summary>
-    private async Task SeedKnownAccountAsync()
+    private async Task SeedKnownAccountAsync(SiteAccount? known = null)
     {
-        await _host.Get<SiteAccountIndex>().UpsertAsync(s_account, CancellationToken.None);
-        await _host.Get<SiteSessionStore>().SetAsync(s_account.Site, s_account.AccountId, """{"cookie":"old"}""", CancellationToken.None);
-        Directory.CreateDirectory(_host.Get<SignInPaths>().AccountProfile(s_account.Site, s_account.AccountId));
+        var account = known ?? s_account;
+        await _host.Get<SiteAccountIndex>().UpsertAsync(account, CancellationToken.None);
+        await _host.Get<SiteSessionStore>().SetAsync(account.Site, account.AccountId, """{"cookie":"old"}""", CancellationToken.None);
+        Directory.CreateDirectory(_host.Get<SignInPaths>().AccountProfile(account.Site, account.AccountId));
+    }
+
+    /// <summary>One connection being added: the passcode, then "Continue as" <paramref name="accountId"/>.</summary>
+    private async Task<HttpResponseMessage> ContinueAsAsync(string pendingId, string accountId)
+    {
+        var client = _host.NewClient();
+        var (gate, _) = await client.PassGateAsync(pendingId);
+        var (_, choose) = await client.GetAsync(gate.Headers.Location!.OriginalString);
+        var (done, _) = await client.PostAsync($"/connect/stub/continue?p={pendingId}", choose, ("account", accountId));
+        return done;
     }
 
     [Fact]
@@ -87,23 +102,66 @@ public sealed class ContinueTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Account_removed_from_the_allowlist_is_neither_offered_nor_accepted()
+    public async Task Two_connections_continue_as_different_accounts_and_each_is_bound_to_its_own()
     {
-        await StartAsync(["someone-else@example.test"]);
-        await SeedKnownAccountAsync();
+        // No account list is configured: the passcode is the gate, and each connection gets the account chosen for it.
+        await SeedKnownAccountAsync(s_account);
+        await SeedKnownAccountAsync(s_otherAccount);
+        _host.Completer.Add("p1", "stub");
+        _host.Completer.Add("p2", "stub");
+
+        var first = await ContinueAsAsync("p1", s_account.AccountId);
+        var second = await ContinueAsAsync("p2", s_otherAccount.AccountId);
+
+        Assert.Equal(HttpStatusCode.SeeOther, first.StatusCode);
+        Assert.Equal(HttpStatusCode.SeeOther, second.StatusCode);
+        Assert.Equal(
+            [("p1", s_account.AccountId), ("p2", s_otherAccount.AccountId)],
+            _host.Completer.Completed.Select(c => (c.PendingId, c.Account.AccountId)));
+    }
+
+    [Fact]
+    public async Task Every_saved_account_is_offered_after_the_gate()
+    {
+        await SeedKnownAccountAsync(s_account);
+        await SeedKnownAccountAsync(s_otherAccount);
         _host.Completer.Add("p1", "stub");
         var client = _host.NewClient();
 
         var (gate, _) = await client.PassGateAsync("p1");
-        // No account to offer: the gate goes straight to a live sign-in.
-        Assert.StartsWith("/connect/stub/live?a=", gate.Headers.Location!.OriginalString);
-        var (_, choose) = await client.GetAsync("/connect/stub?p=p1");
-        Assert.DoesNotContain("Continue as", choose);
+        var (_, choose) = await client.GetAsync(gate.Headers.Location!.OriginalString);
 
-        var (forced, html) = await client.PostAsync("/connect/stub/continue?p=p1", choose, ("account", StubLoginSite.AccountId));
+        Assert.Contains($"Continue as {StubLoginSite.DisplayName}", choose);
+        Assert.Contains($"Continue as {StubLoginSite.OtherDisplayName}", choose);
+    }
+
+    [Fact]
+    public async Task An_old_account_list_in_configuration_is_ignored_with_one_log_line()
+    {
+        // Left by an earlier install: it names someone else, and must neither stop the server nor limit who connects.
+        await StartAsync(new() { [$"Multiplex:Sites:{StubSignInDefinition.SiteSlug}:AllowedAccounts:0"] = "someone-else@example.test" });
+        await SeedKnownAccountAsync();
+        _host.Completer.Add("p1", "stub");
+
+        var response = await ContinueAsAsync("p1", StubLoginSite.AccountId);
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+        Assert.Equal(StubLoginSite.AccountId, Assert.Single(_host.Completer.Completed).Account.AccountId);
+        var notice = Assert.Single(_host.Logs.Entries, e => e.AllText.Contains("AllowedAccounts", StringComparison.Ordinal));
+        Assert.Contains("no longer used", notice.Message);
+    }
+
+    [Fact]
+    public async Task Continue_as_an_account_the_server_holds_no_session_for_is_refused()
+    {
+        _host.Completer.Add("p1", "stub");
+        var client = _host.NewClient();
+        await client.PassGateAsync("p1"); // nothing to offer: this starts a live sign-in, which cannot launch here
+        var (_, choose) = await client.GetAsync("/connect/stub?p=p1");
+
+        var (forced, _) = await client.PostAsync("/connect/stub/continue?p=p1", choose, ("account", StubLoginSite.AccountId));
 
         Assert.Equal(HttpStatusCode.Forbidden, forced.StatusCode);
-        Assert.Contains("not allowed", html);
         Assert.Empty(_refresher.Calls);
         Assert.Empty(_host.Completer.Completed);
     }

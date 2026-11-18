@@ -29,7 +29,6 @@ public static class SignInServiceCollectionExtensions
         services.TryAddSingleton<SiteSessionStore>();
         services.TryAddSingleton<ISiteSessionStore>(sp => sp.GetRequiredService<SiteSessionStore>());
         services.TryAddSingleton<SiteAccountIndex>();
-        services.TryAddSingleton<SiteAllowlist>();
         services.TryAddSingleton<PasscodeGate>();
         services.TryAddSingleton<GateCookie>();
         services.TryAddSingleton<LiveSignInRegistry>();
@@ -37,6 +36,7 @@ public static class SignInServiceCollectionExtensions
         services.TryAddSingleton<ISiteSessionRefresher>(sp => sp.GetRequiredService<SiteSessionRefresher>());
         services.TryAddSingleton<SiteProfileAdopter>();
         services.AddHostedService<StaleProfileSweeper>();
+        services.AddHostedService<RetiredAccountListNotice>();
         return new SiteSignInBuilder(services);
     }
 

@@ -6,6 +6,8 @@ namespace Multiplex.Web.SignIn;
 /// <summary>
 /// The connect pages, reached from <c>/oauth/authorize</c> as <c>/connect/{slug}?p={pendingId}</c>:
 /// passcode gate → "Continue as …" or live sign-in → back to the client with a code or an error.
+/// Each pending authorization is one connection being added; it is bound to the account chosen or
+/// signed in to here. There is no list of accounts: the passcode is the gate.
 /// </summary>
 public static class ConnectEndpoints
 {
@@ -97,16 +99,16 @@ public static class ConnectEndpoints
         var ct = context.RequestAborted;
         var form = await context.Request.ReadFormAsync(ct);
         var accountId = form["account"].ToString();
-        var allowlist = services.GetRequiredService<SiteAllowlist>();
         var index = services.GetRequiredService<SiteAccountIndex>();
         var logger = Logger(context);
 
         var account = string.IsNullOrEmpty(accountId) ? null : await index.FindAsync(site.Slug, accountId, ct);
-        if (account is null || !allowlist.IsAllowed(account))
+        if (account is null)
         {
-            logger.LogWarning("Continue refused for {Site} account {AccountId}: unknown or not on the allowlist.", site.Slug, accountId);
-            await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Account not allowed",
-                $"That {site.DisplayName} account is not allowed on this server.", $"/connect/{site.Slug}?p={Uri.EscapeDataString(pending.Id)}", "Back"));
+            logger.LogWarning("Continue refused for {Site} account {AccountId}: the server holds no session for it.", site.Slug, accountId);
+            await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Account not found",
+                $"This server holds no {site.DisplayName} session for that account. Go back and sign in.",
+                $"/connect/{site.Slug}?p={Uri.EscapeDataString(pending.Id)}", "Back"));
             return;
         }
 
@@ -128,14 +130,6 @@ public static class ConnectEndpoints
 
         if (snapshot is not null)
         {
-            // Emails may have changed on refresh; check the allowlist against the latest.
-            account = await index.FindAsync(site.Slug, account.AccountId, ct) ?? account;
-            if (!allowlist.IsAllowed(account))
-            {
-                await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Account not allowed",
-                    $"That {site.DisplayName} account is not allowed on this server."));
-                return;
-            }
             var completer = services.GetService<IAuthorizationCompleter>()!;
             var redirect = await completer.CompleteAsync(pending.Id, account, ct);
             logger.LogInformation("Connect for {Site} completed with the saved session of {AccountId}.", site.Slug, account.AccountId);
@@ -265,15 +259,13 @@ public static class ConnectEndpoints
         SeeOther(context, url);
     }
 
-    /// <summary>Accounts the server holds a usable session for that are still on the allowlist.</summary>
+    /// <summary>Accounts the server holds a usable session for: stored snapshot and kept browser profile.</summary>
     internal static async Task<IReadOnlyList<SiteAccount>> OfferableAccountsAsync(IServiceProvider services, ISiteSignInDefinition site, CancellationToken ct)
     {
-        var allowlist = services.GetRequiredService<SiteAllowlist>();
         var store = services.GetRequiredService<SiteSessionStore>();
         var paths = services.GetRequiredService<SignInPaths>();
         var accounts = await services.GetRequiredService<SiteAccountIndex>().ListAsync(site.Slug, ct);
-        return [.. accounts.Where(a => allowlist.IsAllowed(a)
-                                      && store.Exists(site.Slug, a.AccountId)
+        return [.. accounts.Where(a => store.Exists(site.Slug, a.AccountId)
                                       && Directory.Exists(paths.AccountProfile(site.Slug, a.AccountId)))];
     }
 

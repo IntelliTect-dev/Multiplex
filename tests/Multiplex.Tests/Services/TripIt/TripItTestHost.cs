@@ -10,8 +10,10 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Tests.SignIn;
 using Multiplex.Web.Auth.Store;
 using Multiplex.Web.Services.TripIt;
+using Multiplex.Web.SignIn;
 using Multiplex.Web.Sites;
 
 namespace Multiplex.Tests.Services.TripIt;
@@ -39,6 +41,7 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
         builder.UseSetting("Multiplex:Auth:RegisterPermitLimit", "10000");
         builder.UseSetting("Multiplex:Auth:TokenPermitLimit", "10000");
         builder.UseSetting("Multiplex:Auth:AuthorizePermitLimit", "10000");
+        builder.UseSetting(PasscodeGate.HashKey, SignInTestHost.PasscodeHash);
         if (fakeTripIt)
         {
             builder.UseSetting($"{TripItServiceOptions.Section}:MinRequestSpacingMs", "0");
@@ -67,7 +70,24 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
     public static string Snapshot(string cookie)
         => JsonSerializer.Serialize(new { cookie, csrf_token = "csrf-" + cookie, spa_headers = new Dictionary<string, string> { ["user-agent"] = "Test" }, captured_at = "2026-11-17T08:00:00Z" });
 
+    /// <summary>
+    /// What an earlier TripIt sign-in on this server leaves behind for <paramref name="account"/>:
+    /// its session for the tools (<see cref="SignIn"/>), and for the connect page a saved account
+    /// (index entry, stored session, kept browser profile) whose session the refresher confirms,
+    /// so a connection can be added with "Continue as" and no browser.
+    /// </summary>
+    public async Task SaveSignInAsync(string account, string cookie)
+    {
+        SignIn(account, cookie);
+        await Services.GetRequiredService<SiteAccountIndex>().UpsertAsync(
+            new SiteAccount(TripItAccountSessions.Site, account, [], "Traveller " + account), CancellationToken.None);
+        await Services.GetRequiredService<SiteSessionStore>().SetAsync(TripItAccountSessions.Site, account, Snapshot(cookie), CancellationToken.None);
+        Directory.CreateDirectory(Services.GetRequiredService<SignInPaths>().AccountProfile(TripItAccountSessions.Site, account));
+        Refresher.Next[account] = () => Snapshot(cookie);
+    }
+
     public const string BaseUrl = "https://mcp.example.test";
+    private const string ClaudeRedirect = "https://claude.ai/api/mcp/auth_callback";
     private readonly ConcurrentDictionary<string, Task<string>> _tokens = new();
 
     /// <summary>An MCP JSON-RPC client for one account (null: no token at all).</summary>
@@ -79,9 +99,39 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
     private async Task<string> TokenForAsync(string account)
     {
         using var http = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-        const string redirect = "https://claude.ai/api/mcp/auth_callback";
+        var (clientId, verifier, pendingId) = await AuthorizeAsync(http);
+
+        var completer = Services.GetRequiredService<IAuthorizationCompleter>();
+        var back = await completer.CompleteAsync(pendingId, new SiteAccount("tripit", account, [], account), CancellationToken.None);
+
+        return await ExchangeAsync(http, clientId, verifier, back);
+    }
+
+    /// <summary>
+    /// Adds one connection the whole way a person does: the client registers and authorizes, the
+    /// person enters the passcode on the connect page and chooses "Continue as"
+    /// <paramref name="account"/>, and the client exchanges the code. Returns that connection's client.
+    /// </summary>
+    public async Task<McpTestClient> ConnectThroughPagesAsync(string account)
+    {
+        var browser = new ConnectClient(this);
+        var (clientId, verifier, pendingId) = await AuthorizeAsync(browser.Http);
+
+        var (gate, _) = await browser.PassGateAsync(pendingId, slug: TripItAccountSessions.Site);
+        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
+        var (_, choose) = await browser.GetAsync(gate.Headers.Location!.OriginalString);
+        var (back, _) = await browser.PostAsync($"/connect/tripit/continue?p={Uri.EscapeDataString(pendingId)}", choose, ("account", account));
+        Assert.Equal(HttpStatusCode.SeeOther, back.StatusCode);
+
+        var token = await ExchangeAsync(browser.Http, clientId, verifier, back.Headers.Location!);
+        return new McpTestClient(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }), () => Task.FromResult(token));
+    }
+
+    /// <summary>Registers a client like Claude and starts an authorization; returns where the connect page takes over.</summary>
+    private static async Task<(string ClientId, string Verifier, string PendingId)> AuthorizeAsync(HttpClient http)
+    {
         var registration = await http.PostAsync("/oauth/register", new StringContent(
-            JsonSerializer.Serialize(new { client_name = "Claude", redirect_uris = new[] { redirect }, token_endpoint_auth_method = "none" }),
+            JsonSerializer.Serialize(new { client_name = "Claude", redirect_uris = new[] { ClaudeRedirect }, token_endpoint_auth_method = "none" }),
             Encoding.UTF8, "application/json"));
         registration.EnsureSuccessStatusCode();
         var clientId = JsonDocument.Parse(await registration.Content.ReadAsStringAsync()).RootElement.GetProperty("client_id").GetString()!;
@@ -90,20 +140,22 @@ public sealed class TripItTestHost(bool fakeTripIt = true) : WebApplicationFacto
         var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         var authorize = QueryHelpers.AddQueryString("/oauth/authorize", new Dictionary<string, string?>
         {
-            ["response_type"] = "code", ["client_id"] = clientId, ["redirect_uri"] = redirect, ["state"] = "s",
+            ["response_type"] = "code", ["client_id"] = clientId, ["redirect_uri"] = ClaudeRedirect, ["state"] = "s",
             ["code_challenge"] = challenge, ["code_challenge_method"] = "S256", ["resource"] = BaseUrl + "/tripit/mcp",
         });
         var connect = await http.GetAsync(authorize);
         Assert.Equal(HttpStatusCode.Redirect, connect.StatusCode);
         var pendingId = QueryHelpers.ParseQuery(new Uri(new Uri(BaseUrl), connect.Headers.Location!).Query)["p"].ToString();
+        return (clientId, verifier, pendingId);
+    }
 
-        var completer = Services.GetRequiredService<IAuthorizationCompleter>();
-        var back = await completer.CompleteAsync(pendingId, new SiteAccount("tripit", account, [], account), CancellationToken.None);
-        var code = QueryHelpers.ParseQuery(back.Query)["code"].ToString();
-
+    /// <summary>Exchanges the code in <paramref name="callback"/> (the client's redirect URI) for an access token.</summary>
+    private static async Task<string> ExchangeAsync(HttpClient http, string clientId, string verifier, Uri callback)
+    {
+        var code = QueryHelpers.ParseQuery(callback.Query)["code"].ToString();
         var token = await http.PostAsync("/oauth/token", new FormUrlEncodedContent(new Dictionary<string, string>
         {
-            ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = redirect,
+            ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = ClaudeRedirect,
             ["client_id"] = clientId, ["code_verifier"] = verifier, ["resource"] = BaseUrl + "/tripit/mcp",
         }));
         token.EnsureSuccessStatusCode();

@@ -162,8 +162,8 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
     /// Reads the account from a <c>/api/v2/get/profile</c> response. Id: the profile's
     /// <c>@attributes.ref</c>, else <c>screen_name</c>. Emails: every
     /// <c>ProfileEmailAddresses.ProfileEmailAddress</c> address (one object or an array) whose
-    /// <c>is_confirmed</c> is exactly true (TripIt sends the string <c>"true"</c>), so nobody can
-    /// claim an allowlisted address by adding it.
+    /// <c>is_confirmed</c> is exactly true (TripIt sends the string <c>"true"</c>), so the connect
+    /// page never labels an account with an address it has merely added.
     /// </summary>
     internal static SiteAccount? ParseAccount(string json)
     {

@@ -14,10 +14,9 @@ public enum AttemptState
     Live,
     Checking,
 
-    /// <summary>Signed in, allowed, session stored; waiting for the person's browser to collect the redirect.</summary>
+    /// <summary>Signed in, session stored; waiting for the person's browser to collect the redirect.</summary>
     Ready,
     Completed,
-    Denied,
     Cancelled,
     TimedOut,
     Failed,
@@ -27,8 +26,9 @@ public enum AttemptState
 /// One live sign-in: a fresh browser profile showing the site's sign-in page, mirrored to the
 /// person's (phone) browser over a WebSocket, with their taps and typing replayed into it.
 /// Navigation is locked to the site's allowed hosts. The attempt watches for the person to be
-/// signed in, checks the allowlist, stores the session and keeps the profile; anything else
-/// (timeout, cancel, failure, denial) closes the browser and deletes the profile.
+/// signed in, stores that account's session and keeps the profile; the connection being added is
+/// bound to that account. Anything else (timeout, cancel, failure) closes the browser and deletes
+/// the profile.
 /// </summary>
 public sealed class LiveSignInAttempt : IAsyncDisposable
 {
@@ -89,7 +89,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
 
     public string StatusMessage { get; private set; }
 
-    /// <summary>Where to send the person after a denial or cancellation (from <see cref="IAuthorizationCompleter.FailAsync"/>).</summary>
+    /// <summary>Where to send the person after a cancellation (from <see cref="IAuthorizationCompleter.FailAsync"/>).</summary>
     public Uri? ReturnUrl { get; private set; }
 
     /// <summary>The signed-in account once the attempt is <see cref="AttemptState.Ready"/>.</summary>
@@ -197,19 +197,6 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     {
         _services.Logger.LogInformation("Live sign-in to {Site} reached account {AccountId}.", Slug, account.AccountId);
 
-        if (!_services.Allowlist.IsAllowed(account))
-        {
-            _services.Logger.LogWarning("{Site} account {AccountId} is not on the allowlist; refusing it.", Slug, account.AccountId);
-            await CloseBrowserAsync();
-            // The refused account's profile is discarded by CleanUpAsync, after the person is told.
-            // Claim the end first, so a Cancel arriving meanwhile cannot also end the authorization.
-            if (!TryEnd(AttemptState.Denied, $"This {Definition.DisplayName} account is not allowed on this server.")) return;
-            if (_services.Completer() is { } completer)
-                ReturnUrl = await completer.FailAsync(PendingId, "access_denied", "This account is not allowed on this server.", CancellationToken.None);
-            await AfterEndAsync(AttemptState.Denied, null);
-            return;
-        }
-
         var snapshot = await Definition.CaptureSnapshotAsync(page, ct);
         await CloseBrowserAsync();
 
@@ -251,7 +238,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     public async Task<Uri?> CancelAsync(IAuthorizationCompleter? completer)
     {
         if (!TryEnd(AttemptState.Cancelled, "Sign-in cancelled."))
-            return State is AttemptState.Cancelled or AttemptState.Denied ? ReturnUrl : null;
+            return State is AttemptState.Cancelled ? ReturnUrl : null;
 
         try { await _lifetime.CancelAsync(); } catch (ObjectDisposedException) { }
         if (completer is not null)
@@ -733,7 +720,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     private string? NextFor(AttemptState state) => state switch
     {
         AttemptState.Ready or AttemptState.Completed => DonePath,
-        AttemptState.Denied or AttemptState.Cancelled => ReturnUrl?.AbsoluteUri,
+        AttemptState.Cancelled => ReturnUrl?.AbsoluteUri,
         _ => null,
     };
 
@@ -743,7 +730,6 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         AttemptState.Live => "live",
         AttemptState.Checking => "checking",
         AttemptState.Ready or AttemptState.Completed => "ready",
-        AttemptState.Denied => "denied",
         AttemptState.Cancelled => "cancelled",
         AttemptState.TimedOut => "timeout",
         _ => "failed",
@@ -779,7 +765,6 @@ internal sealed record LiveSignInServices(
     SiteBrowserManager Manager,
     SiteSessionStore Store,
     SiteAccountIndex Index,
-    SiteAllowlist Allowlist,
     SignInOptions Options,
     Func<IAuthorizationCompleter?> Completer,
     TimeProvider Time,

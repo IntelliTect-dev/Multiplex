@@ -15,7 +15,7 @@ namespace Multiplex.Web.Sites;
 /// <summary>A signed-in account on a site, e.g. one TripIt account.</summary>
 /// <param name="Site">The endpoint slug, e.g. <c>tripit</c>.</param>
 /// <param name="AccountId">Stable, site-issued account identifier (for TripIt, the profile ref).</param>
-/// <param name="Emails">The account's email addresses, as the site reports them; used for the allowlist.</param>
+/// <param name="Emails">The account's confirmed email addresses, as the site reports them; display only.</param>
 /// <param name="DisplayName">A human-readable name for logs and consent text; may be empty.</param>
 public sealed record SiteAccount(string Site, string AccountId, IReadOnlyList<string> Emails, string DisplayName);
 

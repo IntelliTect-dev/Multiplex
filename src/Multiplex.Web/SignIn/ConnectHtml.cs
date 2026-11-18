@@ -278,9 +278,9 @@ public static class ConnectHtml
           function onStatus(m) {
             statusEl.textContent = m.msg;
             if ((m.s === 'ready' || m.s === 'cancelled') && m.next) { finished = true; location.replace(m.next); return; }
-            if (m.s === 'denied' || m.s === 'timeout' || m.s === 'failed' || m.s === 'cancelled') {
-              // A refusal's way back to the app may follow a moment later; keep listening for it.
-              var waitForLink = (m.s === 'denied' || m.s === 'cancelled') && !m.next;
+            if (m.s === 'timeout' || m.s === 'failed' || m.s === 'cancelled') {
+              // A cancellation's way back to the app may follow a moment later; keep listening for it.
+              var waitForLink = m.s === 'cancelled' && !m.next;
               finished = !waitForLink;
               document.getElementById('end-msg').textContent = m.msg;
               var ret = document.getElementById('end-return');

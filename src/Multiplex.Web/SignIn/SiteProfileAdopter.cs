@@ -7,16 +7,15 @@ namespace Multiplex.Web.SignIn;
 /// <summary>
 /// Admin helper: makes an existing, already signed-in Chrome user-data folder the server's
 /// profile for that site account. The folder is <em>copied</em> into the data folder first and
-/// only the copy is ever launched; the original is read, never written. The account must be on
-/// the site's allowlist. Used by the installer (<c>dotnet run -- adopt-profile &lt;site&gt; &lt;dir&gt;</c>)
-/// and by tests.
+/// only the copy is ever launched; the original is read, never written. Whoever can run this
+/// already has the server's data folder, so there is no further check on the account. Used by the
+/// installer (<c>dotnet run -- adopt-profile &lt;site&gt; &lt;dir&gt;</c>) and by tests.
 /// </summary>
 public sealed class SiteProfileAdopter(
     IEnumerable<ISiteSignInDefinition> definitions,
     SiteBrowserManager manager,
     SiteSessionStore store,
     SiteAccountIndex index,
-    SiteAllowlist allowlist,
     IOptions<SignInOptions> options,
     ILogger<SiteProfileAdopter> logger)
 {
@@ -57,8 +56,6 @@ public sealed class SiteProfileAdopter(
             var account = outcome.Account ?? throw new InvalidOperationException(outcome.SignedOut
                 ? $"That profile is not signed in to {definition.DisplayName}."
                 : $"Could not tell whether that profile is signed in to {definition.DisplayName} (the site may be blocking the browser).");
-            if (!allowlist.IsAllowed(account))
-                throw new InvalidOperationException($"That {definition.DisplayName} account is not on Multiplex:Sites:{definition.Slug}:AllowedAccounts.");
 
             var snapshot = await definition.CaptureSnapshotAsync(page, ct);
             await manager.CloseAsync(browser);

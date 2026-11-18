@@ -13,7 +13,6 @@ public sealed class LiveSignInRegistry(
     SiteBrowserManager manager,
     SiteSessionStore store,
     SiteAccountIndex index,
-    SiteAllowlist allowlist,
     IOptions<SignInOptions> options,
     IServiceProvider services,
     TimeProvider time,
@@ -47,7 +46,7 @@ public sealed class LiveSignInRegistry(
             try
             {
                 attempt = new LiveSignInAttempt(definition, pendingId, new LiveSignInServices(
-                    manager, store, index, allowlist, options.Value,
+                    manager, store, index, options.Value,
                     services.GetService<IAuthorizationCompleter>, time, logger));
                 attempt.Start(slot);
             }
