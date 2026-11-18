@@ -57,3 +57,18 @@ internal static class AuthLifetimes
     /// <summary>Last-used stamps are written at most this often per client, so busy clients don't rewrite the store.</summary>
     public static readonly TimeSpan ClientTouchGranularity = TimeSpan.FromHours(1);
 }
+
+/// <summary>
+/// Global caps on what callers who have not signed in can make the server store. When one is reached,
+/// new entries are refused until old ones expire; nothing that exists is evicted. Sized so the whole
+/// store, rewritten on each change, stays a few megabytes at worst (a registration is at most 16 KB,
+/// a pending authorization at most about 10 KB) while far exceeding what one person's clients need.
+/// </summary>
+internal static class AuthCapacity
+{
+    /// <summary>Registered clients, kept until unused for <see cref="AuthLifetimes.UnusedClient"/>.</summary>
+    public const int RegisteredClients = 200;
+
+    /// <summary>Pending authorizations, kept until 10 minutes after they expire.</summary>
+    public const int PendingAuthorizations = 100;
+}

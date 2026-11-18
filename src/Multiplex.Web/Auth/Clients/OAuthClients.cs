@@ -114,7 +114,19 @@ public sealed partial class OAuthClients(
 
         var now = time.GetUtcNow();
         var client = new RegisteredClient(OAuthCrypto.NewId(), name.Length > 0 ? name : null, redirectUris, now, now);
-        await store.WriteAsync(s => StoreWrite.Changed(s.Clients[client.ClientId] = client), ct);
+        var registered = await store.WriteAsync(s =>
+        {
+            // Counted after pruning, so registrations unused for 90 days make room again.
+            if (s.Clients.Count >= AuthCapacity.RegisteredClients) return StoreWrite.Unchanged(false);
+            s.Clients[client.ClientId] = client;
+            return StoreWrite.Changed(true);
+        }, ct);
+        if (!registered)
+        {
+            LogRegistryFull(logger, AuthCapacity.RegisteredClients);
+            return (StatusCodes.Status503ServiceUnavailable, Error(
+                "temporarily_unavailable", "This server has as many registered clients as it keeps; try again later."));
+        }
 
         LogRegistered(logger, client.ClientId, client.ClientName ?? "", requestedAuth ?? "(none given)");
 
@@ -131,10 +143,16 @@ public sealed partial class OAuthClients(
         return (StatusCodes.Status201Created, body);
     }
 
-    private static (int, object) Invalid(string error, string description) =>
-        (StatusCodes.Status400BadRequest, new Dictionary<string, string> { ["error"] = error, ["error_description"] = description });
+    private static (int, object) Invalid(string error, string description) => (StatusCodes.Status400BadRequest, Error(error, description));
+
+    private static Dictionary<string, string> Error(string error, string description) =>
+        new() { ["error"] = error, ["error_description"] = description };
 
     [LoggerMessage(Level = LogLevel.Information,
         Message = "Registered client {ClientId} ({ClientName}); requested token_endpoint_auth_method {RequestedAuth}, registered as none.")]
     private static partial void LogRegistered(ILogger logger, string clientId, string clientName, string requestedAuth);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Refused a client registration: {Limit} clients are already registered. Unused ones are dropped after 90 days.")]
+    private static partial void LogRegistryFull(ILogger logger, int limit);
 }

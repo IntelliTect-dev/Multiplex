@@ -82,12 +82,18 @@ public sealed partial class AuthorizationServer(
         var pending = new PendingAuthorizationRecord(
             OAuthCrypto.NewId(), endpoint.Slug, client.ClientId, client.ClientName, redirectUri, state, challenge,
             endpoint.Resource, endpoint.Slug, now + AuthLifetimes.PendingAuthorization);
-        await store.WriteAsync(st =>
+        var started = await store.WriteAsync(st =>
         {
+            // Counted after pruning, so expired authorizations make room again.
+            if (st.PendingAuthorizations.Count >= AuthCapacity.PendingAuthorizations) return StoreWrite.Unchanged(false);
             st.PendingAuthorizations[pending.Id] = pending;
             OAuthClients.Touch(st, client.ClientId, now);
             return StoreWrite.Changed(true);
         }, ct);
+        if (!started)
+        {
+            return Fail("temporarily_unavailable", "Too many sign-ins are in progress on this server; try again in a few minutes.");
+        }
 
         LogStarted(logger, client.ClientId, endpoint.Slug);
         return new AuthorizeOutcome.Redirect($"{pathBase}/connect/{endpoint.Slug}?p={Uri.EscapeDataString(pending.Id)}");
