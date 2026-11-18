@@ -52,7 +52,11 @@ BeforeAll {
     $env:CLAUDE_CODE_ENTRYPOINT = ''
 
     function Write-FixtureHar {
-        param([Parameter(Mandatory)][string]$Path, [string]$Body = '{"ok":true}')
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [string]$Body = '{"ok":true}',
+            [string]$Url = 'https://api.example.test/v1/things'
+        )
 
         @{
             log = @{
@@ -61,7 +65,7 @@ BeforeAll {
                 entries = @(@{
                         startedDateTime = '2026-01-01T00:00:00.000Z'
                         time            = 1
-                        request         = @{ method = 'GET'; url = 'https://api.example.test/v1/things'
+                        request         = @{ method = 'GET'; url = $Url
                             httpVersion = 'HTTP/1.1'; headers = @(); queryString = @(); cookies = @()
                             headersSize = -1; bodySize = 0
                         }
@@ -85,19 +89,35 @@ BeforeAll {
     # the repository it sits in -- so a bare temp directory is neither somewhere
     # the scrub runs nor somewhere a label resolves.
     function New-PhaseStore {
-        # -NoRepository is the folder an agent records in before anybody has
-        # run `git init`: the recorder writes the .gitignore beside the store
-        # and records anyway, and that is the state a later scrub finds.
-        param([switch]$NoRepository)
+        param(
+            # The folder an agent records in before anybody has run `git init`:
+            # the recorder writes the .gitignore beside the store and records
+            # anyway, and that is the state a later scrub finds.
+            [switch]$NoRepository,
+            # The operator's own identifiers and what each becomes, as
+            # .har-profile.json holds them: literal -> <Sentinel>.
+            [hashtable]$Literals = @{},
+            # Spliced into the folder name, for a path with something awkward
+            # in it.
+            [string]$NameSuffix = ''
+        )
 
-        $base = Join-Path ([IO.Path]::GetTempPath()) ('har-phases-' + [guid]::NewGuid().ToString('n'))
+        $base = Join-Path ([IO.Path]::GetTempPath()) ('har-phases-' + [guid]::NewGuid().ToString('n') + $NameSuffix)
         New-Item -ItemType Directory -Path $base -Force | Out-Null
         if (-not $NoRepository) { & git -C $base init --quiet 2>&1 | Out-Null }
         Set-Content -LiteralPath (Join-Path $base '.gitignore') -Encoding utf8 -Value @(
             '.har-profile.json', '.har-substitutions.json', '.substitutions.json', '.har-captures/')
         Set-Content -LiteralPath (Join-Path $base '.har-profile.json') -Encoding utf8 -Value (
-            @{ salt = 'har-capture-phases-fixture-salt'; literals = @{} } | ConvertTo-Json)
+            @{ salt = 'har-capture-phases-fixture-salt'; literals = $Literals } | ConvertTo-Json)
         [pscustomobject]@{ Base = $base; Captures = (Join-Path $base '.har-captures') }
+    }
+
+    function Remove-PhaseStore {
+        param([object]$Store)
+
+        if ($Store -and (Test-Path -LiteralPath $Store.Base)) {
+            Remove-Item -LiteralPath $Store.Base -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     # One capture, in whichever state a test needs. Returns its directory.
@@ -119,7 +139,22 @@ BeforeAll {
             [string]$SignIn,
             # What the recorder writes when it recorded outside a repository
             # and placed the scrub's substitution tables itself.
-            [switch]$UnprotectedTables
+            [switch]$UnprotectedTables,
+            # The response body the raw capture carries.
+            [string]$Body = '{"ok":true}',
+            # The recorder's process, as session.json records it. A session a
+            # recorder is still working on has a live one and no postProcess.
+            [int]$RecorderId,
+            # When the recording started. The recorder's process is older than
+            # this; a process that began AFTER it only inherited the number.
+            [string]$StartedUtc = '2026-01-01T00:00:00.000Z',
+            # The recorder never wrote endedUtc: still recording, or cut off.
+            [switch]$NotEnded,
+            # The recorder finished its own scrub and catalogue, and said so.
+            [switch]$PostProcessed,
+            # Where the recording published its scrubbed artifacts, when that
+            # was somewhere other than the capture's own directory.
+            [string]$OutputPath
         )
 
         $dir = Join-Path (Join-Path $Store.Captures $Site) $Stamp
@@ -129,14 +164,20 @@ BeforeAll {
             Set-Content -LiteralPath (Join-Path $dir 'raw.mitm') -Value 'not-a-har' -Encoding utf8
             return $dir
         }
-        if (-not $NoRaw) { Write-FixtureHar -Path (Join-Path $dir 'raw.har') }
+        if (-not $NoRaw) { Write-FixtureHar -Path (Join-Path $dir 'raw.har') -Body $Body }
         # The start URI carries a token in its path on purpose: it is the shape
         # nothing here may ever echo.
         $session = @{
             uri = 'https://www.example.test/magic/FIXTURE-START-TOKEN'
             describe = $Describe; sessionDir = $dir
-            harPath = (Join-Path $dir 'raw.har'); outputPath = $dir
-            startedUtc = '2026-01-01T00:00:00.000Z'; endedUtc = '2026-01-01T00:01:00.000Z'
+            harPath = (Join-Path $dir 'raw.har')
+            outputPath = $(if ($OutputPath) { $OutputPath } else { $dir })
+            startedUtc = $StartedUtc
+        }
+        if (-not $NotEnded) { $session.endedUtc = '2026-01-01T00:01:00.000Z' }
+        if ($RecorderId) { $session.pid = $RecorderId }
+        if ($PostProcessed) {
+            $session.postProcess = @{ completedUtc = '2026-01-01T00:02:00.000Z'; errors = @(); warnings = @() }
         }
         if ($SignIn) { $session.signIn = @{ source = $SignIn; signedIn = $true } }
         if ($UnprotectedTables) { $session.unprotectedTables = $true }
@@ -159,6 +200,10 @@ BeforeAll {
     # The front door in a CHILD process, so the exit code is the real one and
     # the refusal lines -- written to the process's stderr, like the -Describe
     # refusal -- are capturable at all.
+    #
+    # It runs FROM the store's own folder -- where an operator stands, and how
+    # a URL or a label finds its store. A test about being somewhere else says
+    # so by passing the store it is standing in and naming the capture by path.
     function Invoke-PhaseDoor {
         param(
             [Parameter(Mandatory)][object]$Store,
@@ -224,20 +269,40 @@ BeforeAll {
     # stubbed, the technique HarBatchStore.Tests.ps1 and
     # capture-quarantine.test.js already use, while the front door, the scrub,
     # the quarantine and the recorder under test stay real.
+    #
+    # THE GATE IS ASKED TWICE, AND THE TWO ASKERS GET THEIR OWN ANSWER. The
+    # scrub wrapper asks about the candidate it just wrote, under its temporary
+    # name; the recorder's `catalogue` asks again about scrubbed.har. One
+    # answer for both could not tell "the catalogue ran on what the scrub just
+    # produced" from "the catalogue ran on whatever was lying there" -- the
+    # mutant that dropped the scrub's exit code survived exactly that way. So
+    # the stub keys on the file it is handed. -RecorderVerdict defaults to the
+    # wrapper's, which is what a real gate would say of the same bytes.
     function New-StubbedGateDoor {
-        param([Parameter(Mandatory)][object]$Store, [Parameter(Mandatory)][int]$Verdict)
+        param(
+            [Parameter(Mandatory)][object]$Store,
+            [Parameter(Mandatory)][int]$Verdict,
+            [int]$RecorderVerdict = -1
+        )
 
+        if ($RecorderVerdict -lt 0) { $RecorderVerdict = $Verdict }
         $copy = Join-Path $Store.Base 'stub-scripts'
         Copy-Item -LiteralPath $script:ScriptsDir -Destination $copy -Recurse -Force
         $stub = @"
 const fs = require('fs'), path = require('path');
 const target = process.argv[process.argv.indexOf('--in') + 1];
-// verify-scrub.js writes its findings report beside the file it verified, and
-// a refusal is specified to move that report with the artifact.
-fs.writeFileSync(path.join(path.dirname(target), 'scrub-findings.json'),
-    JSON.stringify({ findings: [], stub: true }));
-process.stderr.write('verify-scrub: stubbed verdict $Verdict\n');
-process.exit($Verdict);
+const candidate = path.basename(target) === '.scrubbing-scrubbed.har';
+const code = candidate ? $Verdict : $RecorderVerdict;
+// verify-scrub.js writes its findings report beside the file it verified on a
+// run that is not clean -- with the verdict in it -- and writes none on a clean
+// one. A refusal is specified to move that report with the artifact.
+if (code !== 0) {
+    fs.writeFileSync(path.join(path.dirname(target), 'scrub-findings.json'), JSON.stringify({
+        schemaVersion: 1, generatedUtc: new Date().toISOString(), target: path.basename(target),
+        verdict: code === 4 ? 'advisory' : 'gating', findings: [], stub: true }));
+}
+process.stderr.write('verify-scrub: stubbed verdict ' + code + '\n');
+process.exit(code);
 "@
         Set-Content -LiteralPath (Join-Path $copy 'har/verify-scrub.js') -Value $stub -Encoding utf8
         return (Join-Path $copy 'capture/Invoke-HarCapture.ps1')
@@ -253,11 +318,7 @@ Describe 'Invoke-HarCapture -Scrub and -Catalogue run one phase on a capture tha
 
     BeforeEach { $script:Store = New-PhaseStore }
 
-    AfterEach {
-        if ($script:Store -and (Test-Path -LiteralPath $script:Store.Base)) {
-            Remove-Item -LiteralPath $script:Store.Base -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    AfterEach { Remove-PhaseStore -Store $script:Store }
 
     It '-Scrub scrubs and verifies the capture, and stops there' {
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
@@ -588,15 +649,11 @@ Describe 'it says which capture it selected' {
 
     BeforeEach { $script:Store = New-PhaseStore }
 
-    AfterEach {
-        if ($script:Store -and (Test-Path -LiteralPath $script:Store.Base)) {
-            Remove-Item -LiteralPath $script:Store.Base -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    AfterEach { Remove-PhaseStore -Store $script:Store }
 
     It 'names the capture by label, description and directory before it runs anything' {
-        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
-            -Describe 'sign in, list the things'
+        Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
+            -Describe 'sign in, list the things' | Out-Null
 
         $run = Invoke-PhaseDoorInProcess -Store $script:Store -Arguments @{
             Uri = 'https://www.example.test'; Catalogue = $true }
@@ -644,12 +701,38 @@ Describe 'it says which capture it selected' {
         Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed | Out-Null
 
         $run = Invoke-PhaseDoor -Store $script:Store -Arguments @(
-            'www.example.test/reset/TYPED-PATH-TOKEN?t=TYPED-QUERY-TOKEN', '-Catalogue')
+            'www.example.test/reset/TYPED-PATH-TOKEN', '-Catalogue')
 
         $run.ExitCode | Should -Be 3 -Because $run.Text
-        $run.Text | Should -Not -Match 'TYPED-PATH-TOKEN|TYPED-QUERY-TOKEN'
+        $run.Text | Should -Not -Match 'TYPED-PATH-TOKEN'
         $run.Text | Should -Match 'read as a capture label'
         $run.Text | Should -Match 'https://' -Because 'the likeliest slip is a URL typed without its scheme'
+    }
+
+    It 'refuses a wildcard by its spelling, and does not echo that either' {
+        # Remove-HarCapture's rule, for the same reason: a pattern that happened
+        # to match one capture and was accepted would teach the habit, and the
+        # next one would match four. A capture is NAMED. A URL is exempt -- `?`
+        # is how a query string starts -- but only a URL with its scheme is a
+        # URL: pasted without one, its `?t=` makes it a pattern, and it is
+        # refused here before anything is looked up.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+
+        $pattern = Invoke-PhaseDoor -Store $script:Store -Arguments @('www.example.test/2026-*', '-Scrub')
+        $pattern.ExitCode | Should -Be 2 -Because $pattern.Text
+        $pattern.Text | Should -Match 'wildcard'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeFalse `
+            -Because 'a pattern that matches exactly one capture is still a pattern'
+
+        $pasted = Invoke-PhaseDoor -Store $script:Store -Arguments @(
+            'www.example.test/reset/TYPED-PATH-TOKEN?t=TYPED-QUERY-TOKEN', '-Scrub')
+        $pasted.ExitCode | Should -Be 2 -Because $pasted.Text
+        $pasted.Text | Should -Not -Match 'TYPED-PATH-TOKEN|TYPED-QUERY-TOKEN'
+        $pasted.Text | Should -Match 'https://'
+
+        # And the query string of a real URL is not a wildcard.
+        $url = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test/x?y=1', '-Scrub')
+        $url.ExitCode | Should -Be 0 -Because $url.Text
     }
 
     It 'takes the capture''s own directory in place of a URL' {
@@ -695,11 +778,7 @@ Describe 'it refuses rather than guesses' {
 
     BeforeEach { $script:Store = New-PhaseStore }
 
-    AfterEach {
-        if ($script:Store -and (Test-Path -LiteralPath $script:Store.Base)) {
-            Remove-Item -LiteralPath $script:Store.Base -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    AfterEach { Remove-PhaseStore -Store $script:Store }
 
     It 'refuses a site with several captures by naming them, never picking the newest' {
         $first = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed -Describe 'browse the catalogue'
@@ -778,6 +857,68 @@ Describe 'it refuses rather than guesses' {
         Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse
     }
 
+    It 'refuses to re-scrub a signed-in capture whose scrub the gate REJECTED' {
+        # FOUND IN REVIEW. The gate that rejected that scrub had the values the
+        # recorder signed in with, and may have rejected it precisely because
+        # one of them survived. A scrub run now has no such values: its gate
+        # cannot see what the first one saw, so it can pass -- and call
+        # scrubbed.har -- the very thing that was refused, and a catalogue is
+        # then derived from it. The quarantined file blocks exactly as a
+        # checked scrubbed.har does, and for the same reason.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Rejected -SignIn 'bitwarden'
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub', '-Catalogue')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'www\.example\.test/2026-01-02-000001 signed in'
+        $run.Text | Should -Match 'REJECTED'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeFalse `
+            -Because 'nothing the first gate refused may come out under the verified name'
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.rejected.har') | Should -BeTrue
+    }
+
+    It 'refuses it too when session.json cannot say whether the recorder signed in' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Rejected
+        Set-Content -LiteralPath (Join-Path $capture 'session.json') -Value '{ "describe": "a torn wri' -Encoding utf8
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'session\.json that cannot be read'
+        $run.Text | Should -Match 'REJECTED'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeFalse
+    }
+
+    It 'still re-scrubs a rejected capture nobody signed in for' {
+        # The reason to ask for a scrub again: the scrubber was fixed, or a
+        # finding was waived. With no sign-in there are no values the new gate
+        # is missing, so this is the ordinary case and it runs.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Rejected
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
+    }
+
+    It 'offers a paste-back command that survives an apostrophe in the path' {
+        # The refusal prints the command that names one capture by directory,
+        # in single quotes. A folder called O'Brien closed the quote halfway
+        # through the path.
+        $awkward = New-PhaseStore -NameSuffix "-o'brien"
+        try {
+            Add-PhaseCapture -Store $awkward -Stamp '2026-01-02-000001' | Out-Null
+            Add-PhaseCapture -Store $awkward -Stamp '2026-01-02-000002' | Out-Null
+
+            $run = Invoke-PhaseDoor -Store $awkward -Arguments @('https://www.example.test', '-Scrub')
+
+            $run.ExitCode | Should -Be 2 -Because $run.Text
+            $run.Text | Should -Match "Invoke-HarCapture '[^\r\n]*-o''brien[^\r\n]*2026-01-02-000002' -Scrub"
+        }
+        finally { Remove-PhaseStore -Store $awkward }
+    }
+
     It 'refuses -Scrub on a capture with no raw' {
         Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -NoRaw | Out-Null
 
@@ -854,11 +995,7 @@ Describe 'the leak gate is not softened by re-entering' {
 
     BeforeEach { $script:Store = New-PhaseStore }
 
-    AfterEach {
-        if ($script:Store -and (Test-Path -LiteralPath $script:Store.Base)) {
-            Remove-Item -LiteralPath $script:Store.Base -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    AfterEach { Remove-PhaseStore -Store $script:Store }
 
     It 'quarantines a scrub the gate rejects, and catalogues nothing from it' {
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
@@ -927,23 +1064,314 @@ Describe 'the leak gate is not softened by re-entering' {
         Test-Path -LiteralPath (Join-Path $capture 'scrubbed.rejected.har') | Should -BeTrue
     }
 
-    It '-Scrub alone answers the scrub wrapper''s own code on an ADVISORY verdict, and says the verdict' {
-        # A KNOWN LIMIT, pinned so it cannot change by accident in either
-        # direction. The scrub wrapper's folder form answers 0 or 1 and puts
-        # the verdict in its summary; turning that into the recorder's 7 here
-        # would be this door restating the recorder's exit mapping. So the code
-        # is the wrapper's, and the word the operator needs is in the output.
-        # -Scrub -Catalogue, above, does answer 7: the recorder asks the gate
-        # again.
+    It 'does not catalogue an older scrubbed.har when the scrub that was asked for is rejected' {
+        # THE CASE THE FIRST VERSION OF THIS SUITE DID NOT PIN. With no older
+        # scrubbed.har, a front door that ignored the scrub's failure and went
+        # on to the catalogue was still stopped -- by the recorder, which found
+        # nothing to catalogue -- so removing the check changed no test. With
+        # one there, the recorder has a file it would happily pass: the stale
+        # one. Only this door knows the scrub it just asked for did not produce
+        # it. The gate here refuses the wrapper's candidate and would pass the
+        # recorder's re-ask, which is what makes the difference observable.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed
+        $before = (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash
+        $door = New-StubbedGateDoor -Store $script:Store -Verdict 3 -RecorderVerdict 0
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Script $door -Arguments @(
+            'https://www.example.test', '-Scrub', '-Catalogue')
+
+        $run.ExitCode | Should -Not -Be 0 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse `
+            -Because 'a catalogue of the older scrub is not what -Scrub -Catalogue was asked for'
+        Test-Path -LiteralPath (Join-Path $capture 'digest.json') | Should -BeFalse
+        (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash | Should -Be $before
+        $run.Text | Should -Match 'Nothing was catalogued'
+    }
+
+    It 'works in the capture''s own directory when the recording published somewhere else' {
+        # A capture recorded with -OutputPath published a COPY of its scrubbed
+        # artifacts there and kept its own beside the raw. Asked for a
+        # catalogue with no output path, the recorder reads the published copy
+        # -- which a -Scrub just made stale. So the phases name the capture's
+        # directory explicitly, and nothing here may land in, or be read from,
+        # the other place.
+        $published = Join-Path $script:Store.Base 'published/www.example.test'
+        New-Item -ItemType Directory -Path $published -Force | Out-Null
+        Write-FixtureHar -Path (Join-Path $published 'scrubbed.har') -Url 'https://api.example.test/v1/stale-published-copy'
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -OutputPath $published
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @(
+            'https://www.example.test', '-Scrub', '-Catalogue')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        $catalogue = Get-Content -LiteralPath (Join-Path $capture 'catalogue.json') -Raw
+        $catalogue | Should -Match 'v1/things' -Because 'it is derived from the scrub this run just wrote'
+        $catalogue | Should -Not -Match 'stale-published-copy'
+        foreach ($artifact in 'digest.json', 'catalogue.json') {
+            Test-Path -LiteralPath (Join-Path $published $artifact) | Should -BeFalse `
+                -Because 'the phases work in the capture''s own directory and do not republish'
+        }
+    }
+
+    It '-Scrub alone answers 7 on an ADVISORY verdict, and warns even with the status lines silenced' {
+        # FOUND IN REVIEW. The scrub wrapper answers 0 for an artifact it kept,
+        # and says ADVISORY only in a summary on the information stream -- so
+        # `-Scrub -InformationAction SilentlyContinue` replaced a clean
+        # scrubbed.har with an advisory one, exited 0, and said nothing at all.
+        # The verdict is read from the findings report the gate itself writes
+        # for a run that is not clean, never from the summary's wording; it is
+        # said on the WARNING stream, which silencing status does not reach;
+        # and the code is the recorder's own for "produced, with advisory
+        # findings", the one -Scrub -Catalogue already answers.
         $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
         $door = New-StubbedGateDoor -Store $script:Store -Verdict 4
 
         $run = Invoke-PhaseDoor -Store $script:Store -Script $door -Arguments @(
-            'https://www.example.test', '-Scrub')
+            'https://www.example.test', '-Scrub', '-InformationAction', 'Ignore')
+
+        $run.ExitCode | Should -Be 7 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue -Because 'an advisory verdict keeps the artifact'
+        $run.Text | Should -Match '(?m)^WARNING: .*ADVISORY'
+        $run.Text | Should -Not -Match 'Scrub verdicts' -Because 'the status lines really were silenced, or the line above proves nothing'
+    }
+
+    It '-Scrub is not misled by a findings report an earlier run left behind' {
+        # The gate writes its report only for a run that is not clean, and
+        # nothing removes the one a previous run wrote. Read by existence, an
+        # old advisory report would turn every later clean scrub into exit 7.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+        Set-Content -LiteralPath (Join-Path $capture 'scrub-findings.json') -Encoding utf8 -Value (
+            @{ schemaVersion = 1; verdict = 'advisory'; findings = @() } | ConvertTo-Json)
+
+        $run = Invoke-PhaseDoorInProcess -Store $script:Store -Arguments @{
+            Uri = 'https://www.example.test'; Scrub = $true }
+
+        $run.ExitCode | Should -Be 0
+        $run.Warning | Should -BeNullOrEmpty -Because 'this run came back clean'
+    }
+
+    It '-Scrub warns when values were BLUNTED, even with the status lines silenced' {
+        # The other verdict that is not clean and still exits 0 from the
+        # wrapper: values the gate would have blocked were replaced by typed
+        # sentinels, so the artifact came out with less in it than a clean one.
+        # THE REAL GATE, not a stub -- the planted value is one the scrub has
+        # no rule for where it sits (a 32-hex run visible only once a JSON
+        # escape is decoded), the shape HarBatchStore.Tests.ps1 uses for #511.
+        $planted = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+        $raw = Join-Path $capture 'raw.har'
+        # Spliced in as JSON TEXT: ConvertTo-Json would decode the `/` escape
+        # while writing, which removes exactly the spelling this needs.
+        $bodyJson = '"for (;;);{\"jsmods\":{\"require\":[[\"m\\u002F' + $planted + '\",1]]}}"'
+        (Get-Content -LiteralPath $raw -Raw).Replace('"{\"ok\":true}"', $bodyJson) |
+            Set-Content -LiteralPath $raw -Encoding utf8 -NoNewline
+        (Get-Content -LiteralPath $raw -Raw) | Should -Match ([regex]::Escape('\\u002F' + $planted))
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @(
+            'https://www.example.test', '-Scrub', '-InformationAction', 'Ignore')
+
+        (Get-Content -LiteralPath (Join-Path $capture 'scrubbed.har') -Raw) | Should -Not -Match $planted
+        $run.Text | Should -Match '(?m)^WARNING: .*1 blunted'
+        $run.Text | Should -Not -Match $planted -Because 'the warning never carries a value'
+    }
+
+    It 'is not thrown off its exit code by a caller that treats native exit codes as errors' {
+        # $PSNativeCommandUseErrorActionPreference is the caller's, and with it
+        # on, the recorder answering 7 -- "produced, with advisory findings" --
+        # became a terminating error: exit 1, no rows, and a catalogue that was
+        # in fact written. Every code this door passes on is a NON-ZERO THAT
+        # MEANS SOMETHING, so the script turns the preference off for itself.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed
+        $door = (New-StubbedGateDoor -Store $script:Store -Verdict 4).Replace("'", "''")
+        $command = "`$PSNativeCommandUseErrorActionPreference = `$true; & '$door' https://www.example.test -Catalogue | Out-Null; exit `$LASTEXITCODE"
+
+        Push-Location -LiteralPath $script:Store.Base
+        try {
+            $out = & $script:Pwsh -NoProfile -Command $command 2>&1
+            $exit = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+
+        $exit | Should -Be 7 -Because ($out | Out-String)
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
+    }
+}
+
+Describe 'the phases run where the capture lives, not where the command was typed' {
+
+    BeforeEach { $script:Store = New-PhaseStore }
+
+    AfterEach { Remove-PhaseStore -Store $script:Store }
+
+    It '-Scrub uses the operator profile beside the capture, from whatever folder it is run in' {
+        # FOUND IN REVIEW, AND THE WORST OF IT. The scrub and the gate find
+        # .har-profile.json -- the operator's own identifiers, and the salt
+        # every pseudonym is derived from -- by walking up from the WORKING
+        # DIRECTORY. Naming a capture by its directory made "from anywhere" a
+        # documented way to run this, so a re-scrub typed in another repository
+        # used THAT repository's profile: the operator's account handle went
+        # back into scrubbed.har, the gate (same wrong profile) passed it, and
+        # the run said "1 clean" and exited 0.
+        $literal = 'zqx-operator-handle-7731'
+        $owner = New-PhaseStore -Literals @{ $literal = '<AccountHandle>' }
+        try {
+            $capture = Add-PhaseCapture -Store $owner -Stamp '2026-01-02-000001' -Body ('{"note":"owner ' + $literal + '"}')
+            (Get-Content -LiteralPath (Join-Path $capture 'raw.har') -Raw) | Should -Match $literal `
+                -Because 'the raw has to carry the identifier, or nothing below is being tested'
+
+            # Typed in the OTHER repository, whose profile maps nothing.
+            $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+            $run.ExitCode | Should -Be 0 -Because $run.Text
+            $scrubbed = Get-Content -LiteralPath (Join-Path $capture 'scrubbed.har') -Raw
+            $scrubbed | Should -Not -Match $literal -Because 'the profile that applies is the one beside the capture'
+            $scrubbed | Should -Match '<AccountHandle>'
+        }
+        finally { Remove-PhaseStore -Store $owner }
+    }
+
+    It '-Catalogue asks the leak gate with the profile beside the capture too' {
+        # The recorder asks the gate again before it derives anything, and the
+        # gate's literal check is only as good as the profile it is handed. A
+        # scrubbed.har that still carries the operator's identifier is refused
+        # by the capture's own profile and waved through by anybody else's.
+        $literal = 'zqx-operator-handle-7731'
+        $owner = New-PhaseStore -Literals @{ $literal = '<AccountHandle>' }
+        try {
+            $capture = Add-PhaseCapture -Store $owner -Stamp '2026-01-02-000001'
+            Write-FixtureHar -Path (Join-Path $capture 'scrubbed.har') -Body ('{"note":"owner ' + $literal + '"}')
+
+            $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Catalogue')
+
+            $run.ExitCode | Should -Be 6 -Because $run.Text
+            Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse `
+                -Because 'no catalogue is derived from a capture the gate refuses'
+        }
+        finally { Remove-PhaseStore -Store $owner }
+    }
+
+    It 'leaves the caller where they were, whether the phase worked or not' {
+        # The phases change directory to run. A command that returned the
+        # operator somewhere else -- on a failure most of all -- would have the
+        # NEXT thing they typed act on the wrong folder.
+        $good = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
+        $bad = Add-PhaseCapture -Store $script:Store -Site 'www.other.test' -Stamp '2026-01-03-000001'
+        Set-Content -LiteralPath (Join-Path $bad 'raw.har') -Value 'NOT-A-HAR' -Encoding utf8
+        $elsewhere = Join-Path $script:Store.Base 'somewhere/else'
+        New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+
+        Push-Location -LiteralPath $elsewhere
+        try {
+            & $script:InvokePs1 -Uri $good -Scrub -Catalogue -InformationAction Ignore | Out-Null
+            $LASTEXITCODE | Should -Be 0
+            (Get-Location).ProviderPath | Should -Be (Get-Item -LiteralPath $elsewhere).FullName
+
+            & $script:InvokePs1 -Uri $bad -Scrub -InformationAction Ignore 3> $null | Out-Null
+            $LASTEXITCODE | Should -Not -Be 0 -Because 'that raw is not a capture at all'
+            (Get-Location).ProviderPath | Should -Be (Get-Item -LiteralPath $elsewhere).FullName
+        }
+        finally { Pop-Location }
+    }
+
+    It 'refuses a capture-shaped directory that is not inside a capture store' {
+        # Remove-HarCapture's guard, shared rather than copied. The walk decides
+        # what a capture is by the files in a directory and anchors to nothing;
+        # the phases have to anchor, because the folder that holds
+        # .har-captures is where they run and where the profile is found. A
+        # stray session.json and raw.har somewhere else have neither.
+        $loose = Join-Path $script:Store.Base 'my-documents/2026-01-02-000001'
+        New-Item -ItemType Directory -Path $loose -Force | Out-Null
+        Write-FixtureHar -Path (Join-Path $loose 'raw.har')
+        Set-Content -LiteralPath (Join-Path $loose 'session.json') -Encoding utf8 -Value (
+            @{ sessionDir = $loose; endedUtc = '2026-01-02T00:05:00.000Z' } | ConvertTo-Json)
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($loose, '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'not inside a capture store'
+        Test-Path -LiteralPath (Join-Path $loose 'scrubbed.har') | Should -BeFalse
+    }
+}
+
+Describe 'a capture its recorder is still working on is left alone' {
+
+    BeforeEach { $script:Store = New-PhaseStore }
+
+    AfterEach { Remove-PhaseStore -Store $script:Store }
+
+    # A recorder writes its process id and start time into session.json as it
+    # begins, `endedUtc` when the recording stops, and `postProcess` only when
+    # its own scrub and catalogue -- the AI pass included -- have finished. In
+    # between, it is writing the very files a phase run would write.
+    #
+    # THE RECORDER HERE IS THIS TEST PROCESS: alive for as long as the run
+    # under test, and older than a `startedUtc` of now, as a real recorder is
+    # older than the session it opens.
+
+    It 'refuses -Scrub while the recording is still going' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -NotEnded `
+            -RecorderId $PID -StartedUtc ([DateTime]::UtcNow.ToString('o'))
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'still in the hands of the recorder'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeFalse
+    }
+
+    It 'refuses -Catalogue while the recorder is still post-processing' {
+        # Ended, scrubbed, and the recorder's own catalogue pass still running:
+        # the window that lasts minutes, and the one a -Catalogue is most
+        # likely to be typed in.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
+            -RecorderId $PID -StartedUtc ([DateTime]::UtcNow.ToString('o'))
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Catalogue')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'still in the hands of the recorder'
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeFalse
+    }
+
+    It 'runs on a capture whose recorder was killed before it finished' {
+        # THE CASE THE FEATURE EXISTS FOR, and the reason the refusal cannot be
+        # "no postProcess in session.json": a recorder killed during its AI
+        # pass leaves exactly that, for good. Its process is gone, so nothing
+        # is being raced.
+        $gone = Start-Process -FilePath $script:Pwsh -ArgumentList '-NoProfile', '-Command', 'exit' -PassThru
+        $gone.WaitForExit()
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
+            -RecorderId $gone.Id -StartedUtc ([DateTime]::UtcNow.ToString('o'))
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Catalogue')
 
         $run.ExitCode | Should -Be 0 -Because $run.Text
-        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
-        $run.Text | Should -Match 'Scrub verdicts: 0 clean, 0 blunted, 1 kept with advisories, 0 refused'
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
+    }
+
+    It 'is not stopped by an unrelated process that inherited the recorder''s process id' {
+        # A process id is reused. The recorder's own liveness test cannot tell
+        # (it says so), and here that would refuse a capture for as long as
+        # some stranger happened to be running. A recorder is older than the
+        # session it opened; a process that started AFTER the recording did is
+        # not that recorder.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed `
+            -RecorderId $PID -StartedUtc '2026-01-01T00:00:00.000Z'
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Catalogue')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
+    }
+
+    It 'runs on a capture whose recorder finished, even while that process is still there' {
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Scrubbed -PostProcessed `
+            -RecorderId $PID -StartedUtc ([DateTime]::UtcNow.ToString('o'))
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Catalogue')
+
+        $run.ExitCode | Should -Be 0 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
     }
 }
 
