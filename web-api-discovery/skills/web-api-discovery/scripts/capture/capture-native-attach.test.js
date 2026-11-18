@@ -117,6 +117,7 @@ const HEADLESS_PRELOAD = path.join(__dirname, 'capture-native-headless.test-supp
 const headlessSpawn = (exe, argv, opts) => spawn(exe,
     argv.filter((a) => a !== 'about:blank').concat(['--headless=new', 'about:blank']), opts);
 const capture = require(captureJs);
+const gates = require(path.join(__dirname, 'capture-start-gates.test-support.js'));
 
 /**
  * `fs.realpathSync` does not expand a Windows 8.3 short name and os.tmpdir()
@@ -183,12 +184,19 @@ function plantOperatorProfile(dir) {
     return file;
 }
 
+// A MACHINE THE CHECK-ONLY START PASSES ON (#25). `--validate-only` exits 1 when
+// a real start would be refused for want of the browser driver, so the cases
+// that ask it how a mode RESOLVES stand on a machine that has one -- a stand-in,
+// reached the way the recorder documents (NODE_PATH), and only for these runs.
+// The cases that really launch a browser use `driverEnv()` and the real driver.
+const passingGates = gates.childEnv(gates.gateVars(tmpRoot));
+
 /** `start --validate-only`: the recorder's own resolution, not a copy of it. */
 function resolveViaRecorder(cwd, args) {
     const r = spawnSync(process.execPath, [
         captureJs, 'start', '--uri', 'https://example.com',
         '--describe', 'native fixture', '--validate-only', ...(args || [])
-    ], { cwd, encoding: 'utf8', windowsHide: true });
+    ], { cwd, encoding: 'utf8', windowsHide: true, env: passingGates });
     return {
         status: r.status,
         stderr: r.stderr || '',

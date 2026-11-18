@@ -26,6 +26,7 @@ const path = require('path');
 
 const capture = require(path.join(__dirname, 'capture-har.js'));
 const { initProtectedRepo } = require(path.join(__dirname, '..', 'har', 'har-test-repo.test-support.js'));
+const gates = require(path.join(__dirname, 'capture-start-gates.test-support.js'));
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-har-test-'));
 
@@ -1379,6 +1380,23 @@ function makeGuardedCheckout(name) {
     return work;
 }
 
+// A MACHINE THE CHECK-ONLY START PASSES ON (#25). `--validate-only` exits 1 when
+// a real start would be refused -- no browser driver, no operator profile -- and
+// the placement cases below are about what the guard SAYS, on a run that is
+// otherwise fine. So each stands on a machine with a stand-in driver and an
+// operator profile in the folder it runs from.
+const passingGates = gates.childEnv(gates.gateVars(path.join(tmpRoot, 'placement-machine')));
+
+/** `start --validate-only` from `cwd`, where no gate would refuse a real start. */
+function checkOnlyFrom(cwd, args) {
+    gates.plantOperatorProfile(cwd);
+    return require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only', ...args],
+        { cwd, encoding: 'utf8', env: passingGates });
+}
+
 test('the placement guard warns before any capture begins', () => {
     // --validate-only never opens a browser and never writes a HAR, so a
     // warning on this run proves the guard sits ahead of the recording rather
@@ -1390,14 +1408,10 @@ test('the placement guard warns before any capture begins', () => {
     // default lands in the gitignored session directory and is no longer a
     // hazard to warn about. This case is still about ORDERING, not placement.
     const work = makeGuardedCheckout('guard-order');
-    const res = require('child_process').spawnSync(
-        process.execPath,
-        [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
-            '--output-path', 'docs/har-reference',
-            // Required since #366; this case is about the guard's ORDERING.
-            '--describe', 'placement-guard fixture'],
-        { cwd: work, encoding: 'utf8' });
+    const res = checkOnlyFrom(work, [
+        '--output-path', 'docs/har-reference',
+        // Required since #366; this case is about the guard's ORDERING.
+        '--describe', 'placement-guard fixture']);
 
     assert.strictEqual(res.status, 0, 'the guard must not turn an advisory into a failure');
     assert.match(res.stderr, /primary checkout/i, 'says what it detected');
@@ -1434,12 +1448,7 @@ test('a default capture cannot strand anything, so it is not warned about (#471)
     // directory and there is nothing to strand. Warning here is what trained
     // the operator to answer yes and keep capturing from the protected branch.
     const work = makeGuardedCheckout('guard-default');
-    const res = require('child_process').spawnSync(
-        process.execPath,
-        [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
-            '--describe', 'default-destination fixture'],
-        { cwd: work, encoding: 'utf8' });
+    const res = checkOnlyFrom(work, ['--describe', 'default-destination fixture']);
 
     assert.strictEqual(res.status, 0);
     assert.doesNotMatch(res.stderr, /primary checkout/i,
@@ -1456,13 +1465,8 @@ test('an explicitly named destination that is gitignored is not warned about (#4
     // destination has nothing to be told.
     const work = makeGuardedCheckout('guard-ignored');
     fs.writeFileSync(path.join(work, '.gitignore'), 'scratch/\n');
-    const res = require('child_process').spawnSync(
-        process.execPath,
-        [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
-            '--output-path', 'scratch',
-            '--describe', 'ignored-destination fixture'],
-        { cwd: work, encoding: 'utf8' });
+    const res = checkOnlyFrom(work, [
+        '--output-path', 'scratch', '--describe', 'ignored-destination fixture']);
 
     assert.strictEqual(res.status, 0);
     assert.doesNotMatch(res.stderr, /primary checkout/i);
@@ -1486,11 +1490,7 @@ test('the placement guard stays silent in a worktree', () => {
         ['worktree', 'add', wt, '-b', 'feat/q'],
         { cwd: work, stdio: ['ignore', 'ignore', 'ignore'] });
 
-    const res = require('child_process').spawnSync(
-        process.execPath,
-        [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only', '--describe', 'worktree-guard fixture'],
-        { cwd: wt, encoding: 'utf8' });
+    const res = checkOnlyFrom(wt, ['--describe', 'worktree-guard fixture']);
 
     assert.strictEqual(res.status, 0);
     assert.doesNotMatch(res.stderr, /primary checkout/i,

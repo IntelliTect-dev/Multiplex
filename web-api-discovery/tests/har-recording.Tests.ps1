@@ -33,6 +33,25 @@ BeforeAll {
     # Every `start` below passes --describe because #366 made it required. The
     # requirement itself is asserted in capture-durability.test.js, not here --
     # these cases are about paths, ports and profiles.
+    #
+    # A MACHINE THE CHECK-ONLY START PASSES ON (#25). `start --validate-only` is
+    # how those cases ask the recorder what it resolved, and since #25 it exits 1
+    # when a real start would be refused -- no browser driver, no operator
+    # profile. A CI runner has neither and a developer machine may have both, so
+    # a check-only start here always stands on the same machine: a stand-in
+    # driver, reached through the variables the recorder already reads, and an
+    # operator profile in the folder it runs from. Nothing else is given them --
+    # the `stop` cases depend on that folder having NO profile.
+    #
+    # The stand-ins come from the same fixture module the Node suites use, so
+    # "a machine the gates pass on" is defined once.
+    $script:GatesRoot = Join-Path ([IO.Path]::GetTempPath()) ("har-rec-gates-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $script:GatesRoot -Force | Out-Null
+    $script:PassingGates = & node -e @'
+const gates = require(process.argv[1]);
+process.stdout.write(JSON.stringify(gates.gateVars(process.argv[2])));
+'@ (Join-Path $script:CaptureDir 'capture-start-gates.test-support.js') $script:GatesRoot | ConvertFrom-Json
+
     function Invoke-CaptureHar {
         param([Parameter(ValueFromRemainingArguments)][string[]]$CaptureArgs)
         Push-Location -LiteralPath $script:Tmp
@@ -40,12 +59,24 @@ BeforeAll {
         # on stdout and human notes on stderr, and a test that merges them
         # cannot assert on either.
         $errFile = [IO.Path]::GetTempFileName()
+        $restore = @{}
         try {
+            if ($CaptureArgs[0] -eq 'start' -and $CaptureArgs -contains '--validate-only') {
+                Set-Content -LiteralPath (Join-Path $script:Tmp '.har-profile.json') -Encoding utf8 `
+                    -Value (@{ salt = 'a' * 48; literals = @{} } | ConvertTo-Json)
+                foreach ($name in 'NODE_PATH', 'PLAYWRIGHT_BROWSERS_PATH') {
+                    $restore[$name] = [Environment]::GetEnvironmentVariable($name)
+                    [Environment]::SetEnvironmentVariable($name, $script:PassingGates.$name)
+                }
+            }
             $out = & node $script:CaptureJs @CaptureArgs 2>$errFile | Out-String
             $code = $LASTEXITCODE
             $err = Get-Content -LiteralPath $errFile -Raw
         }
         finally {
+            foreach ($name in $restore.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $restore[$name])
+            }
             Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
             Pop-Location
         }
@@ -213,6 +244,12 @@ BeforeAll {
         $session | ConvertTo-Json -Depth 8 |
             Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
         return $sessionDir
+    }
+}
+
+AfterAll {
+    if ($script:GatesRoot -and (Test-Path -LiteralPath $script:GatesRoot)) {
+        Remove-Item -LiteralPath $script:GatesRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
