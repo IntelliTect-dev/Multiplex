@@ -112,10 +112,21 @@
     the salt every pseudonym is derived from -- that the recording itself
     scrubbed with, which the recorder writes into session.json
     (scrubProfilePath), and says which file that is. It refuses when that file
-    no longer exists. A capture recorded before the recorder wrote it is
-    scrubbed with the profile found from the store root, and only when it has
-    no scrubbed.har to replace: nothing says that profile made the one there.
-    -Catalogue asks the leak gate with the profile found from the store root.
+    no longer exists. It is the PATH that is recorded, not the content: a
+    re-scrub follows what the file says now, so a literal removed from it or a
+    changed salt changes the result.
+
+    A capture recorded before the recorder wrote that path is NOT SAFE BY
+    DEFAULT. Nothing says which profile its recording used, so -Scrub refuses
+    it while a scrubbed.har or a quarantined, rejected scrub is there -- either
+    was checked against a profile nothing names. With neither, it scrubs with
+    the profile found from the store root and WARNS which file that is: it may
+    not be the recording's own, so check the result for your own identifiers.
+
+    -Catalogue alone asks the leak gate with the profile found from the store
+    root, which may be WEAKER than the one the recording scrubbed with: a
+    literal only the recording's profile maps is not looked for. -Scrub
+    -Catalogue scrubs, and gates, with the recorded profile first.
 
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
@@ -457,6 +468,11 @@
     Refused when the capture has no raw.har, and while the recorder that made
     the capture is still working on it.
 
+    IT SCRUBS WITH THE OPERATOR PROFILE THE RECORDING USED, as its content is
+    NOW: see the description. Refused when that file is gone (copy it back to
+    the path the refusal names), and, for a capture that does not record one,
+    while a scrubbed.har or a quarantined rejected scrub is there.
+
     A CAPTURE WHOSE RECORDER SIGNED IN FOR IT is the exception. The values it
     filled were handed to the scrub at recording time and exist nowhere else,
     so a scrub run now removes them by field name and cannot prove them gone.
@@ -493,6 +509,11 @@
     before it derives anything from it, decides who does the cataloguing as it
     does after a recording, and will not replace a catalogue that already
     carries described actions -- move that file aside to catalogue afresh.
+
+    BY ITSELF IT RE-CHECKS WITH THE STORE ROOT'S OPERATOR PROFILE, which may
+    be weaker than the one the recording scrubbed with: a literal only the
+    recording's profile maps is not looked for. -Scrub -Catalogue scrubs, and
+    gates, with the recorded profile first.
 
     Refused, by itself, on a capture with no scrubbed.har -- one that was never
     scrubbed, or whose only scrub the gate rejected -- and while the recorder
@@ -1158,8 +1179,13 @@ function Get-HarCapturePhaseBlocker {
         here may not be it; replacing it could swap a verified scrub for one
         that carries the operator's identifiers. Moving scrubbed.har aside is
         the way through, as for a capture that signed in.
-      * Not recorded and nothing to replace: no blocker. The scrub uses the
-        profile found from the store root, as before, and the run says so.
+      * Not recorded and a quarantined, REJECTED scrub is there: refused on
+        the same terms (#24 I1). The gate that rejected it may have had a
+        profile the store root's is not; a re-scrub gated with the root's
+        could pass what that gate refused, and override the rejection.
+      * Not recorded and nothing there at all: no blocker. The scrub uses the
+        profile found from the store root, as before, and WARNS which file
+        that is -- nothing says it is the recording's own.
 #>
 function Get-HarScrubProfileBlocker {
     [CmdletBinding()]
@@ -1175,15 +1201,31 @@ function Get-HarScrubProfileBlocker {
                 "Invoke-HarCapture: $label was scrubbed with the operator profile $($Fact.ScrubProfilePath),"
                 '  which no longer exists. A scrub with any other profile could put back identifiers that'
                 '  one replaced -- and its leak gate, given the same other profile, would pass them.'
-                '  Nothing was run. Put that profile back where it was and run this again.') }
+                '  Nothing was run. The usual cause is a recording made in a linked worktree that has'
+                '  since been removed, taking its gitignored profile with it.'
+                "  To go on, copy the profile back to $($Fact.ScrubProfilePath) and run this again.") }
     }
-    if (-not $Capture.scrubbed) { return $null }
-    return [pscustomobject]@{ Code = 3; Line = @(
-            "Invoke-HarCapture: $label does not record which operator profile its recording scrubbed with,"
-            '  and already has a scrubbed.har. It was recorded before the recorder said so, and the'
+    # A QUARANTINED, REJECTED SCRUB counts as much as a scrubbed.har (#24 I1):
+    # it was gated with a profile nothing names, and a re-scrub with the store
+    # root's -- gated with that same profile -- could pass what it refused.
+    if (-not ($Capture.scrubbed -or $Capture.rejected)) { return $null }
+    $what = if ($Capture.scrubbed) {
+        @('  and already has a scrubbed.har. It was recorded before the recorder said so, and the'
             '  profile found from the store root may not be the one that made that file: scrubbing with'
             '  it could replace a verified scrub with one that carries your identifiers. Nothing was run.'
-            '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.') }
+            '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.')
+    }
+    else {
+        @('  and a scrub of it was REJECTED by the leak gate. It was recorded before the recorder said'
+            '  so, and the gate that rejected it may have had a profile the store root does not: a'
+            '  scrub with the store root''s could pass -- and call scrubbed.har -- what that gate'
+            '  refused. Nothing was run. Triage the quarantined scrub and its findings beside the raw'
+            '  first. To scrub again anyway, move the quarantined scrubbed.rejected file aside (rename'
+            '  it) and run this again.')
+    }
+    return [pscustomobject]@{ Code = 3; Line = @(
+            "Invoke-HarCapture: $label does not record which operator profile its recording scrubbed with,"
+            $what) }
 }
 
 <#
@@ -1514,8 +1556,21 @@ if ($reentering) {
             Write-Information "  scrubbing with the operator profile $($fact.ScrubProfilePath), the one its recording used"
         }
         else {
-            Write-Information ("  this capture does not record which operator profile its recording scrubbed with; " +
-                "scrubbing with the one found from $storeRoot")
+            # On the WARNING stream (#24 I1): nothing says the store root's
+            # profile is the recording's, so this is something to check, not a
+            # status line that silencing status may drop. The file is named as
+            # the scrub will find it -- the nearest at or above the store root,
+            # which is where the scrub runs from (see Push-Location below).
+            $rootProfile = $null
+            for ($dir = $storeRoot; $dir; $dir = [System.IO.Path]::GetDirectoryName($dir)) {
+                $candidate = [System.IO.Path]::Combine($dir, '.har-profile.json')
+                if ([System.IO.File]::Exists($candidate)) { $rootProfile = $candidate; break }
+            }
+            $profileName = if ($rootProfile) { "the operator profile $rootProfile" }
+            else { "whichever operator profile is found from $storeRoot (none was found there)" }
+            Write-Warning ("$label does not record which operator profile its recording scrubbed with; " +
+                "scrubbing with $profileName, which may not be the recording's own -- " +
+                'check the result for your own identifiers before sharing it.')
         }
 
         Push-Location -LiteralPath $storeRoot

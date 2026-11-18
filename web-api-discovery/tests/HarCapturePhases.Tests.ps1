@@ -1428,7 +1428,10 @@ Describe 'a re-scrub uses the operator profile the recording scrubbed with (#24 
 
         $run.ExitCode | Should -Be 3 -Because $run.Text
         $run.Text | Should -Match 'no longer exists'
-        $run.Text | Should -Match ([regex]::Escape($script:SubProfile))
+        # Said as the thing to DO, with the path in it (#24 S2): the operator
+        # reading this needs the remedy, not an inference from the diagnosis.
+        $run.Text | Should -Match ('copy the profile back to\s+' + [regex]::Escape($script:SubProfile))
+        $run.Text | Should -Match 'worktree' -Because 'a recording made in a removed worktree is the usual cause'
         (Get-FileHash -LiteralPath (Join-Path $capture 'scrubbed.har')).Hash | Should -Be $before
     }
 
@@ -1453,6 +1456,56 @@ Describe 'a re-scrub uses the operator profile the recording scrubbed with (#24 
         $run.ExitCode | Should -Be 0 -Because $run.Text
         Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue
         $run.Text | Should -Match 'does not record which operator profile'
+    }
+
+    It 'refuses to scrub such a capture over a quarantined, rejected scrub (#24 I1, X2)' {
+        # The quarantined scrub was gated with a profile nothing names -- maybe
+        # the subfolder's, which maps the id. Re-scrubbed with the store root's
+        # (which maps nothing) the id survives, that gate (same profile) passes
+        # it, and the rejection is overridden by a "clean" scrubbed.har.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Rejected -NoProfileRecord `
+            -Body ('{"account":"' + $script:Literal + '"}')
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+        $run.ExitCode | Should -Be 3 -Because $run.Text
+        $run.Text | Should -Match 'does not record which operator profile'
+        $run.Text | Should -Match 'scrubbed\.rejected' -Because 'it says what to move aside to go on'
+        Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeFalse
+    }
+
+    It 'warns, naming the profile, when it scrubs such a capture for the first time (#24 I1, X1)' {
+        # Nothing says the store root's profile is the recording's. That is
+        # something to check, not a status line -- so it is on the WARNING
+        # stream, which silencing the status lines does not reach.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -NoProfileRecord `
+            -Body ('{"account":"' + $script:Literal + '"}')
+
+        $run = Invoke-PhaseDoorInProcess -Store $script:Store -Arguments @{ Uri = $capture; Scrub = $true }
+
+        $run.ExitCode | Should -Be 0 -Because ($run.Information + $run.Warning)
+        $run.Warning | Should -Match ([regex]::Escape((Join-Path $script:Store.Base '.har-profile.json')))
+        $run.Warning | Should -Match 'check the result for your own identifiers'
+    }
+
+    It 'scrubs such a capture with the store root''s profile, not the caller''s folder''s (#24 S5)' {
+        # The store root's profile maps the id; the folder the command is typed
+        # in has one that maps nothing. With no recorded path the scrub finds
+        # its profile from its working directory, so it has to RUN from the
+        # store root.
+        $owner = New-PhaseStore -Literals @{ $script:Literal = '<AccountId>' }
+        try {
+            $capture = Add-PhaseCapture -Store $owner -Stamp '2026-01-02-000001' -NoProfileRecord `
+                -Body ('{"account":"' + $script:Literal + '"}')
+
+            $run = Invoke-PhaseDoor -Store $script:Store -Arguments @($capture, '-Scrub')
+
+            $run.ExitCode | Should -Be 0 -Because $run.Text
+            $scrubbed = Get-Content -LiteralPath (Join-Path $capture 'scrubbed.har') -Raw
+            $scrubbed | Should -Not -Match $script:Literal -Because 'the profile that applies is the store root''s'
+            $scrubbed | Should -Match '<AccountId>'
+        }
+        finally { Remove-PhaseStore -Store $owner }
     }
 }
 
