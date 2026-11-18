@@ -5,8 +5,8 @@
 // ## The incident
 //
 // `capture-har.js start` could only record in a browser it launched with
-// Playwright, and Playwright's launch is DETECTABLE. On a protected site that
-// ends the recording before it starts. Measured against car-rental sites, by
+// Playwright, and Playwright's launch is a TEST-AUTOMATION launch, which some
+// sites decline to serve -- ending the recording before it starts. Measured against car-rental sites, by
 // hand, with nothing automated driving them:
 //
 //   Hertz          Imperva      403 "Access denied, Error 15" on the FIRST page
@@ -451,6 +451,12 @@ test('N7: the banner says whose browser it is and what stopping will do', () => 
         requestedPort: 9333, profileDir: 'p', harPath: 'r', outputPath: 'o'
     });
     assert.match(native, /no automation flags/i);
+    // #42: the native launch is an ordinary browser a person can watch and
+    // take over -- said as what it is, not as what bot protection will "see".
+    assert.match(native, /ordinary Chrome/i);
+    assert.match(native, /take over/i);
+    assert.doesNotMatch(native, /bot protection/i,
+        'the banner describes the browser, not what it gets past');
     assert.match(native, /leaves it running/i,
         'every other mode ends with the browser gone, so a window that stays open reads ' +
         'as a leak unless it was announced as the contract');

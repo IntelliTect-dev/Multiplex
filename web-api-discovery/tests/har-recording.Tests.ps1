@@ -700,8 +700,8 @@ Describe 'Invoke-HarCapture.ps1' {
         #
         # Back to eight with #73, and the two additions are WHO LAUNCHES THE
         # BROWSER -- which is not a preference this front door could infer.
-        # Playwright's launch is detectable and protected sites refuse it
-        # outright (Imperva, Akamai, DataDome and PerimeterX, measured), so
+        # Playwright's launch is a test-automation launch and some sites refuse
+        # it outright (Imperva, Akamai, DataDome and PerimeterX, measured), so
         # `-Browser Native` records in an ordinary Chrome and `-Attach` records
         # in one that is already running. Neither could be folded into an
         # existing parameter: -Profile names an identity rather than a launch
@@ -1315,6 +1315,32 @@ Describe 'An AI can be told to drive the recording (#98)' {
         $drive | Should -Match '(?i)payment page'
         $drive | Should -Match '(?i)bot check'
         (Get-Content -LiteralPath $checklistMd -Raw) | Should -Match '(?i)error cases'
+    }
+
+    It 'recommends a browser setup for what it is, never for getting past a named bot-protection vendor (#42)' {
+        # The line is: polite, human-pace recording that honours throttling is in;
+        # hiding automation from bot detection is out. A setup recommended because
+        # it "passed" Imperva or DataDome reads as the second thing, so the skill,
+        # the agent's prompt and the recorder describe the native launch as what
+        # it is -- an ordinary browser a person can watch and take over, with no
+        # automation flags -- and any challenge as the person's to answer.
+        # Naming a vendor to RECOGNISE its block page and hand over stays.
+        $captureDir = Split-Path -Parent $script:PromptMd
+        $docs = @(
+            @{ Name = 'SKILL.md'; Text = (Get-Content -LiteralPath $script:SkillMd -Raw) }
+            @{ Name = 'drive-prompt.md'; Text = (Get-Content -LiteralPath (Join-Path $captureDir 'drive-prompt.md') -Raw) }
+            @{ Name = 'capture-har.js'; Text = (Get-Content -LiteralPath (Join-Path $captureDir 'capture-har.js') -Raw) }
+            @{ Name = 'Invoke-HarCapture.ps1'; Text = (Get-Content -LiteralPath $script:InvokePs1 -Raw) }
+        )
+        $vendor = '(Imperva|Incapsula|Akamai|DataDome|PerimeterX|HUMAN Security|Cloudflare|Kasada)'
+        $passed = '(passed|got past|gets past|get past|was not challenged|setup that was)'
+        foreach ($doc in $docs) {
+            $doc.Text | Should -Not -Match "(?is)$vendor.{0,200}?\b$passed\b|\b$passed\b.{0,200}?$vendor" -Because (
+                "$($doc.Name) must not recommend a setup because it got past a named bot-protection vendor")
+            $doc.Text | Should -Not -Match '(?i)protection\s+answers\s+the\s+marking|marks\s+(that\s+)?(this\s+mode|the\s+native\s+launch)\s+exists?\s+to\s+avoid|exists\s+to\s+avoid\)|with\s+bot\s+protection\s+sees' -Because (
+                "$($doc.Name) must describe the native launch as an ordinary browser, not as avoiding what bot protection answers")
+        }
+        (Get-Content -LiteralPath $script:SkillMd -Raw) | Should -Match '(?i)ordinary\s+Chrome\s+a\s+person\s+would\s+(have\s+)?use' -Because 'the native launch is framed as the Chrome a person would use anyway'
     }
 }
 
