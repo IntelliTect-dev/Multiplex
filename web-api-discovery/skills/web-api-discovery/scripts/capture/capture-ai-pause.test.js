@@ -243,10 +243,11 @@ test('I5: THE OWNER\'S CASE -- a bot check, the live view on the phone, and the 
             events.setEncoding('utf8');
             events.on('data', (d) => { streamed += d; });
             // SINGLE-USE: the phone opened the link, so it is spent. Anyone else
-            // holding it -- this transcript, a log -- gets a bare 404, and a
+            // holding it -- this transcript, a log -- is told only that, and a
             // cookie the server never issued is nobody.
             const other = await phoneRequest(link);
-            assert.strictEqual(other.status, 404, 'a second holder of the link gets nothing');
+            assert.strictEqual(other.status, 410, 'a second holder of the link gets nothing of the view');
+            assert.match(other.body, /This link was already opened on another device\./);
             assert.ok(!other.headers['set-cookie'], 'and no cookie');
             const intruder = await phoneRequest(link + 'events', { stream: true,
                 headers: { cookie: `hm=${'A'.repeat(43)}` } });
