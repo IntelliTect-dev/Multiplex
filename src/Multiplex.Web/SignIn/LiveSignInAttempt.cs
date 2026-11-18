@@ -385,22 +385,15 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
 
     private async Task DecideAsync(ICDPSession session, System.Text.Json.JsonElement paused)
     {
-        string? requestId = null;
         try
         {
-            requestId = paused.GetProperty("requestId").GetString()!;
-            var url = paused.GetProperty("request").GetProperty("url").GetString() ?? "";
-            if (!IsAllowed(url) && paused.TryGetProperty("frameId", out var frame) && await IsTopLevelFrameAsync(session, frame.GetString()))
-            {
-                await session.SendAsync("Fetch.failRequest", new Dictionary<string, object>
-                {
-                    ["requestId"] = requestId,
-                    ["errorReason"] = "BlockedByClient",
-                });
-                await NotifyBlockedAsync(url);
-                return;
-            }
-            await session.SendAsync("Fetch.continueRequest", new Dictionary<string, object> { ["requestId"] = requestId });
+            var decision = await NavigationLock.DecideAsync(paused, Definition.AllowedNavigationHosts,
+                frameId => IsTopLevelFrameAsync(session, frameId),
+                (method, args) => session.SendAsync(method, args));
+            if (decision.Outcome == PausedRequestOutcome.Blocked)
+                await NotifyBlockedAsync(decision.Url);
+            else if (decision.Outcome == PausedRequestOutcome.FailedClosed)
+                _services.Logger.LogDebug("Navigation lock on {Site} refused a request it could not judge: {Error}", Slug, decision.Error?.GetType().Name);
         }
         catch (Exception ex)
         {
@@ -429,10 +422,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         DeviceScaleFactor = _services.Options.DeviceScaleFactor,
     };
 
-    private bool IsAllowed(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri)
-        && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
-        && Definition.AllowedNavigationHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase);
+    private bool IsAllowed(string url) => NavigationLock.IsAllowed(url, Definition.AllowedNavigationHosts);
 
     /// <summary>
     /// Second line of the navigation lock: a tab whose navigation was refused (it shows Chrome's
@@ -443,8 +433,9 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     {
         try
         {
-            if (url is "" or "about:blank") return;
-            if (url.StartsWith("chrome-error:", StringComparison.Ordinal))
+            var action = NavigationLock.AfterNavigation(url, Definition.AllowedNavigationHosts);
+            if (action == CommittedPageAction.Ignore) return;
+            if (action == CommittedPageAction.ErrorPage)
             {
                 if (page != _mainPage)
                 {
@@ -461,7 +452,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
                 }
                 return;
             }
-            if (!IsAllowed(url) && (url.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https:", StringComparison.OrdinalIgnoreCase)))
+            if (action == CommittedPageAction.Blocked)
             {
                 await NotifyBlockedAsync(url);
                 if (page == _mainPage)
