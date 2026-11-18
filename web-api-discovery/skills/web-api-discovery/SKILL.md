@@ -2147,17 +2147,25 @@ supplies nothing. Every parameter is optional either way.
     ordinary word. `run-agent.js` writes the scrubbed capture to
     `.run-agent/scrubbed.har` and the tables to `.run-agent/.har-captures/`,
     and the generator looks for `.har-substitutions.json` and
-    `.substitutions.json` in `.har-captures/` beside each `--har`, and beside
-    the capture itself. It reads the replacement values only, never the keys.
-    **Run the generator through `run-agent.js`**, or keep the tables beside the
-    scrubbed capture, or a marker-less fake is taken for a constant.
+    `.substitutions.json` in `.har-captures/` beside each `--har` (and, for a
+    capture that already lives inside the gitignored store, beside the capture
+    itself). It reads the replacement values only, never the keys.
+    **Run the generator through `run-agent.js`.** Run on its own, it needs the
+    tables in a `.har-captures/` folder beside the scrubbed capture, or a
+    marker-less fake is taken for a constant. Never copy a table anywhere
+    else: its keys are the plaintext values the scrub removed, and
+    `.har-captures/` is the name the scaffolded `.gitignore` keeps out of git.
 - **A per-request timestamp or nonce is never baked in**: a 10- or 13-digit
   number within a day of its own call's `startedDateTime` (this is what
   catches a cache-buster such as `_=<milliseconds>` on an endpoint captured
   once); a digit run of 10 or more, or an opaque token of 16 or more
   characters, that differs on every call; or a long number under a
   conventional cache-buster name (`_`, `ts`, `nocache`, `rnd`, ...).
-  `page=1,2,3` and `offset=0,20,40` are short: they are `varying`.
+  `page=1,2,3` and `offset=0,20,40` are short: they are `varying`. A long
+  value that differs on every call may equally be an id or a cursor the
+  caller has to choose, so its description says only what was observed --
+  "a different long number or token on every call" -- and does not call it
+  noise.
 - **A constant opaque token IS baked in.** A token that did not change across
   the captured calls is a constant by this rule; the scrub, not the generator,
   decides what is a credential. Read the generated README's table; if a default
