@@ -456,8 +456,14 @@ public sealed class PacingHandler : DelegatingHandler
         @"window\._cf_chl_opt\b|/cdn-cgi/challenge-platform/(?:h/[a-z]/)?orchestrate/|<title>\s*just a moment\.\.\.\s*</title>",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    /// <summary>A challenge page is a few kilobytes; a 503 body larger than this is not read.</summary>
-    private const long ChallengeBodyMax = 64 * 1024;
+    // DataDome's answer to a refused API call, in any content type: JSON naming
+    // its CAPTCHA. The same reading as the capture side (pacing.js).
+    private static readonly System.Text.RegularExpressions.Regex s_dataDomeBlock = new(
+        @"""url""\s*:\s*""https?://geo\.captcha-delivery\.com/(?:captcha|interstitial)/",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>A block or challenge body is a few kilobytes; a refusal's body larger than this is not read.</summary>
+    private const int ChallengeBodyMax = 64 * 1024;
 
     /// <summary>What refused the request, when it was the site's edge rather than the site; otherwise null.</summary>
     private static async Task<string?> RefusalAsync(HttpResponseMessage response, CancellationToken ct)
@@ -472,38 +478,120 @@ public sealed class PacingHandler : DelegatingHandler
         var server = string.Join(" ", response.Headers.Server.Select(p => p.ToString()));
         if (response.StatusCode == HttpStatusCode.Forbidden)
         {
-            // DataDome sets x-datadome on its own refusals, and answers an API
-            // call in JSON: the content type is not what decides.
-            if (response.Headers.Contains("x-datadome")) return "a DataDome block";
             var fromEdge = s_edgeHeaders.Any(h => response.Headers.Contains(h)) ||
                 System.Text.RegularExpressions.Regex.IsMatch(server,
                     "cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return html && fromEdge ? "an HTML 403 from the site's CDN" : null;
+            if (html && fromEdge) return "an HTML 403 from the site's CDN";
+            // DataDome answers a refused API call in JSON naming its CAPTCHA. The
+            // BODY says so, never its header: x-datadome is on every response of
+            // a site behind it, the application's own 403s included.
+            return await SmallBodyAsync(response, ct).ConfigureAwait(false) is { } body && s_dataDomeBlock.IsMatch(body)
+                ? "a DataDome block"
+                : null;
         }
         // A 503 is the site being unavailable -- waited out and retried -- unless
         // it is Cloudflare's "Just a moment..." challenge, which is never retried.
-        if (response.StatusCode == HttpStatusCode.ServiceUnavailable && html && response.Content is { } content &&
+        if (response.StatusCode == HttpStatusCode.ServiceUnavailable && html &&
             (server.Contains("cloudflare", StringComparison.OrdinalIgnoreCase) || response.Headers.Contains("cf-ray")) &&
-            !(content.Headers.ContentLength > ChallengeBodyMax))
+            await SmallBodyAsync(response, ct).ConfigureAwait(false) is { } page && s_cloudflareChallenge.IsMatch(page))
         {
-            try
-            {
-                // Buffered up to the bound and no further: a body with no
-                // Content-Length that runs past it throws here, and is not a
-                // challenge page.
-                await content.LoadIntoBufferAsync(ChallengeBodyMax, ct).ConfigureAwait(false);
-                var body = await content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                if (s_cloudflareChallenge.IsMatch(body))
-                {
-                    return "a Cloudflare challenge page";
-                }
-            }
-            catch (Exception e) when (e is HttpRequestException or IOException)
-            {
-                // Too large, or unreadable: judged as the 503 it says it is.
-            }
+            return "a Cloudflare challenge page";
         }
         return null;
+    }
+
+    /// <summary>
+    /// The body as text when it is at most <see cref="ChallengeBodyMax"/> bytes; otherwise, or when it cannot
+    /// be read, null. Reads no more than one byte past the bound, and the body stays the caller's either way:
+    /// one past the bound with no Content-Length is put back whole, what was read followed by the rest.
+    /// </summary>
+    private static async Task<string?> SmallBodyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var content = response.Content;
+        if (content is null || content.Headers.ContentLength > ChallengeBodyMax) return null;
+        try
+        {
+            if (content.Headers.ContentLength is not null)
+            {
+                // Within the bound: buffered, so the caller reads it again.
+                await content.LoadIntoBufferAsync(ChallengeBodyMax, ct).ConfigureAwait(false);
+                return await content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            }
+            var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            var head = new byte[ChallengeBodyMax + 1];
+            var read = 0;
+            for (int n; read < head.Length && (n = await stream.ReadAsync(head.AsMemory(read), ct).ConfigureAwait(false)) > 0;)
+            {
+                read += n;
+            }
+            var small = read <= ChallengeBodyMax;
+            HttpContent replay = small ? new ByteArrayContent(head, 0, read) : new StreamContent(new ReplayStream(head, stream));
+            foreach (var header in content.Headers) replay.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            response.Content = replay;
+            // The whole body is in hand, so the original can go; past the bound
+            // the replay owns its stream, and disposing the original would close it.
+            if (small) content.Dispose();
+            return small ? await replay.ReadAsStringAsync(ct).ConfigureAwait(false) : null;
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException)
+        {
+            // Unreadable: judged as the status it says it is.
+            return null;
+        }
+    }
+
+    /// <summary>A body read past the bound, put back: the bytes already read, then the rest of the stream.</summary>
+    private sealed class ReplayStream : Stream
+    {
+        private readonly byte[] _head;
+        private readonly Stream _rest;
+        private int _position;
+
+        public ReplayStream(byte[] head, Stream rest)
+        {
+            _head = head;
+            _rest = rest;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            if (_position >= _head.Length) return _rest.Read(buffer);
+            var n = Math.Min(buffer.Length, _head.Length - _position);
+            _head.AsSpan(_position, n).CopyTo(buffer);
+            _position += n;
+            return n;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_position >= _head.Length) return _rest.ReadAsync(buffer, cancellationToken);
+            var n = Math.Min(buffer.Length, _head.Length - _position);
+            _head.AsMemory(_position, n).CopyTo(buffer);
+            _position += n;
+            return ValueTask.FromResult(n);
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _rest.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     private static {{ProjectName}}ThrottledException Throttled(

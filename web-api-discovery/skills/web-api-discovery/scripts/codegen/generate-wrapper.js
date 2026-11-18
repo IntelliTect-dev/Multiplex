@@ -947,7 +947,7 @@ function pacingReadmeSection(opts) {
         'jitter when the site names no wait. Only idempotent methods are retried, and by default only',
         '`GET` and `HEAD`; `POST` and `PATCH` are never retried. When retries run out, or the site asks for',
         'a longer wait than 60 s, the call fails with `' + opts.projectName + 'ThrottledException` carrying what the site asked for.',
-        'A block -- an HTML `403` from the site\'s CDN, a `403` carrying `x-datadome`, or a bot challenge,',
+        'A block -- an HTML `403` from the site\'s CDN, a `403` whose body is DataDome\'s block (not its `x-datadome` header alone), or a bot challenge,',
         'Cloudflare\'s "Just a moment..." served as a `503` included -- is never retried and nothing',
         'works around it: it fails with `' + opts.projectName + 'BlockedException`.',
         '',
