@@ -54,36 +54,6 @@ function Get-MultiplexRootProblem {
     return $null
 }
 
-function ConvertTo-MultiplexAccountList {
-    <#
-    Account emails for the allowlist: trimmed, lower-cased, de-duplicated and sorted. Accepts
-    separate values or one comma/semicolon separated value, because `pwsh -File script.ps1
-    -AllowedAccount a,b` passes "a,b" as a single string rather than an array.
-    #>
-    [CmdletBinding()] [OutputType([string[]])] param([string[]] $Account)
-    @($Account | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim().ToLowerInvariant() } |
-        Where-Object { $_ } | Sort-Object -Unique)
-}
-
-function Get-MultiplexAllowlistChange {
-    <#
-    What replacing the allowlist with -Current does, so the installer can say it: the accounts
-    allowed afterwards and the ones that are no longer allowed. Both lists are normalised as
-    ConvertTo-MultiplexAccountList does, so case and spacing are not reported as changes.
-    #>
-    [CmdletBinding()]
-    param([AllowEmptyCollection()] [string[]] $Previous = @(), [AllowEmptyCollection()] [string[]] $Current = @())
-    $before = @(ConvertTo-MultiplexAccountList -Account $Previous)
-    $after = @(ConvertTo-MultiplexAccountList -Account $Current)
-    $removed = @($before | Where-Object { $_ -notin $after })
-    [pscustomobject]@{
-        Allowed       = $after
-        Removed       = $removed
-        Summary       = "TripIt accounts allowed to connect: $(if ($after) { $after -join ', ' } else { '(none)' })"
-        RemovedNotice = if ($removed) { "No longer allowed to connect: $($removed -join ', ')" } else { $null }
-    }
-}
-
 function New-MultiplexPasscode {
     <# A random passcode that is easy to type on a phone: 4 groups of 4 lowercase letters/digits. #>
     [CmdletBinding()] [OutputType([string])] param()
@@ -137,11 +107,9 @@ function Read-MultiplexPasscodeSecret {
 function Read-MultiplexConfig {
     [CmdletBinding()] param([Parameter(Mandatory)] [string] $Path)
     if (-not (Test-Path -LiteralPath $Path)) {
-        return [ordered]@{ Port = 5190; PublicBaseUrl = $null; Tunnel = 'None'; PasscodeHash = $null; AllowedAccounts = [ordered]@{ tripit = @() } }
+        return [ordered]@{ Port = 5190; PublicBaseUrl = $null; Tunnel = 'None'; PasscodeHash = $null }
     }
-    $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
-    if (-not $json.Contains('AllowedAccounts')) { $json.AllowedAccounts = @{ tripit = @() } }
-    return $json
+    return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
 }
 
 function Write-MultiplexConfig {
@@ -156,10 +124,13 @@ function Write-MultiplexConfig {
 }
 
 function Get-MultiplexServerEnvironment {
-    <# The environment variables Start-Multiplex.ps1 sets before launching the server. #>
+    <#
+    The environment variables Start-Multiplex.ps1 sets before launching the server. An account
+    list left in the configuration by an earlier install is not passed on: there is none any more.
+    #>
     [CmdletBinding()] [OutputType([System.Collections.Specialized.OrderedDictionary])]
     param([Parameter(Mandatory)] [System.Collections.IDictionary] $Config, [Parameter(Mandatory)] [string] $Root)
-    $envVars = [ordered]@{
+    return [ordered]@{
         ASPNETCORE_ENVIRONMENT        = 'Production'
         # "localhost" makes Kestrel listen on both 127.0.0.1 and ::1; binding only 127.0.0.1 costs
         # every client that resolves localhost to ::1 first a ~2 s connection retry.
@@ -168,14 +139,6 @@ function Get-MultiplexServerEnvironment {
         Multiplex__PublicBaseUrl      = ($Config.PublicBaseUrl ?? "http://localhost:$($Config.Port)").TrimEnd('/')
         Multiplex__Gate__PasscodeHash = $Config.PasscodeHash
     }
-    foreach ($site in $Config.AllowedAccounts.Keys) {
-        $i = 0
-        foreach ($account in @($Config.AllowedAccounts[$site])) {
-            $envVars["Multiplex__Sites__${site}__AllowedAccounts__$i"] = $account
-            $i++
-        }
-    }
-    return $envVars
 }
 
 function Set-ClaudeDesktopBridge {

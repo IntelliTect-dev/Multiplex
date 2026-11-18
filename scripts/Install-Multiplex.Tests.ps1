@@ -53,12 +53,9 @@ Describe 'configuration' {
         $c = Read-MultiplexConfig -Path $path
         $c.PublicBaseUrl = 'https://box.example.ts.net/'
         $c.PasscodeHash = 'pbkdf2-sha256$1$a$b'
-        $c.AllowedAccounts.tripit = @('a@example.com', 'b@example.com')
         Write-MultiplexConfig -Config $c -Path $path
         $env = Get-MultiplexServerEnvironment -Config (Read-MultiplexConfig -Path $path) -Root 'C:\M'
         $env['Multiplex__PublicBaseUrl'] | Should -Be 'https://box.example.ts.net'
-        $env['Multiplex__Sites__tripit__AllowedAccounts__0'] | Should -Be 'a@example.com'
-        $env['Multiplex__Sites__tripit__AllowedAccounts__1'] | Should -Be 'b@example.com'
         $env['Multiplex__Gate__PasscodeHash'] | Should -Be 'pbkdf2-sha256$1$a$b'
         $env['ASPNETCORE_URLS'] | Should -Be 'http://localhost:5190'
         $env['Multiplex__DataPath'] | Should -Be (Join-Path 'C:\M' 'data')
@@ -425,38 +422,55 @@ Describe 'install folder' {
     }
 }
 
-Describe 'allowed accounts' {
-    It 'splits one comma- or semicolon-separated value, as pwsh -File passes it' {
-        ConvertTo-MultiplexAccountList -Account 'tripit-test@example.com,Owner@Example.com' |
-            Should -Be @('owner@example.com', 'tripit-test@example.com')
-        ConvertTo-MultiplexAccountList -Account 'a@example.com; b@example.com' |
-            Should -Be @('a@example.com', 'b@example.com')
+Describe 'no TripIt account list' {
+    # Each connection added in Claude or ChatGPT is bound to the TripIt account signed in while it
+    # is added, behind the passcode, so the installer neither needs nor asks for an account.
+    BeforeAll {
+        # The real installer in its own process, into a throwaway folder: -WhatIf skips the publish,
+        # the passcode file and the configuration write; -NoScheduledTask and -NoStart leave the
+        # logon task and any running server alone.
+        function Invoke-Install([string] $Root) {
+            $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'Install-Multiplex.ps1') `
+                -Root $Root -NoScheduledTask -NoStart -WhatIf *>&1 | Out-String
+            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+        }
     }
 
-    It 'accepts separate values, trims, lower-cases and removes duplicates and blanks' {
-        ConvertTo-MultiplexAccountList -Account ' B@example.com ', 'a@example.com,', 'b@example.com' |
-            Should -Be @('a@example.com', 'b@example.com')
+    It 'the installer has no -AllowedAccount parameter' {
+        (Get-Command (Join-Path $PSScriptRoot 'Install-Multiplex.ps1')).Parameters.Keys | Should -Not -Contain 'AllowedAccount'
     }
 
-    It 'says which accounts a new -AllowedAccount list removes, and lists the result' {
-        $change = Get-MultiplexAllowlistChange -Previous 'a@example.com', 'B@example.com' -Current 'b@example.com,c@example.com'
-        $change.Allowed | Should -Be @('b@example.com', 'c@example.com')
-        $change.Removed | Should -Be @('a@example.com')
-        $change.Summary | Should -Be 'TripIt accounts allowed to connect: b@example.com, c@example.com'
-        $change.RemovedNotice | Should -Be 'No longer allowed to connect: a@example.com'
+    It 'installs without being given a TripIt account' {
+        $result = Invoke-Install -Root (Join-Path $TestDrive "fresh-$([guid]::NewGuid().ToString('N'))")
+        $result.Output | Should -Not -Match 'AllowedAccount'
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match 'Connector address'
     }
 
-    It 'reports no removal when only case or spacing differs' {
-        $change = Get-MultiplexAllowlistChange -Previous ' A@Example.com ' -Current 'a@example.com'
-        $change.Removed | Should -BeNullOrEmpty
-        $change.RemovedNotice | Should -BeNullOrEmpty
-        $change.Summary | Should -Be 'TripIt accounts allowed to connect: a@example.com'
+    It 'still installs over a configuration that has an account list, and says the list is no longer used' {
+        $root = Join-Path $TestDrive "old-$([guid]::NewGuid().ToString('N'))"
+        $path = Join-Path $root 'multiplex.config.json'
+        $old = Read-MultiplexConfig -Path $path
+        $old.AllowedAccounts = [ordered]@{ tripit = @('owner@example.com') }
+        Write-MultiplexConfig -Config $old -Path $path
+
+        $result = Invoke-Install -Root $root
+
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match 'TripIt account list.*no longer used'
+        $result.Output | Should -Match 'Connector address'
     }
 
-    It 'handles a first install with no earlier list' {
-        $change = Get-MultiplexAllowlistChange -Previous @() -Current 'a@example.com'
-        $change.Removed | Should -BeNullOrEmpty
-        $change.Summary | Should -Be 'TripIt accounts allowed to connect: a@example.com'
+    It 'never passes an old account list to the server' {
+        $c = Read-MultiplexConfig -Path (Join-Path $TestDrive 'old-list.json')
+        $c.AllowedAccounts = [ordered]@{ tripit = @('a@example.com', 'b@example.com') }
+        $env = Get-MultiplexServerEnvironment -Config $c -Root 'C:\M'
+        @($env.Keys | Where-Object { $_ -match 'AllowedAccounts' }) | Should -BeNullOrEmpty
+        $env['ASPNETCORE_URLS'] | Should -Be 'http://localhost:5190'
+    }
+
+    It 'a new configuration has no account list' {
+        (Read-MultiplexConfig -Path (Join-Path $TestDrive 'new.json')).Contains('AllowedAccounts') | Should -BeFalse
     }
 }
 
