@@ -406,8 +406,8 @@ $script:CapturesDirName = '.har-captures'
 .DESCRIPTION
     A capture lives at `<folder>/.har-captures/<host>/<stamp>` (or, in the
     legacy layout, `<folder>/.har-captures/<stamp>`). `<folder>` is the store's
-    home: where the recorder was pointed, where its `.gitignore` is, and where
-    the operator profile that scrubbed the capture is found from.
+    home: where the recorder anchored it, where its `.gitignore` is, and where
+    a phase re-run on a capture looks for the operator profile.
 
     Walked SEGMENT BY SEGMENT rather than matched as a substring: a sibling
     called `.har-captures-archive` starts with the store name and is not one,

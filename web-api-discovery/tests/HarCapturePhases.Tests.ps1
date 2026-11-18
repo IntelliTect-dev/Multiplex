@@ -919,6 +919,24 @@ Describe 'it refuses rather than guesses' {
         finally { Remove-PhaseStore -Store $awkward }
     }
 
+    It 'does not offer a directory this command would then refuse as a pattern' {
+        # A store under a folder with a bracket in its name: pasted back, that
+        # path is a wildcard by its spelling and is refused. The label is
+        # offered alone, and the label works there.
+        $awkward = New-PhaseStore -NameSuffix '-[v2]'
+        try {
+            Add-PhaseCapture -Store $awkward -Stamp '2026-01-02-000001' | Out-Null
+            Add-PhaseCapture -Store $awkward -Stamp '2026-01-02-000002' | Out-Null
+
+            $run = Invoke-PhaseDoor -Store $awkward -Arguments @('https://www.example.test', '-Scrub')
+
+            $run.ExitCode | Should -Be 2 -Because $run.Text
+            $run.Text | Should -Match 'Invoke-HarCapture www\.example\.test/2026-01-02-000002 -Scrub'
+            $run.Text | Should -Not -Match "Invoke-HarCapture '"
+        }
+        finally { Remove-PhaseStore -Store $awkward }
+    }
+
     It 'refuses -Scrub on a capture with no raw' {
         Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -NoRaw | Out-Null
 
@@ -1123,16 +1141,37 @@ Describe 'the leak gate is not softened by re-entering' {
         # said on the WARNING stream, which silencing status does not reach;
         # and the code is the recorder's own for "produced, with advisory
         # findings", the one -Scrub -Catalogue already answers.
-        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001'
-        $door = New-StubbedGateDoor -Store $script:Store -Verdict 4
+        #
+        # THE REAL SCRUB AND THE REAL GATE, not a stub: what is read here is a
+        # file another script writes, so the test has to be about the file that
+        # script really writes. A bare 16-digit number that passes the card
+        # checksum is identity evidence by SHAPE alone -- a card, an order id,
+        # or chance -- which is exactly what the gate reports and does not
+        # block on, and the scrub has no rule to take it out.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Body '{"n":4539578763621486}'
 
-        $run = Invoke-PhaseDoor -Store $script:Store -Script $door -Arguments @(
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @(
             'https://www.example.test', '-Scrub', '-InformationAction', 'Ignore')
 
         $run.ExitCode | Should -Be 7 -Because $run.Text
         Test-Path -LiteralPath (Join-Path $capture 'scrubbed.har') | Should -BeTrue -Because 'an advisory verdict keeps the artifact'
         $run.Text | Should -Match '(?m)^WARNING: .*ADVISORY'
         $run.Text | Should -Not -Match 'Scrub verdicts' -Because 'the status lines really were silenced, or the line above proves nothing'
+        # The contract this door reads, pinned on the gate's own output: the
+        # report beside the capture, and the verdict in it as data.
+        $report = Get-Content -LiteralPath (Join-Path $capture 'scrub-findings.json') -Raw | ConvertFrom-Json
+        $report.verdict | Should -Be 'advisory'
+    }
+
+    It '-Scrub -Catalogue answers 7 on that verdict too, from the recorder' {
+        # The same capture through both phases, still with the real gate: the
+        # recorder asks it again and answers its own code.
+        $capture = Add-PhaseCapture -Store $script:Store -Stamp '2026-01-02-000001' -Body '{"n":4539578763621486}'
+
+        $run = Invoke-PhaseDoor -Store $script:Store -Arguments @('https://www.example.test', '-Scrub', '-Catalogue')
+
+        $run.ExitCode | Should -Be 7 -Because $run.Text
+        Test-Path -LiteralPath (Join-Path $capture 'catalogue.json') | Should -BeTrue
     }
 
     It '-Scrub is not misled by a findings report an earlier run left behind' {
