@@ -488,15 +488,19 @@ public sealed class PacingHandler : DelegatingHandler
         {
             try
             {
+                // Buffered up to the bound and no further: a body with no
+                // Content-Length that runs past it throws here, and is not a
+                // challenge page.
+                await content.LoadIntoBufferAsync(ChallengeBodyMax, ct).ConfigureAwait(false);
                 var body = await content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                if (s_cloudflareChallenge.IsMatch(body.Length > ChallengeBodyMax ? body[..(int)ChallengeBodyMax] : body))
+                if (s_cloudflareChallenge.IsMatch(body))
                 {
                     return "a Cloudflare challenge page";
                 }
             }
             catch (Exception e) when (e is HttpRequestException or IOException)
             {
-                // Unreadable: judged as the 503 it says it is.
+                // Too large, or unreadable: judged as the 503 it says it is.
             }
         }
         return null;
