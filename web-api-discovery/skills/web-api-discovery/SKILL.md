@@ -739,7 +739,7 @@ document counts wherever it is hosted).
 | Observed | Means | What happens |
 |---|---|---|
 | `429`, or `503` with `Retry-After` | throttled | **pause** for `Retry-After` (seconds or an HTTP-date), or a backoff with jitter when it names none -- see below for what a pause can and cannot hold |
-| the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, a vendor's block or challenge interstitial on the site, recognised by a marker only that page carries (Cloudflare's "Just a moment..." challenge, DataDome's or PerimeterX's CAPTCHA, Imperva's incident page, Akamai's "Access Denied", Amazon's "Check the box to continue" checkpoint), a site request refused with a `403` carrying `x-datadome` or a vendor's block in any content type (DataDome's or PerimeterX's JSON answer to an XHR), or a `403` or `503` page that says "Press & Hold", "unusual traffic" or "verify you are human", or names a CAPTCHA | blocked / challenged | **hand over** at once |
+| the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, a vendor's block or challenge interstitial on the site, recognised by a marker only that page carries (Cloudflare's "Just a moment..." challenge, DataDome's or PerimeterX's CAPTCHA, Imperva's incident page, Akamai's "Access Denied", Amazon's "Check the box to continue" checkpoint), a site request refused with a vendor's block in any content type (DataDome's or PerimeterX's JSON answer to an XHR), or a `403` or `503` page that says "Press & Hold", "unusual traffic" or "verify you are human", or names a CAPTCHA | blocked / challenged | **hand over** at once |
 | throttling that persists (3 episodes in 10 minutes), throttling **through** a pause, or a `Retry-After` over 60 s | the site means it | **hand over** |
 
 **What a pause holds.** The tooling's own steps wait it out: a paced
@@ -758,9 +758,10 @@ wording of a check -- a sign-up form's "verify you are human" -- which counts
 only on a `403` or `503`. A page that loaded is judged an interstitial only
 under 16 KB, except Amazon's checkpoint, whose form sits deep in a full
 storefront page. AWS WAF's `202` script check, which a browser passes by
-itself, is not a hand-over. Edge headers alone (`cf-ray` and the
-like, which a CDN-fronted site sends on everything) make a block only of the
-page itself answering `403` -- never of a sub-resource, and never of a `503`.
+itself, is not a hand-over. Edge headers alone (`cf-ray`, DataDome's
+`x-datadome` and the like, which a protected site sends on everything, the
+responses it lets through included) make a block only of the page itself
+answering `403` -- never of a sub-resource, and never of a `503`.
 
 **The hand-over.** By hand, you are told what the site did and how long it
 asked you to wait -- nothing stops, it is your browser. Under `-AI`, the

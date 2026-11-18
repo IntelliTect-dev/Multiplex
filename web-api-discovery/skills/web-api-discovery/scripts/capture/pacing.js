@@ -339,18 +339,15 @@ const INTERSTITIALS = [
 ];
 
 // What a bot-protection edge answers a refused XHR or fetch with, in place of
-// its HTML page. Judged on refusals only, whatever the content type.
+// its HTML page. Judged on refusals only, whatever the content type. The BODY
+// decides, never a vendor's header: DataDome's x-datadome is on every response
+// of a site behind it, the ones it lets through included.
 const BLOCK_RESPONSES = [
     // {"url":"https://geo.captcha-delivery.com/captcha/?initialCid=..."}
     { name: 'DataDome block', test: marker(/"url"\s*:\s*"https?:\/\/geo\.captcha-delivery\.com\/(?:captcha|interstitial)\//i) },
     // {"appId":"PX...","blockScript":"/.../captcha.js?...", ...}
     { name: 'PerimeterX block', test: (ctx) => /"appId"\s*:\s*"PX\w+"/i.test(ctx.text) && /"blockScript"\s*:/i.test(ctx.text) }
 ];
-
-// Headers only a bot-protection vendor's own refusal carries. Unlike a CDN's
-// cf-ray or x-amz-cf-id, which are on every response of a site behind it, one
-// of these on a 403 is the vendor refusing -- whatever the content type.
-const BOT_VENDOR_HEADERS = ['x-datadome'];
 
 // WORDING an ordinary page can use too: a sign-up form's "verify you are
 // human", a help page's "are you a robot?", a title naming a CAPTCHA game. It
@@ -363,8 +360,10 @@ const REFUSAL_WORDING = [
     { name: 'a CAPTCHA page', re: /<title>[^<]*captcha[^<]*<\/title>/i }
 ];
 
-// Headers only a CDN or bot-protection edge sets. A 403 carrying one, in HTML,
-// is the edge refusing the visitor -- not the application refusing a request.
+// Headers only a CDN or bot-protection edge sets -- and sets on EVERY response
+// of a site behind it: cf-ray, x-amz-cf-id and DataDome's x-datadome alike are
+// on the pages it serves and the ones it lets through, not only its refusals.
+// So one is weak evidence (see classifyResponse).
 const CDN_HEADERS = ['cf-ray', 'x-iinfo', 'x-cdn', 'x-datadome', 'x-akamai-transformed', 'akamai-grn',
     'x-amz-cf-id', 'x-sucuri-id', 'x-px'];
 const CDN_SERVERS = /cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront|ddos-guard/i;
@@ -441,8 +440,6 @@ function classifyResponse(r, nowMs = Date.now()) {
             (small ? BLOCK_RESPONSES.find((s) => s.test(ctx)) : null) ||
             (html && small ? REFUSAL_WORDING.find((s) => s.re.test(ctx.text)) : null);
         if (known) return signal('blocked', `${status} ${known.name}`);
-        const vendor = status === 403 && BOT_VENDOR_HEADERS.find((h) => headerValue(headers, h) !== undefined);
-        if (vendor) return signal('blocked', `403 from bot protection (${vendor})`);
         if (!html) return null;
         // EDGE HEADERS ALONE are weak evidence: a CDN-fronted site puts cf-ray
         // or x-amz-cf-id on EVERY response, its own error pages included, and
