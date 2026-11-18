@@ -138,6 +138,8 @@ Describe "Codegen integration: emits test project" {
             'DataDomes_JSON_block_is_a_block_with_or_without_its_header',
             'An_application_403_carrying_x_datadome_is_passed_through',
             'A_403_body_past_the_bound_reaches_the_caller_whole',
+            'A_403_naming_an_unknown_charset_reaches_the_caller_with_its_body',
+            'DataDomes_JSON_block_is_a_block_whatever_charset_it_names',
             'PacingOptions_None_adds_no_wait',
             'The_client_sends_through_the_pacing_handler',
             'The_client_names_itself_and_sends_no_browser_fingerprint',

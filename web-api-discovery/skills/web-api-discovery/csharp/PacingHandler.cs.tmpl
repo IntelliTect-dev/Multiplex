@@ -432,7 +432,10 @@ public sealed class PacingHandler : DelegatingHandler
     {
         try
         {
-            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            // As UTF-8, like the block check: a charset the runtime does not know
+            // must not turn a block into some other exception.
+            var text = System.Text.Encoding.UTF8.GetString(
+                await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false));
             text = System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
             return text.Length > 200 ? text[..200] + "..." : text;
         }
@@ -511,11 +514,14 @@ public sealed class PacingHandler : DelegatingHandler
         if (content is null || content.Headers.ContentLength > ChallengeBodyMax) return null;
         try
         {
+            // DECODED HERE AS UTF-8, never through the charset the response
+            // names: the markers looked for are ASCII, and a charset the runtime
+            // does not know would throw -- costing the caller its response.
             if (content.Headers.ContentLength is not null)
             {
                 // Within the bound: buffered, so the caller reads it again.
                 await content.LoadIntoBufferAsync(ChallengeBodyMax, ct).ConfigureAwait(false);
-                return await content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                return System.Text.Encoding.UTF8.GetString(await content.ReadAsByteArrayAsync(ct).ConfigureAwait(false));
             }
             var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             var head = new byte[ChallengeBodyMax + 1];
@@ -531,7 +537,7 @@ public sealed class PacingHandler : DelegatingHandler
             // The whole body is in hand, so the original can go; past the bound
             // the replay owns its stream, and disposing the original would close it.
             if (small) content.Dispose();
-            return small ? await replay.ReadAsStringAsync(ct).ConfigureAwait(false) : null;
+            return small ? System.Text.Encoding.UTF8.GetString(head, 0, read) : null;
         }
         catch (Exception e) when (e is HttpRequestException or IOException)
         {
