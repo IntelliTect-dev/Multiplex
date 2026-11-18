@@ -17,6 +17,11 @@ namespace {{Namespace}};
 /// client, so a missing or expired session is the tool call's error instead.
 /// </para>
 /// <para>
+/// It is read again after the site refuses it, and a session saved since then
+/// is used from the next call on, without a restart. The client -- and the
+/// pacing that lives in it -- is replaced only when the saved session changed.
+/// </para>
+/// <para>
 /// Only a failure the model can do something about is put into words for it --
 /// thrown as <see cref="McpException"/>, whose message the MCP SDK sends to the
 /// client. Any other exception keeps its type, and the SDK reports it without
@@ -42,6 +47,8 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
     private readonly ILogger _log;
     private readonly Lock _gate = new();
     private {{ProjectName}}Client? _client;
+    private SessionCredentials? _credentials;
+    private bool _readStoreAgain;
     private bool _disposed;
 
     /// <param name="store">Where a signed-in session is saved. Not read here.</param>
@@ -76,9 +83,9 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
         }
         catch ({{ProjectName}}AuthenticationException ex)
         {
-            // The saved session no longer works. Let go of the client built
-            // from it, so the next call reads the store and finds a new sign-in.
-            Forget(client);
+            // The saved session no longer works. Have the next call read the
+            // store again, in case someone has signed in since.
+            ReadStoreAgainNextTime();
             throw new McpException(ex.Message + ReadAgain, ex);
         }
         catch (HttpRequestException ex)
@@ -98,7 +105,7 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_client is not null)
+            if (_client is not null && !_readStoreAgain)
             {
                 return _client;
             }
@@ -111,21 +118,31 @@ public sealed class {{ProjectName}}ToolSession : IDisposable
                 _log.LogWarning("No {{ProjectName}} session in {Store}.", _store.Description);
                 throw new McpException(NoSession);
             }
-            _client = _createClient(credentials);
+            if (_client is null || credentials != _credentials)
+            {
+                // A client is built only for a session it has not been built
+                // for. While the saved session is the same one the site just
+                // refused, calls keep the client they had -- and with it the
+                // PacingHandler that spaces them out. A new client per refused
+                // call would let a caller that keeps retrying send as fast as
+                // it could ask.
+                //
+                // A client that is replaced is not disposed: another call may
+                // still be using it. It holds no more than an idle connection,
+                // which the runtime closes, and one is left behind per sign-in.
+                _client = _createClient(credentials);
+                _credentials = credentials;
+            }
+            _readStoreAgain = false;
             return _client;
         }
     }
 
-    private void Forget({{ProjectName}}Client client)
+    private void ReadStoreAgainNextTime()
     {
         lock (_gate)
         {
-            // Not disposed: another call may still be using it. It holds no
-            // more than an idle connection, which the runtime closes.
-            if (ReferenceEquals(_client, client))
-            {
-                _client = null;
-            }
+            _readStoreAgain = true;
         }
     }
 

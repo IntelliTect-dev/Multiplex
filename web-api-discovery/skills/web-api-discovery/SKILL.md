@@ -2351,7 +2351,10 @@ generated one differs.
   `ISessionStore` when the first call arrives and remembers only a session it
   found. So the server starts, and lists its tools, with nobody signed in; and
   a session saved while it runs is picked up by the next call without a
-  restart.
+  restart. After the site refuses a session (302/401) the store is read again
+  at the next call, and the client is replaced only if the saved session has
+  changed: the pacing lives in the client, so a caller that keeps retrying
+  against a dead session is still spaced out.
 - **The server never signs in and never prompts.** Over stdio its stdout is
   the protocol stream and its stdin is the client's; `<Name>Authenticator`
   writes to one and reads the other, so the server must not call it. A tool

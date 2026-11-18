@@ -107,12 +107,11 @@ public class {{ProjectName}}ToolSessionTests
     {
         // The site answers 401, which the client raises as its authentication
         // exception. Whoever signs in again saves a new session; the next call
-        // has to find it.
+        // has to look for it.
         var store = new CountingSessionStore { Saved = SignedIn };
-        var built = 0;
         using var session = new {{ProjectName}}ToolSession(
             store,
-            credentials => { built++; return ClientAnswering(credentials, HttpStatusCode.Unauthorized); });
+            credentials => ClientAnswering(credentials, HttpStatusCode.Unauthorized));
 
         var error = await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/anything")));
         await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/anything")));
@@ -121,7 +120,49 @@ public class {{ProjectName}}ToolSessionTests
         Assert.Contains("does not need restarting", error.Message);
         Assert.IsType<{{ProjectName}}AuthenticationException>(error.InnerException);
         Assert.Equal(2, store.Loads);
-        Assert.Equal(2, built);
+    }
+
+    [Fact]
+    public async Task A_session_that_is_still_expired_keeps_its_client_and_so_its_pacing()
+    {
+        // The pacing lives in the client: each one has its own PacingHandler.
+        // Were a refused call to throw the client away, a model retrying
+        // against a dead session would get a new handler for every call, and
+        // send as fast as it could ask.
+        var store = new CountingSessionStore { Saved = SignedIn };
+        var built = 0;
+        using var session = new {{ProjectName}}ToolSession(
+            store,
+            credentials => { built++; return ClientAnswering(credentials, HttpStatusCode.Unauthorized); });
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/anything")));
+        }
+
+        Assert.Equal(1, built);
+    }
+
+    [Fact]
+    public async Task A_new_sign_in_after_an_expired_session_gets_a_client_of_its_own()
+    {
+        var signedInAgain = new SessionCredentials("session=2", string.Empty);
+        var store = new CountingSessionStore { Saved = SignedIn };
+        var built = new List<SessionCredentials>();
+        using var session = new {{ProjectName}}ToolSession(
+            store,
+            credentials =>
+            {
+                built.Add(credentials);
+                return ClientAnswering(credentials, credentials == SignedIn ? HttpStatusCode.Unauthorized : HttpStatusCode.OK);
+            });
+        await Assert.ThrowsAsync<McpException>(() => session.RunAsync(client => client.SendRawAsync("/anything")));
+
+        store.Save(signedInAgain);
+        var answer = await session.RunAsync(client => client.SendRawAsync("/anything"));
+
+        Assert.Equal("{}", answer);
+        Assert.Equal(new[] { SignedIn, signedInAgain }, built);
     }
 
     [Fact]
