@@ -17,7 +17,8 @@ public sealed class RefresherAndAdoptTests
         await using var site = await StubLoginSite.StartAsync();
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         // A kept profile that holds no session (as after TripIt signed the person out).
-        Directory.CreateDirectory(host.Get<SignInPaths>().AccountProfile("stub", s_account.AccountId));
+        var profile = host.Get<SignInPaths>().AccountProfile("stub", s_account.AccountId);
+        Directory.CreateDirectory(profile);
         await host.Get<SiteSessionStore>().SetAsync("stub", s_account.AccountId, """{"cookie":"stale"}""", CancellationToken.None);
         await host.Get<SiteAccountIndex>().UpsertAsync(s_account, CancellationToken.None);
 
@@ -27,6 +28,7 @@ public sealed class RefresherAndAdoptTests
         Assert.Null(await host.Get<ISiteSessionStore>().GetAsync("stub", s_account.AccountId, CancellationToken.None));
         Assert.Empty(await host.Get<SiteAccountIndex>().ListAsync("stub", CancellationToken.None));
         Assert.Equal([("stub", s_account.AccountId)], host.Revoker.Revoked);
+        Assert.False(Directory.Exists(profile)); // its browser profile goes too, once Chrome has let go of it
 
         // Within the cool-down a second call does not relaunch anything and still reports signed out.
         Assert.Null(await host.Get<ISiteSessionRefresher>().RefreshAsync("stub", s_account.AccountId, CancellationToken.None));
@@ -34,11 +36,31 @@ public sealed class RefresherAndAdoptTests
     }
 
     [ChromiumFact]
+    public async Task Profile_now_signed_in_as_another_account_is_a_sign_out_and_is_deleted()
+    {
+        await using var site = await StubLoginSite.StartAsync();
+        await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
+        // The kept profile of "earlier-account" is, by now, signed in as the stub's own account.
+        const string earlier = "earlier-account";
+        var profile = host.Get<SignInPaths>().AccountProfile("stub", earlier);
+        await SignInDirectlyAsync(profile, site);
+        await host.Get<SiteSessionStore>().SetAsync("stub", earlier, """{"cookie":"old"}""", CancellationToken.None);
+
+        var result = await host.Get<ISiteSessionRefresher>().RefreshAsync("stub", earlier, CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Null(await host.Get<ISiteSessionStore>().GetAsync("stub", earlier, CancellationToken.None));
+        Assert.Equal([("stub", earlier)], host.Revoker.Revoked);
+        Assert.False(Directory.Exists(profile)); // it holds another account's session
+    }
+
+    [ChromiumFact]
     public async Task Unreachable_site_is_a_refresh_failure_not_a_sign_out()
     {
         // The definition points at a port nobody listens on: neither signed in nor signed out.
         await using var host = new SignInTestHost();
-        Directory.CreateDirectory(host.Get<SignInPaths>().AccountProfile("stub", s_account.AccountId));
+        var profile = host.Get<SignInPaths>().AccountProfile("stub", s_account.AccountId);
+        Directory.CreateDirectory(profile);
         await host.Get<SiteSessionStore>().SetAsync("stub", s_account.AccountId, """{"cookie":"kept"}""", CancellationToken.None);
 
         await Assert.ThrowsAsync<SiteRefreshException>(() =>
@@ -46,6 +68,7 @@ public sealed class RefresherAndAdoptTests
 
         Assert.Equal("""{"cookie":"kept"}""", await host.Get<ISiteSessionStore>().GetAsync("stub", s_account.AccountId, CancellationToken.None));
         Assert.Empty(host.Revoker.Revoked);
+        Assert.True(Directory.Exists(profile));
     }
 
     [Fact]
