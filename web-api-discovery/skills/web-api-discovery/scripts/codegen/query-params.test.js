@@ -617,7 +617,9 @@ const SITE = 'https://api.example.com/api/search';
     const credential = ['key', 'api_key', 'apiKey', 'apikey', 'APIKey', 'sid', 'session', 'session-id', 'sessionId', 'sig',
         'signature', 'secret', 'client-secret', 'auth', 'authToken', 'token', 'access_token', 'credential', 'password',
         'X-Amz-Credential', 'X-Amz-Signature', 'X-Amz-Security-Token', 'X-Goog-Signature', 'X-Goog-Credential',
-        'Key-Pair-Id', 'AWSAccessKeyId', 'Signature'];
+        'Key-Pair-Id', 'AWSAccessKeyId', 'Signature',
+        // Run together or abbreviated, so no split finds the word inside.
+        'pwd', 'passwd', 'jwt', 'otp', 'accesstoken', 'authtoken', 'sessionid', 'PHPSESSID', 'jsessionid'];
     for (const name of credential) {
         assert.strictEqual(looksLikeCredentialName(name), true, name);
         // A plain short value under such a name: no marker, no shape, nothing else to go on.
@@ -637,7 +639,9 @@ const SITE = 'https://api.example.com/api/search';
     assert.strictEqual(byWireName(parametersOf([SITE + '?sig=redacted-3f9a1c0b7e2d4a68']))['sig'].reason, 'scrub-marker');
 
     const ordinary = ['keyword', 'keywords', 'fieldKeywords', 'side', 'sidebar', 'author', 'authors', 'tokenizer', 'sessions-per-page',
-        'sessions', 'sigma', 'design', 'secretary', 'monkey', 'k', 'q', 'limit', 'credentials-page-size', 'passwords'];
+        'sessions', 'sigma', 'design', 'secretary', 'monkey', 'k', 'q', 'limit', 'credentials-page-size', 'passwords',
+        // `code` is left ordinary on purpose: a postal, country or promo code is not a credential.
+        'code', 'postalCode', 'promoCode'];
     for (const name of ordinary) {
         assert.strictEqual(looksLikeCredentialName(name), false, name);
         const url = SITE + '?limit=11&' + encodeURIComponent(name) + '=plainvalue7';
@@ -682,6 +686,16 @@ const SITE = 'https://api.example.com/api/search';
     assert.strictEqual(q._.kind, 'nonce', 'the empty call says nothing about the others');
     assert.deepStrictEqual(q._.examples, [], 'and no timestamp is quoted as an example');
     assert.strictEqual(q._.defaults, null);
+
+    // A neutral name, so neither the cache-buster names nor a long-number rule
+    // decides it: only the timestamp in the call that sent one can.
+    const stamp = byWireName(parametersOf([
+        { url: SITE + '?limit=11&stamp=', started: STARTED },
+        { url: SITE + '?limit=11&stamp=' + (STARTED_MS + 700 - 40), started: new Date(STARTED_MS + 700).toISOString() },
+    ])).stamp;
+    assert.strictEqual(stamp.kind, 'nonce', 'an empty call must not hide the timestamp in the other');
+    assert.strictEqual(stamp.reason, 'timestamp');
+    assert.deepStrictEqual(stamp.examples, [], 'and the timestamp is not quoted as an example');
 
     const tokens = byWireName(parametersOf([
         SITE + '?rsh=', SITE + '?rsh=4821937465021', SITE + '?rsh=4821937466377',

@@ -308,8 +308,11 @@ function isPolicySecretName(name, scrub) {
 // The signed-URL family needs no words of its own: X-Amz-Credential,
 // X-Amz-Signature, X-Amz-Security-Token, X-Goog-Signature, Key-Pair-Id and an
 // Azure `sig` each contain one of these as a whole word.
+// The last row is names run together or abbreviated, which no split can open
+// up. `code` is not one: a postal, country or promo code is not a credential.
 const CREDENTIAL_NAME_WORDS = new Set([
     'token', 'sid', 'session', 'sig', 'signature', 'secret', 'auth', 'credential', 'key', 'apikey', 'password',
+    'pwd', 'passwd', 'jwt', 'otp', 'accesstoken', 'authtoken', 'sessionid', 'phpsessid', 'jsessionid',
 ]);
 
 /**
