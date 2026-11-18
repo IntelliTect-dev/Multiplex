@@ -40,15 +40,18 @@ function check(name, fn) {
     }
 }
 
-function entry(url, { method = 'GET', headers = [], reqBody, reqMime = 'application/json', resBody = '{}' } = {}) {
+function entry(url, {
+    method = 'GET', headers = [], reqBody, reqMime = 'application/json',
+    resBody = '{}', resMime = 'application/json', resHeaders = [], redirectURL = '',
+} = {}) {
     return {
         request: {
             method, url, headers, queryString: [], cookies: [],
             ...(reqBody === undefined ? {} : { postData: { mimeType: reqMime, text: reqBody } }),
         },
         response: {
-            status: 200, headers: [], cookies: [],
-            content: { mimeType: 'application/json', text: resBody },
+            status: 200, headers: resHeaders, cookies: [], redirectURL,
+            content: { mimeType: resMime, text: resBody },
         },
     };
 }
@@ -157,6 +160,23 @@ check('a hostname label, a subdomain and a single-letter label come back byte-id
     for (const k of ['hostLabel', 'subdomain', 'letter']) {
         assert.strictEqual(urlAt(URLS[k]), URLS[k], `${k}: the URL was rewritten`);
     }
+});
+
+// The text pass reads URLs in running text conservatively and stops at a
+// sub-delimiter (`;`, `,`, `'`), where free text usually ends a URL. A request
+// URL's authority is known to be one, so it is held as structure whole --
+// userinfo included, which RFC 3986 lets carry those characters.
+check('a request URL authority is structure whole, userinfo with a sub-delimiter included', () => {
+    // `!` before the `@` keeps the userinfo from reading as an email, which is
+    // a shaped kind and would be replaced on its own evidence.
+    const url = `https://x;${WORD.letter};!@h.example.test/p`;
+    assert.ok(parsed(url), 'premise: the userinfo is legal');
+    const har = harOf([
+        entry('https://api.example.test/v1/config', { resBody: JSON.stringify({ name: WORD.letter }) }),
+        entry(url),
+    ]);
+    pii.scrubPii(har);
+    assert.strictEqual(har.log.entries[1].request.url, url);
 });
 
 check('Host, :authority and Origin headers keep the hostname', () => {
@@ -319,6 +339,218 @@ check('property: no field-only kind rewrites any structural slot of a URL', () =
                 const now = har.log.entries[1].request.url;
                 if (!enrolled) misses.push(`${kind}/${t.slot}/${w.length}ch: the value was never enrolled`);
                 else if (now !== url) misses.push(`${kind}/${t.slot}/${w.length}ch: ${parsed(now) ? 'rewritten' : 'BROKEN'}`);
+            }
+        }
+    }
+    assert.ok(cases > 300, `the generator ran ${cases} cases`);
+    assert.deepStrictEqual(misses, [], `${misses.length} case(s) failed:\n      ${misses.slice(0, 12).join('\n      ')}`);
+});
+
+// --- 8. a URL is structure wherever it is written ------------------------------
+//
+// `request.url` is one place a URL lives. The same hosts travel in a Referer, a
+// Location, a CORS header, a Link header, a cookie's Domain, an HTML attribute
+// and a JSON string -- and the text pass reached every one of them (found by
+// independent review). The rule is the URL's, not the field's.
+
+const AD_HOST = `securepubads.${WORD.letter}.doubleclick.test`;
+const AD_URL = `https://${AD_HOST}/x?${WORD.letter}=1&${WORD.matrix}=2`;
+// A real name, one word, so it can sit unencoded in a header or a URL.
+const SURNAME = 'Zorblat';
+
+/** Scrub one carrier entry after an entry that enrolls every word and the name. */
+function scrubCarrier(carrier) {
+    const har = harOf([
+        entry('https://api.example.test/v1/config', {
+            resBody: JSON.stringify({
+                slots: Object.values(WORD).map((w) => ({ name: w })),
+                owner: { display_name: SURNAME },
+            }),
+        }),
+        carrier,
+    ]);
+    pii.scrubPii(har);
+    return har.log.entries[1];
+}
+
+const header = (hs, name) => hs.find((h) => h.name === name).value;
+
+check('Referer: a host and a query name come back byte-identical', () => {
+    const e = scrubCarrier(entry('https://www.example.test/', { headers: [{ name: 'Referer', value: AD_URL }] }));
+    assert.strictEqual(header(e.request.headers, 'Referer'), AD_URL);
+});
+
+check('Location and Access-Control-Allow-Origin: the URL and the origin come back byte-identical', () => {
+    const origin = `https://${AD_HOST}`;
+    const e = scrubCarrier(entry('https://www.example.test/', {
+        resHeaders: [{ name: 'Location', value: AD_URL }, { name: 'Access-Control-Allow-Origin', value: origin }],
+    }));
+    assert.strictEqual(header(e.response.headers, 'Location'), AD_URL);
+    assert.strictEqual(header(e.response.headers, 'Access-Control-Allow-Origin'), origin);
+});
+
+// A relative Location has no scheme for the URL rule to find; it is a request
+// target, read the way `:path` is. Three real Location headers held this shape.
+check('a relative Location keeps its path and query names', () => {
+    const target = `/${WORD.segment}/r?${WORD.letter}=1&${WORD.matrix}=2`;
+    const e = scrubCarrier(entry('https://www.example.test/', { resHeaders: [{ name: 'Location', value: target }] }));
+    assert.strictEqual(header(e.response.headers, 'Location'), target);
+});
+
+check('Link: a bracketed URL comes back byte-identical', () => {
+    const link = `<https://${AD_HOST}/tag.js>; rel=preload`;
+    const e = scrubCarrier(entry('https://www.example.test/', { resHeaders: [{ name: 'Link', value: link }] }));
+    assert.strictEqual(header(e.response.headers, 'Link'), link);
+});
+
+check('Set-Cookie: Domain, Path and the cookie name are structure; the value is payload', () => {
+    const setCookie = `${WORD.letter}=${SURNAME}; Domain=${WORD.letter}.doubleclick.test; Path=/${WORD.segment}; Secure`;
+    const e = scrubCarrier(entry('https://www.example.test/', { resHeaders: [{ name: 'Set-Cookie', value: setCookie }] }));
+    const now = header(e.response.headers, 'Set-Cookie');
+    assert.ok(now.includes(`; Domain=${WORD.letter}.doubleclick.test; Path=/${WORD.segment}; Secure`),
+        'the Domain and Path attributes must come back byte-identical');
+    assert.ok(now.startsWith(`${WORD.letter}=`), 'the cookie NAME must come back byte-identical');
+    assert.ok(!now.includes(SURNAME), 'a declared name in the cookie VALUE must still be replaced');
+});
+
+check('Cookie: cookie names are structure', () => {
+    const cookie = `${WORD.letter}=1; ${WORD.matrix}=2`;
+    const e = scrubCarrier(entry('https://www.example.test/', { headers: [{ name: 'Cookie', value: cookie }] }));
+    assert.strictEqual(header(e.request.headers, 'Cookie'), cookie);
+});
+
+check(':path: a request target keeps its path segments and query names', () => {
+    const target = `/${WORD.segment}/ads?${WORD.query}=1&debug`;
+    const e = scrubCarrier(entry(`https://www.example.test${target}`, { headers: [{ name: ':path', value: target }] }));
+    assert.strictEqual(header(e.request.headers, ':path'), target);
+});
+
+check('an HTML body: absolute, protocol-relative and JSON-escaped URLs come back byte-identical', () => {
+    // ...and one with its colon percent-encoded and its slashes JSON-escaped,
+    // a shape two real HTML pages held.
+    const html = `<script src="${AD_URL}"></script>` +
+        `<img src="//${AD_HOST}/p.gif">` +
+        `<script>var u="${AD_URL.replace(/\//g, '\\/')}";</script>` +
+        `<script>var v="${AD_URL.replace(':', '%3A').replace(/\//g, '\\/')}";</script>`;
+    const e = scrubCarrier(entry('https://www.example.test/', { resBody: html, resMime: 'text/html' }));
+    assert.strictEqual(e.response.content.text, html);
+});
+
+check('a JSON body: a URL in a string value comes back byte-identical', () => {
+    const body = JSON.stringify({ u: AD_URL, next: `//${AD_HOST}/a` });
+    const e = scrubCarrier(entry('https://www.example.test/', { resBody: body }));
+    assert.strictEqual(e.response.content.text, body);
+});
+
+check('redirectURL: never touched', () => {
+    const e = scrubCarrier(entry('https://www.example.test/', { redirectURL: AD_URL }));
+    assert.strictEqual(e.response.redirectURL, AD_URL);
+});
+
+// --- 9. a fake written into a URL is a URL's text ---------------------------
+//
+// Payload keeps its reach, but a fake holds a space and a URL does not. So a
+// fake that lands inside a URL is percent-encoded -- in `request.url` and in a
+// URL written anywhere else.
+
+const noRawSpaceIn = (u) => !/\s/.test(u);
+
+check('request.url: a fake written into a fragment or a query value is percent-encoded', () => {
+    const url = `https://www.example.test/p?a=1&debug&who=${SURNAME}#${SURNAME}`;
+    const e = scrubCarrier(entry(url));
+    const now = e.request.url;
+    assert.ok(!now.includes(SURNAME), 'the declared name must be replaced in the query value and the fragment');
+    assert.ok(noRawSpaceIn(now), 'no raw space may land in a URL');
+    assert.ok(parsed(now), 'the URL must parse');
+    assert.ok(/who=[^&#]*%20/.test(now) && /#[^#]*%20/.test(now), 'the fakes are percent-encoded where they landed');
+});
+
+// A form value the scrub refuses to decode -- it carries a second layer of
+// encoding -- is rewritten on its raw bytes. That route wrote a raw space into
+// one real request URL and would into a form body.
+check('request.url: a fake in a doubly-encoded form value is percent-encoded', () => {
+    const url = `https://www.example.test/p?a=1&v=x-${SURNAME}%2520y`;
+    const e = scrubCarrier(entry(url, {
+        method: 'POST', reqMime: 'application/x-www-form-urlencoded', reqBody: `a=1&v=x-${SURNAME}%2520y`,
+    }));
+    for (const now of [e.request.url, e.request.postData.text]) {
+        assert.ok(!now.includes(SURNAME), 'the declared name must be replaced');
+        assert.ok(noRawSpaceIn(now), 'no raw space may land in a URL or a form body');
+    }
+    assert.ok(parsed(e.request.url), 'the URL must parse');
+});
+
+check('a URL in a header or a JSON string: the fake in a query value is percent-encoded', () => {
+    const payloadUrl = `https://news.example.test/s?q=${SURNAME}`;
+    const e = scrubCarrier(entry('https://www.example.test/', {
+        headers: [{ name: 'Referer', value: payloadUrl }],
+        resBody: JSON.stringify({ u: payloadUrl }),
+    }));
+    const referer = header(e.request.headers, 'Referer');
+    const inBody = JSON.parse(e.response.content.text).u;
+    for (const now of [referer, inBody]) {
+        assert.ok(!now.includes(SURNAME), 'the declared name in a query VALUE must still be replaced');
+        assert.ok(noRawSpaceIn(now), 'no raw space may land in a URL');
+        assert.strictEqual(new URL(now).host, 'news.example.test');
+    }
+});
+
+check('a declared name in free text is still replaced, as text', () => {
+    const e = scrubCarrier(entry('https://www.example.test/', {
+        resBody: `<p>By ${SURNAME}, see https://${AD_HOST}/</p>`, resMime: 'text/html',
+    }));
+    assert.ok(!e.response.content.text.includes(SURNAME));
+    assert.ok(e.response.content.text.includes(`https://${AD_HOST}/`));
+});
+
+// --- 10. the property, beyond request.url ------------------------------------
+//
+// The same generator, with each URL written into the carriers a capture holds:
+// a request header, a response header, a plain-text body, an HTML attribute
+// and a JSON string. Every carrier comes back byte-identical.
+
+check('property: no field-only kind rewrites a URL written in a header or a body', () => {
+    const misses = [];
+    let cases = 0;
+    for (const [kind, field] of Object.entries(FIELD_FOR)) {
+        for (const w of WORDS) {
+            for (const t of TEMPLATES) {
+                if (t.hostOnly && !hostSafe(w)) continue;
+                const url = t.make(w);
+                const carriers = {
+                    referer: url,
+                    location: url,
+                    text: `see ${url} now`,
+                    html: `<a href="${url}">x</a>`,
+                    json: JSON.stringify({ u: url }),
+                };
+                const har = harOf([
+                    entry('https://api.example.test/v1/x', { resBody: JSON.stringify({ [field]: w }) }),
+                    entry('https://www.example.test/', {
+                        method: 'POST', reqMime: 'text/plain', reqBody: carriers.text,
+                        headers: [{ name: 'Referer', value: carriers.referer }],
+                        resHeaders: [{ name: 'Location', value: carriers.location }],
+                        resBody: carriers.html, resMime: 'text/html',
+                    }),
+                    entry('https://www.example.test/j', { resBody: carriers.json }),
+                ]);
+                pii.scrubPii(har);
+                cases++;
+                const [enrol, a, b] = har.log.entries;
+                if (JSON.parse(enrol.response.content.text)[field] === w) {
+                    misses.push(`${kind}/${t.slot}/${w.length}ch: the value was never enrolled`);
+                    continue;
+                }
+                const now = {
+                    referer: header(a.request.headers, 'Referer'),
+                    location: header(a.response.headers, 'Location'),
+                    text: a.request.postData.text,
+                    html: a.response.content.text,
+                    json: b.response.content.text,
+                };
+                for (const k of Object.keys(carriers)) {
+                    if (now[k] !== carriers[k]) misses.push(`${kind}/${t.slot}/${w.length}ch in ${k}: rewritten`);
+                }
             }
         }
     }

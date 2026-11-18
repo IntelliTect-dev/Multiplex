@@ -10,7 +10,8 @@
 //  2. A capture whose bytes no longer match the pinned SHA-256 fails.
 //  3. No captured value reaches the console or the record.
 //  4. Check 3 finds a body the scrub broke; check 4 finds entries the
-//     catalogue lost; check 5 finds a request URL that no longer parses (#66).
+//     catalogue lost; check 5 finds a URL that no longer parses (#66) --
+//     the request URL, the redirect URL or a URL-valued header.
 //  5. The ratchet: pass -> fail is a regression, and so is a rise in broken
 //     bodies or URLs; a changed salt is refused.
 //  6. No profile is a hard failure, not an unsalted run.
@@ -213,7 +214,7 @@ test('check 3 counts both sides when the scrub changed the entry count', () => {
     assert.strictEqual(r.entriesAfter, 1);
 });
 
-test('check 5 finds a request URL the scrub broke, by entry only', () => {
+test('check 5 finds a request URL the scrub broke, by entry and place only', () => {
     const tmp = makeTempRepo('pipeline-check-urls-');
     const before = path.join(tmp, 'before.har');
     const after = path.join(tmp, 'after.har');
@@ -232,9 +233,31 @@ test('check 5 finds a request URL the scrub broke, by entry only', () => {
     const r = check.compareUrls(before, after);
     assert.strictEqual(r.parsedBefore, 2, 'a URL that never parsed is not held to parsing');
     assert.strictEqual(r.broken, 1);
-    assert.deepStrictEqual(r.locations, [{ entry: 1 }], 'a location is an entry index, never a URL');
+    assert.deepStrictEqual(r.locations, [{ entry: 1, where: 'request.url' }],
+        'a location is an entry index and a place, never a URL');
     assert.strictEqual(r.entriesBefore, 3);
     assert.strictEqual(r.entriesAfter, 3);
+});
+
+test('check 5 also holds redirectURL and URL-valued headers to parsing', () => {
+    const tmp = makeTempRepo('pipeline-check-url-headers-');
+    const before = path.join(tmp, 'before.har');
+    const after = path.join(tmp, 'after.har');
+    const withUrls = (host) => {
+        const e = entry('https://www.example.test/', {
+            headers: [{ name: 'Referer', value: `https://${host}/r` }, { name: 'Accept', value: '*/*' }],
+        });
+        e.response.headers = [{ name: 'Location', value: `https://${host}/next` }];
+        e.response.redirectURL = `https://${host}/next`;
+        return e;
+    };
+    fs.writeFileSync(before, JSON.stringify(har([withUrls('static01.cdnword.test')])));
+    fs.writeFileSync(after, JSON.stringify(har([withUrls('static01.Avery Brooks.test')])));
+    const r = check.compareUrls(before, after);
+    assert.strictEqual(r.parsedBefore, 4, 'request.url, Referer, Location and redirectURL');
+    assert.strictEqual(r.broken, 3);
+    assert.deepStrictEqual(r.locations.map((l) => l.where).sort(),
+        ['request.header referer', 'response.header location', 'response.redirectURL']);
 });
 
 test('the ratchet: more broken request URLs is a regression', () => {

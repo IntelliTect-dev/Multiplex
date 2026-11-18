@@ -21,10 +21,11 @@
  *   4. catalogue   the catalogue scaffold's rows account for every scrubbed
  *                  entry -- a row per group, and the groups' counts summing to
  *                  the entry count.
- *   5. urls        every request URL that parsed before the scrub still parses
- *                  after it (#66). A fake person's name written over a hostname
- *                  label broke 160 URLs in one real capture while the gate
- *                  passed; every reader that parses URLs then fails on them.
+ *   5. urls        every URL that parsed before the scrub still parses after it
+ *                  (#66): the request URL, the redirect URL and the URL-valued
+ *                  headers. A fake person's name written over a hostname label
+ *                  broke 160 URLs in one real capture while the gate passed;
+ *                  every reader that parses URLs then fails on them.
  *
  * NEVER PRINTS A VALUE. Output and run records carry counts, kinds, entry
  * indexes and exit codes. The children's own stderr can name fingerprints and
@@ -296,8 +297,30 @@ function comparePayloads(beforePath, afterPath) {
     });
 }
 
-function requestUrl(entry) {
-    return entry && entry.request && typeof entry.request.url === 'string' ? entry.request.url : null;
+// Headers whose value is one absolute URL or origin. The names are this
+// fixed vocabulary, so a location naming one can never carry captured text.
+const URL_HEADERS = ['location', 'content-location', 'referer', 'origin', 'access-control-allow-origin'];
+
+/**
+ * Every place an entry writes a URL, keyed by a fixed location name: the
+ * request URL, the redirect URL, and each URL-valued header (by position, so
+ * two Referer headers stay two places). Values are returned to be parsed and
+ * never leave this module.
+ */
+function urlsOf(entry) {
+    const out = new Map();
+    const req = (entry && entry.request) || {};
+    const res = (entry && entry.response) || {};
+    if (typeof req.url === 'string') out.set('request.url', req.url);
+    if (typeof res.redirectURL === 'string' && res.redirectURL !== '') out.set('response.redirectURL', res.redirectURL);
+    for (const [side, headers] of [['request', req.headers], ['response', res.headers]]) {
+        if (!Array.isArray(headers)) continue;
+        headers.forEach((h, i) => {
+            const name = h && typeof h.name === 'string' ? h.name.toLowerCase() : '';
+            if (URL_HEADERS.includes(name) && typeof h.value === 'string') out.set(`${side}.header ${name}#${i}`, h.value);
+        });
+    }
+    return out;
 }
 
 function urlParses(url) {
@@ -305,22 +328,29 @@ function urlParses(url) {
 }
 
 /**
- * Check 5: every request URL that parsed before the scrub still parses (#66).
+ * Check 5: every URL that parsed before the scrub still parses (#66) -- the
+ * request URL, the redirect URL, and the Location, Referer and other
+ * URL-valued headers, which carry the same hosts and were reached by the same
+ * pass.
  *
- * A location is an ENTRY INDEX and nothing more. A URL is captured data -- a
- * query value, a path segment, the fake that broke it -- so not even its host
- * is printed.
+ * A location is an ENTRY INDEX and a fixed place name, nothing more. A URL is
+ * captured data -- a query value, a path segment, the fake that broke it -- so
+ * not even its host is printed.
  */
 function compareUrls(beforePath, afterPath) {
     const result = { entriesBefore: 0, entriesAfter: 0, parsedBefore: 0, broken: 0, locations: [] };
     return walkLockstep(beforePath, afterPath, result, (b, a, index) => {
-        const was = requestUrl(b);
-        if (was === null || !urlParses(was)) return;
-        result.parsedBefore++;
-        const now = requestUrl(a);
-        if (now !== null && urlParses(now)) return;
-        result.broken++;
-        if (result.locations.length < MAX_LOCATIONS) result.locations.push({ entry: index });
+        const now = urlsOf(a);
+        for (const [key, was] of urlsOf(b)) {
+            if (!urlParses(was)) continue;
+            result.parsedBefore++;
+            const twin = now.get(key);
+            if (twin !== undefined && urlParses(twin)) continue;
+            result.broken++;
+            if (result.locations.length < MAX_LOCATIONS) {
+                result.locations.push({ entry: index, where: key.replace(/#\d+$/, '') });
+            }
+        }
     });
 }
 
@@ -542,8 +572,8 @@ function summaryLines(record, comparison) {
         }
         const u = c.counts.urls;
         if (u && u.broken) {
-            lines.push(`    ${u.broken} of ${u.parsedBefore} request URLs no longer parse, e.g. ` +
-                u.locations.slice(0, 5).map((l) => `entry ${l.entry}`).join(', '));
+            lines.push(`    ${u.broken} of ${u.parsedBefore} URLs no longer parse, e.g. ` +
+                u.locations.slice(0, 5).map((l) => `entry ${l.entry} ${l.where}`).join(', '));
         }
         const g = c.counts.gate;
         if (g && (g.gating || g.advisory)) {
