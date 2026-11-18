@@ -131,15 +131,15 @@ registrations and registers the session instead.
 
 ## Acceptance criteria
 
-- [ ] A generated server answers `tools/list` with one tool per endpoint.
-- [ ] Each tool has a description derived from its operation and explicit
+- [x] A generated server answers `tools/list` with one tool per endpoint.
+- [x] Each tool has a description derived from its operation and explicit
       read-only / destructive / idempotent hints.
-- [ ] The generated project restores and builds on `ModelContextProtocol` 2.4.0
+- [x] The generated project restores and builds on `ModelContextProtocol` 2.4.0
       with 0 warnings.
-- [ ] The server starts with no session saved; a tool call then fails with a
+- [x] The server starts with no session saved; a tool call then fails with a
       message naming the missing session, and the server keeps answering.
-- [ ] stdout carries only JSON-RPC messages.
-- [ ] The smoke test fails when tool emission is removed.
+- [x] stdout carries only JSON-RPC messages.
+- [x] The smoke test fails when tool emission is removed.
 
 ## Implementation checklist
 
