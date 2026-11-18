@@ -24,22 +24,6 @@ public class AuthHostingTests
         }
     }
 
-    /// <summary>The app as deployed: encrypted file store and key ring under one data folder.</summary>
-    private sealed class FileStoreApp(string dataPath) : AuthTestApp
-    {
-        protected override bool InMemoryStore => false;
-
-        protected override IDictionary<string, string?> Settings
-        {
-            get
-            {
-                var settings = base.Settings;
-                settings["Multiplex:DataPath"] = dataPath;
-                return settings;
-            }
-        }
-    }
-
     [Fact]
     public async Task FileStore_KeepsRegistrationsAcrossRestarts_InsideTheDataFolder()
     {
@@ -47,7 +31,7 @@ public class AuthHostingTests
         try
         {
             string clientId;
-            using (var first = new FileStoreApp(dataPath))
+            using (var first = new FileStoreAuthTestApp(dataPath))
             {
                 var metadata = await first.Client().GetAsync("/.well-known/oauth-authorization-server");
                 Assert.Equal(HttpStatusCode.OK, metadata.StatusCode);
@@ -60,7 +44,7 @@ public class AuthHostingTests
             Assert.True(File.Exists(Path.Combine(dataPath, "auth.dat")));
             Assert.NotEmpty(Directory.GetFiles(Path.Combine(dataPath, "keys"), "key-*.xml"));
 
-            using var second = new FileStoreApp(dataPath);
+            using var second = new FileStoreAuthTestApp(dataPath);
             await new OAuthDriver(second).StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
         }
         finally

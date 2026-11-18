@@ -60,6 +60,22 @@ public class AuthTestApp : WebApplicationFactory<Program>
     public HttpClient Client() => CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
 }
 
+/// <summary>The app as deployed: encrypted file store and key ring under one data folder.</summary>
+public sealed class FileStoreAuthTestApp(string dataPath) : AuthTestApp
+{
+    protected override bool InMemoryStore => false;
+
+    protected override IDictionary<string, string?> Settings
+    {
+        get
+        {
+            var settings = base.Settings;
+            settings["Multiplex:DataPath"] = dataPath;
+            return settings;
+        }
+    }
+}
+
 public sealed class TestClock(DateTimeOffset start) : TimeProvider
 {
     private DateTimeOffset _now = start;

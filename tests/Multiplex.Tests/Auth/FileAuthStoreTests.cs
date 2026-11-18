@@ -25,7 +25,7 @@ public sealed class FileAuthStoreTests : IDisposable
     {
         using (var store = NewStore())
         {
-            await store.WriteAsync(s => s.Clients["client-round-trip"] = Client("client-round-trip"), CancellationToken.None);
+            await store.WriteAsync(s => StoreWrite.Changed(s.Clients["client-round-trip"] = Client("client-round-trip")), CancellationToken.None);
         }
 
         var raw = await File.ReadAllBytesAsync(StoreFile);
@@ -66,10 +66,26 @@ public sealed class FileAuthStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteReportingNoChange_LeavesTheFileAlone()
+    {
+        using var store = NewStore();
+        var missing = await store.WriteAsync(s => StoreWrite.Unchanged(s.Clients.ContainsKey("absent")), CancellationToken.None);
+        Assert.False(missing);
+        Assert.False(File.Exists(StoreFile));
+
+        await store.WriteAsync(s => StoreWrite.Changed(s.Clients["kept"] = Client("kept")), CancellationToken.None);
+        var saved = await File.ReadAllBytesAsync(StoreFile);
+        await store.WriteAsync(s => StoreWrite.Unchanged(s.Clients.ContainsKey("kept")), CancellationToken.None);
+
+        // Data Protection output is randomized, so a rewrite would change the bytes.
+        Assert.Equal(saved, await File.ReadAllBytesAsync(StoreFile));
+    }
+
+    [Fact]
     public async Task FailedWrite_LeavesPersistedStateUnchanged()
     {
         using var store = NewStore();
-        await store.WriteAsync(s => s.Clients["kept"] = Client("kept"), CancellationToken.None);
+        await store.WriteAsync(s => StoreWrite.Changed(s.Clients["kept"] = Client("kept")), CancellationToken.None);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.WriteAsync<bool>(s =>
         {
