@@ -450,12 +450,15 @@
     against the values and a new one cannot be, so it is NOT replaced: the run
     is refused, and moving scrubbed.har aside is how to say you mean it. With
     no scrubbed.har there is nothing to lose, and the scrub runs with a
-    warning -- check the result before sharing it.
+    warning -- check the result before sharing it. A capture whose
+    session.json CANNOT BE READ is treated the same way: that file is the only
+    record of whether the recorder signed in, and not knowing is not a no.
 
     A capture recorded OUTSIDE a git repository cannot be scrubbed from here
     until the folder is one: the scrub writes its substitution tables only
-    where git confirms they are ignored. The run fails and says so; `git init`
-    in the folder that holds .har-captures is the way through.
+    where git confirms they are ignored. The run fails and, while the folder
+    is still not a repository, says so; `git init` in the folder that holds
+    .har-captures is the way through.
 
     The exit code is the scrub's own: 0 when a verified scrubbed.har was
     produced, non-zero when it was not. An ADVISORY verdict is therefore 0,
@@ -972,12 +975,16 @@ function Resolve-HarCaptureSelection {
     the file aside, which is an unambiguous statement of intent and keeps the
     better artifact. With none there, there is nothing to lose and the scrub
     runs, with a warning.
+
+    A session.json that CANNOT BE READ is refused on the same terms. It is the
+    only place the sign-in is recorded, so with it unreadable the question has
+    no answer -- and "no" is the one answer that must not be assumed.
 #>
 function Get-HarCapturePhaseBlocker {
     param(
         [Parameter(Mandatory)][object]$Capture,
         [Parameter(Mandatory)][bool]$Scrubbing,
-        [Parameter(Mandatory)][bool]$SignedIn
+        [Parameter(Mandatory)][object]$Fact
     )
 
     $label = Get-HarCaptureLabel -Capture $Capture
@@ -986,16 +993,25 @@ function Get-HarCapturePhaseBlocker {
             return [pscustomobject]@{ Code = 3; Line = @(
                     "Invoke-HarCapture: $label has no raw.har, so there is nothing to scrub.") }
         }
-        if ($SignedIn -and $Capture.scrubbed) {
-            return [pscustomobject]@{ Code = 3; Line = @(
-                    "Invoke-HarCapture: $label signed in while it was recorded, and already has a scrubbed.har."
-                    '  The values the recorder filled were given to that scrub and to the leak gate, and exist'
-                    '  nowhere else. A scrub run now removes them by field name only and cannot prove them'
-                    '  gone, so it would replace a checked artifact with an unchecked one. Nothing was run.'
-                    '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.'
-                    '  -Catalogue by itself catalogues the scrubbed.har that is already there.') }
+        if (-not $Capture.scrubbed -or -not ($Fact.SignedIn -or $Fact.Unreadable)) { return $null }
+
+        $why = if ($Fact.Unreadable) {
+            @(
+                "Invoke-HarCapture: $label has a session.json that cannot be read, and already has a scrubbed.har."
+                '  session.json is where the recorder says whether it signed in for a capture. When it did,'
+                '  the values it filled were given to that scrub and to the leak gate, and exist nowhere else.')
         }
-        return $null
+        else {
+            @(
+                "Invoke-HarCapture: $label signed in while it was recorded, and already has a scrubbed.har."
+                '  The values the recorder filled were given to that scrub and to the leak gate, and exist'
+                '  nowhere else.')
+        }
+        return [pscustomobject]@{ Code = 3; Line = $why + @(
+                '  A scrub run now removes them by field name only and cannot prove them gone, so it would'
+                '  replace a checked artifact with an unchecked one. Nothing was run.'
+                '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.'
+                '  -Catalogue by itself catalogues the scrubbed.har that is already there.') }
     }
     if ($Capture.scrubbed) { return $null }
     if ($Capture.rejected) {
@@ -1037,26 +1053,41 @@ function Get-HarCapturePhaseBlocker {
     directory itself (`unprotectedTables`). The scrub re-entry point will not:
     it writes them only where git confirms they are ignored.
 
-    An unreadable session.json answers no to both. Every capture reaching here
-    has one -- the walk requires it -- so that is a damaged file, and the scrub
-    and the gate still run as they would have.
+    Unreadable -- could session.json be read as the object the recorder writes?
+    NOT KNOWING IS NOT THE SAME AS NO. Every capture reaching here has the
+    file -- the walk requires it -- so an unreadable one is torn or hand-edited,
+    and "did not sign in" is exactly the answer damage must not be able to
+    produce: it would switch off the one refusal that reads this file. So it
+    is reported as its own fact and the caller treats it as it treats a
+    sign-in. `signIn` present in any shape but `source: none` counts as signed
+    in for the same reason.
+
+    Read as a hashtable, with the indexer: a session that never signed in has
+    no `signIn` at all, and under StrictMode -- which the module command brings
+    with it -- a bare property read of something absent throws. It also reads
+    a file whose keys differ only by letter case, which Node accepts and the
+    object form does not.
 #>
 function Get-HarCaptureSessionFact {
     param([Parameter(Mandatory)][string]$Directory)
 
-    $fact = [pscustomobject]@{ SignedIn = $false; OutsideRepository = $false }
+    $fact = [pscustomobject]@{ SignedIn = $false; OutsideRepository = $false; Unreadable = $true }
     try {
-        $session = Get-Content -LiteralPath (Join-Path $Directory 'session.json') -Raw | ConvertFrom-Json
-        # Read through PSObject.Properties: a session that never signed in has
-        # no `signIn` at all, and under StrictMode -- which the module command
-        # brings with it -- a bare property read of something absent throws.
-        $signIn = $session.PSObject.Properties['signIn']
-        $source = if ($signIn -and $signIn.Value) { $signIn.Value.PSObject.Properties['source'] }
-        $fact.SignedIn = [bool]($source -and $source.Value -and "$($source.Value)" -ne 'none')
-        $tables = $session.PSObject.Properties['unprotectedTables']
-        $fact.OutsideRepository = [bool]($tables -and $tables.Value)
+        $session = Get-Content -LiteralPath (Join-Path $Directory 'session.json') -Raw -ErrorAction Stop |
+            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if ($session -is [System.Collections.IDictionary]) {
+            $signIn = $session['signIn']
+            $source = if ($signIn -is [System.Collections.IDictionary]) { "$($signIn['source'])" }
+            $fact.SignedIn = ($null -ne $signIn) -and ($source -ne 'none')
+            $fact.OutsideRepository = [bool]$session['unprotectedTables']
+            $fact.Unreadable = $false
+        }
     }
-    catch { Write-Verbose "session.json in $Directory could not be read: $($_.Exception.Message)" }
+    catch {
+        # The reason is not repeated: a JSON parse error quotes the text it
+        # stopped at, and nothing here prints what a capture's files hold.
+        Write-Verbose "session.json in $Directory could not be read."
+    }
     return $fact
 }
 
@@ -1103,7 +1134,7 @@ if ($reentering) {
     Write-Information "  at $($capture.dir)"
 
     $fact = Get-HarCaptureSessionFact -Directory $capture.dir
-    $blocker = Get-HarCapturePhaseBlocker -Capture $capture -Scrubbing ([bool]$Scrub) -SignedIn $fact.SignedIn
+    $blocker = Get-HarCapturePhaseBlocker -Capture $capture -Scrubbing ([bool]$Scrub) -Fact $fact
     if ($blocker) {
         Write-HarCaptureRefusal -Refusal $blocker
         exit $blocker.Code
@@ -1122,11 +1153,18 @@ if ($reentering) {
         # this scrub cannot check, so it belongs ahead of a summary that will
         # otherwise read as the whole verdict. (A capture that signed in AND
         # already has a scrubbed.har never gets here -- see the blocker.)
-        if ($fact.SignedIn) {
-            Write-Warning ("$label signed in while it was recorded, and the values it filled were held " +
-                'only by the recorder that made it. This scrub removes them by field name and cannot ' +
-                'prove them gone, as a scrub at recording time does -- check the new scrubbed.har for ' +
-                'them before sharing it.')
+        if ($fact.SignedIn -or $fact.Unreadable) {
+            $signedIn = if ($fact.Unreadable) {
+                "$label has a session.json that cannot be read, so nothing says whether the recorder " +
+                'signed in for it. If it did, the values it filled were held only by that recorder.'
+            }
+            else {
+                "$label signed in while it was recorded, and the values it filled were held only by " +
+                'the recorder that made it.'
+            }
+            Write-Warning ("$signedIn This scrub removes them by field name and cannot prove them " +
+                'gone, as a scrub at recording time does -- check the new scrubbed.har for them before ' +
+                'sharing it.')
         }
 
         # THE FOLDER FORM OF THE SCRUB WRAPPER, pointed at this one capture.
@@ -1164,17 +1202,32 @@ if ($reentering) {
             Write-Warning ("The scrub did not produce a verified scrubbed.har for $label -- its summary " +
                 'above says why. The raw capture is untouched.' +
                 $(if ($Catalogue) { ' Nothing was catalogued.' }))
+            # The one failure whose stated remedy cannot be followed from here.
+            # The scrub says to re-run inside the repository that owns the
+            # capture, or to pass --subs: there is no repository, and this door
+            # has no such option to pass. What CAN be done is make the folder
+            # the repository the scrub is asking for.
+            #
+            # ONLY WHILE IT IS STILL TRUE. The flag in session.json says where
+            # the capture was MADE and never changes; the folder can become a
+            # repository afterwards, and from then on a failure is about
+            # something else -- a scrub the gate rejected, a raw that will not
+            # parse. So git is asked about the folder as it is now, and the
+            # hint is kept for the case it describes. With no git to ask, the
+            # scrub could not have confirmed anything either, and it stands.
+            $insideWorkTree = $false
             if ($fact.OutsideRepository) {
-                # The one failure whose stated remedy cannot be followed from
-                # here. The scrub says to re-run inside the repository that
-                # owns the capture, or to pass --subs: there is no repository,
-                # and this door has no such option to pass. What CAN be done is
-                # make the folder the repository the scrub is asking for.
-                Write-Warning ("$label was recorded outside a git repository. The recorder placed the " +
-                    "scrub's substitution tables itself; the scrub run here writes them only where git " +
-                    'confirms they are ignored, so it refuses. Run `git init` in the folder that holds ' +
-                    '.har-captures -- the recorder already wrote a .gitignore there that keeps the store ' +
-                    'out of it -- and run this again.')
+                try {
+                    $insideWorkTree = "$(& git -C $capture.dir rev-parse --is-inside-work-tree 2>$null)".Trim() -eq 'true'
+                }
+                catch { $insideWorkTree = $false }
+            }
+            if ($fact.OutsideRepository -and -not $insideWorkTree) {
+                Write-Warning ("$label was recorded outside a git repository, and its folder still is " +
+                    "not one. The recorder placed the scrub's substitution tables itself; the scrub run " +
+                    'here writes them only where git confirms they are ignored, so it refuses. Run ' +
+                    '`git init` in the folder that holds .har-captures -- the recorder already wrote a ' +
+                    '.gitignore there that keeps the store out of it -- and run this again.')
             }
             exit $scrubExit
         }
