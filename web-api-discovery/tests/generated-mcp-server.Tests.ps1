@@ -253,8 +253,10 @@ Describe 'a server generated from a REST capture' -Skip:$script:NoDotnet {
             }
         }
         It 'logging goes to stderr' {
-            $script:CrudSession.Stderr | Should -Match 'tools/list' -Because 'the server logs each request, and stdout showed none of it'
+            # The wrapper's own log line for the call above. The store's
+            # location belongs here, for the operator, and nowhere on stdout.
             $script:CrudSession.Stderr | Should -Match ([regex]::Escape("No $($script:Crud.Name) session in")) -Because 'the missing session is logged for the operator'
+            ($script:CrudSession.StdoutLines -join "`n") | Should -Not -Match ([regex]::Escape("No $($script:Crud.Name) session in"))
         }
         It 'the server exits cleanly when the client closes its input' {
             $script:CrudSession.ExitCode | Should -Be 0

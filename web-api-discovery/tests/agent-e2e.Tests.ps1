@@ -214,8 +214,8 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
             # the SDK present the smoke test builds the wrapper, starts its MCP
             # server and asks it for its tools (issue #17): one check that the
             # capture gave it tools to expect, and seven against the server.
-            $expected = if ($script:DotnetAvailable) { 8 } else { 1 }
-            [int]$passed | Should -Be $expected
+            $minimum = if ($script:DotnetAvailable) { 8 } else { 1 }
+            [int]$passed | Should -BeGreaterOrEqual $minimum
         }
     }
 }

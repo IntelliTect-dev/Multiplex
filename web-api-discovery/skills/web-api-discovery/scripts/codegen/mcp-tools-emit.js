@@ -316,5 +316,4 @@ module.exports = {
     toolDescriptionFor,
     emitToolsFile,
     csString,
-    GRAPHQL_TOOL_NAME,
 };
