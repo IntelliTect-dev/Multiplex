@@ -343,15 +343,15 @@ try {
         const probe = (n) => 'p' + n + '%20%26%3D%2F%2B%C3%A9';
         for (const expected of [
             // No query argument supplied: the captured defaults, in order, and nothing else.
-            'Assert.Equal("/api/search/suggestions?limit=11&suggestion-type=KEYWORD&suggestion-type=WIDGET&page-type=Gateway&wc=", Assert.Single(sent).PathAndQuery);',
-            'Assert.Equal("/api/items/1/reviews?id=r-100&class=verified&filter.name=stars&client=web&page_size=20&page-size=20&ct=1", Assert.Single(sent).PathAndQuery);',
-            'Assert.Equal("/api/catalog/config?alias=aps&lop=en_US&request-id=K3QW9ZT5VB7XN2M4PD8R", Assert.Single(sent).PathAndQuery);',
-            'Assert.Equal("/api/items/search?dryRun=true&sort=price", Assert.Single(sent).PathAndQuery);',
+            'Assert.Equal("?limit=11&suggestion-type=KEYWORD&suggestion-type=WIDGET&page-type=Gateway&wc=", Assert.Single(sent).Query);',
+            'Assert.Equal("?id=r-100&class=verified&filter.name=stars&client=web&page_size=20&page-size=20&ct=1", Assert.Single(sent).Query);',
+            'Assert.Equal("?alias=aps&lop=en_US&request-id=K3QW9ZT5VB7XN2M4PD8R", Assert.Single(sent).Query);',
+            'Assert.Equal("?dryRun=true&sort=price", Assert.Single(sent).Query);',
             // Every one supplied: each value distinct, and escaped.
-            'Assert.Equal("/api/search/suggestions?limit=' + probe(1) + '&prefix=' + probe(2) +
+            'Assert.Equal("?limit=' + probe(1) + '&prefix=' + probe(2) +
                 '&suggestion-type=' + probe(3) + '&suggestion-type=p3b&page-type=' + probe(4) + '&page=' + probe(5) +
                 '&wc=' + probe(6) + '&session-id=' + probe(7) + '&_=' + probe(8) + '&last-prefix=' + probe(9) +
-                '", Assert.Single(sent).PathAndQuery);',
+                '", Assert.Single(sent).Query);',
         ]) {
             assert.ok(tests.includes(expected), 'QueryStringTests.cs must assert: ' + expected);
         }
@@ -374,7 +374,7 @@ try {
 
         const mock = fs.readFileSync(path.join(testsDir, 'MockHandler.cs'), 'utf8');
         assert.ok(/public static HttpClient FromJson\(string json, ICollection<Uri> sentTo/.test(mock), 'MockHandler records where requests went');
-        console.log('PASS: the wrapper carries tests that assert the exact path and query each endpoint sends.');
+        console.log('PASS: the wrapper carries tests that assert the exact query string each endpoint sends.');
     }
 
     // ---- The wrapper's smoke test expects the parameters in the tool's input schema ----

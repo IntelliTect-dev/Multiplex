@@ -2557,9 +2557,10 @@ the skill).
   parameters the wrapper carries `QueryStringTests.cs`: four facts per such
   endpoint -- no query argument supplied (the captured defaults) and every one
   supplied, from the client and again through the tool class -- each asserting
-  the exact path and query the HTTP handler received (`MockHandler.FromJson`
-  with a list records the request URIs). The expected strings are computed
-  from the capture, not read back from the emitted client. The generated
+  the exact query string the HTTP handler received (`MockHandler.FromJson`
+  with a list records the request URIs; the facts read `Uri.Query`, which is
+  escaped as sent). The expected strings are computed from the capture, not
+  read back from the emitted client. The generated
   README's **Query parameters** table sets out, per tool, each parameter, its
   name on the wire and what is sent when it is omitted, and marks the ones that
   are never baked in.

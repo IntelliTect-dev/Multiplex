@@ -45,9 +45,10 @@ internal static class MockHandler
     /// <summary>
     /// As <see cref="FromJson(string, HttpStatusCode)"/>, and the address of every
     /// request that reaches the handler is added to <paramref name="sentTo"/> --
-    /// so a test can assert the exact path and query string a call put on the
-    /// wire. Read <see cref="Uri.PathAndQuery"/> or <see cref="Uri.AbsoluteUri"/>,
-    /// which are escaped as sent; <see cref="Uri.ToString"/> unescapes for display.
+    /// so a test can assert the exact query string a call put on the wire. Read
+    /// <see cref="Uri.Query"/>, which is escaped as sent;
+    /// <see cref="Uri.ToString"/> unescapes for display, and would hide an
+    /// encoding mistake.
     /// </summary>
     public static HttpClient FromJson(string json, ICollection<Uri> sentTo, HttpStatusCode status = HttpStatusCode.OK)
     {

@@ -53,14 +53,16 @@ BeforeAll {
         #>
         param([Parameter(Mandatory)][string]$Body)
 
+        # The stand-in takes no arguments: it serves response.json from, and
+        # logs requests.log to, its working directory. So it gets its own.
         $dir = Join-Path ([IO.Path]::GetTempPath()) ("standin-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Force $dir | Out-Null
         $log = Join-Path $dir 'requests.log'
-        $bodyFile = Join-Path $dir 'body.json'
-        Set-Content -LiteralPath $bodyFile -Value $Body -NoNewline -Encoding utf8NoBOM
+        Set-Content -LiteralPath (Join-Path $dir 'response.json') -Value $Body -NoNewline -Encoding utf8NoBOM
 
         $startInfo = [System.Diagnostics.ProcessStartInfo]::new('node')
-        foreach ($argument in @($script:StandIn, $log, $bodyFile)) { $startInfo.ArgumentList.Add($argument) }
+        $startInfo.ArgumentList.Add($script:StandIn)
+        $startInfo.WorkingDirectory = $dir
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardInput = $true
@@ -278,7 +280,7 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
                     # 3. A constant overridden, one left out with null, a repeated
                     #    one replaced, and a value for one that is never baked in.
                     @{ method = 'tools/call'; params = @{ name = 'get_search_suggestions'; arguments = @{
-                        limit = '3'; pageType = $null; suggestionType = @('A', 'B c'); sessionId = 'fresh/1'; prefix = 'café' } } }
+                        limit = '3'; pageType = $null; suggestionType = @('A', 'B c'); sessionId = 'fresh/1'; prefix = "caf$([char]0xE9)" } } }
                     # 4. An endpoint captured once, with nothing supplied.
                     @{ method = 'tools/call'; params = @{ name = 'get_catalog_config'; arguments = @{} } }
                     # 5. A path parameter beside query parameters whose names needed changing.
@@ -497,7 +499,9 @@ Describe 'a capture whose query names and values are hostile to C# source' -Skip
     # C# ends a line at (U+0085, U+2028, U+2029), braces, comment and XML
     # delimiters and an emoji; and, as names, C# keywords, names the generated
     # methods and tests already use, an empty name, names with nothing usable in
-    # them and two 120-character names that differ in the 121st.
+    # them and two 120-character names that differ in the 121st. One endpoint's
+    # PATH is spelled the way .NET rewrites (%c3%a9 becomes %C3%A9, %7E becomes
+    # ~): the query facts compare the query string, not the path.
     #
     # A capture is text a website wrote. Every one of these is written into a
     # string literal, an attribute, a `///` comment and a test, and none may
@@ -526,8 +530,8 @@ Describe 'a capture whose query names and values are hostile to C# source' -Skip
     }
     It 'its query facts pass: every name and value reaches the wire as captured' {
         $script:HostileTests.ExitCode | Should -Be 0 -Because $script:HostileTests.Output
-        $script:HostileTests.Total | Should -Be 8 -Because 'four facts for each of the two endpoints'
-        $script:HostileTests.Passed | Should -Be 8
+        $script:HostileTests.Total | Should -Be 12 -Because 'four facts for each of the three endpoints'
+        $script:HostileTests.Passed | Should -Be 12
     }
     It 'no generated source line is ended by a character the capture supplied' {
         # CR, U+0085, U+2028 and U+2029 end a line in C#. The generator writes

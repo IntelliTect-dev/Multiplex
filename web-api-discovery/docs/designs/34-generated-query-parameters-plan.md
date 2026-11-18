@@ -135,9 +135,10 @@ two wire names give one identifier, and capped at 48 characters.
   parameters): four facts per endpoint -- the client called with no query
   argument (the captured defaults) and with every parameter supplied (each a
   distinct value that needs encoding), and the same two through the tool class.
-  Each asserts the exact path and query that reached the handler. The expected
-  strings are computed by the generator from the capture, not read back from
-  the emitted client. It is a file of its own because `ClientTests.*` and
+  Each asserts the exact query string that reached the handler (`Uri.Query`:
+  .NET rewrites a path it considers equivalent, `%7E` to `~`, so the path is
+  left out of the comparison). The expected strings are computed by the
+  generator from the capture, not read back from the emitted client. It is a file of its own because `ClientTests.*` and
   `ToolsTests.cs` are one fact per endpoint / per tool, and it is rendered in
   JavaScript (`query-emit.js`) like the tool class is, so no template and no
   `{{Token}}` is added.
