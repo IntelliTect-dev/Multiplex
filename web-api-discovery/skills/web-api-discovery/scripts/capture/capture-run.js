@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * WHICH RUN MADE A CAPTURE (issue #26).
+ * WHICH RUN MADE A CAPTURE (issue #26, carried over from web-api-discovery#53).
  *
  * The capture store is shared and append-only, and several sessions record
  * into it at once. Nothing in a capture said which of them made it: directory
@@ -94,13 +94,29 @@ const TOKEN_LENGTH = 12;
 /** How many ancestors are read. A real chain is five to ten deep. */
 const MAX_DEPTH = 16;
 /**
- * How long a lookup may take before the capture carries on without a run.
+ * How long a lookup may run before it is given up on.
  *
- * Generous on purpose: the lookup is started early and awaited only when
- * `session.json` is first written, by which time a browser has been launched.
- * Measured at about 3 s on a machine running several agent sessions at once.
+ * A minute, because NOTHING WAITS FOR IT that long: recording starts after
+ * `DEFAULT_GRACE_MS` at most, and a run that arrives later is written in then
+ * (`settleRunIdentity`). The lookup itself was measured at 2-3 s on a machine
+ * running several agent sessions at once. It is the NOTICING that is slow: the
+ * recorder was busy for up to 10 s around it, and a ten-second limit that was
+ * also awaited left two real recordings of four without a run (`afterLimit`).
  */
-const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_TIMEOUT_MS = 60000;
+/**
+ * How long the START of a recording waits for its run.
+ *
+ * Usually not at all: the lookup has been running since before the browser was
+ * launched. This is the most a slow lookup can cost an operator who is sitting
+ * in front of a browser that has opened and not yet navigated.
+ */
+const DEFAULT_GRACE_MS = 5000;
+/**
+ * How many turns of the event loop a time limit yields before it is final.
+ * See `afterLimit`.
+ */
+const LOOP_TURNS = 4;
 
 const BASIS_TERMINAL = 'terminal';
 const BASIS_PROCESS = 'process';
@@ -115,7 +131,11 @@ const REASONS = Object.freeze({
     UNSUPPORTED: 'process ancestry is not read on this platform',
     TIMED_OUT: 'reading the process ancestry took too long',
     FAILED: 'the process ancestry could not be read',
-    NO_INVOKER: 'no invoking process could be identified'
+    NO_INVOKER: 'no invoking process could be identified',
+    // What a recording that started before its lookup finished says in the
+    // meantime. It is replaced when the lookup settles; it is what stays only
+    // if the recording ended first.
+    NOT_YET: 'the process ancestry had not been read when this was written'
 });
 
 /**
@@ -343,14 +363,51 @@ function chainReaderFor(platform) {
 }
 
 /**
+ * A time limit that cannot beat something which had already finished.
+ *
+ * FOUND BY RECORDING FOR REAL. `Promise.race([work, timer])` looks right and is
+ * wrong for a process that does synchronous work: when the event loop comes
+ * back from being busy, an expired timer and a child process that exited
+ * seconds ago are BOTH waiting, and timers are served first. The limit then
+ * "wins" against an answer that was sitting there, and a lookup that took two
+ * seconds is recorded as having taken too long.
+ *
+ * The recorder is such a process. Measured: its start-up -- the git and npm
+ * probes, mostly -- is one synchronous stretch during which the event loop does
+ * not turn at all, 5 to 10 s long on a machine with several sessions running,
+ * and the lookup is started in the middle of it.
+ *
+ * So an expired limit is not final until the loop has turned a few times --
+ * long enough for an exit, the end of its output and the close that follows to
+ * be noticed, which happen in later phases of the same turn and the next.
+ *
+ * NOT unref'd. A timer nothing holds open lets a process whose only pending
+ * work is the lookup exit with the question unanswered, silently, status 0.
+ */
+function afterLimit(ms) {
+    let timer;
+    let cancelled = false;
+    const expired = new Promise((resolve) => {
+        const turn = (left) => {
+            if (cancelled) return;
+            if (left === 0) resolve();
+            else setImmediate(() => turn(left - 1));
+        };
+        timer = setTimeout(() => turn(LOOP_TURNS), ms);
+    });
+    return { expired, cancel() { cancelled = true; clearTimeout(timer); } };
+}
+
+/**
  * Start finding out which run this process belongs to.
  *
  * ALWAYS RESOLVES, NEVER REJECTS, and never takes longer than the timeout. A
  * capture is a browser session somebody is about to drive by hand; it is not
- * delayed or failed because its run could not be read. It records that it
- * could not, and why, and carries on.
+ * failed because its run could not be read. It records that it could not, and
+ * why.
  *
- * Called early and awaited late -- see where `capture-har.js` uses it.
+ * Called early and settled late -- see `settleRunIdentity`, and where
+ * `capture-har.js` uses the two.
  */
 function beginRunIdentity(options = {}) {
     const pid = options.pid || process.pid;
@@ -359,24 +416,52 @@ function beginRunIdentity(options = {}) {
     const readChain = options.readChain || chainReaderFor(options.platform || process.platform);
     if (!readChain) return Promise.resolve(unidentified(REASONS.UNSUPPORTED));
 
-    // NOT unref'd. The race below always settles within the timeout and clears
-    // this, so it holds nothing open for long -- and an unref'd timer lets a
-    // process whose only pending work is this lookup exit with the question
-    // unanswered, silently and with status 0.
-    let timer;
-    const timedOut = new Promise((resolve) => {
-        timer = setTimeout(() => resolve(unidentified(REASONS.TIMED_OUT)), timeoutMs);
-    });
-    const read = Promise.resolve()
-        .then(() => readChain(pid, { timeoutMs }))
+    const limit = afterLimit(timeoutMs);
+    // STARTED HERE, in this call, not a microtask later: "asked now" has to
+    // mean the lookup is running before the caller goes on to anything else.
+    let reading;
+    try { reading = Promise.resolve(readChain(pid, { timeoutMs })); } catch (e) { reading = Promise.reject(e); }
+    const read = reading
         .then((chain) => resolveRun(chain, { stdinIsTty }))
         .catch((e) => unidentified(e && e.timedOut ? REASONS.TIMED_OUT : REASONS.FAILED));
-    return Promise.race([read, timedOut]).finally(() => clearTimeout(timer));
+    return Promise.race([read, limit.expired.then(() => unidentified(REASONS.TIMED_OUT))])
+        .finally(() => limit.cancel());
+}
+
+/**
+ * The run to write NOW, without holding a recording up for it.
+ *
+ * `pending` is what `beginRunIdentity` returned. If it has settled, or settles
+ * within the grace period, that is the answer and `onLate` is never called. If
+ * it has not, the answer for now is `{ id: null, reason: NOT_YET }` and
+ * `onLate` is called ONCE with the real one when it arrives -- which is where
+ * the caller writes it into the record it has already started.
+ *
+ * WHY NOT SIMPLY WAIT. The first version did, for ten seconds, and then gave
+ * up: on a busy machine two real recordings of four were written with no run
+ * at all. Waiting longer would have held a person in front of a browser that
+ * had opened and not navigated. A run that arrives a few seconds into a
+ * recording is worth exactly as much as one that was there at the start.
+ *
+ * `onLate` THROWING IS SWALLOWED. It writes a file; a full disk at that moment
+ * must not become an unhandled rejection that ends a recording in progress.
+ */
+function settleRunIdentity(pending, onLate, options = {}) {
+    const graceMs = options.graceMs !== undefined ? options.graceMs : DEFAULT_GRACE_MS;
+    const grace = afterLimit(graceMs);
+    const waited = {};
+    return Promise.race([pending, grace.expired.then(() => waited)]).then((run) => {
+        grace.cancel();
+        if (run !== waited) return run;
+        pending.then((late) => { try { onLate(late); } catch (e) { void e; } });
+        return unidentified(REASONS.NOT_YET);
+    });
 }
 
 module.exports = {
     newCaptureId,
     beginRunIdentity,
+    settleRunIdentity,
     resolveRun,
     isShell,
     tokenFor,

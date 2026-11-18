@@ -11,8 +11,8 @@
 // laptop and FAILS in CI, where a suite that goes quiet is a suite that lies.
 //
 // FALSIFIERS (fail before this change, pass after):
-//   E1  a recording's session.json carries a capture id and a run from the
-//       moment it starts -- and the run is the one ANOTHER child of the same
+//   E1  a recording's session.json carries a capture id and a run record from
+//       its first write -- and the run is the one ANOTHER child of the same
 //       invoking process resolves for itself
 //   E2  `status` reports both
 //   E3  the walk over the store reports both
@@ -22,6 +22,8 @@
 //   E6  a capture recorded before this change is still found, and is reported
 //       as having neither -- by the walk and by `status`
 //   E7  nothing sensitive is in what was recorded
+//   E8  a recording whose lookup is slow starts anyway, says the run is not
+//       known yet, and has it written in when it arrives
 
 'use strict';
 
@@ -37,6 +39,7 @@ const captureRun = require(path.join(__dirname, 'capture-run.js'));
 const captureJs = path.join(__dirname, 'capture-har.js');
 const storeJs = path.join(__dirname, 'capture-store.js');
 const HEADLESS_PRELOAD = path.join(__dirname, 'capture-native-headless.test-support.js');
+const SLOW_LOOKUP_PRELOAD = path.join(__dirname, 'capture-run-slow-lookup.test-support.js');
 const LEAF = path.join(__dirname, 'capture-run.test-support.js');
 
 const kit = createE2eKit('capture-run-identity-');
@@ -44,8 +47,9 @@ const kit = createE2eKit('capture-run-identity-');
 const TOKEN = /^[0-9a-f]{12}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const READ_HERE = process.platform === 'linux' || process.platform === 'win32';
-// The one description both recordings carry: the measured case was three
-// captures by one session that all read the same.
+const NOT_YET = captureRun.REASONS.NOT_YET;
+// The one description every recording here carries: the measured case was
+// three captures by one session that all read the same.
 const DESCRIBE = 'run identity: load the fixture page';
 
 const queued = [];
@@ -96,22 +100,28 @@ function sessionDirs(repo) {
 }
 
 /**
- * One whole recording: start, wait until it is recording, read what it wrote
- * at the start, end it with a separate `stop` the way an agent does, and
- * collect the recorder's own stdout.
+ * One whole recording: start, read the FIRST session.json it writes, wait for
+ * its run to be settled and for the page to be recorded, ask `status`, end it
+ * with a separate `stop` the way an agent does, and collect its stdout.
+ *
+ * `atStart` is the first write. `settled` is the session once its run is no
+ * longer "not known yet" -- on an ordinary machine those are the same write;
+ * on one busy enough that the lookup is still going they are not, and E8 makes
+ * that happen on purpose.
  */
-async function recordOnce(repo, uri, site) {
+async function recordOnce(repo, uri, site, options = {}) {
     const before = new Set(sessionDirs(repo));
     const hitsBefore = site.hits;
-    const recorder = spawn(process.execPath, [
-        '-r', HEADLESS_PRELOAD, captureJs, 'start',
+    const preloads = [HEADLESS_PRELOAD].concat(options.preloads || []);
+    const recorder = spawn(process.execPath, preloads.flatMap((p) => ['-r', p]).concat([
+        captureJs, 'start',
         '--uri', uri,
         '--describe', DESCRIBE,
         '--browser', 'native',
         '--profile', path.join(repo, '.chrome-profile'),
         '--snapshot-seconds', '1',
         '--no-wait'
-    ], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: kit.driverEnv() });
+    ]), { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: kit.driverEnv() });
     let out = '';
     let err = '';
     recorder.stdout.on('data', (d) => { out += d; });
@@ -132,6 +142,15 @@ async function recordOnce(repo, uri, site) {
         }
         assert.ok(atStart, `no capture session appeared under ${repo}\n${err}`);
         browserPid = atStart.browserPid;
+        const sessionFile = path.join(sessionDir, 'session.json');
+
+        let settled = null;
+        await kit.waitFor(() => {
+            const doc = kit.readJson(sessionFile);
+            if (doc && doc.run && doc.run.reason !== NOT_YET) settled = doc;
+            return !!settled;
+        }, 120000);
+        assert.ok(settled, `the run was never settled in session.json: ${JSON.stringify(atStart.run)}\n${err}`);
 
         // The page has to have been asked for and logged, or there is no
         // recording to post-process and no completion line to read.
@@ -148,7 +167,8 @@ async function recordOnce(repo, uri, site) {
         return {
             sessionDir,
             atStart,
-            atEnd: kit.readJson(path.join(sessionDir, 'session.json')),
+            settled,
+            atEnd: kit.readJson(sessionFile),
             status: JSON.parse(status.stdout),
             recorderStdout: out,
             recorderStderr: err
@@ -171,36 +191,44 @@ function completeLine(stdout) {
     return null;
 }
 
+/** A local page, and how often it has been asked for. */
+async function fixtureSite() {
+    const { server, uri } = await kit.fixtureServer();
+    const site = { hits: 0, uri, close: () => server.close() };
+    server.on('request', () => { site.hits++; });
+    return site;
+}
+
 test('E1-E7: a real recording says which run made it, everywhere the session is surfaced', async () => {
     const repo = kit.makeRepo('run-identity');
     if (kit.blockedOrSkipped('E1-E7', kit.integrationBlocker(repo))) return;
 
-    const { server, uri } = await kit.fixtureServer();
-    const site = { hits: 0 };
-    server.on('request', () => { site.hits++; });
+    const site = await fixtureSite();
+    const uri = site.uri;
     try {
         const sibling = await siblingIdentity();
         const first = await recordOnce(repo, uri, site);
 
-        // E1 -- at the START, not only once it is over.
+        // E1 -- from the FIRST write, not only once it is over.
         assert.match(String(first.atStart.captureId), UUID,
-            `session.json has no capture id from the moment recording starts: ${JSON.stringify(
+            `session.json has no capture id from its first write: ${JSON.stringify(
                 { captureId: first.atStart.captureId, run: first.atStart.run })}`);
         assert.ok(first.atStart.run && typeof first.atStart.run === 'object',
-            'session.json has no run record from the moment recording starts');
+            'session.json has no run record from its first write');
+        assert.strictEqual(first.settled.captureId, first.atStart.captureId);
         if (READ_HERE) {
-            assert.match(String(first.atStart.run.id), TOKEN,
-                `this platform is read, so the recording has a run: ${JSON.stringify(first.atStart.run)}`);
-            assert.strictEqual(first.atStart.run.id, sibling.run.id,
+            assert.match(String(first.settled.run.id), TOKEN,
+                `this platform is read, so the recording has a run: ${JSON.stringify(first.settled.run)}`);
+            assert.strictEqual(first.settled.run.id, sibling.run.id,
                 'the recorder and another child of the same invoking process are one run: ' +
-                JSON.stringify({ recorder: first.atStart.run, sibling: sibling.run }));
-            assert.ok(['terminal', 'process', 'shell'].includes(first.atStart.run.basis));
+                JSON.stringify({ recorder: first.settled.run, sibling: sibling.run }));
+            assert.ok(['terminal', 'process', 'shell'].includes(first.settled.run.basis));
         } else {
-            assert.deepStrictEqual(first.atStart.run, { id: null, reason: captureRun.REASONS.UNSUPPORTED });
+            assert.deepStrictEqual(first.settled.run, { id: null, reason: captureRun.REASONS.UNSUPPORTED });
         }
-        assert.strictEqual(first.atEnd.captureId, first.atStart.captureId, 'the identity does not change as it ends');
-        assert.deepStrictEqual(first.atEnd.run, first.atStart.run);
-        const runId = first.atStart.run.id;
+        assert.strictEqual(first.atEnd.captureId, first.atStart.captureId, 'the capture id does not change as it ends');
+        assert.deepStrictEqual(first.atEnd.run, first.settled.run, 'nor does a run, once it is known');
+        const runId = first.settled.run.id;
 
         // E2 -- `status`.
         assert.strictEqual(first.status.captureId, first.atStart.captureId);
@@ -215,7 +243,7 @@ test('E1-E7: a real recording says which run made it, everywhere the session is 
         // E5 -- again, by the same process, described identically.
         const second = await recordOnce(repo, uri, site);
         assert.strictEqual(second.atStart.describe, first.atStart.describe);
-        assert.strictEqual(second.atStart.run.id, runId, 'one invoking process, one run');
+        assert.strictEqual(second.settled.run.id, runId, 'one invoking process, one run');
         assert.match(String(second.atStart.captureId), UUID);
         assert.notStrictEqual(second.atStart.captureId, first.atStart.captureId,
             'two recordings that read the same are still two captures');
@@ -258,7 +286,46 @@ test('E1-E7: a real recording says which run made it, everywhere the session is 
         const allowed = first.atEnd.run.id === null ? ['id', 'reason'] : ['basis', 'id', 'lineage'];
         assert.deepStrictEqual(Object.keys(first.atEnd.run).sort(), allowed);
     } finally {
-        server.close();
+        site.close();
+    }
+});
+
+test('E8: a recording whose lookup is slow starts anyway, and its run is written in when it arrives', async () => {
+    // FOUND BY RECORDING FOR REAL. The first version waited for the lookup and
+    // then gave up, and on a busy machine two recordings of four were written
+    // with no run at all. Waiting longer would hold up somebody sitting in
+    // front of a browser that has opened and not navigated. So the recording
+    // starts, the session says the run is not known yet, and it is written in
+    // when it is.
+    const repo = kit.makeRepo('run-identity-slow');
+    if (kit.blockedOrSkipped('E8', kit.integrationBlocker(repo))) return;
+
+    const site = await fixtureSite();
+    try {
+        const sibling = await siblingIdentity();
+        const slow = await recordOnce(repo, site.uri, site, { preloads: [SLOW_LOOKUP_PRELOAD] });
+
+        assert.match(String(slow.atStart.captureId), UUID, 'the capture id never waits for anything');
+        assert.deepStrictEqual(slow.atStart.run, { id: null, reason: NOT_YET },
+            'the recording started before its lookup answered, and its first write must say so: ' +
+            JSON.stringify(slow.atStart.run));
+
+        assert.strictEqual(slow.settled.captureId, slow.atStart.captureId);
+        if (READ_HERE) {
+            assert.match(String(slow.settled.run.id), TOKEN, JSON.stringify(slow.settled.run));
+            assert.strictEqual(slow.settled.run.id, sibling.run.id,
+                'the run that arrived late is the one this process\'s other children resolve');
+        } else {
+            assert.deepStrictEqual(slow.settled.run, sibling.run);
+        }
+        assert.deepStrictEqual(slow.atEnd.run, slow.settled.run, 'and it is still there when the recording ends');
+
+        const line = completeLine(slow.recorderStdout);
+        assert.ok(line, `the recorder printed no completion line:\n${slow.recorderStderr}`);
+        assert.strictEqual(line.runId, slow.settled.run.id, 'the completion line carries the run that arrived');
+        assert.strictEqual(slow.status.runId, slow.settled.run.id);
+    } finally {
+        site.close();
     }
 });
 
