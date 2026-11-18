@@ -198,13 +198,28 @@ test('G4: nothing is ever killed -- not the child, and nothing in capture-har.js
     control.end('end');
     await done;
     assert.strictEqual(fake.state.kills, 0);
-    // And the source: the one kill() that used to be here is gone.
-    const source = fs.readFileSync(path.join(__dirname, 'capture-har.js'), 'utf8');
-    assert.ok(!/proc\.kill\(|\.kill\(\)/.test(source), 'no child.kill() anywhere in the recorder');
-    for (const m of source.matchAll(/process\.kill\(([^)]*)\)/g)) {
-        assert.match(m[1], /,\s*0\s*$/, `process.kill(${m[1]}) must be a liveness probe (signal 0)`);
+    // And the source: the one kill() that used to be here is gone -- from the
+    // recorder AND from every module it runs a pause or a hand-over through.
+    for (const file of ['capture-har.js', 'capture-pause.js', 'mirror.js', 'agent-stream.js', 'pacing.js']) {
+        const source = fs.readFileSync(path.join(__dirname, file), 'utf8');
+        assert.ok(!/proc\.kill\(|\.kill\(\)/.test(source), `no child.kill() anywhere in ${file}`);
+        for (const m of source.matchAll(/process\.kill\(([^)]*)\)/g)) {
+            assert.match(m[1], /,\s*0\s*$/, `${file}: process.kill(${m[1]}) must be a liveness probe (signal 0)`);
+        }
+        assert.ok(!/SIGKILL|SIGTERM|taskkill/.test(source), `no terminating signal in ${file}`);
     }
-    assert.ok(!/SIGKILL|SIGTERM|taskkill/.test(source));
+    // The terminate paths that remain are TIMEOUTS ON SHORT CLIS the recorder
+    // itself started to ask a question -- `tailscale status --json` in
+    // mirror.js, and the agent's `--version` probe in capture-har.js: spawnSync
+    // ends that child if it hangs. Never the agent, never the browser. Pinned
+    // by name, so a new one is a decision rather than a drift.
+    const timed = [];
+    for (const file of ['capture-har.js', 'mirror.js', 'capture-pause.js', 'agent-stream.js']) {
+        const source = fs.readFileSync(path.join(__dirname, file), 'utf8');
+        for (const m of source.matchAll(/spawnSync\(([^)]*?),[^;]*?timeout:/gs)) timed.push(`${file}: ${m[1].trim()}`);
+    }
+    assert.deepStrictEqual(timed.sort(), ['capture-har.js: AGENT_CLAUDE', 'mirror.js: exe'],
+        'spawnSync with a timeout only for the agent probe and the tailscale CLI');
 });
 
 test('G5: the step log is readable text; the raw events go beside it', async () => {
