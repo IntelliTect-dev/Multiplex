@@ -87,9 +87,9 @@
  * ## An agent can drive it, and the prompt is generated (#98)
  *
  * `--ai` hands the browsing to an agent while this process goes on recording.
- * It implies `--browser native`, because a browser Playwright launched is a
- * browser the sites worth driving an agent at refuse (the table above), so an
- * agent driving one would be driving the refusal.
+ * It implies `--browser native`, because the agent browses in the ordinary
+ * Chrome a person would use -- one the person can watch and take over -- not
+ * in a test-automation launch (see the table above for what that launch met).
  *
  * `--describe` BECOMES THE GOAL. It is already required (#366), so the switch
  * needs no new input: the prompt is assembled from drive-prompt.md, this run's
@@ -620,8 +620,9 @@ const LAUNCH_TIMEOUT_MS = 45000;
 const CDP_PROBE_MS = 1500;
 const PORT_SCAN_LIMIT = 64;
 // The two ways a browser can come to exist for a recording (#73). The default
-// is unchanged; `native` exists because Playwright's launch is DETECTABLE and
-// protected sites refuse it outright -- see the measured table at the top.
+// is unchanged; `native` records in an ordinary Chrome with no automation
+// flags, where Playwright's is a test-automation launch -- see the measured
+// table at the top.
 const BROWSER_PLAYWRIGHT = 'playwright';
 const BROWSER_NATIVE = 'native';
 const BROWSER_MODES = [BROWSER_PLAYWRIGHT, BROWSER_NATIVE];
@@ -1544,13 +1545,13 @@ function discoverStorageState(startDir, stopAt) {
 function resolveBrowserMode(args) {
     // `--ai` MOVES THE DEFAULT (#98), it does not add a third mode.
     //
-    // An agent driving a Playwright-launched browser is an agent driving the one
-    // launch the protected sites in the table above refuse outright -- which are
-    // the sites `--ai` was built for. So the implication is part of the switch
-    // rather than something the operator has to remember to type, and the two
-    // combinations that contradict it are refused below rather than resolved by
-    // precedence. Precedence here would silently record in the browser the
-    // operator was avoiding, and the evidence would be a 403 an afternoon later.
+    // An agent browses in the ordinary Chrome a person would use, one they can
+    // watch and take over -- not in a test-automation launch. So the implication
+    // is part of the switch rather than something the operator has to remember
+    // to type, and the two combinations that contradict it are refused below
+    // rather than resolved by precedence. Precedence here would silently record
+    // in the browser the operator chose not to use, and the evidence would be a
+    // 403 an afternoon later.
     const ai = !!args.ai;
     const asked = args.browser === undefined
         ? (ai ? BROWSER_NATIVE : BROWSER_PLAYWRIGHT)
@@ -1565,15 +1566,15 @@ function resolveBrowserMode(args) {
     if (ai && args.isolated) {
         return {
             error: '--ai and --isolated are exclusive. --isolated launches Playwright\'s bundled' +
-                '\n  Chromium, which IS the launch a protected site refuses -- and an agent ' +
-                'driving\n  that browser is an agent driving the refusal'
+                '\n  Chromium, a test-automation launch -- and an agent browses in an ordinary ' +
+                'Chrome\n  with no automation flags, one a person can watch and take over'
         };
     }
     if (ai && asked !== BROWSER_NATIVE) {
         return {
             error: `--ai and --browser ${asked} are exclusive: --ai implies --browser native.` +
-                '\n  Playwright\'s launch is detectable and the sites worth driving an agent at ' +
-                'refuse\n  it, so there would be nothing to drive'
+                '\n  An agent browses in an ordinary Chrome with no automation flags, one a ' +
+                'person\n  can watch and take over, not in a test-automation launch'
         };
     }
     const attaching = args.attach !== undefined;
@@ -1581,7 +1582,8 @@ function resolveBrowserMode(args) {
         if (asked === BROWSER_NATIVE && args.isolated) {
             return {
                 error: '--browser native and --isolated are exclusive. --isolated launches ' +
-                    "Playwright's\n  bundled Chromium, which IS the launch a protected site refuses"
+                    "Playwright's\n  bundled Chromium, a test-automation launch -- the opposite of " +
+                    'an ordinary Chrome'
             };
         }
         return { browser: asked, attached: false };
@@ -3139,8 +3141,8 @@ function chromeExtensionNotice(session) {
  *
  * `--ai` with no agent to run is UNANSWERABLE, so it is a refusal rather than a
  * warning that falls back to a recording nobody is driving: the operator asked
- * for a capture to be driven, and a browser sitting open on a bot-protected site
- * with nothing happening in it is not a lesser version of that.
+ * for a capture to be driven, and a browser sitting open on the site with
+ * nothing happening in it is not a lesser version of that.
  */
 function resolveAgent(ctx = {}) {
     if (!ctx.ai) return {};
@@ -4946,8 +4948,8 @@ async function start(args) {
     // the same reason the preflight itself sits above everything else: this is
     // the other gate whose answer makes the rest pointless. An operator left with
     // a Chrome open, a profile warmed up and no driver has to clean up after a run
-    // that could never have worked -- and on the protected sites this mode exists
-    // for, that browser was the expensive part.
+    // that could never have worked -- and that browser, signed in on its
+    // capture profile, was the expensive part.
     //
     // Not enforced under --validate-only either, and for the same reason asked
     // there by startGateVerdict rather than skipped.

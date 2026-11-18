@@ -306,9 +306,9 @@ test('N3: every unanswerable flag combination is a usage error, not a guess', ()
     const repo = makeRepo('exclusivity');
     plantOperatorProfile(repo);
     const cases = [
-        // --isolated is bundled Chromium on a throwaway profile, which IS the
-        // launch a protected site refuses. Honouring one flag while the operator
-        // typed both would record in the browser they were avoiding, and the
+        // --isolated is bundled Chromium on a throwaway profile, a test-automation
+        // launch. Honouring one flag while the operator typed both would record
+        // in the browser they chose not to use, and the
         // evidence would be a 403 they then spend an afternoon on.
         { args: ['--browser', 'native', '--isolated'], match: /exclusive/i },
         { args: ['--attach', '9222', '--isolated'], match: /exclusive/i },
@@ -389,7 +389,7 @@ test('N5: the native launch carries NO automation flags', () => {
     // failure says WHY it matters.
     const forbidden = /automation|blink-features|headless|disable-extensions|disable-gpu|remote-allow-origins|load-extension/i;
     for (const a of args) {
-        assert.ok(!forbidden.test(a), `${a} is an automation marking -- a site reads it and refuses`);
+        assert.ok(!forbidden.test(a), `${a} is an automation flag -- the native launch is an ordinary Chrome with none`);
     }
 
     // about:blank ON PURPOSE: the site is navigated to after the attach, so its
