@@ -52,6 +52,9 @@ skills/web-api-discovery/
 │       ├── run-agent.js             # orchestrator: scrub -> verify -> detect -> generate
 │       ├── generate-wrapper.js      # typed client + PowerShell module + MCP server
 │       ├── mcp-tools-emit.js        # the MCP tool class: one tool per endpoint, with its hints
+│       ├── query-params.js          # an endpoint's query parameters: what varied, what is the
+│       │                            #   default, and what is never baked in (scrubbed, nonce)
+│       ├── query-emit.js            # ...written into the client, the tools, the README and the tests
 │       ├── tests-emit.js            # xUnit + Pester scaffold
 │       ├── sln-emit.js              # deterministic .slnx
 │       ├── secret-gate-emit.js      # gitleaks hook + workflows
