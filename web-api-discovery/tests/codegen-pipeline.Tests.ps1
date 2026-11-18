@@ -125,7 +125,7 @@ Describe 'pacing + throttling handler in the generated client' {
     }
     It 'the MCP server registers the options and builds the client with them' {
         $mcp = Get-Content (Join-Path $script:ProjDir 'McpProgram.cs') -Raw
-        $mcp | Should -Match 'AddSingleton\(_ => PacingOptions\.FromEnvironment\(\)\)'
+        $mcp | Should -Match 'var pacing = PacingOptions\.FromEnvironment\(\);\s+builder\.Services\.AddSingleton\(pacing\);' -Because 'read before the host is built (agent-e2e Stage 7b runs it)'
         $mcp | Should -Match 'sp\.GetRequiredService<PacingOptions>\(\)'
     }
     It 'the generated README tells a consumer how the client paces and how to tune it' {

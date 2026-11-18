@@ -146,6 +146,41 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
         }
     }
 
+    Context 'Stage 7b -- the built MCP server reads its pacing options at startup' {
+        It 'a malformed pacing variable fails the server as it starts, not on the first tool call' {
+            if (-not $script:DotnetAvailable) {
+                Set-ItResult -Skipped -Because "dotnet SDK not available"
+                return
+            }
+            $csproj = Join-Path $script:RestOut 'src/MyWrapper/MyWrapper.csproj'
+            $built = & dotnet build $csproj --nologo -v:q 2>&1 | Out-String
+            $LASTEXITCODE | Should -Be 0 -Because $built
+            $dll = Join-Path $script:RestOut 'src/MyWrapper/bin/Debug/net10.0/MyWrapper.dll'
+            Test-Path $dll | Should -BeTrue
+            # stdin closed at once: a server that STARTED would read end-of-input
+            # and exit 0, which is what a lazily-read option let it do.
+            $psi = [System.Diagnostics.ProcessStartInfo]::new('dotnet')
+            $psi.ArgumentList.Add($dll)
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.Environment['MYWRAPPER_PACING_MAX_ATTEMPTS'] = 'lots'
+            $server = [System.Diagnostics.Process]::Start($psi)
+            try {
+                $server.StandardInput.Close()
+                $stderr = $server.StandardError.ReadToEndAsync()
+                $null = $server.StandardOutput.ReadToEndAsync()
+                $server.WaitForExit(120000) | Should -BeTrue -Because 'the server must not keep running on a bad value'
+                $server.ExitCode | Should -Not -Be 0 -Because "the server must refuse to start.`n$($stderr.Result)"
+                $stderr.Result | Should -Match 'MYWRAPPER_PACING_MAX_ATTEMPTS must be a whole number'
+            } finally {
+                if (-not $server.HasExited) { $server.Kill($true) }
+                $server.Dispose()
+            }
+        }
+    }
+
     Context 'Stage 8 -- dotnet test of emitted test project' {
         It 'all emitted [Fact] tests pass' {
             if (-not $script:DotnetAvailable) {

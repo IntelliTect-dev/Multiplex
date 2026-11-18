@@ -2300,8 +2300,9 @@ the site said:
 The defaults come from `PacingOptions.FromEnvironment()`, which reads
 `<NAME>_PACING_MIN_SPACING_MS`, `_JITTER_MS`, `_MAX_CONCURRENCY`,
 `_MAX_ATTEMPTS`, `_MAX_RETRY_AFTER_SECONDS`, `_RETRY_METHODS`
-(`GET,HEAD,PUT`) and `_USER_AGENT`, refusing a value it cannot parse. The MCP server registers
-those options and builds the client with them. Code passes a `PacingOptions` to
+(`GET,HEAD,PUT`) and `_USER_AGENT`, refusing a value it cannot parse. The MCP server reads
+those options as it starts, before its host is built -- so a bad value stops it
+there, not on the first tool call -- and builds the client with them. Code passes a `PacingOptions` to
 the `(session, pacing, innerHandler, log)` constructor; the
 `(session, HttpClient)` overload stays a bring-your-own pipeline, which is what
 the per-endpoint fixture tests use.

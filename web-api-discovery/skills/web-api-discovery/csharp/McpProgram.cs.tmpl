@@ -36,8 +36,11 @@ builder.Services.AddSingleton<SessionCredentials>(sp =>
 // Polite by default: one request at a time, spaced out, a site's Retry-After
 // honoured, retries only for GET/HEAD, and a block never retried. Tuned through
 // the {{ProjectName}}_PACING_* environment variables (PacingOptions.FromEnvironment),
-// read once at startup so a bad value fails the server here, not mid-call.
-builder.Services.AddSingleton(_ => PacingOptions.FromEnvironment());
+// read once at startup -- here, before the host is built, rather than in a
+// factory the first tool call would run -- so a bad value fails the server
+// here, not mid-call.
+var pacing = PacingOptions.FromEnvironment();
+builder.Services.AddSingleton(pacing);
 builder.Services.AddSingleton(sp => new {{ProjectName}}Client(
     sp.GetRequiredService<SessionCredentials>(),
     sp.GetRequiredService<PacingOptions>(),
