@@ -126,6 +126,7 @@ Describe "Codegen integration: emits test project" {
             'Without_Retry_After_it_backs_off_exponentially_with_jitter',
             'Retries_that_run_out_surface_a_throttled_exception',
             'A_Retry_After_longer_than_the_cap_is_surfaced_not_waited_or_cut_short',
+            'The_handlers_own_backoff_is_never_taken_for_a_wait_the_site_asked_for',
             'POST_is_never_retried_even_when_listed',
             'PUT_and_DELETE_are_retried_only_when_configured',
             'A_block_from_the_edge_is_never_retried',

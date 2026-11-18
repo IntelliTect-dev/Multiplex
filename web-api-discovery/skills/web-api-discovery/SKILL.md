@@ -2280,7 +2280,9 @@ the site said:
   thing twice. `MaxAttempts` (3) counts the first.
 - **A `Retry-After` longer than `MaxRetryAfter` (60 s) is not waited out and not
   cut short**: the request fails with `<Name>ThrottledException` carrying the
-  value, and so does any request made before that time passes.
+  value, and so does any request made before that time passes. Only what the
+  **site** names counts against `MaxRetryAfter`: the handler's own backoff is
+  waited out and never refuses a request.
 - **When retries run out**, `<Name>ThrottledException` (an
   `HttpRequestException`) says what was throttled, how many attempts were made
   and what the site asked for.
