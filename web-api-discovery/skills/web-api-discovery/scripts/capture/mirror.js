@@ -24,9 +24,12 @@
  *   - The link carries a long random token, and is SINGLE-USE. The first
  *     browser to open it is given the one cookie this server issues -- random,
  *     HttpOnly, SameSite=Strict -- and the token is spent: from then on the
- *     page, the live stream and input all need that cookie, and anything
- *     without it (a second holder of the link: a transcript, a log, a link
- *     preview) is a bare 404, as is every other path. So ONE BROWSER AT A TIME
+ *     page, the live stream and input all need that cookie. Without it (a
+ *     second holder of the link: a transcript, a log, a link preview), the
+ *     spent link gets a one-line page saying it was already opened on another
+ *     device -- so a person reopening it knows why -- and nothing more; the
+ *     stream, input and every other path, a wrong or unknown token above all,
+ *     are a bare 404. So ONE BROWSER AT A TIME
  *     holds for the whole hand-over, and the cookie is a credential, not a
  *     label. The browser holding it may reload and reconnect.
  *   - `tailscale serve` is deliberately not used: it writes persistent
@@ -313,6 +316,28 @@ function notFound(res) {
     res.end('Not found');
 }
 
+const SPENT_TEXT = 'This link was already opened on another device. Use that device, or the terminal on the PC.';
+
+/**
+ * The GENUINE link, already spent, opened by a browser that does not hold it.
+ * Said, so the person reopening it knows why it does not work -- and nothing
+ * more: no script, no link, nothing about the capture. A wrong or unknown
+ * token is never told even this; it gets the bare 404.
+ */
+function spentPage(res) {
+    res.writeHead(410, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-frame-options': 'DENY',
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+        'content-security-policy': "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    });
+    res.end('<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Link already used</title>' +
+        `</head><body><p>${SPENT_TEXT}</p></body></html>`);
+}
+
 /**
  * Start the phone view.
  *
@@ -379,7 +404,7 @@ async function startMirror(opts) {
                 claim = newSecret();
                 res.setHeader('set-cookie', `hm=${claim}; Path=${prefix}; HttpOnly; SameSite=Strict`);
             } else if (!holder(req)) {
-                notFound(res);
+                spentPage(res);
                 return;
             }
             const nonce = crypto.randomBytes(16).toString('base64');

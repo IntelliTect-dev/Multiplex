@@ -863,8 +863,10 @@ not sent). Then the browser is yours, still open and still recording:
   token and is **single-use**: the first browser to open it is given the one
   cookie the view issues (random, HttpOnly, SameSite=Strict) and the link is
   spent. Anything else holding the link -- a transcript, a log, a link preview
-  -- gets a bare 404, as does every request without that cookie, so **one
-  browser** holds the view for the whole hand-over. Open the link once, in the
+  -- gets one line and nothing more: "This link was already opened on another
+  device. Use that device, or the terminal on the PC." Every other request
+  without that cookie, and any wrong link, gets a bare 404, so **one browser**
+  holds the view for the whole hand-over. Open the link once, in the
   browser you mean to use; that browser may reload the page and reconnect. **An
   AI session relaying the link passes it on as text and never opens, fetches or
   previews it**: whatever opens it first holds it, and nobody else can.

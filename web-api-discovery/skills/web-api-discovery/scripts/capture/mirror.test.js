@@ -14,9 +14,11 @@
 //   T3  it listens ONLY on the address it was given
 //   T4  the link is SINGLE-USE: without the token every request is a bare
 //       404; the first browser to open it gets the one cookie the server
-//       issues, and the link is spent -- a second holder gets 404 for the
-//       page, the stream and input; a cookie the server never issued is
-//       nobody; the browser that holds it can reload and reconnect
+//       issues, and the link is spent -- a second holder gets a one-line
+//       "already opened on another device" page (410) and nothing else, and
+//       404 for the stream and input; a wrong token is still a bare 404; a
+//       cookie the server never issued is nobody; the browser that holds it
+//       can reload and reconnect
 //   T5  frames: the screencast starts, each frame is acknowledged and reaches
 //       the phone; closing stops the screencast, ends the page and stops
 //       listening
@@ -259,7 +261,7 @@ function streamStatus(url, cookie) {
     });
 }
 
-test('T4: the link is single-use -- the first browser holds the one cookie, and everyone else gets a bare 404', async () => {
+test('T4: the link is single-use -- the first browser holds the one cookie; a second holder is told it was spent', async () => {
     const view = await mirror.startMirror({ host: '127.0.0.1', cdp: fakeCdp() });
     try {
         assert.ok(view.token.length >= 43, 'a long random token (32 bytes)');
@@ -287,17 +289,31 @@ test('T4: the link is single-use -- the first browser holds the one cookie, and 
         const a = setCookie.split(';')[0];
 
         // A SECOND HOLDER OF THE LINK -- a transcript, a log, scrollback -- gets
-        // nothing: not the page, not a cookie, not the stream, not input.
+        // nothing: not the page, not a cookie, not the stream, not input. The
+        // GENUINE link, spent, says so -- and nothing beyond that -- so a person
+        // who reopens it knows why it does not work.
         const second = await request(view.url);
-        assert.strictEqual(second.status, 404, 'the link is spent');
-        assert.strictEqual(second.body, 'Not found');
+        assert.strictEqual(second.status, 410, 'the link is spent');
+        assert.match(second.body,
+            /This link was already opened on another device\. Use that device, or the terminal on the PC\./);
+        assert.doesNotMatch(second.body, /<script|<form|<a\b|<img|href=|src=/i, 'a page that reveals nothing beyond itself');
+        assert.ok(!second.body.includes(view.token), 'not even the token it was asked with');
+        assert.match(second.headers['content-security-policy'], /default-src 'none'/);
+        assert.strictEqual(second.headers['cache-control'], 'no-store');
         assert.ok(!second.headers['set-cookie'], 'and no cookie');
+        // A WRONG or unknown token is still a bare 404, spent link or not.
+        for (const p of [`/m/${wrong}/`, '/m/', `/m/${view.token}x/`]) {
+            const r = await request(origin + p);
+            assert.strictEqual(r.status, 404, `${p.replace(view.token, '<token>')} after the link was spent`);
+            assert.strictEqual(r.body, 'Not found');
+        }
         // A cookie this server never issued is nobody, whatever its shape.
         const forged = `hm=${'A'.repeat(43)}`;
         assert.strictEqual(await streamStatus(view.url + 'events', forged), 404, 'a forged cookie is nobody');
         assert.strictEqual(await streamStatus(view.url + 'events', 'hm=guess'), 404);
         assert.strictEqual((await post(view, forged, { t: 'text', v: 'x' })).status, 404, 'nor can it type');
-        assert.strictEqual((await request(view.url, { headers: { cookie: forged } })).status, 404);
+        assert.strictEqual((await request(view.url, { headers: { cookie: forged } })).status, 410,
+            'a forged cookie on the page gets the spent page, never the view');
 
         // THE BROWSER THAT HOLDS IT can reload the page and reconnect the
         // stream -- a phone back from another app -- and it alone gives input.
@@ -314,7 +330,7 @@ test('T4: the link is single-use -- the first browser holds the one cookie, and 
         rewatch.close();
         // Even with the holder's stream closed, the link stays spent.
         await settle();
-        assert.strictEqual((await request(view.url)).status, 404);
+        assert.strictEqual((await request(view.url)).status, 410);
         assert.strictEqual(await streamStatus(view.url + 'events', forged), 404);
     } finally {
         await view.close();
