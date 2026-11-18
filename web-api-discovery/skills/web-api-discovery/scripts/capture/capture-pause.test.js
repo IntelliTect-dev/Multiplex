@@ -38,6 +38,9 @@
 //       who was driving; handing back records who handed back
 //   P4  the record never carries the query string, and the summary counts
 //       pauses, hand-overs and the time they took
+//   P5  a pause cut short (a hand-over) does not keep a LATER pause's held
+//       request waiting until the cancelled pause's original end -- real
+//       timers, the paced drain through a real pacer
 
 'use strict';
 
@@ -413,6 +416,54 @@ test('P3: a hand-over cuts a pause short and drops the hold; handing back record
     pause.handOver(monitor.observe(challenge) || decision, 'agent');
     const ended = pause.end('terminal');
     assert.strictEqual(ended.outcome, 'ended');
+});
+
+test('P5: a pause cut short by a hand-over does not keep a LATER pause\'s requests held to its original end', async () => {
+    // The reviewer's sequence, on real timers at a small scale. Pause 1 holds
+    // two requests; the first goes on and draws another 429, so pause 2 (5 s)
+    // starts while the second waits its turn in the paced drain -- asleep in
+    // the pacer, in pause 2. A check hands over: pause 2 is cut short. The
+    // person hands back. Pause 3 (300 ms) holds a request. It must go when
+    // pause 3 ends -- not when pause 2 would have.
+    const ctx = fakeContext();
+    const pacer = pacing.createPacer({ navigation: [0, 0], action: [300, 300], perMinute: 0 });
+    const hold = createSiteHold({ install: ctx.install, uninstall: ctx.uninstall, holds: () => true,
+        space: () => pacer.beforeAction() });
+    const pause = createCapturePause({ hold, pacer });
+    const named = (ms) => ({ action: 'pause', waitMs: ms, named: true, signal: throttle(ms) });
+    const log = [];
+    const at = {};
+    const request = (name) => ctx.request(`https://www.example.com/${name}`, log)
+        .then(() => { at[name] = Date.now(); });
+
+    pause.pause(named(200), 'agent');
+    await hold.settled();
+    const a = request('a');
+    const b = request('b');
+    // A goes on when pause 1 ends -- and draws another 429: pause 2, 5 s.
+    assert.ok(await waitUntil(() => log.includes('continue https://www.example.com/a'), 5000), `A never went: ${log}`);
+    pause.pause(named(5000), 'agent');
+    await sleep(400);   // B is now asleep in the pacer, in pause 2
+    assert.ok(!log.some((l) => l.includes('/b')), `B went inside pause 2: ${log}`);
+    // A check: a person takes over, cutting pause 2 short. Then hands back.
+    pause.handOver({ action: 'hand-over', why: 'challenge', signal: { kind: 'challenge', status: 200,
+        url: 'https://www.example.com/', retryAfterMs: null, signature: 'a check' } }, 'agent');
+    await b;
+    assert.ok(log.includes('abort https://www.example.com/b blockedbyclient'), `B is aborted on the hand-over: ${log}`);
+    pause.resume('phone');
+
+    // PAUSE 3, 300 ms, holds C.
+    pause.pause(named(300), 'agent');
+    await hold.settled();
+    const started = Date.now();
+    const c = request('c');
+    assert.ok(await waitUntil(() => at.c, 8000), `C was never sent: ${log}`);
+    await c;
+    const tookMs = at.c - started;
+    assert.ok(log.includes('continue https://www.example.com/c'));
+    assert.ok(tookMs < 2500,
+        `C went ${tookMs} ms into pause 3 (300 ms) -- held towards pause 2's cancelled end, not pause 3's own`);
+    await a;
 });
 
 test('P4: no query string in the record, and the summary counts pauses, hand-overs and time', () => {

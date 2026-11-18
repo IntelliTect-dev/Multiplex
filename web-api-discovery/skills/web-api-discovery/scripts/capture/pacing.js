@@ -169,6 +169,28 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
     let navChain = Promise.resolve();
     let actChain = Promise.resolve();
     const waits = [];
+    // Steps asleep in a pause, each with the function that wakes it.
+    const sleepers = new Set();
+
+    /**
+     * Sleep through (part of) a pause -- CUT SHORT by resumeNow(). A pause can
+     * be a named wait of up to a day; one that a person ended early (taking
+     * over, or handing back) must not keep a step asleep to its original end,
+     * and with it everything queued behind that step.
+     */
+    function sleepInPause(ms) {
+        return new Promise((resolve) => {
+            let timer = null;
+            const wake = () => {
+                if (!sleepers.delete(wake)) return;
+                if (timer) clearTimeout(timer);
+                resolve();
+            };
+            sleepers.add(wake);
+            if (opts.sleep) Promise.resolve(sleep(ms)).then(wake, wake);
+            else timer = setTimeout(wake, ms);
+        });
+    }
 
     function ceilingWait(t) {
         if (!pace.perMinute) return 0;
@@ -186,10 +208,15 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
         const pause = Math.max(0, pausedUntil - t);
         const wait = Math.max(gap, ceiling, pause);
         waits.push({ kind, wait, gap, ceiling, pause });
-        if (wait > 0) await sleep(wait);
-        // A pause that was EXTENDED while this step slept (the site asked for
-        // longer) is waited out too: a step never starts inside a pause.
-        while (pausedUntil > now()) await sleep(pausedUntil - now());
+        // The pace's own wait first -- a person between two steps, never
+        // hurried -- then whatever is left of a pause, which resumeNow() cuts
+        // short.
+        const paced = Math.max(gap, ceiling);
+        if (paced > 0) await sleep(paced);
+        // A pause that began, or was EXTENDED, while this step slept (the site
+        // asked for longer) is waited out too: a step never starts inside a
+        // pause.
+        while (pausedUntil > now()) await sleepInPause(pausedUntil - now());
     }
 
     function serialize(kind, fn) {
@@ -221,11 +248,14 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
             return pausedUntil;
         },
         /**
-         * End a pause early. A step already asleep finishes its sleep -- a
-         * person handing back is rarely a matter of milliseconds -- but no
-         * step waits on the pause from here on.
+         * End a pause early -- a person took over, or handed back. A step
+         * asleep in the pause is WOKEN and goes on now (its pace gap was
+         * already waited); no step waits on the pause from here on.
          */
-        resumeNow() { pausedUntil = 0; },
+        resumeNow() {
+            pausedUntil = 0;
+            for (const wake of [...sleepers]) wake();
+        },
         pausedUntil: () => pausedUntil,
         /** Every wait taken, for tests and the verbose log. */
         waits: () => waits.slice()
