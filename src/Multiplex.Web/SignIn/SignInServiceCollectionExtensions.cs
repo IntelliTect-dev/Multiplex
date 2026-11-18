@@ -36,6 +36,7 @@ public static class SignInServiceCollectionExtensions
         services.TryAddSingleton<SiteSessionRefresher>();
         services.TryAddSingleton<ISiteSessionRefresher>(sp => sp.GetRequiredService<SiteSessionRefresher>());
         services.TryAddSingleton<SiteProfileAdopter>();
+        services.AddHostedService<StaleProfileSweeper>();
         return new SiteSignInBuilder(services);
     }
 
