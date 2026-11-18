@@ -170,30 +170,44 @@ came out of the same finding:
 
 ## Acceptance Criteria
 
-- [ ] Every capture gets `captureId` and `run` in `session.json` when recording starts
-- [ ] `status` JSON and the `capture: complete` line carry `captureId` and `runId`
-- [ ] Two captures started by one invoking process share `run.id`; two invoking processes get different ones, interleaved or not
-- [ ] `Get-HarCapture` shows the run in objects, the table and the list view
-- [ ] Selecting by one run never returns another run's captures, nor a capture with no run
-- [ ] A capture recorded before this change is listed and labelled as having no run
-- [ ] Nothing sensitive is recorded
-- [ ] No new command-line option, switch, positional argument or environment variable
+- [x] Every capture gets `captureId` and `run` in `session.json` when recording starts
+- [x] `status` JSON and the `capture: complete` line carry `captureId` and `runId`
+- [x] Two captures started by one invoking process share `run.id`; two invoking processes get different ones, interleaved or not
+- [x] `Get-HarCapture` shows the run in objects, the table and the list view
+- [x] Selecting by one run never returns another run's captures, nor a capture with no run
+- [x] A capture recorded before this change is listed and labelled as having no run
+- [x] Nothing sensitive is recorded
+- [x] No new command-line option, switch, positional argument or environment variable
+- [x] A slow lookup neither holds a recording up nor costs it its run
 
 ## Implementation Checklist
 
-- [ ] `scripts/capture/capture-run.js` -- the rule (`resolveRun`), the readers
-      (Linux `/proc`, Windows `pwsh`), `beginRunIdentity`, `newCaptureId`
-- [ ] `scripts/capture/capture-run.test.js` -- the rule over injected chains,
-      the readers' parsing, and two real interleaved invoking processes
-- [ ] `capture-har.js` -- one require, one kickoff, the at-start write,
+- [x] `scripts/capture/capture-run.js` -- the rule (`resolveRun`), the readers
+      (Linux `/proc`, Windows `pwsh`), `beginRunIdentity`, `settleRunIdentity`,
+      `newCaptureId`
+- [x] `scripts/capture/capture-run.test.js` -- the rule over injected chains,
+      the readers' parsing, the limits under a busy event loop, and two real
+      interleaved invoking processes (`capture-run.test-support.js`)
+- [x] `capture-har.js` -- one require, one kickoff, the at-start write,
       `status()`, the complete line
-- [ ] `scripts/capture/capture-run-identity.test.js` -- one real recording
-      against a local page: `session.json`, `status`, the complete line, the walk
-- [ ] `capture-store.js` + `capture-store.test.js` -- carry the identity
-- [ ] `Get-HarCapture.ps1`, `HarCapture.Format.ps1xml`, `tests/HarCaptureList.Tests.ps1`
-- [ ] `Remove-HarCapture.ps1`, `tests/HarCaptureRemove.Tests.ps1`
-- [ ] `Invoke-HarCapture.ps1`, `tests/har-recording.Tests.ps1`
-- [ ] `SKILL.md`
+- [x] `scripts/capture/capture-run-identity.test.js` -- real recordings
+      against a local page: `session.json`, `status`, the complete line, the
+      walk, and one whose lookup is withheld
+      (`capture-run-slow-lookup.test-support.js`)
+- [x] `capture-store.js` + `capture-store.test.js` -- carry the identity
+- [x] `Get-HarCapture.ps1`, `HarCapture.Format.ps1xml`, `tests/HarCaptureList.Tests.ps1`
+- [x] `Remove-HarCapture.ps1`, `tests/HarCaptureRemove.Tests.ps1`
+- [x] `Invoke-HarCapture.ps1`, `tests/har-recording.Tests.ps1`
+- [x] `SKILL.md`, both READMEs
+
+## Not done here
+
+- macOS and other platforms record `run: { id: null, reason }`; a `ps`-based
+  reader is not written, because it could not be run here.
+- Windows without PowerShell 7 records no run. The Windows PowerShell 5.1 route
+  to the same answer goes through WMI and took 5-15 s where it was measured.
+- The Linux reader has been run only against a constructed `/proc` on the
+  machine this was written on; its real-process cases run first in CI.
 
 ## Test commands
 
