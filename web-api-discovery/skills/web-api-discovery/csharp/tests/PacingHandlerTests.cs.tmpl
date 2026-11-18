@@ -486,6 +486,50 @@ public class PacingHandlerTests
             () => edge.Http.GetAsync(Url, HttpCompletionOption.ResponseHeadersRead));
     }
 
+    /// <summary>
+    /// A 403 whose Content-Type names a charset .NET does not know, with its length known up front or not.
+    /// </summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> BogusCharset403(byte[] body, bool lengthKnown) => _ =>
+    {
+        HttpContent content = lengthKnown ? new ByteArrayContent(body) : new StreamContent(new UnknownLengthStream(body));
+        content.Headers.TryAddWithoutValidation("Content-Type", "application/json; charset=bogus");
+        var response = new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = content };
+        response.Headers.TryAddWithoutValidation("x-datadome", "protected");
+        return response;
+    };
+
+    [Fact]
+    public async Task A_403_naming_an_unknown_charset_reaches_the_caller_with_its_body()
+    {
+        // Looking for a block must not cost the caller its 403: a charset the
+        // runtime cannot decode is the caller's to deal with, not the handler's.
+        var body = System.Text.Encoding.UTF8.GetBytes("{\"error\":\"sign in required\"}");
+        foreach (var lengthKnown in new[] { true, false })
+        {
+            var rig = Build(Unspaced, 0.5, BogusCharset403(body, lengthKnown), Succeed);
+            using var response = await rig.Http.GetAsync(Url, HttpCompletionOption.ResponseHeadersRead);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+            Assert.Equal(body, await response.Content.ReadAsByteArrayAsync());
+            Assert.Equal(1, rig.Site.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task DataDomes_JSON_block_is_a_block_whatever_charset_it_names()
+    {
+        // Its markers are ASCII: read as UTF-8, whatever the header says.
+        var body = System.Text.Encoding.UTF8.GetBytes(DataDomeBlock);
+        foreach (var lengthKnown in new[] { true, false })
+        {
+            var rig = Build(Unspaced, 0.5, BogusCharset403(body, lengthKnown), Succeed);
+            var ex = await Assert.ThrowsAsync<{{ProjectName}}BlockedException>(
+                () => rig.Http.GetAsync(Url, HttpCompletionOption.ResponseHeadersRead));
+            Assert.Equal(1, rig.Site.Calls);
+            Assert.Contains("a DataDome block", ex.Message);
+            Assert.Contains("captcha-delivery.com", ex.Message);
+        }
+    }
+
     [Fact]
     public async Task PacingOptions_None_adds_no_wait()
     {
