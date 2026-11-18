@@ -327,6 +327,11 @@ Invoke-HarCapture https://example.com -Scrub -Catalogue   # scrub, then catalogu
   pseudonym is derived from -- is the one that applies. Naming a capture by
   its directory from another repository does not scrub it with that other
   repository's profile. You are returned to the directory you ran it from.
+  That is the profile the recording used whenever the recording was run from
+  that folder, which is the ordinary case. A recording run from a subfolder
+  that had a `.har-profile.json` of its own used that one: a re-scrub then
+  uses a different profile (so different pseudonyms), or fails for want of one
+  -- keep the profile beside the store.
 * **A capture its recorder is still working on is refused.** A recorder goes
   on writing `scrubbed.har`, the digest and the catalogue for minutes after a
   recording stops; while its process is alive and it has not recorded that it
