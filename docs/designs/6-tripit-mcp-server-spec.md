@@ -202,6 +202,9 @@ metadata and the 401 challenge).
 - Refresh: on an authentication failure (302, 401, or 403 with the small HTML block page) the
   server relaunches the account's profile headless, reloads `/app/trips`, re-reads the jar,
   swaps the snapshot and retries once. One refresh per account at a time, with a cool-down.
+  A write (any non-GET) is resent only after the 403 block page, where TripIt's application
+  never saw it. A write answered 302 or 401 renews the session but is not resent: the tool
+  says the change may or may not have happened and to check before trying again.
 - If refresh shows the person is signed out (TripIt redirects to its login page), the
   account's grants are revoked. The next tool call gets an HTTP 401, Claude's refresh gets
   `invalid_grant`, and Claude shows **Connect** again — which runs the live sign-in.
@@ -235,6 +238,17 @@ human (re-sign-in, a challenge), the person is sent to it.
   user secrets / the encrypted store; compared in constant time. Generated at install if
   absent, and its location (never its value) printed.
 - Allowlist: `Multiplex:Sites:TripIt:AllowedAccounts` (emails), in local configuration only.
+  Only addresses TripIt marks `is_confirmed` exactly true count; a missing or odd flag does
+  not (fail closed).
+- Passcode tries are reserved before they are checked, so a burst of concurrent guesses
+  never gets more than the limit; a right passcode clears that caller's count.
+- Sign-in browser profiles left behind by a crash (`temp-*`, `*.old-*`) are deleted when the
+  server starts, and a signed-out account's profile is deleted with its session.
+- The OAuth store is written only when a request changed it, and holds at most 200
+  registered clients and 100 pending authorizations (10 per caller); beyond that, new ones
+  are refused rather than old ones evicted.
+- An open (no-sign-in) MCP endpoint also counts a browser request from a non-local page
+  (an `Origin` header that is not a loopback origin) as outside this PC.
 - One live browser at a time per gate session; at most two concurrent sign-in browsers.
 - Every authorization, token issue, refresh failure and destructive tool call is logged with
   client id, account id and tool name, never token, cookie or request body.
@@ -260,9 +274,15 @@ Served at `/tripit/mcp` (same names as TripItEx so existing prompts keep working
 needs a session, and Claude does not document support for it). A risky tool called without
 `confirm_token` changes nothing and returns a preview ("will delete trip *X* and its 7
 plans") plus a `confirm_token` valid for 5 minutes, bound to account, tool and the exact
-arguments. Calling again with that token performs it. The model has to show the preview to
-the person to get a meaningful second call, and both MCP hosts also prompt on
-`destructiveHint` tools.
+arguments. Calling again with that token performs it, once: a token is spent when the change
+is attempted, so a replay (for example re-sending `tripit_add_participants` invitations) is
+refused. A token presented with other arguments is refused without being spent. The record
+of spent tokens is in memory, so after a restart a token issued before it could be used once
+more within its 5 minutes. The model has to show the preview to the person to get a
+meaningful second call, and both MCP hosts also prompt on `destructiveHint` tools.
+`tripit_delete_segment` needs the plan's `type` and `objectUuid`: the preview names the plan
+and the leg, and the confirmed call re-reads the plan and deletes the leg only if it is
+still part of it.
 
 ## 7. Installing into each client
 
