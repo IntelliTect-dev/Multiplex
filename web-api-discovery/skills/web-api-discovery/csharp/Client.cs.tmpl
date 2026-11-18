@@ -162,7 +162,10 @@ public sealed partial class {{ProjectName}}Client : IDisposable
         if (!resp.IsSuccessStatusCode)
         {
             var preview = body.Length > 400 ? body[..400] + "..." : body;
-            throw new HttpRequestException($"{{ProjectName}} {path} -> {(int)resp.StatusCode}: {preview}");
+            // The status goes on the exception as well as into its text, so a
+            // caller can tell a refusal that may be about the session (a
+            // redirect, a 403) from any other without reading the message.
+            throw new HttpRequestException($"{{ProjectName}} {path} -> {(int)resp.StatusCode}: {preview}", null, resp.StatusCode);
         }
         return body;
     }
