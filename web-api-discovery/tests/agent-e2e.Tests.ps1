@@ -117,6 +117,7 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
                 'src/MyWrapper/DpapiSessionStore.cs',
                 'src/MyWrapper/UserSecretsSessionStore.cs',
                 'src/MyWrapper/McpProgram.cs',
+                'src/MyWrapper/ToolSession.cs',
                 'README.md',
                 '.gitleaks.toml',
                 '.githooks/pre-commit',

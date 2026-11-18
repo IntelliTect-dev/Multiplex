@@ -15,23 +15,11 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
-// Resolve a session: prefer DPAPI on Windows, fall back to user-secrets.
+// Where a signed-in session is saved: DPAPI on Windows, user-secrets elsewhere.
 builder.Services.AddSingleton<ISessionStore>(_ =>
     OperatingSystem.IsWindows()
         ? new DpapiSessionStore()
         : new UserSecretsSessionStore());
-
-builder.Services.AddSingleton<SessionCredentials>(sp =>
-{
-    var store = sp.GetRequiredService<ISessionStore>();
-    if (!store.TryLoad(out var creds))
-    {
-        throw new InvalidOperationException(
-            $"No {{ProjectName}} session found in {store.Description}. " +
-            "Run the {{ProjectName}} authenticator first.");
-    }
-    return creds;
-});
 
 // Polite by default: one request at a time, spaced out, a site's Retry-After
 // honoured, retries only for GET/HEAD, and a block never retried. Tuned through
@@ -41,11 +29,21 @@ builder.Services.AddSingleton<SessionCredentials>(sp =>
 // here, not mid-call.
 var pacing = PacingOptions.FromEnvironment();
 builder.Services.AddSingleton(pacing);
-builder.Services.AddSingleton(sp => new {{ProjectName}}Client(
-    sp.GetRequiredService<SessionCredentials>(),
-    sp.GetRequiredService<PacingOptions>(),
-    innerHandler: null,
-    sp.GetService<ILogger<{{ProjectName}}Client>>()));
+
+// The session is the opposite case: it is NOT read here. {{ProjectName}}ToolSession
+// reads the store at the first tool call and builds the client then, so the
+// server starts and lists its tools with no session saved, and never prompts
+// for one: a prompt on a stdio server would be written into the protocol
+// stream. A tool called without a session answers with an error that says so.
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<PacingOptions>();
+    var clientLog = sp.GetService<ILogger<{{ProjectName}}Client>>();
+    return new {{ProjectName}}ToolSession(
+        sp.GetRequiredService<ISessionStore>(),
+        credentials => new {{ProjectName}}Client(credentials, options, innerHandler: null, clientLog),
+        sp.GetService<ILogger<{{ProjectName}}ToolSession>>());
+});
 
 builder.Services
     .AddMcpServer()

@@ -1,0 +1,141 @@
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol;
+using {{Namespace}}.Auth;
+
+namespace {{Namespace}};
+
+/// <summary>
+/// What every MCP tool call goes through to reach {{ProjectName}}: the saved
+/// session, and the client built from it.
+/// <para>
+/// The session is read at the first tool call, not when the server starts. A
+/// server therefore starts, and lists its tools, on a machine where nobody has
+/// signed in yet. Nothing here signs in or prompts: over stdio the server's
+/// stdout carries only MCP protocol messages and its stdin belongs to the
+/// client, so a missing or expired session is the tool call's error instead.
+/// </para>
+/// <para>
+/// Only a failure the model can do something about is put into words for it --
+/// thrown as <see cref="McpException"/>, whose message the MCP SDK sends to the
+/// client. Any other exception keeps its type, and the SDK reports it without
+/// its detail.
+/// </para>
+/// </summary>
+public sealed class {{ProjectName}}ToolSession : IDisposable
+{
+    private const string NoSession =
+        "No {{ProjectName}} session is saved on this machine, so this tool cannot call {{BaseUrl}}. " +
+        "Sign in with {{ProjectName}}Authenticator (BrowserLoginAsync) and save the session it returns. " +
+        "The server reads it at the next call and does not need restarting.";
+
+    private const string ReadAgain =
+        " The server reads the saved session again at the next call and does not need restarting.";
+
+    private const string NotTheExpectedJson =
+        "{{ProjectName}} answered, but not with the JSON this tool expects: an empty answer, or a page " +
+        "where data should be. The call may still have taken effect on the site, so check before sending it again.";
+
+    private readonly ISessionStore _store;
+    private readonly Func<SessionCredentials, {{ProjectName}}Client> _createClient;
+    private readonly ILogger _log;
+    private readonly Lock _gate = new();
+    private {{ProjectName}}Client? _client;
+    private bool _disposed;
+
+    /// <param name="store">Where a signed-in session is saved. Not read here.</param>
+    /// <param name="createClient">Builds the client for a session once one is found.</param>
+    /// <param name="log">Where the store's location is logged; it is never sent to the model.</param>
+    public {{ProjectName}}ToolSession(
+        ISessionStore store,
+        Func<SessionCredentials, {{ProjectName}}Client> createClient,
+        ILogger<{{ProjectName}}ToolSession>? log = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _createClient = createClient ?? throw new ArgumentNullException(nameof(createClient));
+        _log = log ?? NullLogger<{{ProjectName}}ToolSession>.Instance;
+    }
+
+    /// <summary>
+    /// Runs one tool call against the signed-in client, reading the saved
+    /// session first if no earlier call has.
+    /// </summary>
+    /// <exception cref="McpException">
+    /// No session is saved, the session has expired, the site refused or
+    /// throttled the call, or it answered with something other than the
+    /// expected JSON.
+    /// </exception>
+    public async Task<T> RunAsync<T>(Func<{{ProjectName}}Client, Task<T>> call)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        var client = GetClient();
+        try
+        {
+            return await call(client).ConfigureAwait(false);
+        }
+        catch ({{ProjectName}}AuthenticationException ex)
+        {
+            // The saved session no longer works. Let go of the client built
+            // from it, so the next call reads the store and finds a new sign-in.
+            Forget(client);
+            throw new McpException(ex.Message + ReadAgain, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            // Throttled, blocked, or an error status: the client's message
+            // already says which, in the site's own terms.
+            throw new McpException(ex.Message, ex);
+        }
+        catch (JsonException ex)
+        {
+            throw new McpException(NotTheExpectedJson, ex);
+        }
+    }
+
+    private {{ProjectName}}Client GetClient()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_client is not null)
+            {
+                return _client;
+            }
+            if (!_store.TryLoad(out var credentials))
+            {
+                // Nothing is remembered about a miss, so a session saved while
+                // the server runs is found by the next call. The store's
+                // location names the user's profile folder: it goes to the
+                // log, and stays out of what the model is told.
+                _log.LogWarning("No {{ProjectName}} session in {Store}.", _store.Description);
+                throw new McpException(NoSession);
+            }
+            _client = _createClient(credentials);
+            return _client;
+        }
+    }
+
+    private void Forget({{ProjectName}}Client client)
+    {
+        lock (_gate)
+        {
+            // Not disposed: another call may still be using it. It holds no
+            // more than an idle connection, which the runtime closes.
+            if (ReferenceEquals(_client, client))
+            {
+                _client = null;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            _disposed = true;
+            _client?.Dispose();
+            _client = null;
+        }
+    }
+}
