@@ -998,18 +998,18 @@ function Get-HarCapturePhaseBlocker {
         $why = if ($Fact.Unreadable) {
             @(
                 "Invoke-HarCapture: $label has a session.json that cannot be read, and already has a scrubbed.har."
-                '  session.json is where the recorder says whether it signed in for a capture. When it did,'
-                '  the values it filled were given to that scrub and to the leak gate, and exist nowhere else.')
+                '  session.json is where the recorder says whether it signed in for a capture. When it'
+                '  did, the values it filled were given to that scrub and to the leak gate, and exist'
+                '  nowhere else: a scrub run now removes them by field name only and cannot prove them')
         }
         else {
             @(
                 "Invoke-HarCapture: $label signed in while it was recorded, and already has a scrubbed.har."
                 '  The values the recorder filled were given to that scrub and to the leak gate, and exist'
-                '  nowhere else.')
+                '  nowhere else: a scrub run now removes them by field name only and cannot prove them')
         }
         return [pscustomobject]@{ Code = 3; Line = $why + @(
-                '  A scrub run now removes them by field name only and cannot prove them gone, so it would'
-                '  replace a checked artifact with an unchecked one. Nothing was run.'
+                '  gone. It would replace a checked artifact with an unchecked one, so nothing was run.'
                 '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.'
                 '  -Catalogue by itself catalogues the scrubbed.har that is already there.') }
     }
