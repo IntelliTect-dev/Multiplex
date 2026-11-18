@@ -2,12 +2,12 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
 # Wrapper for the zero-dep Node behavior tests pinning issue #21 -- the runner
-# that holds the post-capture pipeline to four mechanical checks over pinned
+# that holds the post-capture pipeline to five mechanical checks over pinned
 # raw captures. Pester is the only suite CI runs, so a Node test with no
 # wrapper here is a test that never runs on a pull request.
 #
 #   pipeline-check.test.js   the runner, run as a command against synthetic
-#                            captures: the four checks, the SHA-256 pin, the
+#                            captures: the five checks, the SHA-256 pin, the
 #                            regression ratchet, and that no captured value
 #                            reaches the console or the run record.
 
