@@ -261,20 +261,67 @@ function backoffMs(attempt, opts = {}) {
 
 // The body of a block or challenge page is small; a real page that merely
 // embeds a CAPTCHA widget on a sign-in form is not. Only this much of a body
-// is ever read, and a 200 is judged as a challenge only below it.
+// is read for the signatures below, and a refusal (403, 503) is judged on them
+// only below it.
 const CHALLENGE_BODY_MAX = 64 * 1024;
 
+// A page that ANSWERED 2xx or 3xx is judged an interstitial only below this
+// much tighter bound. The vendor interstitials are a few kilobytes; an ordinary
+// page is usually far more, and a wrong call here hands over a page that loaded.
+const INTERSTITIAL_BODY_MAX = 16 * 1024;
+
+// How far into a body a DEEP signature looks (see INTERSTITIALS).
+const DEEP_SCAN_MAX = 1024 * 1024;
+
+const marker = (re) => (ctx) => re.test(ctx.text);
+
 // Signatures of bot-protection INTERSTITIALS: pages that stand in for the one
-// asked for. Each is specific to the interstitial, not to the vendor's script
-// being present -- reCAPTCHA v3 runs invisibly on ordinary sign-in pages, and
-// matching its script tag would hand over on every one of them.
-const CHALLENGE_SIGNATURES = [
-    { name: 'Cloudflare challenge', re: /cf-chl-|challenge-platform\/h\/|<title>\s*just a moment\.\.\.\s*<\/title>/i },
-    { name: 'Cloudflare block', re: /<title>\s*attention required! \| cloudflare\s*<\/title>|cf-error-details/i },
-    { name: 'DataDome CAPTCHA', re: /captcha-delivery\.com/i },
-    { name: 'PerimeterX "Press & Hold"', re: /px-captcha|press (?:&amp;|&) hold/i },
-    { name: 'Imperva', re: /_incapsula_resource|incapsula incident id/i },
-    { name: 'Akamai "Access Denied"', re: /<title>\s*access denied\s*<\/title>[\s\S]*reference\s*#\s*\d/i },
+// asked for. Each tests for a marker ONLY the interstitial carries -- never the
+// vendor's script, a preconnect to its host, or wording an ordinary page can
+// use. Those all sit on ordinary pages of a protected site: reCAPTCHA v3 runs
+// invisibly on sign-in pages, an Imperva site loads /_Incapsula_Resource
+// scripts, a Cloudflare site serves /cdn-cgi/challenge-platform/ scripts on
+// every page, and a DataDome site may preconnect to captcha-delivery.com.
+// Matching any of them handed over on a page that had loaded.
+//
+// A DEEP signature is read up to DEEP_SCAN_MAX and is exempt from the size
+// bounds: its marker is a form that posts to the vendor's own validator, and the
+// page around it is a full-size one with that form far down.
+//
+// FIXTURES (pacing.test.js): the vendor shapes are hand-written, minimal, from
+// what each interstitial is known to contain -- there is no captured vendor page
+// to test against. Amazon's checkpoint is the exception: it is derived from a
+// capture.
+const INTERSTITIALS = [
+    { name: 'Cloudflare challenge', test: marker(
+        /window\._cf_chl_opt\b|[?&]__cf_chl_(?:f_tk|jschl_tk__)=|\/cdn-cgi\/challenge-platform\/(?:h\/[a-z]\/)?orchestrate\//i) },
+    { name: 'Cloudflare block', test: marker(
+        /<title>\s*attention required! \| cloudflare\s*<\/title>|\bid\s*=\s*["']?cf-error-details\b/i) },
+    // The block page hands its parameters to the CAPTCHA in a `dd` object.
+    { name: 'DataDome CAPTCHA', test: marker(/\bvar\s+dd\s*=\s*\{[^}]*captcha-delivery\.com/i) },
+    { name: 'PerimeterX "Press & Hold"', test: marker(/\bid\s*=\s*["']?px-captcha\b/i) },
+    // The block page is an iframe onto /_Incapsula_Resource?CWUDNSAI=..., with
+    // the incident ID as its fallback text.
+    { name: 'Imperva', test: marker(/incapsula incident id|_incapsula_resource\?[^"'\s>]*\bcwudnsai=/i) },
+    { name: 'Akamai "Access Denied"', test: marker(/<title>\s*access denied\s*<\/title>[\s\S]*reference\s*#\s*\d/i) },
+    // Amazon answers a signed-out visitor it doubts with a full storefront page
+    // whose middle is a form to /checkpoint/validate: "Check the box to
+    // continue", a checkbox labelled "I am human".
+    { name: 'Amazon "Check the box to continue" checkpoint', deep: true, test: (ctx) => {
+        const page = ctx.deep();
+        const form = /<form\b[^>]*\baction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?\/checkpoint\/validate\b/i.test(page);
+        return (form || /^\/checkpoint\//i.test(ctx.path)) && /check the box to continue|\bi am human\b/i.test(page);
+    } }
+];
+
+// WORDING an ordinary page can use too: a sign-up form's "verify you are
+// human", a help page's "are you a robot?", a title naming a CAPTCHA game, an
+// app shell titled "Just a moment...". It is never a challenge on its own. It
+// counts only on a refusal -- an HTML 403 or 503 -- where the site has already
+// said no and the wording says why.
+const REFUSAL_WORDING = [
+    { name: 'a "Just a moment..." page', re: /<title>\s*just a moment\.\.\.\s*<\/title>/i },
+    { name: 'a "Press & Hold" page', re: /press (?:&amp;|&) hold/i },
     { name: 'an "unusual traffic" page', re: /unusual traffic from your (?:computer|network)|are you a robot\?/i },
     { name: 'a "verify you are human" page', re: /verify (?:that )?you are (?:a )?human/i },
     { name: 'a CAPTCHA page', re: /<title>[^<]*captcha[^<]*<\/title>/i }
@@ -286,10 +333,22 @@ const CDN_HEADERS = ['cf-ray', 'x-iinfo', 'x-cdn', 'x-datadome', 'x-akamai-trans
     'x-amz-cf-id', 'x-sucuri-id', 'x-px'];
 const CDN_SERVERS = /cloudflare|akamai|incapsula|imperva|datadome|sucuri|cloudfront|ddos-guard/i;
 
-function bodyText(body) {
+function bodyText(body, max = CHALLENGE_BODY_MAX) {
     if (body === undefined || body === null) return '';
-    if (Buffer.isBuffer(body)) return body.subarray(0, CHALLENGE_BODY_MAX).toString('utf8');
-    return String(body).slice(0, CHALLENGE_BODY_MAX);
+    if (Buffer.isBuffer(body)) return body.subarray(0, max).toString('utf8');
+    return String(body).slice(0, max);
+}
+
+/** What a signature is tested against: the body's head, its path, and (lazily) more of the body. */
+function signatureContext(r) {
+    let deep = null;
+    let path = '';
+    try { path = new URL(r.url).pathname; } catch (e) { void e; }
+    return {
+        text: bodyText(r.body),
+        path,
+        deep: () => (deep === null ? (deep = bodyText(r.body, DEEP_SCAN_MAX)) : deep)
+    };
 }
 
 function bodySize(body) {
@@ -328,11 +387,14 @@ function classifyResponse(r, nowMs = Date.now()) {
     const mime = String(r.mimeType || headerValue(headers, 'content-type') || '').toLowerCase();
     const html = mime.includes('html') || (!mime && r.isDocument);
     if (!html) return null;
-    const text = bodyText(r.body);
-    const small = bodySize(r.body) <= CHALLENGE_BODY_MAX;
-    const known = small ? CHALLENGE_SIGNATURES.find((s) => s.re.test(text)) : null;
+    const ctx = signatureContext(r);
+    const size = bodySize(r.body);
+    const small = size <= CHALLENGE_BODY_MAX;
+    const interstitial = (bound) => INTERSTITIALS.find((s) => (s.deep || size <= bound) && s.test(ctx));
 
     if (status === 403 || status === 503) {
+        const known = interstitial(CHALLENGE_BODY_MAX) ||
+            (small ? REFUSAL_WORDING.find((s) => s.re.test(ctx.text)) : null);
         if (known) return signal('blocked', `${status} ${known.name}`);
         // EDGE HEADERS ALONE are weak evidence: a CDN-fronted site puts cf-ray
         // or x-amz-cf-id on EVERY response, its own error pages included, and
@@ -347,10 +409,13 @@ function classifyResponse(r, nowMs = Date.now()) {
         }
         return null;
     }
-    // A page that answered 200 but IS an interstitial: judged on main-frame
-    // documents only, where it replaces the page that was asked for.
-    if (r.isDocument && known && status >= 200 && status < 400) return signal('challenge', known.name);
-    return null;
+    // A page that answered 2xx or 3xx but IS an interstitial: judged on
+    // main-frame documents only, where it replaces the page that was asked for,
+    // and only on markers and inside the tighter bound -- an AWS WAF script
+    // check that answers 202 and passes by itself in any browser is neither.
+    if (!r.isDocument || status < 200 || status >= 400) return null;
+    const known = interstitial(INTERSTITIAL_BODY_MAX);
+    return known ? signal('challenge', known.name) : null;
 }
 
 /**
@@ -544,6 +609,7 @@ module.exports = {
     PACE_OFF,
     DEFAULT_RETRY_AFTER_CAP_MS,
     CHALLENGE_BODY_MAX,
+    INTERSTITIAL_BODY_MAX,
     parsePace,
     describePace,
     randomBetween,

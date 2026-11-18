@@ -18,9 +18,12 @@
 //   R2  backoff is exponential with equal jitter: in [step/2, step], capped
 //   C1  429 and 503+Retry-After are throttling; a bare 503 is not
 //   C2  an HTML 403 from a CDN is a block; an application's JSON 403 is not
-//   C3  challenge interstitials are recognised; a sign-in page that merely
-//       embeds reCAPTCHA is not
+//   C3  challenge interstitials are recognised by markers only they carry; a
+//       sign-in page that merely embeds reCAPTCHA is not
 //   C4  only the SITE counts: a tracker's 429 on another host is ignored
+//   C6  an ordinary page carrying a vendor's tag or the wording is not a
+//       challenge -- nor is AWS WAF's 202 script check
+//   C7  Amazon's checkpoint is found deep in a 300 KB page
 //   M1  a throttle pauses for Retry-After, a burst is one episode
 //   M2  a throttle that persists hands over
 //   M3  throttling through a pause hands over (the agent case)
@@ -221,6 +224,80 @@ test('R2: backoff is exponential with equal jitter, and capped', () => {
 const onSite = (over) => Object.assign({ url: 'https://www.example.com/api/search', onSite: true, isDocument: false,
     headers: {} }, over);
 
+// THE VENDOR INTERSTITIALS ARE HAND-WRITTEN. There is no captured vendor page
+// to test against, so each is a minimal page shaped after what that vendor's
+// interstitial is known to carry, cut down to the marker the signature keys on
+// and a little of what surrounds it. Amazon's checkpoint (amazonCheckpointPage)
+// is the one derived from a real capture.
+const VENDOR_PAGES = {
+    Cloudflare: '<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head><body>' +
+        '<noscript><span id="challenge-error-text">Enable JavaScript and cookies to continue</span></noscript>' +
+        '<script>(function(){window._cf_chl_opt={cvId: \'3\',cZone: "www.example.com",cType: \'managed\'};' +
+        'var a=document.createElement(\'script\');' +
+        'a.src=\'/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=8a1b2c3d4e5f6789\';' +
+        'document.getElementsByTagName(\'head\')[0].appendChild(a);}());</script></body></html>',
+    DataDome: '<html><head><title>www.example.com</title></head><body style="margin:0">' +
+        '<p id="cmsg">Please enable JS and disable any ad blocker</p>' +
+        '<script data-cfasync="false">var dd={\'rt\':\'c\',\'cid\':\'AHrlqAAAAAMAexample\',\'hsh\':\'0123456789ABCDEF\',' +
+        '\'t\':\'fe\',\'s\':12345,\'host\':\'geo.captcha-delivery.com\'}</script>' +
+        '<script data-cfasync="false" src="https://ct.captcha-delivery.com/c.js"></script></body></html>',
+    PerimeterX: '<html lang="en"><head><title>Access to this page has been denied</title></head><body>' +
+        '<script>window._pxAppId = \'PXabc123\'; window._pxJsClientSrc = \'/abc123/init.js\';</script>' +
+        '<div id="px-captcha"></div><p>Press &amp; Hold to confirm you are a human (and not a bot).</p></body></html>',
+    Imperva: '<html style="height:100%"><head><META NAME="ROBOTS" CONTENT="NOINDEX, NOFOLLOW"></head>' +
+        '<body style="margin:0px;height:100%"><iframe id="main-iframe" ' +
+        'src="/_Incapsula_Resource?CWUDNSAI=24&xinfo=0-0-0&incident_id=0-0&edet=15&mth=GET" frameborder=0 ' +
+        'width="100%" height="100%">Request unsuccessful. Incapsula incident ID: 0-0</iframe></body></html>'
+};
+
+/** Ordinary page content, with no marker in it, to pad a page to a real size. */
+function storefrontFiller(bytes) {
+    const block = '<div class="a-section a-spacing-base"><span class="a-size-base a-color-base">' +
+        'Free shipping on eligible orders. Shop deals in electronics, home and kitchen.</span></div>\n';
+    return block.repeat(Math.ceil(bytes / block.length)).slice(0, bytes);
+}
+
+/**
+ * AMAZON'S CHECKPOINT, derived from a capture taken 2026-11-18 UTC: a
+ * signed-out search answered with GET /checkpoint/continue -> 200 text/html,
+ * about 300 KB, its title "Amazon.com" set by script, the form about 148 KB
+ * in. Kept verbatim: the opening of the document, and the alert and the form.
+ * Dropped: the checkpoint token (from the query string and the hidden input),
+ * the delivery location, and an opaque trailing comment. The storefront around
+ * the form is generated filler of the captured page's size.
+ */
+function amazonCheckpointPage() {
+    const head = '<!doctype html><html lang="en-us" class="a-no-js"><!-- sp:feature:head-start -->\n' +
+        '<head><script>var aPageStart = (new Date()).getTime();</script><meta charset="utf-8"/>\n' +
+        '<!-- sp:end-feature:head-start -->\n';
+    const checkpoint = '<div id="tmms-challenge" lang="en-US" class="a-container a-padding-double-large">\n' +
+        '        <div class="a-box a-alert a-alert-info a-spacing-base">\n' +
+        '    <div class="a-box-inner a-alert-container">\n' +
+        '        <i class="a-icon a-icon-alert" aria-hidden="true"></i>\n' +
+        '        <div class="a-alert-content">\n' +
+        '            <h4 role="heading" aria-level="1">Check the box to continue.</h4>\n' +
+        '        </div>\n    </div>\n</div>\n\n' +
+        '<div class="a-section">\n    <div class="a-box a-color-offset-background">\n' +
+        '        <div class="a-box-inner a-padding-extra-large">\n' +
+        '            <form method="POST" action="/checkpoint/validate" id="checkpointForm">\n' +
+        '                <input type="hidden" name="token" value="">\n' +
+        '                <div class="a-row a-spacing-large">\n' +
+        '                    <label for="continueCheck" class="a-size-medium a-text-bold">\n' +
+        '                        <input type="checkbox" id="continueCheck" name="continueCheck" value="true">\n' +
+        '                        <span>I am human</span>\n' +
+        '                    </label>\n                </div>\n\n' +
+        '                <div class="a-row">\n' +
+        '                    <span class="a-button a-button-primary a-span12" id="continueButton" aria-disabled="true">\n' +
+        '                        <span class="a-button-inner">\n' +
+        '                            <button type="submit" class="a-button-text" disabled>Continue shopping</button>\n' +
+        '                        </span>\n                    </span>\n                </div>\n' +
+        '            </form>\n        </div>\n    </div>\n</div>\n';
+    const tail = '<!-- sp:end-feature:csm:body-close -->\n</div></body></html>\n';
+    const before = 148 * 1024 - head.length;
+    return head + storefrontFiller(before) + checkpoint +
+        storefrontFiller(303 * 1024 - 148 * 1024 - checkpoint.length - tail.length) + tail;
+}
+
 test('C1: 429 and 503+Retry-After are throttling; a bare 503 is not', () => {
     const t429 = pacing.classifyResponse(onSite({ status: 429, headers: { 'retry-after': '30' } }));
     assert.strictEqual(t429.kind, 'throttled');
@@ -257,26 +334,108 @@ test('C2: an HTML 403 from a CDN is a block; an application JSON 403 is not', ()
     assert.strictEqual(pacing.classifyResponse(onSite(Object.assign({ status: 503, isDocument: true }, edgeOnly))),
         null, 'a bare HTML 503 through a CDN is an outage, not a refusal');
     assert.strictEqual(pacing.classifyResponse(onSite({ status: 403, isDocument: false, mimeType: 'text/html',
-        body: '<script src="https://geo.captcha-delivery.com/captcha/"></script>' })).kind, 'blocked',
+        body: VENDOR_PAGES.DataDome })).kind, 'blocked',
     'with a known signature a sub-resource counts');
     assert.strictEqual(pacing.classifyResponse(onSite({
         status: 200, mimeType: 'text/html', headers: { 'cf-mitigated': 'challenge' }, body: '<html></html>'
     })).kind, 'challenge');
+    // WORDING counts on a refusal: the site has already said no, and it says why.
+    const worded = pacing.classifyResponse(onSite({ status: 403, isDocument: true, mimeType: 'text/html',
+        body: '<html><body>Our systems have detected unusual traffic from your computer network.</body></html>' }));
+    assert.strictEqual(worded.kind, 'blocked');
+    assert.match(worded.signature, /unusual traffic/);
 });
 
-test('C3: challenge interstitials are recognised; a page that merely embeds reCAPTCHA is not', () => {
-    const doc = (body) => pacing.classifyResponse(onSite({ status: 200, isDocument: true, mimeType: 'text/html', body }));
-    assert.strictEqual(doc('<html><head><title>Just a moment...</title></head><script src="/cdn-cgi/challenge-platform/h/g/orchestrate"></script></html>').kind, 'challenge');
-    assert.strictEqual(doc('<html><script src="https://geo.captcha-delivery.com/captcha/"></script></html>').kind, 'challenge');
-    assert.strictEqual(doc('<html><div id="px-captcha"></div><p>Press &amp; Hold to confirm you are a human</p></html>').kind, 'challenge');
-    assert.strictEqual(doc('<html><body>Our systems have detected unusual traffic from your computer network.</body></html>').kind, 'challenge');
+test('C3: challenge interstitials are recognised by markers only they carry', () => {
+    const doc = (body, over) => pacing.classifyResponse(onSite(Object.assign(
+        { status: 200, isDocument: true, mimeType: 'text/html', body }, over)));
+    for (const [vendor, page] of Object.entries(VENDOR_PAGES)) {
+        const s = doc(page);
+        assert.ok(s && s.kind === 'challenge', `${vendor}'s interstitial, answering 200, is a challenge: ${JSON.stringify(s)}`);
+        assert.strictEqual(pacing.classifyResponse(onSite({ status: 403, isDocument: true, mimeType: 'text/html',
+            body: page })).kind, 'blocked', `${vendor}'s interstitial answering 403 is a block`);
+    }
     assert.strictEqual(doc('<html><title>Sign in</title><form><input type=password></form>' +
         '<script src="https://www.google.com/recaptcha/api.js?render=abc"></script></html>'), null,
     'reCAPTCHA v3 runs invisibly on ordinary sign-in pages; handing over on it would end every sign-in');
-    const big = '<html><title>Just a moment...</title>' + 'x'.repeat(pacing.CHALLENGE_BODY_MAX + 10) + '</html>';
-    assert.strictEqual(doc(big), null, 'a full-size page that happens to contain the words is a page, not an interstitial');
-    assert.strictEqual(pacing.classifyResponse(onSite({ status: 200, isDocument: false, mimeType: 'text/html',
-        body: '<title>Just a moment...</title>' })), null, 'a 200 is judged as an interstitial only as the main document');
+    // A PAGE THAT LOADED is judged inside a much tighter bound than a refusal.
+    const padded = VENDOR_PAGES.Cloudflare.replace('</body>',
+        `<div>${'x'.repeat(pacing.INTERSTITIAL_BODY_MAX)}</div></body>`);
+    assert.ok(Buffer.byteLength(padded) < pacing.CHALLENGE_BODY_MAX, 'the padded page is inside the refusal bound');
+    assert.strictEqual(doc(padded), null, 'a 2xx page above the interstitial bound is a page, whatever it contains');
+    assert.strictEqual(doc(padded, { status: 403 }).kind, 'blocked', 'the same page refused is judged on the larger bound');
+    assert.strictEqual(doc(VENDOR_PAGES.Cloudflare, { isDocument: false }), null,
+        'a 200 is judged as an interstitial only as the main document');
+});
+
+test('C6: an ordinary page carrying a vendor\'s tag, or the wording, is not a challenge', () => {
+    const doc = (body, over) => pacing.classifyResponse(onSite(Object.assign(
+        { url: 'https://www.example.com/', status: 200, isDocument: true, mimeType: 'text/html', body }, over)));
+    const ordinary = {
+        'Imperva\'s script on a small start page': '<html><head><title>Welcome</title>' +
+            '<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3&ns=2"></script></head>' +
+            '<body><div id="app"></div></body></html>',
+        'DataDome\'s tag and a preconnect to its CAPTCHA host': '<html><head><title>Welcome</title>' +
+            '<link rel="preconnect" href="https://geo.captcha-delivery.com">' +
+            '<script>window.ddjskey = \'0123456789ABCDEF\';</script>' +
+            '<script src="https://js.datadome.co/tags.js" async></script></head><body><div id="app"></div></body></html>',
+        'a script from DataDome\'s CAPTCHA host': '<html><script src="https://geo.captcha-delivery.com/captcha/"></script></html>',
+        'PerimeterX\'s sensor': '<html><head><title>Shop</title>' +
+            '<script src="//client.px-cloud.net/PXabc123/main.min.js" async></script></head><body><main></main></body></html>',
+        'Cloudflare\'s bot-detection script': '<html><head><title>Home</title></head><body><script>(function(){' +
+            'window.__CF$cv$params={r:\'8a1b2c3d4e5f6789\',t:\'MTcwMDAwMDAwMA==\'};var a=document.createElement(\'script\');' +
+            'a.src=\'/cdn-cgi/challenge-platform/h/b/scripts/jsd/1a2b3c4d5e6f/main.js\';' +
+            'document.getElementsByTagName(\'head\')[0].appendChild(a);})();</script></body></html>',
+        'a sign-up form that asks you to verify you are human': '<html><title>Create account</title><form>' +
+            '<label>Please verify you are human</label><div class="cf-turnstile" data-sitekey="0x4AAAAAAA"></div></form></html>',
+        'a help page about "Are you a robot?" and unusual traffic': '<html><title>Help</title><h2>Are you a robot?</h2>' +
+            '<p>If a page says it detected unusual traffic from your computer network, try again later.</p></html>',
+        'a help page about Press & Hold': '<html><title>Help</title><p>If you see Press &amp; Hold, hold the button.</p></html>',
+        'a title naming a CAPTCHA': '<html><head><title>How our CAPTCHA works</title></head><body><p>...</p></body></html>',
+        'an app shell titled "Just a moment..."': '<html><head><title>Just a moment...</title></head>' +
+            '<body><div id="root"></div><script src="/static/js/main.js"></script></body></html>',
+        'an Amazon page that says "I am human" and links to /checkpoint': '<html><head><title>Amazon.com</title></head>' +
+            '<body><p>Seen "I am human"? <a href="/checkpoint/continue">Read about our checks</a>.</p>' +
+            storefrontFiller(40 * 1024) + '</body></html>'
+    };
+    for (const [what, body] of Object.entries(ordinary)) {
+        assert.strictEqual(doc(body), null, `${what} is an ordinary page, not a challenge`);
+    }
+    // AWS WAF's script check answers 202 with a page whose script fetches a
+    // token and reloads: an ordinary browser passes it by itself, and the next
+    // page is the real one. Handing over here would hand over on Amazon's home
+    // page. (Hand-written; the capture's 202 entry was not kept.)
+    const awsWaf = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title></title>' +
+        '<script>window.awsWafCookieDomainList = [];window.gokuProps = {"key":"AQIDAHjc","iv":"A6we","context":"x"};</script>' +
+        '<script src="https://0123456789ab.edge.sdk.awswaf.com/0123456789ab/cdef01234567/challenge.js"></script></head>' +
+        '<body><div id="challenge-container"></div><script>AwsWafIntegration.checkForceRefresh().then((forceRefresh) => {' +
+        'if (forceRefresh) { AwsWafIntegration.forceRefreshToken().then(() => { window.location.reload(true); }); } else {' +
+        'AwsWafIntegration.getToken().then(() => { window.location.reload(true); }); } });</script>' +
+        '<noscript><h1>JavaScript is disabled</h1>In order to continue, we need to verify that you\'re not a robot. ' +
+        'This requires JavaScript. Enable JavaScript and then reload the page.</noscript></body></html>';
+    assert.strictEqual(doc(awsWaf, { url: 'https://www.amazon.com/', status: 202 }), null,
+        'AWS WAF\'s script check passes by itself in a browser; it is not a hand-over');
+    // The telemetry a checkpoint page sends mentions the checkpoint; it is not one.
+    assert.strictEqual(pacing.classifyResponse({ url: 'https://unagi.amazon.com/1/events/com.amazon.csm.csa.prod',
+        onSite: true, isDocument: false, status: 200, mimeType: 'application/json', headers: {}, body: '{}' }), null);
+});
+
+test('C7: Amazon\'s checkpoint is a challenge, though its form sits deep in a full-size page', () => {
+    const page = amazonCheckpointPage();
+    assert.ok(Buffer.byteLength(page) > 250 * 1024, 'the captured page is about 300 KB');
+    assert.ok(page.indexOf('/checkpoint/validate') > pacing.CHALLENGE_BODY_MAX,
+        'and the form is beyond the head of the body the other signatures read');
+    const at = (url, body = page) => pacing.classifyResponse({ url, onSite: true, isDocument: true, status: 200,
+        mimeType: 'text/html;charset=UTF-8', headers: { 'content-type': 'text/html;charset=UTF-8' },
+        body: Buffer.from(body) });
+    const s = at('https://www.amazon.com/checkpoint/continue');
+    assert.ok(s && s.kind === 'challenge', `the checkpoint must hand over: ${JSON.stringify(s)}`);
+    assert.match(s.signature, /Amazon "Check the box to continue" checkpoint/);
+    assert.strictEqual(at('https://www.amazon.com/s?k=usb+hub').kind, 'challenge',
+        'served in place of the search, the form still says what it is');
+    assert.strictEqual(at('https://www.amazon.com/s?k=usb+hub', page.replace('Check the box to continue.', '')
+        .replace('<span>I am human</span>', '<span>Continue</span>')), null,
+    'a form to /checkpoint/validate with no checkbox wording is not this interstitial');
 });
 
 test('C4: only the site counts -- a tracker\'s 429 on another host is ignored', () => {

@@ -731,7 +731,7 @@ site asking this visitor to slow down.
 | Observed | Means | What happens |
 |---|---|---|
 | `429`, or `503` with `Retry-After` | throttled | **pause** for `Retry-After` (seconds or an HTTP-date), or a backoff with jitter when it names none -- see below for what a pause can and cannot hold |
-| the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, or a known block or challenge interstitial on the site ("Just a moment...", "Press & Hold", "unusual traffic", a CAPTCHA page) | blocked / challenged | **hand over** at once |
+| the page itself as a small HTML `403` from a CDN (Cloudflare, Akamai, Imperva, DataDome, ...), `cf-mitigated: challenge`, a vendor's block or challenge interstitial on the site, recognised by a marker only that page carries (Cloudflare's challenge, DataDome's or PerimeterX's CAPTCHA, Imperva's incident page, Akamai's "Access Denied", Amazon's "Check the box to continue" checkpoint), or a `403` or `503` page that says "Just a moment...", "Press & Hold", "unusual traffic" or "verify you are human", or names a CAPTCHA | blocked / challenged | **hand over** at once |
 | throttling that persists (3 episodes in 10 minutes), throttling **through** a pause, or a `Retry-After` over 60 s | the site means it | **hand over** |
 
 **What a pause holds.** The tooling's own steps wait it out: a paced
@@ -744,7 +744,13 @@ waiting, and that is a hand-over.
 
 A burst of throttled requests on one page load is one episode, not three. A
 page that merely embeds a CAPTCHA widget (reCAPTCHA v3 runs invisibly on many
-sign-in pages) is not a challenge, and edge headers alone (`cf-ray` and the
+sign-in pages) is not a challenge. Nor is a page that loaded carrying a bot
+vendor's script or tag (a protected site serves them on every page), or the
+wording of a check -- a sign-up form's "verify you are human" -- which counts
+only on a `403` or `503`. A page that loaded is judged an interstitial only
+under 16 KB, except Amazon's checkpoint, whose form sits deep in a full
+storefront page. AWS WAF's `202` script check, which a browser passes by
+itself, is not a hand-over. Edge headers alone (`cf-ray` and the
 like, which a CDN-fronted site sends on everything) make a block only of the
 page itself answering `403` -- never of a sub-resource, and never of a `503`.
 
