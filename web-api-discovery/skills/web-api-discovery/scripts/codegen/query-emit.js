@@ -236,8 +236,29 @@ function cannedResponseFor(pattern) {
     return isList ? '[]' : '{}';
 }
 
-function queryFactsFor(tool, names) {
-    const p = tool.pattern;
+/**
+ * The endpoints that take query parameters, in the order the client declares
+ * them, each with its client method's name and its tool -- or null when it has
+ * none. Every endpoint has a client method; not every one has a tool
+ * (mcp-tools-emit.js leaves out sign-in paths, OPTIONS/HEAD and endpoints the
+ * capture showed no JSON response from). The query parameters belong to the
+ * endpoint, so they are on the client method either way, and whatever is
+ * written about them must not assume a tool.
+ */
+function endpointsWithQuery(args) {
+    const { patterns, tools, methodNameFor } = args;
+    return (patterns || [])
+        .filter((p) => (p.queryParameters || []).length > 0)
+        .map((p) => ({
+            pattern: p,
+            methodName: methodNameFor(p),
+            tool: (tools || []).find((t) => t.pattern === p) || null,
+        }));
+}
+
+function queryFactsFor(endpoint, names) {
+    const p = endpoint.pattern;
+    const methodName = endpoint.methodName;
     const parameters = p.queryParameters;
     const pathArgs = p.segments.filter((s) => s.param).map((s) => placeholderFor(s.type));
     const probes = probeArguments(parameters);
@@ -251,12 +272,12 @@ function queryFactsFor(tool, names) {
     // `~`, `%c3` to `%C3`), which a captured path may well contain.
     const fact = (suffix, target, args, expected) => [
         '    [Fact]',
-        '    public async Task ' + tool.methodName + '_' + suffix + '()',
+        '    public async Task ' + methodName + '_' + suffix + '()',
         '    {',
         '        var sent = new List<Uri>();',
         '        using var http = MockHandler.FromJson(' + canned + ', sent);',
         ...target.setup,
-        '        await ' + target.call + '.' + tool.methodName + '(' + args + ');',
+        '        await ' + target.call + '.' + methodName + '(' + args + ');',
         '        Assert.Equal(' + expected + ', Assert.Single(sent).Query);',
         '    }',
     ].join('\n');
@@ -269,12 +290,16 @@ function queryFactsFor(tool, names) {
         setup: ['        using var session = new ' + names.toolSession + '(new SavedSession(), credentials => new ' + names.client + '(credentials, http));'],
         call: 'new ' + names.tools + '(session)',
     };
-    return [
+    const facts = [
         fact('SendsTheCapturedQueryWhenNoneIsSupplied', client, pathArgs.join(', '), byDefault),
         fact('SendsEveryQueryParameterTheCallerSupplies', client, supplied, whenSupplied),
-        fact('SendsTheCapturedQueryThroughTheToolWhenNoneIsSupplied', viaTool, pathArgs.join(', '), byDefault),
-        fact('SendsEveryQueryParameterThroughTheTool', viaTool, supplied, whenSupplied),
     ];
+    // Only an endpoint that has a tool has a tool method to call.
+    if (endpoint.tool) {
+        facts.push(fact('SendsTheCapturedQueryThroughTheToolWhenNoneIsSupplied', viaTool, pathArgs.join(', '), byDefault));
+        facts.push(fact('SendsEveryQueryParameterThroughTheTool', viaTool, supplied, whenSupplied));
+    }
+    return facts;
 }
 
 function hasQuery(tool) {
@@ -285,32 +310,36 @@ function hasQuery(tool) {
  * Render QueryStringTests.cs: for every endpoint that takes query parameters,
  * the exact query string that reaches the HTTP handler -- with no query
  * argument supplied (the captured defaults) and with every one supplied, from
- * the client and through the MCP tool class.
+ * the client, and through the MCP tool class when the endpoint has a tool.
  *
  * The expected strings are computed here from the wire names and values, not
  * read back from the emitted client: a client that stops sending its query
  * still has these to fail against.
  *
  * @param {object}   args
- * @param {object}   args.opts   projectName, namespace.
- * @param {object[]} args.tools  From listTools(), with pattern.queryParameters described.
+ * @param {object}   args.opts           projectName, namespace.
+ * @param {object[]} args.patterns       The endpoints, with queryParameters described.
+ * @param {object[]} args.tools          From listTools(): the endpoints that have a tool.
+ * @param {function} args.methodNameFor  generate-wrapper.js's client method namer.
  * @returns {string|null} The file, or null when no endpoint takes a query parameter.
  */
 function emitQueryTestsFile(args) {
-    const { opts, tools } = args;
-    const withQuery = tools.filter(hasQuery);
+    const { opts } = args;
+    const withQuery = endpointsWithQuery(args);
     if (withQuery.length === 0) return null;
     const name = opts.projectName;
     const names = { client: name + 'Client', tools: name + 'Tools', toolSession: name + 'ToolSession' };
     const facts = [];
-    for (const tool of withQuery) facts.push(...queryFactsFor(tool, names));
+    for (const endpoint of withQuery) facts.push(...queryFactsFor(endpoint, names));
     return [
         '// <auto-generated>',
         '//   Emitted by web-api-discovery (scripts/codegen/query-emit.js).',
-        '//   The query string each endpoint puts on the wire. Four [Fact]s for every',
-        '//   endpoint that takes query parameters: what is sent when the caller supplies',
-        '//   none (the captured defaults) and when the caller supplies every one, from',
-        '//   the client and again through the MCP tool class. Each asserts the exact',
+        '//   The query string each endpoint puts on the wire. For every endpoint that',
+        '//   takes query parameters: what is sent when the caller supplies none (the',
+        '//   captured defaults) and when the caller supplies every one -- from the',
+        '//   client, and again through the MCP tool class when the endpoint has a tool.',
+        '//   (An endpoint the README lists as left out of the tools has a client method',
+        '//   and no tool, so it has the client\'s two facts only.) Each asserts the exact',
         '//   query string the HTTP handler received, so the names, the order, the',
         '//   encoding, repeated parameters and empty values are all pinned.',
         '//',
@@ -413,30 +442,37 @@ function whenOmitted(q) {
 }
 
 /**
- * The README's "Query parameters" section: every tool's query parameters, what
- * each is called on the wire, and what is sent when the caller omits it -- with
- * the parameters that are never baked in marked, and the reason given.
+ * The README's "Query parameters" section: every endpoint's query parameters,
+ * what each is called on the wire, and what is sent when the caller omits it --
+ * with the parameters that are never baked in marked, and the reason given. An
+ * endpoint is listed by its tool, or by its client method when it has no tool.
  *
- * @param {object[]} tools From listTools(), with pattern.queryParameters described.
- * @param {object}   opts  projectName.
+ * @param {object}   args
+ * @param {object}   args.opts           projectName.
+ * @param {object[]} args.patterns       The endpoints, with queryParameters described.
+ * @param {object[]} args.tools          From listTools(): the endpoints that have a tool.
+ * @param {function} args.methodNameFor  generate-wrapper.js's client method namer.
  * @returns {string} The section, or '' when no endpoint takes a query parameter.
  */
-function queryReadmeSection(tools, opts) {
-    const withQuery = tools.filter(hasQuery);
+function queryReadmeSection(args) {
+    const { opts } = args;
+    const withQuery = endpointsWithQuery(args);
     if (withQuery.length === 0) return '';
     const lines = [
         '### Query parameters',
         '',
-        'Each tool, and the client method it calls, takes the query parameters the capture showed for its',
-        'endpoint. Every one is optional. What is sent when a caller supplies nothing comes from what the',
-        'captured calls did:',
+        'Each client method takes the query parameters the capture showed for its endpoint, and so does',
+        'its tool. An endpoint that is left out of the tools keeps them on its client method, and is listed',
+        'here by that method. Every parameter is optional. What is sent when a caller supplies nothing comes',
+        'from what the captured calls did:',
         '',
         '| Tool | Parameter | On the wire | Sent in | When omitted |',
         '|---|---|---|---|---|',
     ];
-    for (const tool of withQuery) {
-        for (const q of tool.pattern.queryParameters) {
-            lines.push('| `' + tool.name + '` | ' + mdName(q.toolName) + ' | ' + mdName(q.wireName) + (q.repeated ? ' (repeated)' : '') +
+    for (const endpoint of withQuery) {
+        const listedAs = endpoint.tool ? '`' + endpoint.tool.name + '`' : 'no tool (`' + endpoint.methodName + '`)';
+        for (const q of endpoint.pattern.queryParameters) {
+            lines.push('| ' + listedAs + ' | ' + mdName(q.toolName) + ' | ' + mdName(q.wireName) + (q.repeated ? ' (repeated)' : '') +
                 ' | ' + q.sentIn + ' of ' + q.calls + ' | ' + whenOmitted(q) + ' |');
         }
     }
@@ -457,7 +493,7 @@ function queryReadmeSection(tools, opts) {
     lines.push('A parameter keeps its exact name on the wire. Its C# and tool name is that name in camelCase');
     lines.push('(`page-size` is `pageSize`), and values are percent-encoded when the request is built.');
     lines.push('`tests/' + opts.projectName + '.Tests/QueryStringTests.cs` asserts the exact query string each endpoint sends, and');
-    lines.push('`pester/Mcp.Tests.ps1` that the running server lists every one of these parameters in its tool\'s input schema.');
+    lines.push('`pester/Mcp.Tests.ps1` that the running server lists a tool\'s parameters in that tool\'s input schema.');
     return lines.join('\n');
 }
 
