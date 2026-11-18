@@ -2343,17 +2343,26 @@ the skill).
   The tool class has none for:
   - an endpoint with a path segment about **signing in or credentials**. A
     segment is one when, split into words (camelCase, `-`, `_` and `.` are
-    boundaries; `sign-in` and `log_out` count as one word), it has a sign-in
-    word -- `auth`, `login`, `logout`, `signin`, `signout`, `token`,
-    `session`, `oauth`, `sso`, `csrf`, `password`, `mfa`, `otp`, or
-    `authenticate`, `authorize`, `xsrf`, `totp`, `credential`; a plural `s` or
-    a version digit aside -- and every other word is one of its usual
-    companions (`refresh`, `access`, `reset`, `change`, `verify`, `callback`,
-    `user`, `current`, ...) or a number. So `auth`, `sessions`, `oauth2`,
-    `refresh-token` and `reset_password` are; `sessions-of-a-conference`,
-    `token-usage` and `authors` are not. The segments looked at are those the
-    endpoint was *captured* with, because the path matcher can fold a name
-    into a path parameter;
+    boundaries; `sign-in`, `log_out`, `sign-up`, `api-key` and `accessKeys`
+    count as one word each), it has a sign-in word -- `auth`, `login`,
+    `logout`, `signin`, `signout`, `signup`, `register`, `token`, `session`,
+    `oauth`, `saml`, `oidc`, `openid`, `sso`, `csrf`, `xsrf`, `password`,
+    `passwd`, `pwd`, `passcode`, `mfa`, `2fa`, `otp`, `totp`, `authn`,
+    `authz`, `authenticate`, `authentication`, `authorize`, `authorization`,
+    `credential`, or what a credential *store* is called by: `secret`,
+    `apikey`, `accesskey`, `jwt`, `jwks`, `cookie`; a plural `s` or a version
+    digit aside -- and every other word
+    is a number or one of its usual companions: `refresh`, `access`, `reset`,
+    `change`, `verify`, `callback`, `user`, `current`, `key`, `personal`,
+    `client`, ..., or a file extension (`json`, `php`, `aspx`, `asp`, `jsp`,
+    `html`, `htm`, `do`, `action`, `xml`, `cgi`). The segment
+    `j_security_check` is matched whole. So `auth`, `sessions`, `oauth2`,
+    `refresh-token`, `reset_password`, `session.json`, `login.php`,
+    `api-keys`, `client-secret` and `cookies` are; `sessions-of-a-conference`,
+    `token-usage`, `cookie-recipes`, `secret-santa`, `authors`,
+    `keyboard-layouts` and `keys` (`key` alone is only a companion) are not.
+    The segments looked at are those the endpoint was *captured* with,
+    because the path matcher can fold a name into a path parameter;
   - every **`OPTIONS` and `HEAD`**;
   - an endpoint **none of whose captured responses parsed as JSON**.
 
@@ -2361,7 +2370,9 @@ the skill).
   a model should be handed none of that by default. The generated README
   lists each endpoint left out, with the reason, and says how to offer one
   deliberately: write the tool in a file of your own, as another part of the
-  partial tool class. **No option turns them on.**
+  partial tool class. **No option turns them on.** When any endpoint is left
+  out the generator also says so on its console, in one line: how many, and
+  where the list is.
 - **Hints from the HTTP method and the operation.** A client reads these to
   decide whether a call needs confirming, so every tool sets all of them
   rather than inheriting the SDK's defaults (`Destructive` true, the others
@@ -2388,9 +2399,21 @@ the skill).
   - **no word of its path is a veto**: a word for changing or removing
     (`delete`, `cancel`, `update`, `set`, ...), for an action that is not "one
     more record" (`send`, `pay`, `checkout`, `transfer`, `refund`, `close`,
-    `void`, `publish`, ...), for an opaque call whose command is in the body
-    (`rpc`, `batch`, `execute`, `graphql`, `query`, ...), or for sign-in.
-    Whole words, a plural `s` aside; no evidence overrides a veto;
+    `void`, `publish`, ...), for money or a commitment (`order`, `invoice`,
+    `fund`, `donation`, `booking`, `reservation`, `subscription`, `bid`,
+    `trade`), for an opaque call whose command is in the body (`rpc`,
+    `batch`, `execute`, `graphql`, `query`, ...), or for sign-in. Whole
+    words, a plural `s` aside -- and the first three kinds **by stem** as
+    well: a word that *begins* with the stem of one of them is a veto, the
+    stem being the word without a final `e` and at least four letters long.
+    So `withdrawal`, `cancellation`, `deletion`, `removal`, `archived` and
+    `chargebacks` are vetoes. A three-letter stem is not used (`set`, `buy`,
+    `bid` and `mov` would take `settings`, `buyers`, `bidders` and `movies`),
+    except `pay`, for `payment`, `payout` and `payee`. The price is that some
+    harmless names now ask for confirmation -- `closets`, `payloads`,
+    `editors`, `publishers` -- which is the cheap way to be wrong. No evidence
+    overrides a veto: the capture does not vouch for `POST /api/payments`
+    because `/api/payments/{id}` is in it;
   - and **either the path says so** -- a whole word `create`, `add` or `new`
     -- **or the capture does**: it also holds the same path with an id
     appended, on the same host, so the path is a collection and a `POST`
@@ -2427,16 +2450,22 @@ the skill).
   `McpException`, whose message the SDK sends to the client. The last two say
   the call may still have taken effect on the site, so a write is not simply
   sent again. Any other exception is reported without its detail. The message
-  never carries the session store's path, and text that looks like a `Cookie`
-  or `Set-Cookie` header is removed from the site's error text before the
-  model sees it.
+  never carries the session store's path. Before the site's error text is
+  shown to the model, the session's own cookie values and CSRF token are
+  taken out of it by value, wherever and in whatever shape the site echoed
+  them (a value under six characters is left alone, since it cannot be told
+  from ordinary text), and then anything that looks like a `Cookie` or
+  `Set-Cookie` header.
 - **The wrapper's own smoke test starts the server.**
   `tests/<Name>.Tests/pester/Mcp.Tests.ps1` builds the wrapper, starts the
   built assembly over stdio (`McpStdio.ps1`, beside it), sends `initialize`
   and `tools/list`, and asserts the server lists every tool baked in from the
   captured endpoints, each with a description and its hints, and that stdout
-  carried only protocol messages. (A tool written by hand is listed beside
-  them and is not its business.) It lists tools and never calls one: a call
+  carried only protocol messages. A tool written by hand is listed beside
+  them and is not its business -- but the names the left-out endpoints' tools
+  would have had are baked in as well, and the suite fails if the server
+  lists one, which is what catches a sign-in tool coming back through a
+  generator regression. It lists tools and never calls one: a call
   would go to the real site. With no .NET SDK it skips the cases that need a
   server -- and **fails instead when `CI` is set**, where one passing case
   over a server that never started would be a false green. The generated
