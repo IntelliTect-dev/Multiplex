@@ -561,6 +561,12 @@ const AGENT_ACK_GRACE_MS = 30000;
 // a phone link the person may be anywhere; without an answer from it in this
 // long, the recording ends as `handed-over` and is post-processed.
 const HAND_OVER_UNATTENDED_MS = 30 * 60 * 1000;
+// HOW LONG THE ENDING WAITS FOR A PAUSE'S HOLD TO LET GO. What the browser held
+// is aborted when the recording ends, and the aborts must reach the browser
+// BEFORE this process lets go of it: a request still held when the connection
+// drops is released by the browser, and goes to the site. Bounded, because a
+// browser that no longer answers must not hold the ending hostage.
+const HOLD_SETTLE_MAX_MS = 5000;
 // HOW LONG AN AGENT TOLD "the capture has ended" IS GIVEN to end its turn, so its
 // last words reach the step log before the recorder moves on. Not waited past:
 // the recording is already over, and nothing ends the agent.
@@ -5170,12 +5176,19 @@ async function start(args) {
 
     // THE WHOLE CAPTURE PAUSES. During a pause the site's requests from this
     // capture's tabs wait in the browser -- the recorder's own steps, the
-    // agent's clicks, anything -- and go on when it ends. Only the site's: its
-    // host and subdomains, and any page load (the same requests a signal is
-    // read from). Installed for the pause, removed after it.
+    // agent's clicks, anything -- and go on when it ends, one at a time and
+    // the action pace apart. Only the site's: its host and subdomains, and any
+    // page load (the same requests a signal is read from). Installed for the
+    // pause, removed after it.
     const hold = capturePause.createSiteHold({
         install: (handler) => context.route('**/*', handler),
         uninstall: (handler) => context.unroute('**/*', handler),
+        space: () => pacer.beforeAction(),
+        onOverflow: (max) => {
+            log.warn(`capture-har: the browser is holding ${max} of this capture's requests to the site, ` +
+                'the most one pause holds.\n  Any more during this pause are aborted rather than held: the ' +
+                'site never sees them, and a page that needs one asks again.');
+        },
         // NOT SILENT: a pause announced as held that is not held is the one
         // outcome worse than either.
         onError: (e, installing) => {
@@ -5575,6 +5588,8 @@ async function start(args) {
     // itself after its current turn. Never ended by this process.
     const endedBy = { enter: 'terminal', 'ended-on-phone': 'phone' }[reason] || 'recording-ended';
     if (pauses.end(endedBy) || (session.pauses && session.pauses.length)) syncPauses();
+    // The aborts reach the browser before anything lets go of it (HOLD_SETTLE_MAX_MS).
+    await Promise.race([hold.settled(), sleep(HOLD_SETTLE_MAX_MS)]);
     if (handOver) {
         closePhoneView(handOver, 'The capture has ended; what was recorded is kept. You can close this page.');
         handOver = null;
