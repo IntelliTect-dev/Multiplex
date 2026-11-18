@@ -11,6 +11,7 @@
 //       PacingHandlerTests.cs     (the client's pacing + throttling handler)
 //       ToolSessionTests.cs       (the MCP server's lazily read session)
 //       ToolsTests.cs             (one [Fact] per MCP tool, through the tool class)
+//       QueryStringTests.cs       (the exact query each endpoint sends; only when one takes a query)
 //       ClientTests.<Group>.cs    (one per resource group; [Fact] per endpoint)
 //       pester/
 //         Mcp.Tests.ps1           (starts the server and asks it for its tools)
@@ -24,6 +25,7 @@ const path = require('path');
 
 const { pascalCase } = require('./generate-wrapper-helpers.js');
 const { listTools, listLeftOut, toolNameFor } = require('./mcp-tools-emit.js');
+const { emitQueryTestsFile, expectedQueryNames } = require('./query-emit.js');
 
 const IGNORED_PATH_PREFIXES = new Set(['api', 'v1', 'v2', 'v3', 'rest', 'graphql']);
 
@@ -113,10 +115,17 @@ function psBool(b) { return b ? '$true' : '$false'; }
 // per tool. Built from the endpoint list -- not read back from the emitted tool
 // class -- so a wrapper whose tool class is missing still expects its tools.
 function expectedToolLine(tool) {
+    // The tool's query parameters, as its inputSchema must name them (issue
+    // #34). Only on a tool that has any, so a tool without keeps the line it
+    // always had. The names are ASCII letters and digits: nothing to escape.
+    const query = expectedQueryNames(tool);
+    const queryPart = query.length > 0
+        ? '; Query = @(' + query.map((n) => '"' + n + '"').join(', ') + ')'
+        : '';
     return '        @{ Name = "' + tool.name + '"; Method = "' + tool.methodName + '"' +
         '; ReadOnly = ' + psBool(tool.hints.readOnly) +
         '; Destructive = ' + psBool(tool.hints.destructive) +
-        '; Idempotent = ' + psBool(tool.hints.idempotent) + ' }';
+        '; Idempotent = ' + psBool(tool.hints.idempotent) + queryPart + ' }';
 }
 
 function substitute(body, tokens) {
@@ -218,6 +227,17 @@ function emitTestScaffold(args) {
     const ttTmpl = fs.readFileSync(path.join(tmplDir, 'ToolsTests.cs.tmpl'), 'utf8');
     fs.writeFileSync(path.join(testProjDir, 'ToolsTests.cs'),
         substitute(ttTmpl, Object.assign({}, baseTokens, { Facts: toolFacts })));
+
+    // QueryStringTests.cs -- the exact query each endpoint puts on the wire
+    // (issue #34). A file of its own: ClientTests.* is one [Fact] per endpoint
+    // and ToolsTests.cs one per tool. Written only when some endpoint takes a
+    // query parameter, and removed when none does, so regenerating from a
+    // capture that lost its queries does not leave facts for methods that no
+    // longer take the arguments.
+    const queryTestsPath = path.join(testProjDir, 'QueryStringTests.cs');
+    const queryTests = emitQueryTestsFile({ opts, tools });
+    if (queryTests === null) fs.rmSync(queryTestsPath, { force: true });
+    else fs.writeFileSync(queryTestsPath, queryTests);
 
     // Pester -- bake the expected tools into Mcp.Tests.ps1, which starts the
     // server and compares them with what it answers to tools/list.

@@ -28,7 +28,9 @@ BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
     $script:Project = Join-Path $script:RepoRoot "src/{{ProjectName}}/{{ProjectName}}.csproj"
     # One entry per endpoint of the capture: the tool's name on the wire, the
-    # client method it calls, and the hints its HTTP method gives it.
+    # client method it calls, the hints its HTTP method gives it, and -- when the
+    # endpoint was captured with a query string -- the query parameters (Query)
+    # its input schema must list.
     $script:ExpectedTools = @(
 {{ExpectedTools}}
     )
@@ -125,6 +127,27 @@ Describe "{{ProjectName}} MCP smoke" {
                 $tool.annotations.readOnlyHint | Should -Be $expected.ReadOnly -Because "readOnlyHint of $($expected.Name)"
                 $tool.annotations.destructiveHint | Should -Be $expected.Destructive -Because "destructiveHint of $($expected.Name)"
                 $tool.annotations.idempotentHint | Should -Be $expected.Idempotent -Because "idempotentHint of $($expected.Name)"
+            }
+        }
+
+        It "lists every query parameter of an endpoint in its tool's input schema, none of them required" {
+            # An entry carries Query only when its endpoint was captured with a
+            # query string; the names are the tool's property names, in order.
+            # Without them in the schema a model cannot pass a search term, a
+            # page or a filter, and the tool asks the site for the bare path.
+            foreach ($expected in $script:ExpectedTools) {
+                if (-not $expected.ContainsKey("Query")) { continue }
+                $tool = $script:Tools | Where-Object { $_.name -eq $expected.Name }
+                $tool | Should -Not -BeNullOrEmpty -Because "the server must list $($expected.Name) ($($expected.Method))"
+                $propertiesProperty = $tool.inputSchema.PSObject.Properties["properties"]
+                $listed = if ($propertiesProperty) { @($propertiesProperty.Value.PSObject.Properties | ForEach-Object { $_.Name }) } else { @() }
+                $requiredProperty = $tool.inputSchema.PSObject.Properties["required"]
+                $required = if ($requiredProperty) { @($requiredProperty.Value) } else { @() }
+                foreach ($parameter in $expected.Query) {
+                    # -ccontains: a schema property name is matched exactly, case included.
+                    ($listed -ccontains $parameter) | Should -BeTrue -Because "tool $($expected.Name) must take the query parameter $parameter; it takes: $($listed -join ', ')"
+                    ($required -ccontains $parameter) | Should -BeFalse -Because "query parameter $parameter of $($expected.Name) is optional"
+                }
             }
         }
 
