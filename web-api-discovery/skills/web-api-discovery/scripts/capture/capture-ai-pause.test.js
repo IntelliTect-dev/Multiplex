@@ -21,6 +21,9 @@
 //   I5  the owner's case: nobody at the terminal, the hand-over prints a
 //       private phone link, the phone sees the live browser, taps "I'm done,
 //       continue", and the agent is told to carry on and finishes
+//   I6  the agent goes away during a hand-over: the hand-back does not claim
+//       it was told to carry on, and the recording ends -- post-processed, the
+//       agent's exit recorded as the ending -- instead of waiting for ever
 
 'use strict';
 
@@ -282,6 +285,81 @@ test('I5: THE OWNER\'S CASE -- a bot check, the live view on the phone, and the 
             // The view is gone with the hand-over.
             const after = await phoneRequest(link).then(() => null, (e) => e);
             assert.ok(after, 'nothing listens once the hand-over is over');
+            assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid), 'the browser is left running');
+        } finally {
+            if (events) events.destroy();
+            server.close();
+            if (agentPid && pidAlive(agentPid)) killTree(agentPid);
+            if (browserPid) killTree(browserPid);
+            if (recorder && recorder.exitCode === null) recorder.kill();
+        }
+    });
+
+test('I6: the agent goes away during a hand-over -- the hand-back says so, and the recording ends cleanly',
+    async () => {
+        // Nobody at this terminal; the person is on their phone. The agent is
+        // told a person is taking over and EXITS (a crash, a closed session)
+        // instead of waiting. When the person taps "I'm done, continue" there
+        // is nothing to hand back to: the line must not claim the agent was
+        // told to carry on, and the recording must END -- post-processed, its
+        // ending recorded -- rather than wait for a stop command for ever.
+        const repo = makeRepo('ai-phone-gone');
+        if (blockedOrSkipped('I6', integrationBlocker(repo))) return;
+
+        const { server, uri } = await fixtureServer();
+        const pruned = pathWithoutAgent();
+        assert.ok(!agentOnPath(pruned), 'the agent must be reachable only through the stub');
+        const childEnv = driverEnv({ PATH: pruned, HAR_STUB_AGENT_MODE: 'challenge-exit',
+            HAR_CAPTURE_TAILSCALE: 'tailscale',
+            HAR_STUB_TAILSCALE_JSON: JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['127.0.0.1'] } }) });
+
+        let recorder = null;
+        let browserPid = null;
+        let agentPid = null;
+        let events = null;
+        try {
+            recorder = startStubDrivenCapture(repo, uri, childEnv);
+            let recorderErr = '';
+            recorder.stderr.on('data', (d) => { recorderErr += d; });
+            recorder.stdout.on('data', () => {});
+            const { sessionDir, session } = await waitForRecordingSession(repo, recorder, () => recorderErr);
+            browserPid = session.browserPid;
+
+            const linked = await waitFor(() => /Open on your phone: (http:\/\/\S+)/.test(recorderErr), 120000);
+            assert.ok(linked, `no phone link was given:\n${recorderErr}`);
+            const link = /Open on your phone: (http:\/\/\S+)/.exec(recorderErr)[1];
+            // The agent goes away while the person has the browser.
+            assert.ok(await waitFor(() => /agent ended .* \(exit 0\)/.test(recorderErr), 60000),
+                `the stub agent never exited:\n${recorderErr}`);
+            assert.strictEqual(recorder.exitCode, null, 'an agent that exits during a hand-over ends nothing by itself');
+
+            const page = await phoneRequest(link);
+            assert.strictEqual(page.status, 200);
+            const cookie = String(page.headers['set-cookie']).split(';')[0];
+            events = await phoneRequest(link + 'events', { stream: true, headers: { cookie } });
+            let streamed = '';
+            events.setEncoding('utf8');
+            events.on('data', (d) => { streamed += d; });
+            const done = await phoneRequest(link + 'input', { method: 'POST', body: '{"t":"done"}',
+                headers: { cookie, 'content-type': 'application/json', origin: new URL(link).origin } });
+            assert.strictEqual(done.status, 204);
+
+            const ended = await waitFor(() => recorder.exitCode !== null, 120000);
+            assert.ok(ended, `with the agent gone, the hand-back must end the recording -- it waited:\n${recorderErr}`);
+            assert.match(recorderErr, /capture-har: Resumed after \d+ (s|min)[^\n]* -- you handed the browser back on your phone\./);
+            assert.doesNotMatch(recorderErr, /the agent has been told to carry on/,
+                'nothing was told to carry on: there was no agent to tell');
+            assert.match(recorderErr, /the agent is no longer running/);
+            assert.doesNotMatch(streamed, /the capture carries on/, 'nor does the phone say it carries on');
+
+            const finalSession = readJson(path.join(sessionDir, 'session.json'));
+            agentPid = finalSession.agentPid;
+            assert.strictEqual(finalSession.endedBy, 'agent-finished',
+                `the agent's own exit is the ending, recorded once the person handed back:\n${recorderErr}`);
+            assert.strictEqual(finalSession.agentExitCode, 0);
+            assert.ok(finalSession.postProcess, 'and it was post-processed as usual');
+            const [h] = finalSession.pauses || [];
+            assert.ok(h && h.kind === 'hand-over' && h.resumedBy === 'phone', JSON.stringify(finalSession.pauses));
             assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid), 'the browser is left running');
         } finally {
             if (events) events.destroy();
