@@ -26,6 +26,26 @@
     scrubbed artifacts. Reporting a capture as done while the scrub is still
     running would name files that do not exist yet.
 
+    It waits for as long as the work is getting somewhere, not for a fixed
+    time: a large capture takes minutes to scrub, and a wait that gave up at 60
+    seconds reported a good capture as a failed one. While it waits it says
+    where the recording process has got to, about every 30 seconds.
+
+    When it returns with the recording process STILL RUNNING, it says which of
+    two things happened, and neither of them is a verdict on the capture:
+
+      STALLED          the stop registered, and post-processing has shown no
+                       sign of progress for longer than a capture of that size
+                       is allowed (60 seconds, or 15 seconds per megabyte; 30
+                       minutes during the AI catalogue pass). The message
+                       states both times.
+      NEVER REGISTERED the recording process has not taken up the stop within
+                       60 seconds. The recording is still going, and the
+                       request stays in place.
+
+    Both exit 1 and leave everything as it is -- the recording process still
+    owns the raw capture and the scrub. Run this again to wait again.
+
     It never kills a browser process: killing one discards the entire
     recording, and a developer's machine may hold real signed-in windows whose
     loss has nothing to do with this capture.
@@ -59,8 +79,43 @@
 .PARAMETER ValidateOnly
     Resolve and print what would be stopped, without stopping it.
 
+.OUTPUTS
+    One line of JSON, for whatever is driving this: the state it ended in, the
+    session directory, the exit code, and the detail behind the state.
+
+        { "stop": "complete", "sessionDir": "...", "exitCode": 0, "ending": { ... } }
+
+    "stop" is one of: complete, not-processed (the capture was cancelled; the
+    raw is kept), stalled, not-registered. "ending" carries the phase, when the
+    stop registered, the last sign of progress, how long nothing has moved
+    (quietSeconds) and how long it is allowed to (quietLimitSeconds).
+    `node capture-har.js status` reports the same "ending" at any time,
+    including "progressing" while post-processing is still under way.
+
+    Everything a person reads is on the error stream, as it always was.
+
+.NOTES
+    Exit codes are capture-har.js's own. The ones this command returns:
+
+      0  stopped, scrubbed and catalogued (or cancelled: the raw is kept)
+      1  returned with the recording process still running -- the stop never
+         registered, or post-processing stalled -- or a runtime error. The JSON
+         says which.
+      3  no capture session found to stop
+      4  the capture produced no usable recording
+      5  the raw was assembled from the incremental log
+      6  recorded, but the scrub or the catalogue FAILED. Never returned for
+         post-processing that is merely still running.
+      7  scrubbed and catalogued, with advisory findings to review
+
 .EXAMPLE
     Stop-HarRecording
+
+.EXAMPLE
+    $state = Stop-HarRecording | ConvertFrom-Json
+    if ($state.stop -eq 'stalled') { "nothing has moved for $($state.ending.quietSeconds)s" }
+
+    Read the state rather than the exit code alone: 1 covers both early returns.
 #>
 
 [CmdletBinding()]

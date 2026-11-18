@@ -1322,6 +1322,200 @@ Describe 'Stop-HarRecording.ps1' {
     }
 }
 
+Describe 'Stop-HarRecording.ps1 says what state the ending is in (#27)' {
+    # It used to wait a fixed 60 seconds and then exit 6, "post-processing is
+    # still running" -- on a 22 MB capture whose recording process finished
+    # normally a little later. These run the REAL front door, as its own
+    # process, against a session directory in each state.
+    #
+    # No clock is injected and none needs to be: the state is derived from what
+    # is on disk, so a fixture dated in the past is in that state the moment the
+    # command looks. (The clock IS injected in capture-ending.test.js, where the
+    # "takes five minutes and succeeds" case lives.)
+
+    BeforeAll {
+        $script:RecorderJs = Join-Path $script:CaptureDir 'capture-ending-recorder.test-support.js'
+
+        # ALWAYS with the session and the captures directory named, and from
+        # outside any repository. A bare stop resolves the newest live capture
+        # in the store this clone records into and asks it to end -- which on a
+        # developer's machine may be a recording somebody is in the middle of.
+        function Invoke-StopHarRecording {
+            param(
+                [Parameter(Mandatory)][string]$Session,
+                [Parameter(Mandatory)][string]$CapturesDirectory
+            )
+            $errFile = [IO.Path]::GetTempFileName()
+            Push-Location -LiteralPath $CapturesDirectory
+            try {
+                $out = & pwsh -NoProfile -File $script:StopPs1 -Session $Session `
+                    -CapturesDirectory $CapturesDirectory -MinimumBytes 0 2>$errFile | Out-String
+                $code = $LASTEXITCODE
+                $err = Get-Content -LiteralPath $errFile -Raw
+            }
+            finally {
+                Pop-Location
+                Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+            }
+            $json = ($out -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
+            [pscustomobject]@{
+                StdOut   = $out
+                StdErr   = "$err"
+                ExitCode = $code
+                State    = if ($json) { $json | ConvertFrom-Json } else { $null }
+            }
+        }
+
+        # A session a RUNNING recorder owns. The owner is this Pester process:
+        # alive for as long as the test runs, which is all `stop` asks of it.
+        function New-LiveSession {
+            param(
+                [Parameter(Mandatory)][string]$Root,
+                [hashtable]$Extra = @{}
+            )
+            $sessionDir = Join-Path (Join-Path $Root 'example.com') '2026-01-01-120000'
+            New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
+            $entry = @{
+                startedDateTime = '2026-01-01T12:00:01Z'
+                time            = 0
+                request         = @{ method = 'GET'; url = 'https://example.com/api/thing/1'; headers = @() }
+                response        = @{ status = 200; content = @{ text = '{"ok":true}' }; headers = @() }
+                cache           = @{}
+                timings         = @{}
+            } | ConvertTo-Json -Depth 8 -Compress
+            Set-Content -LiteralPath (Join-Path $sessionDir 'raw.ndjson') -Value $entry -Encoding utf8
+            $session = @{
+                uri        = 'https://example.com'
+                sessionDir = $sessionDir
+                harPath    = Join-Path $sessionDir 'raw.har'
+                recordLog  = Join-Path $sessionDir 'raw.ndjson'
+                outputPath = $sessionDir
+                startedUtc = '2026-01-01T12:00:00Z'
+                pid        = $PID
+            }
+            foreach ($key in $Extra.Keys) { $session[$key] = $Extra[$key] }
+            $session | ConvertTo-Json -Depth 8 |
+                Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
+            return $sessionDir
+        }
+
+        function Get-UtcString([datetime]$When) { $When.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    }
+
+    BeforeEach {
+        $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("har-end-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:Tmp -and (Test-Path -LiteralPath $script:Tmp)) {
+            Remove-Item -LiteralPath $script:Tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports stalled post-processing as a stall -- its own state, exit 1 not 6 -- and takes nothing over' {
+        $then = (Get-Date).AddHours(-2)
+        $sessionDir = New-LiveSession -Root $script:Tmp -Extra @{
+            endedUtc = Get-UtcString $then
+            endedBy  = 'stop-command'
+            summary  = @{ exists = $true; bytes = 2048 }
+            ending   = @{
+                by = 'stop-command'; registeredUtc = Get-UtcString $then
+                phase = 'scrub'; phaseStartedUtc = Get-UtcString $then
+            }
+        }
+        $rawHar = Join-Path $sessionDir 'raw.har'
+        Set-Content -LiteralPath $rawHar -Encoding utf8 -Value (
+            '{"log":{"version":"1.2","creator":{"name":"x","version":"1"},"pages":[],"entries":[]}}')
+        (Get-Item -LiteralPath $rawHar).LastWriteTimeUtc = $then.ToUniversalTime()
+
+        $r = Invoke-StopHarRecording -Session $sessionDir -CapturesDirectory $script:Tmp
+
+        $r.ExitCode | Should -Be 1 -Because (
+            "6 says the scrub FAILED and 0 says it finished; a stall is neither. stderr:`n$($r.StdErr)")
+        $r.State | Should -Not -BeNullOrEmpty -Because "the state must be on stdout as JSON, got: $($r.StdOut)"
+        $r.State.stop | Should -Be 'stalled'
+        $r.State.exitCode | Should -Be 1
+        $r.State.ending.phase | Should -Be 'scrub'
+        $r.State.ending.quietSeconds | Should -BeGreaterThan 7000
+        $r.State.ending.quietLimitSeconds | Should -Be 60
+        $r.StdErr | Should -Match 'STALLED'
+        $r.StdErr | Should -Not -Match 'NEVER REGISTERED'
+
+        # The recorder is running and still owns the work.
+        Test-Path -LiteralPath (Join-Path $sessionDir 'scrubbed.har') | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Raw | ConvertFrom-Json).postProcess |
+            Should -BeNullOrEmpty -Because 'stop must not write a result for a recorder that is still running'
+
+        # And `status` gives the same answer, from the same evaluation.
+        $status = (Invoke-CaptureHar status --session $sessionDir --dir $script:Tmp).StdOut | ConvertFrom-Json
+        $status.ending.state | Should -Be 'stalled'
+        $status.ending.phase | Should -Be 'scrub'
+    }
+
+    It 'reports a stop that never registered as exactly that, and assembles nothing under the live recorder' {
+        $sessionDir = New-LiveSession -Root $script:Tmp
+        # Asked for ten minutes ago, and the recorder has still not taken it up.
+        $stopFile = Join-Path $sessionDir 'STOP'
+        Set-Content -LiteralPath $stopFile -Value '' -NoNewline
+        (Get-Item -LiteralPath $stopFile).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(-10)
+
+        $r = Invoke-StopHarRecording -Session $sessionDir -CapturesDirectory $script:Tmp
+
+        $r.ExitCode | Should -Be 1 -Because "stderr:`n$($r.StdErr)"
+        $r.State.stop | Should -Be 'not-registered'
+        $r.State.ending.registeredUtc | Should -BeNullOrEmpty
+        $r.State.ending.quietLimitSeconds | Should -Be 60
+        $r.StdErr | Should -Match 'NEVER REGISTERED'
+        $r.StdErr | Should -Not -Match 'STALLED'
+
+        # The recording is still going: its raw must not be assembled from the
+        # log by another process, which is what the fixed timer fell through to.
+        Test-Path -LiteralPath (Join-Path $sessionDir 'raw.har') | Should -BeFalse
+        Test-Path -LiteralPath $stopFile | Should -BeTrue -Because 'the request stays in place'
+
+        $status = (Invoke-CaptureHar status --session $sessionDir --dir $script:Tmp).StdOut | ConvertFrom-Json
+        $status.ending.state | Should -Be 'not-registered'
+        $status.recording | Should -BeTrue
+    }
+
+    It 'waits for a recording process that is still working, and reports its success' {
+        # A real, separate process stands in for the recorder: it takes up the
+        # stop, acknowledges it, and spends four seconds "scrubbing" before it
+        # finishes. Four seconds, not four minutes -- the long case is pinned
+        # with an injected clock -- but enough that a stop which did not wait
+        # would return before there was a result to report.
+        $sessionDir = New-LiveSession -Root $script:Tmp
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = (Get-Command node).Source
+        foreach ($a in @($script:RecorderJs, $sessionDir, '{"scrubMs":4000,"lingerMs":1500}')) {
+            [void]$psi.ArgumentList.Add($a)
+        }
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $recorder = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $recorder.StandardOutput.ReadLine() | Should -Match '^ready \d+$' -Because (
+                'the stand-in recorder must own the session before it is asked to stop')
+
+            $elapsed = Measure-Command {
+                $script:R = Invoke-StopHarRecording -Session $sessionDir -CapturesDirectory $script:Tmp
+            }
+
+            $script:R.ExitCode | Should -Be 0 -Because "stderr:`n$($script:R.StdErr)"
+            $script:R.State.stop | Should -Be 'complete'
+            $script:R.State.ending.endedBy | Should -Be 'stop-command'
+            $elapsed.TotalSeconds | Should -BeGreaterThan 3.5 -Because 'it has to have waited for the scrub'
+            Test-Path -LiteralPath (Join-Path $sessionDir 'scrubbed.har') | Should -BeTrue
+        }
+        finally {
+            if (-not $recorder.WaitForExit(15000)) { $recorder.Kill($true) }
+            $recorder.Dispose()
+        }
+    }
+}
+
 Describe 'The repository no longer references the deleted command' {
 
     It 'has zero references to Start-HarRecording outside git history' {

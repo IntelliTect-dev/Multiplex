@@ -1070,6 +1070,40 @@ scrub/verify/digest tail. Ctrl+C asks whether you meant to finish or to
 cancel; cancelling keeps the raw capture and skips post-processing, so a
 mis-keyed Ctrl+C costs nothing. Nothing is ever killed.
 
+**Stopping from another process waits, and says what it is waiting for.**
+`Stop-HarRecording` (`node capture-har.js stop`) asks the recording process to
+end, then waits for it to save the recording and to scrub, verify, digest and
+catalogue it. It waits **for as long as that work is getting somewhere, not for
+a fixed time** -- a large capture takes minutes to scrub -- and says where the
+recording process has got to about every 30 seconds. It reads that from the
+`ending` record the recording process writes into `session.json` as each phase
+starts, and from the files post-processing itself writes.
+
+It ends in one of these states. The state is in the one line of JSON it prints
+on stdout (`{ "stop": ..., "sessionDir": ..., "exitCode": ..., "ending": {...} }`),
+and `node capture-har.js status` reports the same thing under `ending` at any
+time:
+
+| State | What it means | Exit | What to do |
+|---|---|---|---|
+| `complete` | Post-processing finished. | 0, 5, 6 or 7 -- the capture's own result | Carry on with the artifacts it names. |
+| `progressing` | The stop registered and something has moved recently. **`stop` does not return in this state -- it keeps waiting.** `status` reports it. | -- | **Wait.** If your shell cut `stop` off, nothing is lost: run it again, or poll `status`. |
+| `stalled` | The stop registered, and nothing has moved for longer than a capture of that size is allowed. | 1 | **Escalate.** Look at the recording process (its pid is in the JSON). Nothing was taken over or removed. |
+| `not-registered` | The recording process is running and has not taken up the stop within 60 seconds. The recording is still going. | 1 | **Ask again**, or end it at its terminal (ENTER) or by closing its browser window. The request stays in place. |
+| `not-processed` | The capture was cancelled (Ctrl+C, then `c`): the raw is kept and nothing else was run. | 0 | Nothing. |
+
+- **The allowance** before `stalled` is 60 seconds, or 15 seconds per megabyte of
+  capture where that is longer, and 30 minutes during the AI catalogue pass. A
+  scrub reads the whole capture before it writes a byte, so how long a healthy
+  one is silent grows with its size. The JSON carries both numbers:
+  `quietSeconds` and `quietLimitSeconds`.
+- **Exit 1 is not a verdict on the capture.** Both early returns happen with the
+  recording process still running and still owning the work. Exit 6 means what
+  it says -- the scrub or the catalogue *failed* -- and is never returned for
+  post-processing that is merely still running.
+- **A recording process that has exited** is different: nothing else will ever
+  finish its work, so `stop` assembles and post-processes the capture itself.
+
 That safety is why **two recorders run and exactly one survives**. Playwright
 serializes `recordHar` only during a close the driver performs, so a window
 close would otherwise write nothing at all. A second recorder appends every

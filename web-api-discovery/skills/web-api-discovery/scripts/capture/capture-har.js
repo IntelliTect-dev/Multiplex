@@ -225,6 +225,43 @@
  * and does not quarantine -- those belong to the scrub stage, and a second copy
  * of them behind a second door is how the invariants in #343 get lost.
  *
+ * ## Stopping from another process
+ *
+ * `stop` does not post-process. It asks the recording process to end and then
+ * WAITS for it -- to save the recording, then to scrub, verify, digest and
+ * catalogue it -- because the work belongs to the process that owns the browser.
+ *
+ * IT WAITS FOR AS LONG AS THE WORK IS GETTING SOMEWHERE, NOT FOR A FIXED TIME
+ * (#27). It used to give up after 60 seconds, exit 6, on a 22 MB capture whose
+ * recording process finished normally a little later -- and the caller could not
+ * tell progressing from hung from a stop that never registered. Now the
+ * recording process writes `ending` into session.json the moment its ending is
+ * settled and again as each phase STARTS, and `stop` reads that and the files
+ * post-processing itself writes (capture-ending.js says exactly which, and what
+ * is deliberately not a sign of progress). Three states, each with its own
+ * message and its own value in the JSON:
+ *
+ *   progressing     the ending registered and something has moved within the
+ *                   allowance. `stop` keeps waiting, and says so every 30 s.
+ *   stalled         the ending registered and nothing has moved for longer than
+ *                   the allowance. `stop` returns, exit 1.
+ *   not-registered  the recording process is running and has not taken up the
+ *                   stop within 60 seconds. `stop` returns, exit 1.
+ *
+ * THE ALLOWANCE is 60 seconds, or 15 seconds per megabyte of capture where that
+ * is longer, and 30 minutes during the AI catalogue pass -- a scrub reads the
+ * whole capture before it writes a byte, so how long a healthy one is silent
+ * grows with its size. It is stated in the message and in the JSON.
+ *
+ * BOTH EARLY RETURNS LEAVE EVERYTHING AS IT IS: the recording process is still
+ * running and still owns the raw and the scrub, so nothing is assembled or
+ * post-processed underneath it. A recording process that has EXITED is a
+ * different thing -- nothing else will ever finish its work, so `stop` does.
+ *
+ * `status` reports the same state under `ending`, from the same evaluation, and
+ * `stop` prints it as one line of JSON on stdout:
+ * `{ "stop": <state>, "sessionDir", "exitCode", "ending": { ... } }`.
+ *
  * Usage:
  *   node capture-har.js start --uri <url> --describe <text>
  *                             [--profile <name|path>] [--isolated]
@@ -337,11 +374,16 @@
  *                    Accepted on every command; Invoke-HarCapture sets it from
  *                    PowerShell's own -Verbose rather than exposing a second
  *                    switch for the same idea. All chatter goes to STDERR --
- *                    stdout carries only the --validate-only and status JSON.
+ *                    stdout carries only JSON: --validate-only, `status`, and
+ *                    the one closing line of `start` and of `stop`.
  *
  * Exit codes:
- *   0 -- recorded, scrubbed and catalogued
- *   1 -- I/O or runtime error
+ *   0 -- recorded, scrubbed and catalogued. Also `stop` on a capture that was
+ *        cancelled: the raw is kept and there is nothing more to do.
+ *   1 -- I/O or runtime error. Also what `stop` returns when it stops waiting
+ *        with the recording process STILL RUNNING (#27): the stop never
+ *        registered, or post-processing stalled. Neither says anything about
+ *        the capture; the JSON `stop` prints on stdout says which it was.
  *   2 -- usage error
  *   3 -- no capture session found to stop
  *   4 -- the capture produced no usable recording
@@ -350,7 +392,10 @@
  *        attached browser has no recordHar at all, so assembling is the design
  *        rather than a fallback, and reporting it would make the normal ending
  *        of that mode look like a degraded one.
- *   6 -- recorded successfully, but scrub or catalogue failed
+ *   6 -- recorded successfully, but scrub or catalogue failed. NOT what `stop`
+ *        returns while post-processing is merely still running: it used to be,
+ *        after 60 seconds, which reported a good capture as a failed one. `stop`
+ *        now waits for that instead (see "## Stopping from another process").
  *   7 -- recorded, scrubbed and catalogued, but the leak gate reported
  *        ADVISORY findings (identity evidence by shape). Every artifact is
  *        where it should be; the findings need a human verdict.
@@ -419,6 +464,10 @@ const capturePause = require(path.join(__dirname, 'capture-pause.js'));
 const agentStream = require(path.join(__dirname, 'agent-stream.js'));
 // The private phone view of the browser during a hand-over.
 const mirror = require(path.join(__dirname, 'mirror.js'));
+// Where the END of a capture has got to, and whether it is still getting
+// anywhere: the recorder writes it down, `stop` waits on it, `status` asks it
+// once. See "## Stopping from another process" above.
+const captureEnding = require(path.join(__dirname, 'capture-ending.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -559,7 +608,6 @@ const CAPTURE_BROWSER_NAME = 'har-capture';
 // PRINT the promote command -- nothing in this file writes into it.
 const REFERENCE_DIR = path.join('docs', 'har-reference');
 const POLL_MS = 200;
-const STOP_TIMEOUT_MS = 60000;
 const LAUNCH_TIMEOUT_MS = 45000;
 const CDP_PROBE_MS = 1500;
 const PORT_SCAN_LIMIT = 64;
@@ -670,8 +718,9 @@ function renderLines(lines, levelName) {
 
 /**
  * Every human-facing message goes to stderr. stdout carries machine output --
- * the `--validate-only` and `status` JSON -- and prose mixed into it is what
- * makes `Invoke-HarCapture ... | ConvertFrom-Json` fail on a verbose run.
+ * the `--validate-only` and `status` JSON, and the one closing line of `start`
+ * and of `stop` -- and prose mixed into it is what makes
+ * `Invoke-HarCapture ... | ConvertFrom-Json` fail on a verbose run.
  *
  * `lines` is the only primitive; the per-level helpers are one-line pairs
  * through it, so the threshold is applied in exactly one place.
@@ -3665,6 +3714,20 @@ function runNode(script, argv, cwd, input) {
 }
 
 /**
+ * Who a post-processing phase tells that it is STARTING (#27): `opts.onPhase`,
+ * or nobody.
+ *
+ * The recorder passes one, and writes each phase into session.json so a `stop`
+ * in another process can tell work that is getting somewhere from work that is
+ * hung. It is INJECTED rather than done here because these phases have other
+ * callers: `stop` runs them itself when the recorder is gone, and `catalogue`
+ * runs the last of them on a capture that may have no session directory at all.
+ */
+function phaseReporter(opts) {
+    return (opts && opts.onPhase) || (() => {});
+}
+
+/**
  * Put `candidate` in front of the leak gate and record its verdict on `state`.
  *
  * ONE implementation, because there are now two doors into the pipeline. A
@@ -3714,7 +3777,9 @@ function askTheGate(candidate, state, run, literals) {
  * two-engines defect this subsystem has spent a dozen PRs removing.
  */
 function catalogueScrubbed(session, state, opts = {}) {
+    const enter = phaseReporter(opts);
     try {
+        enter(captureEnding.PHASES.DIGEST);
         log.info('capture-har: building the digest ...');
         const har = harDocument.readHarDocument(state.scrubbed.path).document;
         // capturedUtc is when the RECORDING happened, not when it was
@@ -3730,6 +3795,7 @@ function catalogueScrubbed(session, state, opts = {}) {
         writeJson(digestPath, digest);
         state.digest = { path: digestPath };
 
+        enter(captureEnding.PHASES.CATALOGUE);
         const cataloguePath = path.join(session.outputPath, CATALOGUE_FILE);
         // Never clobber an existing catalogue: a re-capture must not erase the
         // actions a previous run's AI phase already named and exercised.
@@ -3873,6 +3939,7 @@ function postProcess(session, opts = {}) {
     // two real detectors happen to disagree about. What is under test there is
     // this function's decision, not sanitize-har.js's pattern list.
     const run = opts.run || runNode;
+    const enter = phaseReporter(opts);
     const harDir = path.join(__dirname, '..', 'har');
     const state = { startedUtc: new Date().toISOString(), errors: [], warnings: [] };
 
@@ -3890,6 +3957,7 @@ function postProcess(session, opts = {}) {
     // Each stage is named as it STARTS (#492). Every one of them is silent
     // until it finishes, and after a recording stops they run for minutes --
     // which an operator cannot tell apart from a hang.
+    enter(captureEnding.PHASES.SCRUB);
     log.info(`capture-har: scrubbing ${describeSize(session.harPath)} ...`);
     const tables = session.unprotectedTables
         ? ['--subs', path.join(session.sessionDir, subsDestination.LEGACY_SUBS_FILENAME),
@@ -3926,6 +3994,7 @@ function postProcess(session, opts = {}) {
             state.warnings.push(`sanitize-har: BLUNTED ${blunted[1]} -- values the leak gate ` +
                 'would have blocked, replaced by typed sentinels and recorded in the artifact');
         }
+        enter(captureEnding.PHASES.VERIFY);
         askTheGate(candidate, state, run, literals);
     }
 
@@ -3963,6 +4032,7 @@ function postProcess(session, opts = {}) {
     // Verified (or advisory-only): promote the candidate to the output path.
     // A COPY, because nothing under .har-captures/ is ever taken away -- the
     // session keeps the complete record of what it produced.
+    enter(captureEnding.PHASES.PUBLISH);
     try {
         fs.mkdirSync(session.outputPath, { recursive: true });
         sweepAbandonedTemps(session.outputPath);
@@ -4238,6 +4308,9 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
             // told the file exists. Absent for a hand-driven capture, because a
             // path to a file that is not there is worse than silence.
             (session.agentLogPath ? `Agent step log: ${session.agentLogPath}\n` : '');
+        // Its own phase: this child prints nothing until it ends, so a `stop`
+        // waiting on it allows it far longer than a scrub of the same capture.
+        phaseReporter(opts)(captureEnding.PHASES.AI_CATALOGUE);
         log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
         const child = catalogueChildCommand(prompt);
         const run = spawn(child.command, child.args, {
@@ -5799,6 +5872,11 @@ async function start(args) {
     }
 
     await Promise.race(endings);
+    // ACKNOWLEDGED BEFORE ANYTHING IS TORN DOWN (#27). `endedUtc` is not written
+    // until the browser is closed and the raw is saved and walked, which on a
+    // large capture is longer than a `stop` in another process waited -- so it
+    // could not tell a stop that registered from one that never did.
+    noteEndingPhase(session, captureEnding.PHASES.FINALIZING, reason);
     if (rl) rl.close();
 
     // THE CAPTURE HAS ENDED, so whatever was paused or handed over ends with
@@ -5973,7 +6051,13 @@ async function start(args) {
         log.info(`  ${recorder.excluded} request(s) from outside this capture's tabs were not ` +
             'recorded -- see "Only this capture\'s tabs are recorded" in SKILL.md.');
     }
-    session.postProcess = postProcess(session, { literals: signInWatcher.secrets() });
+    session.postProcess = postProcess(session, {
+        literals: signInWatcher.secrets(),
+        // Each phase is written down as it STARTS (#27): what a `stop` in
+        // another process reads to tell this from a hang.
+        onPhase: (phase) => noteEndingPhase(session, phase)
+    });
+    captureEnding.notePhase(session, captureEnding.PHASES.COMPLETE);
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
 
@@ -6145,7 +6229,32 @@ function resolveSession(args) {
     return pool[pool.length - 1].dir;
 }
 
-async function stop(args) {
+/**
+ * Write down, in session.json, how far this recording's ending has got (#27).
+ *
+ * The recorder's half of what `stop` waits on. `by` is what ended the
+ * recording, and is given once, when the ending is acknowledged.
+ *
+ * NEVER FATAL. This is a note about the work, not the work: a session.json
+ * that cannot be rewritten this instant must not cost a capture its scrub.
+ */
+function noteEndingPhase(session, phase, by) {
+    try {
+        captureEnding.notePhase(session, phase, { by });
+        writeJson(path.join(session.sessionDir, SESSION_FILE), session);
+    } catch (e) {
+        log.verbose(`capture-har: could not record the ${phase} phase: ${e.message}`);
+    }
+}
+
+/**
+ * End a recording from another process, and wait for it to finish.
+ *
+ * `deps` is for tests -- `now`, `sleep` and `isDriverAlive` -- and is a
+ * function parameter on purpose: nothing on the command line or in the
+ * environment changes how long this waits.
+ */
+async function stop(args, deps = {}) {
     const sessionDir = resolveSession(args);
     if (!sessionDir) {
         process.stderr.write('capture-har: no capture session found to stop\n');
@@ -6164,32 +6273,74 @@ async function stop(args) {
         return 0;
     }
 
-    // Idempotent: a session that already ended has flushed whatever it had and
-    // retired its driver, so there is nothing to signal -- just report.
-    let driverLost = false;
-    if (!session.endedUtc) {
-        // A driver that already died will never answer the sentinel, and
-        // waiting the full timeout for it looks identical to a healthy stop
-        // that is merely slow. Ask about the driver process, not the debugging
-        // port: a crashed driver can leave an orphaned browser answering that
-        // port, and believing it would reinstate the silent 60-second hang.
-        if (!isDriverAlive(session)) {
-            driverLost = true;
-            process.stderr.write(
-                `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
-                '  Assembling the incremental log instead.\n');
-        } else {
-            fs.writeFileSync(path.join(sessionDir, STOP_SENTINEL), '', 'utf8');
-            // Wait for endedUtc, then keep waiting for post-processing --
-            // reporting "done" while the scrub is still running would hand the
-            // caller a catalogue that does not exist yet.
-            const deadline = Date.now() + STOP_TIMEOUT_MS;
-            while (Date.now() < deadline) {
-                const updated = readJson(sessionFile);
-                if (updated && updated.endedUtc) { session = updated; break; }
-                await sleep(POLL_MS);
-            }
-        }
+    // WHERE THE ENDING HAS GOT TO, asked of capture-ending.js and never of a
+    // timer (#27). Idempotent: a session that already ended has flushed
+    // whatever it had and retired its driver, so there is nothing to signal
+    // and nothing to wait for -- the wait below returns at once.
+    //
+    // Ask about the driver PROCESS, not the debugging port: a crashed driver
+    // can leave an orphaned browser answering that port.
+    const watch = {
+        now: deps.now,
+        sleep: deps.sleep,
+        isRecorderAlive: deps.isDriverAlive || isDriverAlive,
+        session
+    };
+    const first = captureEnding.look(sessionDir, watch).verdict;
+    if (first.state === captureEnding.STATE_RECORDING) {
+        // Still recording, and nobody has asked it to end: ask. A request that
+        // is already there is left exactly as it is -- its age is how long the
+        // recorder has gone without taking it up.
+        fs.writeFileSync(path.join(sessionDir, STOP_SENTINEL), '', 'utf8');
+    }
+    // Then wait -- for the recording to be saved, and for post-processing --
+    // for as long as either is getting somewhere. Reporting "done" while the
+    // scrub is still running would hand the caller a catalogue that does not
+    // exist yet; giving up on a fixed timer reported a good capture as failed.
+    const waited = await captureEnding.waitForEnding(sessionDir, Object.assign({}, watch, {
+        onWaiting: (verdict, why) =>
+            (why === 'interval' ? log.info : log.verbose)(captureEnding.waitingLine(verdict))
+    }));
+    session = waited.session || session;
+    // The one line of machine output, on stdout like `status` and the
+    // recorder's own closing line: the state this command ended in. Looked at
+    // afresh unless the caller hands over the verdict it acted on -- `stop` may
+    // have finished the work itself since the wait ended.
+    const result = (exitCode, verdict) => {
+        const ending = verdict || captureEnding.look(sessionDir, watch).verdict;
+        process.stdout.write(JSON.stringify({ stop: ending.state, sessionDir, exitCode, ending }) + '\n');
+        return exitCode;
+    };
+
+    // THE TWO WAYS THIS RETURNS WITH THE RECORDER STILL RUNNING. Both leave
+    // everything exactly as it is: that process still owns the raw and the
+    // scrub. Assembling `raw.har` from its log here, as the fixed timer's
+    // expiry used to fall through to, raced it for the one file that cannot be
+    // re-made. And both exit 1, not 6 -- 6 says the scrub or the catalogue
+    // FAILED, and neither of these says anything about the capture at all.
+    if (waited.verdict.state === captureEnding.STATE_STALLED) {
+        log.lines(captureEnding.stalledLines(waited.verdict, session).map((line) => ['warn', line]));
+        return result(1, waited.verdict);
+    }
+    if (waited.verdict.state !== captureEnding.STATE_COMPLETE
+        && waited.verdict.state !== captureEnding.STATE_NOT_PROCESSED
+        && waited.verdict.state !== captureEnding.STATE_RECORDER_GONE) {
+        log.lines(captureEnding.notRegisteredLines(waited.verdict).map((line) => ['warn', line]));
+        return result(1, waited.verdict);
+    }
+
+    // A driver that died never answers, and never finishes. Whether it was
+    // already gone or went while this waited, nothing else will ever run what
+    // it left undone, so the rest of this function does.
+    const driverLost = waited.verdict.state === captureEnding.STATE_RECORDER_GONE;
+    if (driverLost && !session.endedUtc) {
+        process.stderr.write(
+            `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
+            '  Assembling the incremental log instead.\n');
+    } else if (driverLost && first.state !== captureEnding.STATE_RECORDER_GONE) {
+        process.stderr.write(
+            `capture-har: the recorder for ${sessionDir} exited before post-processing finished.\n` +
+            '  Running it here instead.\n');
     }
 
     let summary = summarize(session.harPath);
@@ -6214,55 +6365,39 @@ async function stop(args) {
         return 4;
     }
 
-    // The driver owns post-processing whenever it is alive, so `stop` waits
-    // rather than racing it. When the driver is gone, nothing else will ever
-    // run those phases, so `stop` runs them itself.
+    // The driver owns post-processing whenever it is alive, so `stop` waited
+    // above rather than racing it. When the driver is gone, nothing else will
+    // ever run those phases, so `stop` runs them itself -- and ONLY then: this
+    // is reached with a live driver only when it already finished or cancelled.
     session = readJson(sessionFile) || session;
-    if (!session.postProcess && !session.cancelled) {
-        // Wait only while something is actually going to do the work. A driver
-        // that is gone will never write postProcess, so waiting the full
-        // timeout for it is a minute of silence followed by the same answer --
-        // run the phases here instead. `driverLost` alone is not the test: a
-        // driver that died AFTER writing endedUtc never sets it.
-        if (driverLost || !isDriverAlive(session)) {
-            // `stop` runs in a DIFFERENT PROCESS from the recorder and holds no
-            // in-memory index -- which is exactly why the descriptors are read
-            // back from `raw.ndjson` rather than carried in a variable (#442).
-            // Only in THIS branch: while the driver is alive it owns the raw,
-            // and two processes rewriting one file is not an improvement over
-            // an un-annotated one. Idempotent, so a raw the driver already
-            // annotated is left alone.
-            annotateUnretainedBodies(session.harPath, session.recordLog);
-            session.postProcess = postProcess(session);
-            writeJson(sessionFile, session);
-        } else {
-            const deadline = Date.now() + STOP_TIMEOUT_MS;
-            while (Date.now() < deadline) {
-                const updated = readJson(sessionFile);
-                if (updated && updated.postProcess) { session = updated; break; }
-                await sleep(POLL_MS);
-            }
-        }
+    if (driverLost && !session.postProcess && !session.cancelled) {
+        // `stop` runs in a DIFFERENT PROCESS from the recorder and holds no
+        // in-memory index -- which is exactly why the descriptors are read
+        // back from `raw.ndjson` rather than carried in a variable (#442).
+        // Only in THIS branch: while the driver is alive it owns the raw,
+        // and two processes rewriting one file is not an improvement over
+        // an un-annotated one. Idempotent, so a raw the driver already
+        // annotated is left alone.
+        annotateUnretainedBodies(session.harPath, session.recordLog);
+        session.postProcess = postProcess(session);
+        writeJson(sessionFile, session);
     }
 
     log.info(`capture-har: ${describeSummary(summary)}`);
-    if (session.postProcess) {
-        reportPostProcess(session);
-    } else if (session.cancelled) {
+    if (!session.postProcess) {
+        // Cancelled: the raw is the whole result, and that is not a failure.
+        // (This used to fall through to the exit code of a post-processing
+        // result that does not exist, and crashed.)
         log.info(`  raw kept, not post-processed: ${session.harPath}`);
-    } else {
-        log.warn(
-            `  raw:       ${session.harPath}\n` +
-            '  post-processing is still running in the recording process --\n' +
-            '  the scrubbed artifacts and the catalogue are not ready yet.');
-        return 6;
+        return result(0);
     }
+    reportPostProcess(session);
 
     // `ownsRecordHar !== false` rather than a truthiness test: a session.json
     // written before #73 has no such field, and the mode it recorded under is
     // the one where assembling IS news. Absent has to keep meaning true.
-    return postProcessExitCode(session.postProcess,
-        (assembled || session.assembledFromLog) && session.ownsRecordHar !== false);
+    return result(postProcessExitCode(session.postProcess,
+        (assembled || session.assembledFromLog) && session.ownsRecordHar !== false));
 }
 
 // ---------------------------------------------------------------------------
@@ -6490,6 +6625,11 @@ function status(args) {
         recording: !session.endedUtc && isDriverAlive(session),
         endedBy: session.endedBy,
         driverLost: !session.endedUtc && !isDriverAlive(session),
+        // WHERE THE ENDING HAS GOT TO (#27): still recording, a stop asked for
+        // and not yet (or never) taken up, post-processing progressing or
+        // stalled, finished. The same evaluation `stop` waits on, so an agent
+        // can ask here whether to wait, ask again, or escalate.
+        ending: captureEnding.look(sessionDir, { isRecorderAlive: isDriverAlive }).verdict,
         postProcess: session.postProcess || null,
         summary: session.summary || summarize(session.harPath)
     }, null, 2) + '\n');
@@ -6536,6 +6676,7 @@ module.exports = {
     resolveSessionPaths,
     uriFolder,
     resolveSession,
+    stop,
     findProfileConflict,
     findFreePort,
     resolveBrowserMode,
