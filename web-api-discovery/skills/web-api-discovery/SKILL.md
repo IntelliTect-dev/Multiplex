@@ -866,7 +866,9 @@ not sent). Then the browser is yours, still open and still recording:
   spent. Anything else holding the link -- a transcript, a log, a link preview
   -- gets a bare 404, as does every request without that cookie, so **one
   browser** holds the view for the whole hand-over. Open the link once, in the
-  browser you mean to use; that browser may reload the page and reconnect.
+  browser you mean to use; that browser may reload the page and reconnect. **An
+  AI session relaying the link passes it on as text and never opens, fetches or
+  previews it**: whatever opens it first holds it, and nobody else can.
   `HAR_CAPTURE_TAILSCALE` is a **test hook**: it names the tailscale CLI outright
   (the tests point it at one that is not there, so no test touches a real
   tailnet). It changes where the address is read from, never which addresses
