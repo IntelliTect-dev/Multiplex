@@ -713,9 +713,9 @@ Describe 'Invoke-HarCapture.ps1' {
         # names the switch and the design is its Proposal section; it is the one
         # thing no existing parameter can say. -Browser and -Attach answer whose
         # BROWSER it is, which is a different question and already decided by the
-        # time this one is asked: `-AI` implies -Browser Native, because an agent
-        # driving a Playwright-launched browser would be driving the launch the
-        # protected sites refuse. It takes no value, because -Describe -- already
+        # time this one is asked: `-AI` implies -Browser Native, because the agent
+        # browses in the ordinary Chrome a person would use, not in a
+        # test-automation launch. It takes no value, because -Describe -- already
         # mandatory -- is the goal, and there is deliberately no `-Agent` yet:
         # a second driver would be a second option, and nothing needs one.
         #
@@ -1325,22 +1325,32 @@ Describe 'An AI can be told to drive the recording (#98)' {
         # it is -- an ordinary browser a person can watch and take over, with no
         # automation flags -- and any challenge as the person's to answer.
         # Naming a vendor to RECOGNISE its block page and hand over stays.
+        # An explicit list, so a file is in scope because someone decided it is
+        # read as the skill's advice -- not because a glob happened to reach it.
         $captureDir = Split-Path -Parent $script:PromptMd
-        $docs = @(
-            @{ Name = 'SKILL.md'; Text = (Get-Content -LiteralPath $script:SkillMd -Raw) }
-            @{ Name = 'drive-prompt.md'; Text = (Get-Content -LiteralPath (Join-Path $captureDir 'drive-prompt.md') -Raw) }
-            @{ Name = 'capture-har.js'; Text = (Get-Content -LiteralPath (Join-Path $captureDir 'capture-har.js') -Raw) }
-            @{ Name = 'Invoke-HarCapture.ps1'; Text = (Get-Content -LiteralPath $script:InvokePs1 -Raw) }
-        )
+        $skillRoot = Split-Path -Parent $script:SkillMd
+        $files = [ordered]@{
+            'SKILL.md'              = $script:SkillMd
+            'README.md'             = (Join-Path (Split-Path -Parent (Split-Path -Parent $skillRoot)) 'README.md')
+            'drive-prompt.md'       = (Join-Path $captureDir 'drive-prompt.md')
+            'capture-har.js'        = (Join-Path $captureDir 'capture-har.js')
+            'Invoke-HarCapture.ps1' = $script:InvokePs1
+        }
         $vendor = '(Imperva|Incapsula|Akamai|DataDome|PerimeterX|HUMAN Security|Cloudflare|Kasada)'
         $passed = '(passed|got past|gets past|get past|was not challenged|setup that was)'
-        foreach ($doc in $docs) {
-            $doc.Text | Should -Not -Match "(?is)$vendor.{0,200}?\b$passed\b|\b$passed\b.{0,200}?$vendor" -Because (
-                "$($doc.Name) must not recommend a setup because it got past a named bot-protection vendor")
-            $doc.Text | Should -Not -Match '(?i)protection\s+answers\s+the\s+marking|marks\s+(that\s+)?(this\s+mode|the\s+native\s+launch)\s+exists?\s+to\s+avoid|exists\s+to\s+avoid\)|with\s+bot\s+protection\s+sees' -Because (
-                "$($doc.Name) must describe the native launch as an ordinary browser, not as avoiding what bot protection answers")
+        # Framing the native launch as evasion: what bot protection "answers",
+        # Playwright being "detectable" as the reason to switch, "protected
+        # sites refuse" it, an agent "driving the refusal".
+        $evasion = '(?i)protection\s+answers\s+the\s+marking|marks\s+(that\s+)?(this\s+mode|the\s+native\s+launch)\s+exists?\s+to\s+avoid|exists\s+to\s+avoid\)|with\s+bot\s+protection\s+sees|\bdetectable\b|protected\s+sites?(\s+\w+){0,4}\s+refuses?\b|driving\s+the\s+refusal'
+        foreach ($name in $files.Keys) {
+            Test-Path -LiteralPath $files[$name] | Should -BeTrue -Because "$name is in the scan list, so it must exist"
+            $text = Get-Content -LiteralPath $files[$name] -Raw
+            $text | Should -Not -Match "(?is)$vendor.{0,200}?\b$passed\b|\b$passed\b.{0,200}?$vendor" -Because (
+                "$name must not recommend a setup because it got past a named bot-protection vendor")
+            $text | Should -Not -Match $evasion -Because (
+                "$name must describe the native launch as an ordinary browser, not as avoiding what bot protection refuses")
         }
-        (Get-Content -LiteralPath $script:SkillMd -Raw) | Should -Match '(?i)ordinary\s+Chrome\s+a\s+person\s+would\s+(have\s+)?use' -Because 'the native launch is framed as the Chrome a person would use anyway'
+        (Get-Content -LiteralPath $script:SkillMd -Raw) | Should -Match '(?i)ordinary\s+Chrome' -Because 'the native launch is described as an ordinary Chrome'
     }
 }
 

@@ -225,12 +225,12 @@ test('A1: --ai implies the native browser and records that an agent drives it', 
     const r = resolveViaRecorder(repo, ['--ai']);
     assert.strictEqual(r.status, 0, r.stderr);
 
-    // THE IMPLICATION IS THE POINT. `-AI` exists for the sites that refuse a
-    // Playwright-launched browser, so defaulting it to the mode those sites
-    // refuse would make the switch useless on the only sites it was built for.
+    // THE IMPLICATION IS THE POINT. An agent browses in the ordinary Chrome a
+    // person would use, one they can watch and take over -- so `-AI` defaults
+    // to it rather than to a test-automation launch.
     assert.strictEqual(r.session.browser, 'native',
-        '--ai implies --browser native: an agent driving a Playwright-launched browser is ' +
-        'an agent driving the one launch protected sites refuse');
+        '--ai implies --browser native: the agent browses in an ordinary Chrome, ' +
+        'not in a test-automation launch');
     assert.strictEqual(r.session.mode, 'native-chrome');
     assert.strictEqual(r.session.ownsRecordHar, false);
 
@@ -907,8 +907,8 @@ test('A7: a run that asks for an agent and has none is refused, naming what is m
 
     // AND THE REFUSAL ARRIVES BEFORE A BROWSER DOES. An operator left with a
     // Chrome open, a profile warmed up and no driver has to clean up after a run
-    // that could never have worked -- and on a protected site that browser was
-    // the expensive part.
+    // that could never have worked -- and that browser, signed in on its capture
+    // profile, was the expensive part.
     //
     // PATH keeps everything EXCEPT the directories that hold a `claude`, so
     // `where`/`which` still runs and genuinely finds nothing -- on a runner that

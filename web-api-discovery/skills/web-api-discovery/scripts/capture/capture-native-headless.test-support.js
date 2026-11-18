@@ -6,8 +6,8 @@
  *
  * Preloaded (`node -r`) into the recorder process by capture-native-attach's
  * I1, which drives `capture-har.js start --browser native` end to end. That
- * launch is the product's, and it carries no headless flag on purpose -- a
- * protected site detects one (#73), and N5 pins the argument list. So the flag
+ * launch is the product's, and it carries no headless flag on purpose -- it is
+ * an ordinary Chrome with no automation flags (#73), and N5 pins the argument list. So the flag
  * is not added to the product; it is added HERE, around `child_process.spawn`,
  * before `capture-har.js` loads and takes its reference to it.
  *

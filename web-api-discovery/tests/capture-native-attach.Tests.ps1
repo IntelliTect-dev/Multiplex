@@ -160,8 +160,9 @@ Describe 'Invoke-HarCapture.ps1 exposes the mode without re-deciding it (#73)' {
     It 'documents WHY the mode exists, not merely that it exists' {
         # The measured evidence is the reason anybody would reach for this, and
         # an operator hitting a 403 needs to recognise their own symptom in the
-        # help before they will believe a flag is the answer. Named protections,
-        # because "some sites block automation" is advice nobody can act on.
+        # help. Named protections, because "some sites block automation" is a
+        # symptom nobody can recognise; the help then describes Native as what
+        # it is, an ordinary Chrome with no automation flags.
         $help = Get-Help -Name $script:InvokePs1 -Full
         $browserHelp = ($help.parameters.parameter |
             Where-Object name -eq 'Browser' | Out-String)

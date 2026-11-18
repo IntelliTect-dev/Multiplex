@@ -314,9 +314,9 @@
     is already mandatory. Everything else is generated.
 
     IT IMPLIES -Browser Native, and is therefore exclusive with -Isolated and
-    with -Browser Playwright. An agent driving a Playwright-launched browser is
-    an agent driving the one launch the protected sites above refuse outright,
-    which are the sites worth driving an agent at in the first place.
+    with -Browser Playwright. The agent browses in the ordinary Chrome a person
+    would use -- no automation flags, a window you can watch and take over --
+    not in a test-automation launch.
 
     THE PROMPT IS GENERATED, NOT HAND-WRITTEN, and that is the feature. It is
     assembled from the recorder's own drive-prompt.md, this run's facts (the
