@@ -130,11 +130,24 @@ for every capture that has no run.
 
 Linux reads `/proc` and costs nothing. Windows has no way to read another
 process's start time from Node, so the recorder starts one `pwsh` (which the
-front doors already require) as soon as `start` is past its checks, and awaits
-it when it writes `session.json` -- by then a browser has been launched. The
-lookup is bounded (10 s); when it runs out the capture records
-`run: { id: null, reason }` and carries on. `--validate-only` reads nothing.
-Other platforms record `run: { id: null, reason }`.
+front doors already require) as soon as `start` is past its checks, and
+collects the answer when it writes `session.json` -- by then a browser has been
+launched. `--validate-only` reads nothing. Other platforms record
+`run: { id: null, reason }`.
+
+**A slow lookup does not hold a recording up, and is not thrown away.** The
+first implementation awaited the lookup for ten seconds and then recorded
+`run: { id: null, reason }`. Recording for real on a busy machine (four
+recordings by two sessions while a test suite ran) left two of the four with no
+run. So recording now waits five seconds at most, writes
+`run: { id: null, reason: "...had not been read when this was written" }`, and
+the run is written into `session.json` when the lookup answers; the lookup
+itself is given a minute. Two things came out of the same finding:
+
+- the lookup starts in the call that asks for it, not a microtask later;
+- a time limit is not final until the event loop has turned a few times after
+  it expires, because a process coming back from synchronous work serves an
+  expired timer before it notices a child that exited seconds earlier.
 
 ### Deliberately not done (owner decisions)
 

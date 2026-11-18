@@ -71,6 +71,12 @@ Nothing deletes a recording on its own -- there is no age sweep, no size cap
 and no bulk delete. A raw capture is a browser session somebody drove by hand,
 so every one is kept until you remove that one deliberately.
 
+The store is shared, so each recording also says **which run made it**: the
+`Run` column, the same for everything one terminal or one agent session
+recorded and different for anyone else's. `Invoke-HarCapture` tells you your
+run when a recording ends, and
+`Get-HarCapture | Where-Object { $_.RunId -and $_.RunId -eq $run }` lists it.
+
 **In a folder that isn't a git repository**, the recorder first asks whether
 to create one (`[Y/n]`). A repository plus the `.gitignore` the recorder writes
 keeps raw captures and the scrub's substitution tables, which can reverse the
