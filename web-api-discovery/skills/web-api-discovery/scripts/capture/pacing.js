@@ -164,6 +164,9 @@ function createPacer(pace = DEFAULT_PACE, opts = {}) {
         const wait = Math.max(gap, ceiling, pause);
         waits.push({ kind, wait, gap, ceiling, pause });
         if (wait > 0) await sleep(wait);
+        // A pause that was EXTENDED while this step slept (the site asked for
+        // longer) is waited out too: a step never starts inside a pause.
+        while (pausedUntil > now()) await sleep(pausedUntil - now());
     }
 
     function serialize(kind, fn) {
