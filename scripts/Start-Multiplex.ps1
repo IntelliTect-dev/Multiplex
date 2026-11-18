@@ -7,24 +7,37 @@
     "Multiplex" scheduled task. Reads multiplex.config.json, starts the tunnel first when the
     public address depends on it (a Cloudflare quick tunnel gets a new address on every
     start), then runs the server in the foreground with its configuration in environment
-    variables. Stopping the server stops the tunnel.
+    variables. Stopping the server stops the tunnel. Each step, and any failure with the step
+    it happened in, is written to logs\start.log: the task runs hidden, so nothing else shows it.
 #>
 [CmdletBinding()]
 param([string] $Root = (Split-Path -Parent $PSCommandPath))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $Root 'Multiplex.Install.psm1') -Force
 
-$configPath = Join-Path $Root 'multiplex.config.json'
-$config = Read-MultiplexConfig -Path $configPath
 $logDir = Join-Path $Root 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$startLog = Join-Path $logDir 'start.log'
+function Write-StartLog([string] $Message) { Add-Content -LiteralPath $startLog -Value "$(Get-Date -Format o) $Message" }
 $tunnel = $null
+$step = 'loading the install module'
 
 try {
+    Import-Module (Join-Path $Root 'Multiplex.Install.psm1') -Force
+    Limit-MultiplexLog -Path $startLog
+    Write-StartLog "Starting Multiplex as $([Environment]::UserDomainName)\$([Environment]::UserName)."
+
+    $step = 'reading the configuration'
+    $configPath = Join-Path $Root 'multiplex.config.json'
+    $config = Read-MultiplexConfig -Path $configPath
+
+    $step = "starting the tunnel ($($config.Tunnel))"
+    Write-StartLog "Step: $step."
     # Clears the recorded public address first, so only a tunnel that came up sets it.
     $tunnel = Start-MultiplexTunnel -Config $config -ConfigPath $configPath -LogDir $logDir
 
+    $step = 'starting the server'
+    Write-StartLog "Step: $step on http://localhost:$($config.Port); public address: $($config.PublicBaseUrl ?? '(none, this PC only)')."
     foreach ($pair in (Get-MultiplexServerEnvironment -Config $config -Root $Root).GetEnumerator()) {
         [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'Process')
     }
@@ -35,7 +48,13 @@ try {
     Push-Location $appDir
     try { & (Join-Path $appDir 'Multiplex.Web.exe') *>> $serverLog }
     finally { Pop-Location }
-    exit $LASTEXITCODE
+    $code = $LASTEXITCODE
+    Write-StartLog "The server stopped with exit code $code; see $serverLog."
+    exit $code
+}
+catch {
+    Write-StartLog "Start-up failed while ${step}: $($_.Exception.Message)"
+    throw
 }
 finally {
     if ($tunnel -and -not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue }

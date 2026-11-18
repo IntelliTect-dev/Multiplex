@@ -97,20 +97,204 @@ Describe 'public address' {
         (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
     }
 
-    It 'a Tailscale Funnel that does not come up leaves no public address' {
-        Mock -ModuleName Multiplex.Install Invoke-TailscaleFunnel { [pscustomobject]@{ Started = $false; Output = 'Funnel is not enabled on your tailnet' } }
+}
+
+Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
+    # A fake tailscale.cmd, first on PATH, answers each subcommand from files beside it:
+    # <name>.out (stdout), <name>.err (stderr), <name>.code (exit code), <name>.hang (then waits,
+    # as `tailscale funnel` does while Funnel still needs enabling). Every call is logged.
+    BeforeAll {
+        function New-FakeTailscale {
+            param([Parameter(Mandatory)] [string] $Dir, [Parameter(Mandatory)] [hashtable] $Responses)
+            New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+            Set-Content -LiteralPath (Join-Path $Dir 'tailscale.cmd') -Value @(
+                '@echo off'
+                'setlocal'
+                'set "name=%~1"'
+                'if /i "%~1 %~2"=="funnel status" set "name=funnel-status"'
+                'echo %*>>"%~dp0calls.log"'
+                'if exist "%~dp0%name%.out" type "%~dp0%name%.out"'
+                'if exist "%~dp0%name%.err" type "%~dp0%name%.err" 1>&2'
+                'if exist "%~dp0%name%.hang" ping -n 60 127.0.0.1 >nul'
+                'set "code=99"'
+                'if exist "%~dp0%name%.code" set /p code=<"%~dp0%name%.code"'
+                'exit /b %code%')
+            foreach ($name in $Responses.Keys) {
+                $r = $Responses[$name]
+                Set-Content -LiteralPath (Join-Path $Dir "$name.code") -Value "$($r.Exit ?? 0)" -NoNewline
+                if ($r.Contains('Out')) { Set-Content -LiteralPath (Join-Path $Dir "$name.out") -Value $r.Out }
+                if ($r.Contains('Err')) { Set-Content -LiteralPath (Join-Path $Dir "$name.err") -Value $r.Err }
+                if ($r.Hang) { Set-Content -LiteralPath (Join-Path $Dir "$name.hang") -Value '' }
+            }
+        }
+        $script:refused = 'failed to connect to local tailscaled (which appears to be running as tailscaled.exe, pid 6272). Got error: 401 Unauthorized: Tailscale running in server mode ("PC\\Owner"); connection from "unknown-user-S-1-12-1-1" not allowed'
+        $script:running = '{ "BackendState": "Running", "Self": { "DNSName": "box.example.ts.net." } }'
+        $script:funnelOn = '{ "AllowFunnel": { "box.example.ts.net:443": true } }'
+        $script:savedPath = $env:PATH
+    }
+
+    BeforeEach {
+        $script:fake = Join-Path $TestDrive "ts-$([guid]::NewGuid().ToString('N'))"
+        $script:logDir = Join-Path $script:fake 'logs'
+        New-Item -ItemType Directory -Force -Path $script:logDir | Out-Null
+        $env:PATH = "$script:fake;$script:savedPath"
+        $script:path = Join-Path $script:fake 'multiplex.config.json'
+        $script:config = Read-MultiplexConfig -Path $script:path
         $script:config.Tunnel = 'Tailscale'
-        Start-MultiplexTunnel -Config $script:config -ConfigPath $script:path -LogDir $TestDrive -WarningAction SilentlyContinue
-        $script:config.PublicBaseUrl | Should -BeNullOrEmpty
+        $script:config.PublicBaseUrl = 'https://old-tunnel.example.ts.net'   # left from an earlier start
+        Write-MultiplexConfig -Config $script:config -Path $script:path
+        InModuleScope Multiplex.Install { $script:TailscaleTimeoutSeconds = 3 }
+        function Start-Tunnel {
+            Start-MultiplexTunnel -Config $script:config -ConfigPath $script:path -LogDir $script:logDir -WarningVariable script:warned -WarningAction SilentlyContinue 6>$null
+        }
+        function Get-TunnelLog { Get-Content -LiteralPath (Join-Path $script:logDir 'tunnel.log') -Raw -ErrorAction SilentlyContinue }
+        function Get-Calls { @(Get-Content -LiteralPath (Join-Path $script:fake 'calls.log') -ErrorAction SilentlyContinue) }
+    }
+
+    AfterEach {
+        $env:PATH = $script:savedPath
+        InModuleScope Multiplex.Install { $script:TailscaleTimeoutSeconds = 20 }
+    }
+
+    It 'Tailscale owned by another Windows account: serves locally, and says whose it is and what to do' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = $script:refused } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        $log = Get-TunnelLog
+        $log | Should -Match ([regex]::Escape('runs unattended for the Windows account PC\Owner'))
+        $log | Should -Match 'Run unattended'
+        "$script:warned" | Should -Match ([regex]::Escape('PC\Owner'))
+        Get-Calls | Should -Not -Match '^funnel'   # no Funnel attempt once Tailscale has refused
+    }
+
+    It 'a non-zero exit with nothing said: serves locally and reports the exit code' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 3 } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match 'tailscale status --json failed with exit code 3'
+    }
+
+    It 'a status that prints nothing: serves locally and says so' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 0 } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match 'tailscale status --json printed nothing'
+    }
+
+    It 'a status that is not JSON, or JSON without this PC''s name: serves locally and says so' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Out = 'Health check: { truncated' } }
+        { Start-Tunnel } | Should -Not -Throw
+        Get-TunnelLog | Should -Match 'not JSON.*Health check'
+
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Out = '[ 1, 2 ]' } }
+        { Start-Tunnel } | Should -Not -Throw
+        Get-TunnelLog | Should -Match "did not report this PC's DNS name"
         (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
     }
 
-    It 'a Tailscale Funnel that comes up records its address' {
-        Mock -ModuleName Multiplex.Install Invoke-TailscaleFunnel { [pscustomobject]@{ Started = $true; Output = '' } }
-        Mock -ModuleName Multiplex.Install Get-TailscaleDnsName { 'box.example.ts.net' }
-        $script:config.Tunnel = 'Tailscale'
-        Start-MultiplexTunnel -Config $script:config -ConfigPath $script:path -LogDir $TestDrive 6>$null
+    It 'Tailscale signed out: serves locally and says to sign in' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Out = '{ "BackendState": "NeedsLogin", "Self": { "DNSName": "" } }' } }
+        { Start-Tunnel } | Should -Not -Throw
+        Get-TunnelLog | Should -Match 'not signed in'
+        Get-Calls | Should -Not -Match '^funnel'
+    }
+
+    It 'a refused Funnel: serves locally and reports Tailscale''s own words' {
+        New-FakeTailscale -Dir $script:fake -Responses @{
+            status   = @{ Out = $script:running }
+            'funnel' = @{ Exit = 1; Err = 'error enabling https feature: permission denied' } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match 'exit code 1.*error enabling https feature: permission denied'
+    }
+
+    It 'a Funnel that waits to be enabled is stopped, and its enable link reported' {
+        New-FakeTailscale -Dir $script:fake -Responses @{
+            status   = @{ Out = $script:running }
+            'funnel' = @{ Out = 'Funnel is not enabled on your tailnet. To enable, visit: https://login.tailscale.com/f/funnel?node=abc'; Hang = $true } }
+        $elapsed = Measure-Command { { Start-Tunnel } | Should -Not -Throw }
+        $elapsed.TotalSeconds | Should -BeLessThan 20
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match 'did not finish within 3 s'
+        Get-TunnelLog | Should -Match ([regex]::Escape('https://login.tailscale.com/f/funnel?node=abc'))
+    }
+
+    It 'a Funnel that reports success but is not open to the internet is not counted as started' {
+        New-FakeTailscale -Dir $script:fake -Responses @{
+            status          = @{ Out = $script:running }
+            'funnel'        = @{ Out = 'Available within your tailnet:' }
+            'funnel-status' = @{ Out = '{ "AllowFunnel": { "other.example.ts.net:443": true } }' } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match ([regex]::Escape('does not show https://box.example.ts.net open to the internet'))
+    }
+
+    It 'a confirmed Funnel records its address' {
+        New-FakeTailscale -Dir $script:fake -Responses @{
+            status          = @{ Out = $script:running }
+            'funnel'        = @{ Out = "Available on the internet:`nhttps://box.example.ts.net/" }
+            'funnel-status' = @{ Out = $script:funnelOn } }
+        Start-Tunnel
         (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -Be 'https://box.example.ts.net'
+        Get-TunnelLog | Should -BeNullOrEmpty
+        Get-Calls | Should -Contain 'funnel --bg --yes 5190'
+    }
+
+    It 'Tailscale that cannot be run at all is reported, not thrown' {
+        $result = InModuleScope Multiplex.Install { Get-TailscaleDnsName -Tailscale (Join-Path $TestDrive 'absent\tailscale.exe') }
+        $result.DnsName | Should -BeNullOrEmpty
+        $result.Problem | Should -Match 'could not be run'
+    }
+
+    Context 'the start script' {
+        BeforeEach {
+            # A real start: the install module and start script beside a stand-in server that
+            # prints this PC's name and exits.
+            $script:root = Join-Path $TestDrive "root-$([guid]::NewGuid().ToString('N'))"
+            New-Item -ItemType Directory -Force -Path (Join-Path $script:root 'app') | Out-Null
+            Copy-Item (Join-Path $PSScriptRoot 'Start-Multiplex.ps1'), (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Destination $script:root
+            Copy-Item (Join-Path $env:SystemRoot 'System32\HOSTNAME.EXE') (Join-Path $script:root 'app\Multiplex.Web.exe')
+            $c = Read-MultiplexConfig -Path (Join-Path $script:root 'multiplex.config.json')
+            $c.Tunnel = 'Tailscale'
+            Write-MultiplexConfig -Config $c -Path (Join-Path $script:root 'multiplex.config.json')
+            function Invoke-Start { & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $script:root 'Start-Multiplex.ps1') *>&1 | Out-Null; $LASTEXITCODE }
+            function Get-Log([string] $Name) { Get-Content -LiteralPath (Join-Path $script:root "logs\$Name") -Raw -ErrorAction SilentlyContinue }
+        }
+
+        It 'starts the server when Tailscale refuses this account, and logs why it serves locally' {
+            New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = $script:refused } }
+            Invoke-Start | Should -Be 0
+            Get-Log 'server.log' | Should -Match ([regex]::Escape([Environment]::MachineName))
+            Get-Log 'tunnel.log' | Should -Match ([regex]::Escape('PC\Owner'))
+            Get-Log 'start.log' | Should -Match 'starting the server'
+        }
+
+        It 'logs the step it reached when start-up fails' {
+            Set-Content -LiteralPath (Join-Path $script:root 'multiplex.config.json') -Value '{ not json'
+            Invoke-Start | Should -Not -Be 0
+            Get-Log 'start.log' | Should -Match 'Start-up failed while reading the configuration'
+        }
+    }
+}
+
+Describe 'start-up report' {
+    It 'shows the step start-up reached, the tunnel log and the end of the server log' {
+        $logs = Join-Path $TestDrive "report-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $logs | Out-Null
+        Set-Content -LiteralPath (Join-Path $logs 'start.log') -Value '2026-11-18T06:12:10 Start-up failed while starting the server: access denied'
+        Set-Content -LiteralPath (Join-Path $logs 'tunnel.log') -Value '2026-11-18T06:12:10 Tailscale Funnel is not available: refused'
+        Set-Content -LiteralPath (Join-Path $logs 'server.log') -Value (1..30 | ForEach-Object { "server line $_" })
+        $report = Get-MultiplexStartReport -LogDir $logs
+        $report | Should -Match 'Start-up failed while starting the server: access denied'
+        $report | Should -Match 'Tailscale Funnel is not available: refused'
+        $report | Should -Match 'server line 30'
+        $report | Should -Not -Match 'server line 20\b'
+    }
+
+    It 'says when nothing was logged at all' {
+        $logs = Join-Path $TestDrive "empty-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $logs | Out-Null
+        Get-MultiplexStartReport -LogDir $logs | Should -Match 'Nothing was logged'
     }
 }
 
