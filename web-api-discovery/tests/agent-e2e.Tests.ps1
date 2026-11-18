@@ -118,13 +118,17 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
                 'src/MyWrapper/UserSecretsSessionStore.cs',
                 'src/MyWrapper/McpProgram.cs',
                 'src/MyWrapper/ToolSession.cs',
+                'src/MyWrapper/MyWrapperTools.Generated.cs',
                 'README.md',
                 '.gitleaks.toml',
                 '.githooks/pre-commit',
                 '.github/workflows/ci.yml',
                 '.github/workflows/secret-scan.yml',
                 'tests/MyWrapper.Tests/MyWrapper.Tests.csproj',
-                'tests/MyWrapper.Tests/pester/Mcp.Tests.ps1'
+                'tests/MyWrapper.Tests/ToolSessionTests.cs',
+                'tests/MyWrapper.Tests/ToolsTests.cs',
+                'tests/MyWrapper.Tests/pester/Mcp.Tests.ps1',
+                'tests/MyWrapper.Tests/pester/McpStdio.ps1'
             )
             foreach ($rel in $expected) {
                 $p = Join-Path $root $rel
@@ -202,9 +206,16 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
             Test-Path $emitted | Should -BeTrue
             # Invoke in an isolated runspace via pwsh -NoProfile so the outer
             # Pester run is not disturbed.
-            $r = & pwsh -NoProfile -Command "Invoke-Pester -Path '$emitted' -PassThru -Output None | Select-Object -ExpandProperty FailedCount"
+            $counts = & pwsh -NoProfile -Command "`$r = Invoke-Pester -Path '$emitted' -PassThru -Output None; '{0},{1}' -f `$r.PassedCount, `$r.FailedCount"
             $LASTEXITCODE | Should -Be 0
-            [int]$r | Should -Be 0
+            $passed, $failed = "$($counts | Select-Object -Last 1)".Trim() -split ','
+            [int]$failed | Should -Be 0
+            # No failures is also what a suite that ran nothing reports. With
+            # the SDK present the smoke test builds the wrapper, starts its MCP
+            # server and asks it for its tools (issue #17): one check that the
+            # capture gave it tools to expect, and seven against the server.
+            $expected = if ($script:DotnetAvailable) { 8 } else { 1 }
+            [int]$passed | Should -Be $expected
         }
     }
 }

@@ -3,50 +3,108 @@
 
 # MCP smoke test for the {{ProjectName}} wrapper.
 #
-# Verifies that every method on {{ProjectName}}Client carries a [Description]
-# attribute - the MCP runtime ({{ProjectName}}McpServer, registered via
-# WithToolsFromAssembly()) lifts those descriptions into JSON-RPC tool
-# manifests, so a missing [Description] would degrade the tool catalogue.
+# Builds the wrapper, starts its MCP server over stdio the way an MCP client
+# does, and asks it which tools it lists. A server lists a tool only when a
+# class is marked [McpServerToolType] and the method [McpServerTool], and the
+# only way to know that both reached the server is to ask the running server:
+# reading the source for attributes passes just as well when it registers none.
 #
-# The expected method list below is baked in by the generator from the
-# captured HAR; re-run generate-wrapper.js to refresh it.
+# The expected tools below are baked in by the generator from the captured
+# endpoints; re-run generate-wrapper.js to refresh them.
+#
+# It lists tools and never CALLS one. A call would go to the real site, with
+# whatever session is saved on this machine.
 #
 # Run via: pwsh -File ./tests/{{ProjectName}}.Tests/pester/run-pester.ps1
 # (or invoke this file directly with Invoke-Pester).
 
+BeforeDiscovery {
+    $script:NoDotnet = $null -eq (Get-Command dotnet -ErrorAction SilentlyContinue)
+}
+
 BeforeAll {
+    . (Join-Path $PSScriptRoot "McpStdio.ps1")
+
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:ClientCs = Join-Path $script:RepoRoot "src/{{ProjectName}}/{{ProjectName}}Client.Generated.cs"
-    $script:ExpectedMethods = @(
-{{ExpectedMethods}}
+    $script:Project = Join-Path $script:RepoRoot "src/{{ProjectName}}/{{ProjectName}}.csproj"
+    # One entry per endpoint of the capture: the tool's name on the wire, the
+    # client method it calls, and the hints its HTTP method gives it.
+    $script:ExpectedTools = @(
+{{ExpectedTools}}
     )
 }
 
 Describe "{{ProjectName}} MCP smoke" {
-    It "Client.Generated.cs exists" {
-        Test-Path $script:ClientCs | Should -BeTrue
+    It "the capture gave the generator at least one endpoint to make a tool from" {
+        # Everything below compares the server with this list. Were it empty, a
+        # server with no tools would match it.
+        $script:ExpectedTools.Count | Should -BeGreaterThan 0
     }
 
-    It "every expected method declares a [Description] attribute" {
-        $body = Get-Content -Raw $script:ClientCs
-        $script:ExpectedMethods.Count | Should -BeGreaterThan 0 -Because "the generator should have emitted at least one method"
-        foreach ($m in $script:ExpectedMethods) {
-            $pattern = '\[Description\("[^"]+"\)\]\s*(?:\r?\n\s*)*public\s+async\s+Task<[^>]+>\s+' + [regex]::Escape($m)
-            $body | Should -Match $pattern -Because "method $m must be preceded by a [Description] attribute"
-        }
-    }
+    Context "the running server" -Skip:$script:NoDotnet {
+        BeforeAll {
+            $script:BuildOutput = & dotnet build $script:Project -c Debug --nologo -v minimal 2>&1 | Out-String
+            $script:BuildExitCode = $LASTEXITCODE
 
-    It "dotnet is available (smoke-build the wrapper)" {
-        if ($null -eq (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-            Set-ItResult -Skipped -Because "dotnet SDK not on PATH"
-            return
+            $script:Session = $null
+            $script:SessionError = $null
+            if ($script:BuildExitCode -eq 0) {
+                $framework = @(([xml](Get-Content -Raw $script:Project)).Project.PropertyGroup.TargetFramework)[0]
+                $server = Join-Path (Split-Path $script:Project -Parent) "bin/Debug/$framework/{{ProjectName}}.dll"
+                try {
+                    $script:Session = Invoke-McpStdioSession -FilePath dotnet -ArgumentList @($server) -Request @(@{ method = "tools/list" })
+                }
+                catch {
+                    $script:SessionError = $_.Exception.Message
+                }
+            }
+            $script:Tools = if ($script:Session) { @($script:Session.Responses[0].tools) } else { @() }
         }
-        Push-Location $script:RepoRoot
-        try {
-            & dotnet build "src/{{ProjectName}}/{{ProjectName}}.csproj" --nologo -v minimal 2>&1 | Out-Null
-            $LASTEXITCODE | Should -Be 0 -Because "wrapper csproj must compile"
-        } finally {
-            Pop-Location
+
+        It "the wrapper builds" {
+            $script:BuildExitCode | Should -Be 0 -Because "the wrapper csproj must compile. Output:`n$($script:BuildOutput)"
+        }
+
+        It "the server starts over stdio and answers tools/list" {
+            $script:SessionError | Should -BeNullOrEmpty
+            $script:Session | Should -Not -BeNullOrEmpty
+        }
+
+        It "lists at least one tool" {
+            $script:Tools.Count | Should -BeGreaterThan 0 -Because "a server whose tool class is not registered lists none"
+        }
+
+        It "lists exactly the tools the generator made" {
+            $listed = (@($script:Tools | ForEach-Object { $_.name }) | Sort-Object) -join ", "
+            $expected = (@($script:ExpectedTools | ForEach-Object { $_.Name }) | Sort-Object) -join ", "
+            $listed | Should -Be $expected
+        }
+
+        It "gives every tool a description for the model to read" {
+            foreach ($expected in $script:ExpectedTools) {
+                $tool = $script:Tools | Where-Object { $_.name -eq $expected.Name }
+                "$($tool.description)".Trim() | Should -Not -BeNullOrEmpty -Because "tool $($expected.Name) ($($expected.Method)) needs a description"
+            }
+        }
+
+        It "gives every tool the read-only, destructive and idempotent hints of its endpoint" {
+            foreach ($expected in $script:ExpectedTools) {
+                $tool = $script:Tools | Where-Object { $_.name -eq $expected.Name }
+                $tool | Should -Not -BeNullOrEmpty -Because "the server must list $($expected.Name) ($($expected.Method))"
+                $tool.annotations.readOnlyHint | Should -Be $expected.ReadOnly -Because "readOnlyHint of $($expected.Name)"
+                $tool.annotations.destructiveHint | Should -Be $expected.Destructive -Because "destructiveHint of $($expected.Name)"
+                $tool.annotations.idempotentHint | Should -Be $expected.Idempotent -Because "idempotentHint of $($expected.Name)"
+            }
+        }
+
+        It "writes nothing to stdout but MCP protocol messages" {
+            $script:Session.StdoutLines.Count | Should -BeGreaterThan 0
+            foreach ($line in $script:Session.StdoutLines) {
+                $message = $null
+                try { $message = $line | ConvertFrom-Json -ErrorAction Stop } catch { $message = $null }
+                $message | Should -Not -BeNullOrEmpty -Because "stdout is the protocol stream, and this line is not JSON: $line"
+                $message.jsonrpc | Should -Be "2.0" -Because "stdout is the protocol stream, and this line is not a JSON-RPC message: $line"
+            }
         }
     }
 }
