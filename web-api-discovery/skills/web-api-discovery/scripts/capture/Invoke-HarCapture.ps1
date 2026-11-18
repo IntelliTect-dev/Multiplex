@@ -245,19 +245,20 @@
     WHO LAUNCHES THE BROWSER.
 
     `Playwright` (the default) launches it here, which is what every capture
-    did before -- and what a site with bot protection detects and refuses.
-    Playwright marks the browser as automated, and the protection answers the
-    marking rather than the traffic. Measured on car-rental sites: Imperva
+    did before. That is a test-automation launch: Playwright starts its browser
+    with automation switches, and some sites decline to serve such a browser.
+    Measured on car-rental sites, in the Playwright-launched window: Imperva
     returned 403 "Error 15" on the first page load, Akamai reset the search
     POST, DataDome served a slider CAPTCHA and then 403 even once it was
     solved, and PerimeterX raised "Press & Hold" as soon as a location field
     was typed into -- all while browsing BY HAND, and all on sites that worked
     normally in an ordinary Chrome on the same machine and network.
 
-    `Native` is that ordinary Chrome: the recorder starts chrome.exe itself
-    with no automation flags and attaches over CDP. Use it on any site that
-    refuses the default. There are no stealth measures and none are wanted --
-    a site may still challenge, and you answer it in the window.
+    `Native` is that ordinary Chrome -- the browser a person would use anyway:
+    the recorder starts chrome.exe itself with no automation flags and attaches
+    over CDP, in a window you can watch and take over. There are no stealth
+    measures and none are wanted -- a site may still challenge, and the
+    challenge is yours to answer in the window.
 
     What changes: Playwright's recordHar belongs to a browser Playwright
     launched, so raw.har comes from the incremental recorder instead. That
@@ -265,8 +266,8 @@
     requests recordHar drops), and the scrub/verify/digest/catalogue tail is
     identical.
 
-    Exclusive with -Isolated, which launches the bundled Chromium -- the very
-    launch a protected site rejects.
+    Exclusive with -Isolated, which launches the bundled Chromium -- a
+    test-automation launch, the opposite of an ordinary browser.
 
     The recording is scoped to this capture's tabs, and the debugging port
     stays open after it stops: see -Attach.
@@ -542,8 +543,8 @@
         ConvertTo-Json -Depth 4
 
 .EXAMPLE
-    # A site whose bot protection refuses a Playwright-launched browser: record
-    # in an ordinary Chrome instead. Stopping leaves that browser running.
+    # Record in the ordinary Chrome a person would use anyway, with no
+    # automation flags. Stopping leaves that browser running.
     Invoke-HarCapture https://www.hertz.com -Describe 'search a one-way rental' -Browser Native
 
 .EXAMPLE
