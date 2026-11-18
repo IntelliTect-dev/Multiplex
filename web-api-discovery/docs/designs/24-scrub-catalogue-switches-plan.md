@@ -72,6 +72,19 @@ Read by VALUE: `-Scrub:$false` records as today.
   the profile beside the capture is the one found; if none is found from
   there, the scrub's existing hard failure applies.
 
+  WHAT THAT RULE DOES AND DOES NOT GUARANTEE. A recording finds its profile by
+  walking up from the directory IT was run in (`harProfile.loadProfile({})`,
+  and it scaffolds a missing one in that same directory), while the store is
+  anchored to the repository's main working tree. Run from the store's own
+  folder -- or from below it with no nearer profile, which is what a linked
+  worktree under the main tree is -- those are the same file, and a re-scrub
+  uses the profile the recording used. Run from a subfolder that has its own
+  profile, the recording used THAT one, and the phases will not find it: they
+  use the one at the store root (a different salt, so different pseudonyms) or
+  fail for want of any. The rule makes a re-scrub independent of where it is
+  typed; it does not make it use the recording's profile in that case. Nothing
+  records which profile a recording used.
+
 ### FOR THE OWNER: what changed meaning beyond the two switches
 
 The two switches are the approved surface. To make them usable without a third
@@ -293,10 +306,15 @@ would send the operator away from the cause.
 
 ## Known gaps (reported, not built -- each needs an owner decision)
 
-- A BLUNTED scrub is warned about and still exits 0, from `-Scrub` alone and
-  from `-Scrub -Catalogue` (where the code is the recorder's). In a full
-  recording the same scrub ends 7. Raising it here would be this door adding
-  to the recorder's exit mapping.
+- What `-Scrub` still does not answer non-zero for:
+  - a BLUNTED scrub, which is warned about and exits 0 -- from `-Scrub` alone
+    and from `-Scrub -Catalogue` (where the code is the recorder's). In a full
+    recording the same scrub ends 7. Raising it here would be this door adding
+    to the recorder's exit mapping;
+  - an ADVISORY verdict whose findings report the gate could not write (the
+    report is best effort). The wrapper's verdict line then differs from the
+    clean one, so it is still WARNED about, but nothing says "advisory" as
+    data and the exit stays 0.
 - The honest long-term shape for the scrub phase is a `scrub` command on
   `capture-har.js` exposing `postProcess`'s phase A (publish to the session's
   output path, 0/6/7, the sign-in-literals notice in one place). That is new
