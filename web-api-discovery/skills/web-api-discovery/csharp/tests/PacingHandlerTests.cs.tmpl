@@ -251,6 +251,39 @@ public class PacingHandlerTests
     }
 
     [Fact]
+    public async Task Disposing_the_client_while_a_request_waits_surfaces_the_cancellation()
+    {
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new PacingOptions { MinimumSpacing = TimeSpan.FromSeconds(1), SpacingJitter = TimeSpan.Zero };
+        var handler = new PacingHandler(options, null, new ManualClock(), async (wait, ct) =>
+        {
+            waiting.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            finally
+            {
+                // The cancellation reaches the handler only once the client is
+                // gone -- the order a real dispose can take.
+                await disposed.Task;
+            }
+        }, () => 0.5)
+        {
+            InnerHandler = new ScriptedHandler(Succeed),
+        };
+        var http = new HttpClient(handler);
+        (await http.GetAsync(Url)).EnsureSuccessStatusCode();
+        var second = http.GetAsync(Url);   // waits for its slot, a second after the first
+        await waiting.Task;
+        http.Dispose();
+        disposed.SetResult();
+        var ex = await Record.ExceptionAsync(() => second);
+        Assert.IsAssignableFrom<OperationCanceledException>(ex);
+    }
+
+    [Fact]
     public async Task POST_is_never_retried_even_when_listed()
     {
         var options = new PacingOptions

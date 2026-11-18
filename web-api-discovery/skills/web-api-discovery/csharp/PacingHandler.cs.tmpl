@@ -463,9 +463,9 @@ public sealed class PacingHandler : DelegatingHandler
 
     private static DateTimeOffset Max(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _gate.Dispose();
-        base.Dispose(disposing);
-    }
+    // The gate is deliberately NOT disposed with the handler. A SemaphoreSlim
+    // holds nothing to free unless its AvailableWaitHandle is used (it is not
+    // here), and a request still waiting when the client is disposed releases
+    // the gate on its way out: disposing it first replaced that request's
+    // cancellation with an ObjectDisposedException.
 }
