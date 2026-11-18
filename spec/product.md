@@ -46,7 +46,7 @@ On the owner's PC for now, reachable from the internet over HTTPS through a tunn
 
 ## Constraints and risks
 
-- **No authentication yet.** Anyone who can reach the host can call every service's tools. The TripIt work adds it: MCP clients sign in through OAuth, behind an owner passcode; each connection uses the site account signed in while it was added (#52).
+- **No authentication yet.** Anyone who can reach the host can call every service's tools. The TripIt work adds it: MCP clients sign in through OAuth. The owner passcode only gates reaching the sign-in: every connection proves its site account by signing in to the site live, and uses only that account. No account is offered from what the host already holds (#52).
 - **No limit on concurrent calls.** For a service that reads pages, each call that arrives while the others are busy opens another tab.
 - **Chromium runs with its sandbox turned off** (`--no-sandbox`).
 - **Websites change without notice.** An undocumented API can change or disappear, and page layouts tend to change more often than the API behind them (one reason services call the API). Each service's live tests are what notice.
