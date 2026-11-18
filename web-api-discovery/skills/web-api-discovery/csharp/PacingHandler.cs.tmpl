@@ -298,7 +298,7 @@ public sealed class PacingHandler : DelegatingHandler
                 {
                     Defer(ref _siteDeferral, asked);
                     throw Throttled(request, throttledStatus, retryAfter, attempt,
-                        $"the site asked to wait {asked.TotalSeconds:0.#} s, longer than MaxRetryAfter " +
+                        $"the site asked to wait {Describe(asked)}, longer than MaxRetryAfter " +
                         $"({_options.MaxRetryAfter.TotalSeconds:0.#} s)");
                 }
                 var wait = retryAfter ?? Backoff(attempt);
@@ -368,10 +368,15 @@ public sealed class PacingHandler : DelegatingHandler
     {
         lock (_slotLock)
         {
-            var until = _time.GetUtcNow() + wait;
+            var now = _time.GetUtcNow();
+            // Saturating: a Retry-After too long to represent is "never", not an overflow.
+            var until = wait >= DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + wait;
             if (until > deferral) deferral = until;
         }
     }
+
+    private static string Describe(TimeSpan wait)
+        => wait == TimeSpan.MaxValue ? "longer than can be represented" : $"{wait.TotalSeconds:0.#} s";
 
     private TimeSpan Backoff(int attempt)
     {
@@ -391,6 +396,19 @@ public sealed class PacingHandler : DelegatingHandler
         {
             var wait = date - _time.GetUtcNow();
             return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+        }
+        // .NET reads delta-seconds as an int, so a larger all-digits value comes
+        // back as no header at all. It is the site asking for a very long wait --
+        // longer than any cap -- not for none. Anything else it could not read
+        // (a sign, a fraction, words) is neither form, and is absent.
+        if (response.Headers.TryGetValues("Retry-After", out var raw) &&
+            raw.FirstOrDefault()?.Trim() is { Length: > 0 } text && text.All(char.IsAsciiDigit))
+        {
+            const long maxSeconds = long.MaxValue / TimeSpan.TicksPerSecond;
+            return long.TryParse(text, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var seconds) && seconds < maxSeconds
+                ? TimeSpan.FromSeconds(seconds)
+                : TimeSpan.MaxValue;
         }
         return null;
     }
@@ -438,7 +456,7 @@ public sealed class PacingHandler : DelegatingHandler
         HttpRequestMessage request, HttpStatusCode status, TimeSpan? retryAfter, int attempts, string why)
         => new(
             $"{request.Method} {request.RequestUri} was throttled by the site ({(int)status}); {why}." +
-            (retryAfter is { } ra ? $" It asked to wait {ra.TotalSeconds:0.#} s." : string.Empty),
+            (retryAfter is { } ra ? $" It asked to wait {Describe(ra)}." : string.Empty),
             status,
             retryAfter,
             attempts);

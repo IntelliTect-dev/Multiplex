@@ -195,6 +195,36 @@ public class PacingHandlerTests
     }
 
     [Fact]
+    public async Task A_Retry_After_too_large_for_dotnet_to_read_is_a_long_wait_not_no_wait()
+    {
+        // .NET reads delta-seconds as an int. A larger value is the site asking
+        // for a very long wait -- not for none, followed by a backoff and a retry.
+        foreach (var huge in new[] { "2147483648", "99999999999", "99999999999999999999999999" })
+        {
+            var rig = Build(Unspaced, 0.5, Status(HttpStatusCode.TooManyRequests, huge), Succeed);
+            var ex = await Assert.ThrowsAsync<{{ProjectName}}ThrottledException>(() => rig.Http.GetAsync(Url));
+            Assert.Equal(1, rig.Site.Calls);
+            Assert.True(ex.RetryAfter > PacingOptions.Default.MaxRetryAfter, $"Retry-After: {huge} is longer than the cap");
+            await Assert.ThrowsAsync<{{ProjectName}}ThrottledException>(() => rig.Http.GetAsync(Url));
+            Assert.Equal(1, rig.Site.Calls);
+        }
+    }
+
+    [Fact]
+    public async Task A_negative_or_garbage_Retry_After_is_treated_as_absent()
+    {
+        foreach (var junk in new[] { "-5", "1.5", "soon" })
+        {
+            var rig = Build(Unspaced, 0.5, Status(HttpStatusCode.TooManyRequests, junk), Succeed);
+            var response = await rig.Http.GetAsync(Url);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(2, rig.Site.Calls);
+            // The handler's own backoff, as if no Retry-After had been sent.
+            Assert.Contains(rig.Waits, w => w >= TimeSpan.FromSeconds(0.5) && w <= TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Fact]
     public async Task The_handlers_own_backoff_is_never_taken_for_a_wait_the_site_asked_for()
     {
         // MaxRetryAfter caps what the SITE may ask for. A bare 429 asks for no
