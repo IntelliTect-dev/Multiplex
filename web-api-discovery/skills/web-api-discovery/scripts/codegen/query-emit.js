@@ -183,13 +183,15 @@ function defaultPairs(parameters) {
 }
 
 // A value that needs every kind of escaping a query value can need: a space,
-// the separators, a slash, a plus and a non-ASCII letter.
-const PROBE_SUFFIX = ' &=/+é';
+// the separators, a slash, a plus and a non-ASCII letter (e-acute, U+00E9,
+// built from its code so this file stays ASCII).
+const PROBE_SUFFIX = ' &=/+' + String.fromCharCode(0xe9);
 
 /**
  * A distinct, awkward value for every parameter, to call a generated method
- * with: `p1 &=/+é` for the first, and two values for a repeated one. Distinct,
- * so two arguments passed in the wrong order cannot produce the right query.
+ * with: `p1 &=/+` and an e-acute for the first, and two values for a repeated
+ * one. Distinct, so two arguments passed in the wrong order cannot produce the
+ * right query.
  */
 function probeArguments(parameters) {
     return parameters.map((q, i) => {
@@ -217,11 +219,6 @@ function placeholderFor(type) {
     return type === 'int' || type === 'long' ? '1' : '"abc"';
 }
 
-/** The path a test call asks for: literals as captured, each path parameter as its placeholder. */
-function testPathFor(pattern) {
-    return '/' + pattern.segments.map((s) => (s.literal ? s.literal : (s.type === 'int' || s.type === 'long' ? '1' : 'abc'))).join('/');
-}
-
 /** A body the method's response type can be read from, whatever the capture's fixtures hold. */
 function cannedResponseFor(pattern) {
     const isList = !pattern.envelope && /^IReadOnlyList</.test(pattern.responseModel || '');
@@ -234,10 +231,13 @@ function queryFactsFor(tool, names) {
     const pathArgs = p.segments.filter((s) => s.param).map((s) => placeholderFor(s.type));
     const probes = probeArguments(parameters);
     const supplied = pathArgs.concat(probeCallArguments(probes)).join(', ');
-    const byDefault = csLiteral(testPathFor(p) + wireQuery(defaultPairs(parameters)));
-    const whenSupplied = csLiteral(testPathFor(p) + wireQuery(probePairs(probes)));
+    const byDefault = csLiteral(wireQuery(defaultPairs(parameters)));
+    const whenSupplied = csLiteral(wireQuery(probePairs(probes)));
     const canned = csLiteral(cannedResponseFor(p));
 
+    // Uri.Query, not PathAndQuery: the query is escaped exactly as the client
+    // built it, while .NET rewrites a PATH it considers equivalent (`%7E` to
+    // `~`, `%c3` to `%C3`), which a captured path may well contain.
     const fact = (suffix, target, args, expected) => [
         '    [Fact]',
         '    public async Task ' + tool.methodName + '_' + suffix + '()',
@@ -246,7 +246,7 @@ function queryFactsFor(tool, names) {
         '        using var http = MockHandler.FromJson(' + canned + ', sent);',
         ...target.setup,
         '        await ' + target.call + '.' + tool.methodName + '(' + args + ');',
-        '        Assert.Equal(' + expected + ', Assert.Single(sent).PathAndQuery);',
+        '        Assert.Equal(' + expected + ', Assert.Single(sent).Query);',
         '    }',
     ].join('\n');
 
@@ -272,7 +272,7 @@ function hasQuery(tool) {
 
 /**
  * Render QueryStringTests.cs: for every endpoint that takes query parameters,
- * the exact path and query that reach the HTTP handler -- with no query
+ * the exact query string that reaches the HTTP handler -- with no query
  * argument supplied (the captured defaults) and with every one supplied, from
  * the client and through the MCP tool class.
  *
@@ -299,9 +299,9 @@ function emitQueryTestsFile(args) {
         '//   The query string each endpoint puts on the wire. Four [Fact]s for every',
         '//   endpoint that takes query parameters: what is sent when the caller supplies',
         '//   none (the captured defaults) and when the caller supplies every one, from',
-        '//   the client and again through the MCP tool class. Each asserts the exact path',
-        '//   and query the HTTP handler received, so the names, the order, the encoding,',
-        '//   repeated parameters and empty values are all pinned.',
+        '//   the client and again through the MCP tool class. Each asserts the exact',
+        '//   query string the HTTP handler received, so the names, the order, the',
+        '//   encoding, repeated parameters and empty values are all pinned.',
         '//',
         '//   The expected strings come from the captured endpoints, not from the client',
         '//   that is being tested: re-run generate-wrapper.js to refresh them.',
