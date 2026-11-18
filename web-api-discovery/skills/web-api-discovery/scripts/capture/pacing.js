@@ -735,7 +735,9 @@ function httpOf(signal) {
  * `opts.link` is the private phone link for a hand-over, `opts.noLink` why
  * there is none; `opts.finish` says how the person ends or hands back once
  * they have taken over; `opts.noHuman`, when there is nobody to hand the
- * browser to (a headless run), replaces the hand-over with what happens.
+ * browser to (a headless run), replaces the hand-over with what happens;
+ * `opts.noHold` for a tool that pauses only its own next step and does not
+ * hold the browser (capture-cdp.js), so the line claims no more than it does.
  *
  * @returns {Array<[level, text]>} in the recorder's renderLines shape
  */
@@ -758,7 +760,7 @@ function throttleLines(decision, who = 'you', opts = {}) {
         const why = s.retryAfterMs !== null
             ? `the site asked us to wait ${wait} (${httpOf(s)})`
             : `the site is throttling (${httpOf(s)}) and named no wait, so backing off ${wait}`;
-        const holds = {
+        const holds = opts.noHold ? 'the next step waits' : {
             agent: 'the browser holds this capture\'s requests to the site, and the agent has been told to wait',
             'agent-unmessaged': 'the browser holds this capture\'s requests to the site (this agent cannot be messaged)',
             'agent-unstarted': 'the browser holds this capture\'s requests to the site, and the agent starts after it'

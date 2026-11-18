@@ -67,10 +67,12 @@ function parseArgs(argv) {
  * nobody is there, and a hand-over ends the run (exit 3).
  */
 function throttleAudience(args) {
+    // noHold: this tool does not hold the browser's requests the way
+    // capture-har.js does, so its lines never say so.
     return args.headless
-        ? { who: 'script', say: { tool: 'capture-cdp',
+        ? { who: 'script', say: { tool: 'capture-cdp', noHold: true,
             noHuman: 'Nobody can take over a headless browser, so this run ends (exit 3).' } }
-        : { who: 'you', say: { tool: 'capture-cdp' } };
+        : { who: 'you', say: { tool: 'capture-cdp', noHold: true } };
 }
 
 /**

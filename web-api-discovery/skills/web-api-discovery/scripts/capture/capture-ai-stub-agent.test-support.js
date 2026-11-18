@@ -97,8 +97,22 @@ childProcess.spawn = function spawn(command, args, options) {
     return realSpawn.call(this, command, args, options);
 };
 
+/**
+ * Is this the recorder asking Tailscale for this PC's address (mirror.js)?
+ * Answered from HAR_STUB_TAILSCALE_JSON when a test sets it -- so a test can
+ * stand the phone view up on LOOPBACK, and no test ever touches a real tailnet.
+ */
+function isTailscaleStatus(command, argv) {
+    return /tailscale(\.exe)?$/i.test(path.basename(String(command))) && Array.isArray(argv) &&
+        argv[0] === 'status' && argv[1] === '--json';
+}
+
 childProcess.spawnSync = function spawnSync(command, args, options) {
     if (isAgentProbe(command, args)) return agentProbeResult();
+    if (process.env.HAR_STUB_TAILSCALE_JSON && isTailscaleStatus(command, args)) {
+        const stdout = process.env.HAR_STUB_TAILSCALE_JSON;
+        return { status: 0, signal: null, pid: 0, error: undefined, stdout, stderr: '', output: [null, stdout, ''] };
+    }
     return realSpawnSync.call(this, command, args, options);
 };
 
@@ -240,6 +254,11 @@ async function driveTheRecording(prompt) {
             step('opened /challenge');
             const told = await messageMatching(/A person is taking over/, 30000);
             step(told ? 'the recorder said a person is taking over; waiting' : 'nobody said anything');
+            // Waits as told: until the person hands back, or the capture ends.
+            await messageMatching(/The person has finished|The capture has ended/, 120000);
+            if (inbox.some((m) => /The person has finished/.test(m.text))) {
+                step('the person has finished; re-checked the page and carried on');
+            }
             say('SUMMARY: met a bot check and waited for the person.');
             return 0;
         }
