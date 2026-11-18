@@ -1513,10 +1513,8 @@ test('the agent rate watch counts only an agent that has been launched and is st
 test('start says when it clamps a --pace wait to 10 minutes', () => {
     const work = tmpDir('pace-clamp');
     require('child_process').execFileSync('git', ['init', '-q'], { cwd: work });
-    const res = require('child_process').spawnSync(process.execPath,
-        [path.join(__dirname, 'capture-har.js'), 'start', '--uri', 'https://app.example.com', '--port', '0',
-            '--validate-only', '--describe', 'pace clamp fixture', '--pace', 'nav=3000000000'],
-        { cwd: work, encoding: 'utf8' });
+    // On a machine the check passes on (#25): this case is about the note.
+    const res = checkOnlyFrom(work, ['--describe', 'pace clamp fixture', '--pace', 'nav=3000000000']);
     assert.strictEqual(res.status, 0, res.stderr);
     assert.match(res.stderr, /capture-har: --pace nav=3000000000: a wait is at most 10 minutes/);
 });
