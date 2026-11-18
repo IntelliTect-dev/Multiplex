@@ -195,6 +195,32 @@ public class PacingHandlerTests
     }
 
     [Fact]
+    public async Task The_handlers_own_backoff_is_never_taken_for_a_wait_the_site_asked_for()
+    {
+        // MaxRetryAfter caps what the SITE may ask for. A bare 429 asks for no
+        // wait; the backoff that follows is the handler's own, and must not
+        // trip that cap or refuse a request "because the site asked".
+        var options = new PacingOptions
+        {
+            MinimumSpacing = TimeSpan.Zero, SpacingJitter = TimeSpan.Zero, MaxAttempts = 3,
+            MaxRetryAfter = TimeSpan.FromSeconds(1), BackoffBase = TimeSpan.FromSeconds(1), BackoffMax = TimeSpan.FromSeconds(30),
+        };
+        var rig = Build(options, 0.5, Status(HttpStatusCode.TooManyRequests), Status(HttpStatusCode.TooManyRequests), Succeed);
+        var response = await rig.Http.GetAsync(Url);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(3, rig.Site.Calls);
+        Assert.Contains(rig.Waits, w => w > options.MaxRetryAfter);
+
+        // With a cap of zero, a POST's bare 429 holds the next GET for the
+        // backoff; it does not refuse it.
+        var zero = new PacingOptions { MinimumSpacing = TimeSpan.Zero, SpacingJitter = TimeSpan.Zero, MaxRetryAfter = TimeSpan.Zero };
+        var post = Build(zero, 0.5, Status(HttpStatusCode.TooManyRequests), Succeed);
+        await Assert.ThrowsAsync<{{ProjectName}}ThrottledException>(() => post.Http.PostAsync(Url, new StringContent("{}")));
+        Assert.Equal(HttpStatusCode.OK, (await post.Http.GetAsync(Url)).StatusCode);
+        Assert.Contains(post.Waits, w => w > TimeSpan.Zero);
+    }
+
+    [Fact]
     public async Task POST_is_never_retried_even_when_listed()
     {
         var options = new PacingOptions

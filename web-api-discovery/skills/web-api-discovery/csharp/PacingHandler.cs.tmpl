@@ -228,7 +228,12 @@ public sealed class PacingHandler : DelegatingHandler
     private readonly SemaphoreSlim _gate;
     private readonly object _slotLock = new();
     private DateTimeOffset _nextSlot = DateTimeOffset.MinValue;
+    // TWO DEFERRALS, kept apart. What the SITE asked for (Retry-After) is held
+    // to MaxRetryAfter, and a request is refused rather than sent early. The
+    // handler's OWN backoff, after a 429 or 503 that named no wait, is only
+    // ever waited out: nobody asked for it, so it never refuses anything.
     private DateTimeOffset _siteDeferral = DateTimeOffset.MinValue;
+    private DateTimeOffset _backoffDeferral = DateTimeOffset.MinValue;
 
     public PacingHandler(PacingOptions? options = null, ILogger? log = null)
         : this(options, log, time: null, delay: null, random: null)
@@ -291,13 +296,14 @@ public sealed class PacingHandler : DelegatingHandler
 
                 if (retryAfter is { } asked && asked > _options.MaxRetryAfter)
                 {
-                    Defer(asked);
+                    Defer(ref _siteDeferral, asked);
                     throw Throttled(request, throttledStatus, retryAfter, attempt,
                         $"the site asked to wait {asked.TotalSeconds:0.#} s, longer than MaxRetryAfter " +
                         $"({_options.MaxRetryAfter.TotalSeconds:0.#} s)");
                 }
                 var wait = retryAfter ?? Backoff(attempt);
-                Defer(wait);
+                if (retryAfter is null) Defer(ref _backoffDeferral, wait);
+                else Defer(ref _siteDeferral, wait);
                 if (attempt >= maxAttempts)
                 {
                     throw Throttled(request, throttledStatus, retryAfter, attempt, retryable
@@ -327,7 +333,7 @@ public sealed class PacingHandler : DelegatingHandler
                 throw Throttled(request, HttpStatusCode.TooManyRequests, deferral, 0,
                     $"the site asked for a pause until {_siteDeferral:u}, longer than MaxRetryAfter; not sent");
             }
-            var start = Max(now, Max(_nextSlot, _siteDeferral));
+            var start = Max(now, Max(_nextSlot, Max(_siteDeferral, _backoffDeferral)));
             var jitter = TimeSpan.FromTicks((long)(_options.SpacingJitter.Ticks * _random()));
             _nextSlot = start + _options.MinimumSpacing + jitter;
             wait = start - now;
@@ -358,12 +364,12 @@ public sealed class PacingHandler : DelegatingHandler
     }
 
     /// <summary>Later requests wait this out too: a site's Retry-After is about the client, not one request.</summary>
-    private void Defer(TimeSpan wait)
+    private void Defer(ref DateTimeOffset deferral, TimeSpan wait)
     {
         lock (_slotLock)
         {
             var until = _time.GetUtcNow() + wait;
-            if (until > _siteDeferral) _siteDeferral = until;
+            if (until > deferral) deferral = until;
         }
     }
 
