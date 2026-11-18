@@ -523,8 +523,8 @@ test('C8: a block delivered to an XHR is seen, whatever its content type', () =>
     assert.strictEqual(xhr({ mimeType: 'application/json', headers: { 'cf-ray': 'x', server: 'cloudflare' },
         body: '{"error":"forbidden"}' }), null, 'a CDN\'s headers alone are on every response, an app\'s 403 included');
     assert.strictEqual(pacing.classifyResponse({ url: 'https://collector.tracker.example.net/t', onSite: false,
-        isDocument: false, status: 403, mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: '' }),
-    null, 'a tracker\'s refusal is not the site\'s');
+        isDocument: false, status: 403, mimeType: 'application/json', headers: { 'x-datadome': 'protected' }, body: ddBlock }),
+    null, 'a tracker\'s refusal, even DataDome\'s own block, is not the site\'s');
     assert.strictEqual(xhr({ status: 200, mimeType: 'application/json',
         body: '{"url":"https://geo.captcha-delivery.com/captcha/?x"}' }), null, 'a 200 is not a refusal');
 });
