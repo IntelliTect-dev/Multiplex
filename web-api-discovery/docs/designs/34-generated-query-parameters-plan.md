@@ -132,13 +132,16 @@ two wire names give one identifier, and capped at 48 characters.
 ### 4. Tests the generator emits
 
 - `tests/<Name>.Tests/QueryStringTests.cs` (only when an endpoint has query
-  parameters): four facts per endpoint -- the client called with no query
-  argument (the captured defaults) and with every parameter supplied (each a
-  distinct value that needs encoding), and the same two through the tool class.
+  parameters): per endpoint, the client called with no query argument (the
+  captured defaults) and with every parameter supplied (each a distinct value
+  that needs encoding) -- and the same two through the tool class when the
+  endpoint has a tool. Four facts for an endpoint with a tool, two for one that
+  is left out of the tools (see **Rebased onto #17's review rounds**).
   Each asserts the exact query string that reached the handler (`Uri.Query`:
   .NET rewrites a path it considers equivalent, `%7E` to `~`, so the path is
   left out of the comparison). The expected strings are computed by the
-  generator from the capture, not read back from the emitted client. It is a file of its own because `ClientTests.*` and
+  generator from the capture, not read back from the emitted client. It is a
+  file of its own because `ClientTests.*` and
   `ToolsTests.cs` are one fact per endpoint / per tool, and it is rendered in
   JavaScript (`query-emit.js`) like the tool class is, so no template and no
   `{{Token}}` is added.
@@ -153,7 +156,8 @@ two wire names give one identifier, and capped at 48 characters.
   different queries (a constant, a varying search term, a paging number, a
   repeated parameter, an empty value, a scrub-marked session id, a per-call
   timestamp), an endpoint with awkward and colliding names, an endpoint
-  captured once, a POST with a query and a body, and one with no query.
+  captured once, a POST with a query and a body, one with no query, and a
+  sign-in path with a query -- which has a client method and no tool.
 - `tests/fixtures/har/rest-query-typed-pii.har`: a city that is personal data
   in the response and a query value too, so the scrub leaves a fake city in the
   query that carries no marker.
@@ -170,8 +174,9 @@ two wire names give one identifier, and capped at 48 characters.
   loopback (`tests/stand-in-site.js`) and reads the request lines it received,
   and falsifies: with a parameter removed from the tool class the wrapper's
   smoke test fails, and with the query emission reverted in the generated
-  client all sixteen of its query facts fail. A second wrapper, from the
-  hostile fixture, must build with 0 warnings and pass its own query facts.
+  client all eighteen of its query facts fail. A second wrapper, from the
+  hostile fixture, must build with 0 warnings, pass its own query facts and
+  pass its own smoke test -- one of its tools has a name cut to 64 characters.
 
 ## Evidence Plan
 
@@ -263,6 +268,32 @@ Made without the owner; each is in the hand-off report.
     a captured path spelled that way would fail a path comparison while sending
     the right request.
 
+## Rebased onto #17's review rounds
+
+The branch was first built on `ab0d48c` and rebased onto `6ec471d` after #17
+gained two review rounds. What that changed here:
+
+- **Not every endpoint has a tool any more.** #17 now leaves sign-in and
+  credential paths, `OPTIONS` / `HEAD` and endpoints with no JSON response out
+  of the tools; each keeps its client method. The first version of this work
+  wrote the query tests and the README table from the list of TOOLS, so such an
+  endpoint would have kept its query parameters on the client with no test and
+  no line in the README. They are written from the list of endpoints now
+  (`endpointsWithQuery` in `query-emit.js`), each with its tool or none:
+  - the client method takes the query parameters either way;
+  - `QueryStringTests.cs` gives an endpoint with no tool the client's two
+    facts, and no fact that calls a tool method that does not exist;
+  - the smoke test's `; Query = @(...)` is on a tool's own line only, so
+    nothing is expected of a name in `LeftOutTools`;
+  - the README lists it as `no tool (<ClientMethod>)`, after the "Left out of
+    the tools" section that says why.
+- **Tool names are cut to 64 characters with a hash.** Everything here that
+  names a tool takes the name from `listTools()`, so it follows. The hostile
+  fixture has a path deep enough to be cut, and its wrapper's smoke test must
+  find that tool's parameters under the cut name.
+- **A POST is destructive unless something vouches for it.** That changes the
+  hints of `create_items_search` in the fixture, which nothing here asserts.
+
 ## Found along the way (not changed here)
 
 - `sanitize-har.js`'s fake JWT is `eyJ` + 18 hex + `.` + 40 hex + `.` + **6**
@@ -274,6 +305,15 @@ Made without the owner; each is in the hand-off report.
   line in C# as U+2028 and U+2029 do. A response field name carrying one would
   break the tool file's build. `query-emit.js` escapes it for its own literals
   (`csLiteral`); `csString` is under review with #17 and is not edited here.
-- Two generated tests fail on a capture with a non-JSON streaming endpoint
-  (no fixture is written for it): issue #35. The query facts do not depend on
-  fixtures, and pass for that endpoint.
+- Generated tests fail on a capture with a non-JSON endpoint, because no
+  fixture is written for it: issue #35. The query facts do not depend on
+  fixtures, and pass for such an endpoint. After #17's review rounds:
+  - an endpoint with NO JSON response gets no tool, so only its client fact
+    (`<Method>_ReturnsFixture`) fails -- and that fact's
+    `Assert.NotNull` on a `JsonElement` is a build warning (xUnit2002) in the
+    generated test project;
+  - an endpoint where SOME captured response parses as JSON keeps its tool
+    (`hasJsonResponse` is true when any sample parsed), while its fixture is
+    still taken from the first sample. On the real capture the streaming
+    endpoint is such a one -- one of its two responses parses, as an array --
+    so it keeps its tool and both of its fixture facts still fail.

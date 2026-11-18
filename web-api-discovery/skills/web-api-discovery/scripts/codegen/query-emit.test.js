@@ -147,22 +147,71 @@ function described(urls) {
     console.log('PASS: a captured name or value is escaped into every C# literal it reaches.');
 }
 
+// What generate-wrapper.js hands the emitters: the endpoints, the tools some of
+// them have, and its client method namer. A pattern here names its own method.
+const OPTS = { projectName: 'P', namespace: 'N' };
+const methodNameFor = (p) => p.methodName;
+
 // ---- Nothing to render when no endpoint takes a query ----
 {
-    const tools = [{ name: 'get_me', methodName: 'GetMeAsync', pattern: { method: 'GET', segments: [{ literal: 'me' }], queryParameters: [] } },
-        { name: 'graphql', methodName: 'GraphQLAsync', pattern: null }];
-    assert.strictEqual(emitQueryTestsFile({ opts: { projectName: 'P', namespace: 'N' }, tools }), null);
-    assert.strictEqual(queryReadmeSection(tools, { projectName: 'P' }), '');
+    const me = { methodName: 'GetMeAsync', method: 'GET', segments: [{ literal: 'me' }], queryParameters: [] };
+    const tools = [{ name: 'get_me', methodName: 'GetMeAsync', pattern: me }, { name: 'graphql', methodName: 'GraphQLAsync', pattern: null }];
+    assert.strictEqual(emitQueryTestsFile({ opts: OPTS, patterns: [me], tools, methodNameFor }), null);
+    assert.strictEqual(queryReadmeSection({ opts: OPTS, patterns: [me], tools, methodNameFor }), '');
     console.log('PASS: a capture with no query parameters gets no query tests and no README section.');
+}
+
+// ---- An endpoint that is left out of the tools keeps its query on the client ----
+{
+    // Issue #17 gives some endpoints no tool: sign-in paths, OPTIONS/HEAD, and
+    // ones the capture showed no JSON response from. Each still has a client
+    // method, and that method still takes the query.
+    const url = SITE + '?format=csv&since=2026-01-01';
+    const parameters = Object.values(described([url, url]));
+    const withTool = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }],
+        responseModel: 'SearchResponse', queryParameters: parameters };
+    const leftOut = { methodName: 'GetExportReportAsync', method: 'GET', segments: [{ literal: 'export' }, { literal: 'report' }],
+        responseModel: 'JsonElement', hasJsonResponse: false, queryParameters: parameters };
+    const patterns = [leftOut, withTool];
+    const tools = [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: withTool }];
+
+    const tests = emitQueryTestsFile({ opts: OPTS, patterns, tools, methodNameFor });
+    const factNames = (tests.match(/public async Task (\w+)\(\)/g) || []).map((m) => m.replace(/^public async Task |\(\)$/g, ''));
+    assert.deepStrictEqual(factNames, [
+        // No tool: the client's two facts, and nothing that asks for a tool method.
+        'GetExportReportAsync_SendsTheCapturedQueryWhenNoneIsSupplied',
+        'GetExportReportAsync_SendsEveryQueryParameterTheCallerSupplies',
+        // A tool: the client's two, and the same two through the tool class.
+        'GetSearchAsync_SendsTheCapturedQueryWhenNoneIsSupplied',
+        'GetSearchAsync_SendsEveryQueryParameterTheCallerSupplies',
+        'GetSearchAsync_SendsTheCapturedQueryThroughTheToolWhenNoneIsSupplied',
+        'GetSearchAsync_SendsEveryQueryParameterThroughTheTool',
+    ]);
+    assert.ok(!tests.includes('new PTools(session).GetExportReportAsync'), 'no call to a tool method that does not exist');
+    assert.strictEqual((tests.match(/new PTools\(session\)\.GetSearchAsync\(/g) || []).length, 2);
+    assert.ok(tests.includes('Assert.Equal("?format=csv&since=2026-01-01", Assert.Single(sent).Query);'), tests);
+
+    const section = queryReadmeSection({ opts: OPTS, patterns, tools, methodNameFor });
+    assert.ok(section.includes('| `get_search` | `format` | `format` | 2 of 2 | sends `"csv"` (every captured call did) |'), section);
+    assert.ok(section.includes('| no tool (`GetExportReportAsync`) | `format` | `format` | 2 of 2 | sends `"csv"` (every captured call did) |'),
+        'a left-out endpoint is listed by its client method:\n' + section);
+
+    // Only endpoints without a tool: still tests and still a section, and no tool is assumed anywhere.
+    const clientOnly = emitQueryTestsFile({ opts: OPTS, patterns: [leftOut], tools: [], methodNameFor });
+    assert.strictEqual((clientOnly.match(/^ +\[Fact\]$/gm) || []).length, 2);
+    assert.ok(!clientOnly.includes('PTools'), 'nothing refers to the tool class');
+    assert.ok(queryReadmeSection({ opts: OPTS, patterns: [leftOut], tools: [], methodNameFor }).includes('no tool (`GetExportReportAsync`)'));
+    console.log('PASS: an endpoint with no tool keeps its query facts for the client, and is listed by its client method.');
 }
 
 // ---- The README gives the true reason a value was not baked in ----
 {
     const url = SITE + '?fb_dtsg=NAdQx3kLr9WpT2vY&sid=redacted-3f9a1c0b7e2d4a68&v=7c9e6679-7425-40de-944b-e07fc1f90ae7&=x&a%7Cb=1';
     const parameters = Object.values(described([url + '&order=4821937465021', url + '&order=4821937466377']));
-    const section = queryReadmeSection(
-        [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: { method: 'GET', segments: [{ literal: 'search' }], queryParameters: parameters } }],
-        { projectName: 'P' });
+    const search = { methodName: 'GetSearchAsync', method: 'GET', segments: [{ literal: 'search' }], queryParameters: parameters };
+    const section = queryReadmeSection({
+        opts: OPTS, patterns: [search], tools: [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: search }], methodNameFor,
+    });
     for (const row of [
         '| `get_search` | `fbDtsg` | `fb_dtsg` | 2 of 2 | **left out, never baked in**: its name is one the scrub policy treats as a secret |',
         '| `get_search` | `sid` | `sid` | 2 of 2 | **left out, never baked in**: the scrub replaced the captured value |',
@@ -323,6 +372,16 @@ try {
         console.log('PASS: a tool declares the same query parameters as its client method, each described, and passes them on.');
     }
 
+    // ---- An endpoint left out of the tools: its query stays on the client method ----
+    {
+        // GET /api/session/status?verbose=1 -- a sign-in path, so no tool (issue #17).
+        const status = methodOf(client, 'GetSessionStatusAsync');
+        assert.ok(status.includes('GetSessionStatusAsync(string? verbose = "1", CancellationToken ct = default)'), status);
+        assert.ok(status.includes('AddQuery(wireQuery, "verbose", verbose);'), status);
+        assert.ok(!toolsCs.includes('GetSessionStatusAsync'), 'and the tool class has no method for it');
+        console.log('PASS: an endpoint that gets no tool still takes its query parameters on the client method.');
+    }
+
     // ---- The README lists them, and says what is never baked in ----
     {
         assert.ok(readme.includes('### Query parameters'), 'the README has the section');
@@ -344,6 +403,11 @@ try {
         assert.ok(/A value the scrub replaced[^]*is never\s+written into the generated code/.test(readme), 'the note says so');
         const section = readme.slice(readme.indexOf('### Query parameters'));
         assert.ok(!section.includes('| `get_me` |'), 'a tool with no query parameters has no row');
+        // The endpoint that has no tool is listed by its client method, not as a tool.
+        assert.ok(section.includes('| no tool (`GetSessionStatusAsync`) | `verbose` | `verbose` | 1 of 1 | sends `"1"` (the one captured call did) |'), section);
+        assert.ok(!section.includes('get_session_status'), 'and never under the name its tool would have had');
+        assert.ok(readme.indexOf('### Left out of the tools') < readme.indexOf('### Query parameters'),
+            'the section follows the one that says what "left out" means');
 
         // A recipe shows the call a reader makes first: with the parameter that varied.
         assert.ok(readme.includes('var result = await client.GetSearchSuggestionsAsync(prefix: "w");'), 'the search recipe passes a search term');
@@ -375,15 +439,23 @@ try {
             'await client.GetItemsByIdReviewsAsync(1, idQuery: "p1 &=/+é", @class: "p2 &=/+é", q0: "p3 &=/+é",'), tests);
         assert.ok(tests.includes('suggestionType: new[] { "p3 &=/+é", "p3b" }'), 'a repeated parameter is given two values');
         const facts = tests.match(/^ +\[Fact\]$/gm) || [];
-        assert.strictEqual(facts.length, 16, 'four facts for each of the four endpoints that take a query');
-        assert.strictEqual((tests.match(/new QueryExTools\(session\)\./g) || []).length, 8, 'half of them go through the tool class');
+        assert.strictEqual(facts.length, 18,
+            'four facts for each of the four endpoints with a tool, and the client\'s two for the one without');
+        assert.strictEqual((tests.match(/new QueryExTools\(session\)\./g) || []).length, 8, 'eight of them go through the tool class');
         assert.ok(!tests.includes('GetMeAsync'), 'an endpoint with no query has no query facts');
+
+        // The endpoint with no tool: its client facts, and no call to a tool method that does not exist.
+        assert.ok(tests.includes('public async Task GetSessionStatusAsync_SendsTheCapturedQueryWhenNoneIsSupplied()'), tests);
+        assert.ok(tests.includes('public async Task GetSessionStatusAsync_SendsEveryQueryParameterTheCallerSupplies()'), tests);
+        assert.ok(tests.includes('Assert.Equal("?verbose=1", Assert.Single(sent).Query);'), tests);
+        assert.ok(!/GetSessionStatusAsync_\w*Tool/.test(tests), 'no through-the-tool fact for it');
+        assert.ok(!tests.includes('new QueryExTools(session).GetSessionStatusAsync'), 'which would not compile');
 
         // The one-fact-per-endpoint and one-fact-per-tool files are left as they were.
         const clientFacts = fs.readdirSync(testsDir).filter((f) => /^ClientTests\..*\.cs$/.test(f))
             .map((f) => (fs.readFileSync(path.join(testsDir, f), 'utf8').match(/^ +\[Fact\]$/gm) || []).length)
             .reduce((a, b) => a + b, 0);
-        assert.strictEqual(clientFacts, 5, 'ClientTests.* stays one fact per endpoint');
+        assert.strictEqual(clientFacts, 6, 'ClientTests.* stays one fact per endpoint');
         assert.strictEqual((fs.readFileSync(path.join(testsDir, 'ToolsTests.cs'), 'utf8').match(/^ +\[Fact\]$/gm) || []).length, 5,
             'and ToolsTests.cs one per tool');
 
@@ -403,6 +475,10 @@ try {
         assert.ok(smoke.includes(
             '@{ Name = "get_me"; Method = "GetMeAsync"; ReadOnly = $true; Destructive = $false; Idempotent = $true }'),
             'a tool with no query parameters keeps the line it always had');
+        // The endpoint with no tool is named only among the left-out: no input
+        // schema is expected of a tool the server must not list.
+        assert.ok(smoke.includes('@{ Name = "get_session_status"; Method = "GetSessionStatusAsync" }'), smoke);
+        assert.ok(!/get_session_status[^\n]*Query = /.test(smoke), 'no Query is expected of a left-out endpoint');
         // That the suite then FINDS them in a running server's inputSchema, and
         // fails when one is missing, is tests/generated-query-parameters.Tests.ps1.
         console.log('PASS: the smoke test is given each tool\'s query parameters to look for in its inputSchema.');

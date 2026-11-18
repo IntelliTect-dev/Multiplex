@@ -262,12 +262,16 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
 
         $script:UnitTests = $null
         $script:QueryFacts = $null
+        $script:LeftOutFacts = $null
         $script:Session = $null
         $script:SessionError = $null
         $script:SessionStore = $null
         if ($script:Query.BuildExit -eq 0) {
             $script:UnitTests = Invoke-EmittedUnitTest -Wrapper $script:Query
             $script:QueryFacts = Invoke-EmittedUnitTest -Wrapper $script:Query -Filter 'FullyQualifiedName~QueryStringTests'
+            # GET /api/session/status?verbose=1 is a sign-in path: it has a
+            # client method and, since issue #17, no tool.
+            $script:LeftOutFacts = Invoke-EmittedUnitTest -Wrapper $script:Query -Filter 'FullyQualifiedName~QueryStringTests.GetSessionStatusAsync_'
 
             $script:SessionStore = Save-ThrowawaySession -Name $script:Query.Name
             try {
@@ -320,10 +324,17 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
             $script:UnitTests.ExitCode | Should -Be 0 -Because $script:UnitTests.Output
             $script:UnitTests.Failed | Should -Be 0
         }
-        It 'sixteen of them assert the exact query string on the wire: four for each endpoint that takes one' {
+        It 'eighteen of them assert the exact query string on the wire: four for each endpoint with a tool, two for the one without' {
             $script:QueryFacts.ExitCode | Should -Be 0 -Because $script:QueryFacts.Output
-            $script:QueryFacts.Total | Should -Be 16
-            $script:QueryFacts.Passed | Should -Be 16
+            $script:QueryFacts.Total | Should -Be 18
+            $script:QueryFacts.Passed | Should -Be 18
+        }
+        It 'an endpoint left out of the tools still sends its query from the client method, and has no fact that asks for a tool' {
+            # Both of its facts call the client. A through-the-tool fact for it
+            # would not have compiled: the tool class has no such method.
+            $script:LeftOutFacts.ExitCode | Should -Be 0 -Because $script:LeftOutFacts.Output
+            $script:LeftOutFacts.Total | Should -Be 2
+            $script:LeftOutFacts.Passed | Should -Be 2
         }
     }
 
@@ -397,6 +408,12 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
             $me | Should -Not -BeNullOrEmpty
             Get-SchemaPropertyName $me | Should -BeNullOrEmpty
         }
+        It 'an endpoint left out of the tools is not listed, whatever its query' {
+            # Six endpoints, five tools: the sign-in path has none.
+            @($script:Tools | ForEach-Object { $_.name }) | Should -Not -Contain 'get_session_status'
+            (@($script:Tools | ForEach-Object { $_.name }) | Sort-Object) -join ', ' |
+                Should -BeExactly 'create_items_search, get_catalog_config, get_items_by_id_reviews, get_me, get_search_suggestions'
+        }
         It 'no tool asks the model for plumbing' {
             $script:Tools.Count | Should -Be 5
             foreach ($tool in $script:Tools) {
@@ -449,6 +466,12 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
             $readme | Should -Match ([regex]::Escape('| `get_search_suggestions` | `limit` | `limit` | 5 of 5 | sends `"11"` (every captured call did) |'))
             $readme | Should -Not -Match 'redacted-3f9a1c0b7e2d4a68'
         }
+        It 'lists an endpoint that has no tool by its client method, and says why it has none' {
+            $readme = Get-Content -LiteralPath $script:Query.Readme -Raw
+            $readme | Should -Match ([regex]::Escape('| `GetSessionStatusAsync` | `GET /api/session/status` | its path names sign-in or credentials (session) |'))
+            $readme | Should -Match ([regex]::Escape('| no tool (`GetSessionStatusAsync`) | `verbose` | `verbose` | 1 of 1 | sends `"1"` (the one captured call did) |'))
+            $readme | Should -Not -Match 'get_session_status' -Because 'nothing in the README offers it as a tool'
+        }
     }
 
     Context 'the smoke test the wrapper carries' {
@@ -489,7 +512,7 @@ Describe 'a wrapper generated from a capture with query strings' -Skip:$script:N
                 Set-Content -LiteralPath $script:Query.ClientSource -Value $reverted -NoNewline
                 $result = Invoke-EmittedUnitTest -Wrapper $script:Query -Filter 'FullyQualifiedName~QueryStringTests'
                 $result.ExitCode | Should -Not -Be 0
-                $result.Failed | Should -Be 16 -Because "every query fact asserts a query string, and none is sent now. Output:`n$($result.Output)"
+                $result.Failed | Should -Be 18 -Because "every query fact asserts a query string, and none is sent now. Output:`n$($result.Output)"
             }
             finally {
                 Set-Content -LiteralPath $script:Query.ClientSource -Value $source -NoNewline
@@ -506,7 +529,9 @@ Describe 'a capture whose query names and values are hostile to C# source' -Skip
     # methods and tests already use, an empty name, names with nothing usable in
     # them and two 120-character names that differ in the 121st. One endpoint's
     # PATH is spelled the way .NET rewrites (%c3%a9 becomes %C3%A9, %7E becomes
-    # ~): the query facts compare the query string, not the path.
+    # ~): the query facts compare the query string, not the path. Another's path
+    # is deep enough that its tool name is cut to 64 characters with a hash
+    # (issue #17): the tool takes the same forty parameters under that name.
     #
     # A capture is text a website wrote. Every one of these is written into a
     # string literal, an attribute, a `///` comment and a test, and none may
@@ -535,8 +560,24 @@ Describe 'a capture whose query names and values are hostile to C# source' -Skip
     }
     It 'its query facts pass: every name and value reaches the wire as captured' {
         $script:HostileTests.ExitCode | Should -Be 0 -Because $script:HostileTests.Output
-        $script:HostileTests.Total | Should -Be 12 -Because 'four facts for each of the three endpoints'
-        $script:HostileTests.Passed | Should -Be 12
+        $script:HostileTests.Total | Should -Be 16 -Because 'four facts for each of the four endpoints'
+        $script:HostileTests.Passed | Should -Be 16
+    }
+    It 'a tool whose name is cut to 64 characters still lists every query parameter, and the smoke test finds them' {
+        # The precondition, from what the generator baked in: one tool has a
+        # name of exactly 64 characters that ends in a hash, and query
+        # parameters are expected of it.
+        $smoke = Get-Content -LiteralPath $script:Hostile.Smoke -Raw
+        $cut = [regex]::Match($smoke, '@\{ Name = "(get_alpha_[a-z0-9_]+_[0-9a-f]{8})"; Method = "GetAlphaById[A-Za-z0-9]+Async";[^\r\n]*; Query = @\("quote", ')
+        $cut.Success | Should -BeTrue -Because 'the deep path must have given a cut tool name with query parameters to look for'
+        $cut.Groups[1].Value.Length | Should -Be 64
+
+        # Then the wrapper's own smoke test, against the running server: the
+        # tool is listed under that name, and its input schema has them all --
+        # the C# keywords and the 48-character names included.
+        $result = Invoke-EmittedSmoke -Wrapper $script:Hostile
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -BeGreaterOrEqual 10 -Because 'a suite that ran nothing would also report no failures'
     }
     It 'no generated source line is ended by a character the capture supplied' {
         # CR, U+0085, U+2028 and U+2029 end a line in C#. The generator writes

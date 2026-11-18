@@ -2285,6 +2285,14 @@ Generated rules:
   order is path parameters, `body`, the query parameters in first-seen order,
   `ct`. An endpoint captured with no query is emitted exactly as before
   (`query: null`).
+- **The query parameters belong to the endpoint, not to its tool.** An
+  endpoint that is left out of the tools (a sign-in path, `OPTIONS` / `HEAD`,
+  no JSON response -- see **The MCP server and its tools**) still has a client
+  method, and that method takes the query parameters exactly as any other
+  does. Nothing written about them assumes a tool: the README lists such an
+  endpoint by its client method (`no tool (GetSessionStatusAsync)`), the smoke
+  test expects no input schema of a tool the server must not list, and
+  `QueryStringTests.cs` gives it the client's facts only.
 - **The wire name stays exact; the C# name is made valid.** `page-size` is
   `pageSize`, `q[0]` is `q0`, `filter.name` is `filterName`, `_` is
   `underscore`; a C# keyword is escaped (`@class`, which a tool lists as
@@ -2562,14 +2570,17 @@ the skill).
   `.github/workflows/ci.yml` runs it, in a `pwsh` step after the build.
   `ToolsTests.cs` and `ToolSessionTests.cs` cover the calls, against fixtures.
 - **The query string is asserted on the wire.** When an endpoint takes query
-  parameters the wrapper carries `QueryStringTests.cs`: four facts per such
-  endpoint -- no query argument supplied (the captured defaults) and every one
-  supplied, from the client and again through the tool class -- each asserting
+  parameters the wrapper carries `QueryStringTests.cs`: for each such endpoint,
+  no query argument supplied (the captured defaults) and every one supplied,
+  from the client -- and again through the tool class when the endpoint has a
+  tool. That is four facts for an endpoint with a tool and two for one that is
+  left out of the tools. Each asserts
   the exact query string the HTTP handler received (`MockHandler.FromJson`
   with a list records the request URIs; the facts read `Uri.Query`, which is
   escaped as sent). The expected strings are computed from the capture, not
   read back from the emitted client. The generated
-  README's **Query parameters** table sets out, per tool, each parameter, its
+  README's **Query parameters** table sets out, per tool -- or per client
+  method, for an endpoint with no tool -- each parameter, its
   name on the wire and what is sent when it is omitted, and marks the ones that
   are never baked in.
 

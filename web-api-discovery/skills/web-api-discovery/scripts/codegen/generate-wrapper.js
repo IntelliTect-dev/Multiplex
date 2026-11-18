@@ -1099,9 +1099,11 @@ function mcpServerReadmeSection(opts, patterns, hasGraphQL) {
     lines.push('these tools, with these hints.');
     lines.push('');
     for (const line of leftOutReadmeLines(opts, patterns)) lines.push(line);
-    // What each tool takes in its query string, what it sends when a parameter
-    // is omitted, and what is never baked in (issue #34).
-    const querySection = queryReadmeSection(tools, opts);
+    // What each endpoint takes in its query string, what is sent when a
+    // parameter is omitted, and what is never baked in (issue #34). After the
+    // left-out section on purpose: an endpoint with no tool still has its query
+    // parameters, on its client method, and is listed here by that method.
+    const querySection = queryReadmeSection({ opts, patterns, tools, methodNameFor });
     if (querySection) {
         lines.push('');
         lines.push(querySection);
