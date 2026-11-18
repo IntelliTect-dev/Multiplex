@@ -330,11 +330,12 @@ const INTERSTITIALS = [
         '(?:reference(?:\\s|&#32;|&nbsp;)*(?:#|&#35;)\\s*\\d|errors(?:\\.|&#46;)edgesuite(?:\\.|&#46;)net)', 'i')) },
     // Amazon answers a signed-out visitor it doubts with a full storefront page
     // whose middle is a form to /checkpoint/validate: "Check the box to
-    // continue", a checkbox labelled "I am human".
+    // continue", a checkbox labelled "I am human". The FORM is what says so,
+    // never the URL: any site can have a /checkpoint/ path.
     { name: 'Amazon "Check the box to continue" checkpoint', deep: true, test: (ctx) => {
         const page = ctx.deep();
         const form = /<form\b[^>]*\baction\s*=\s*["']?(?:https?:\/\/[^/"'\s>]+)?\/checkpoint\/validate\b/i.test(page);
-        return (form || /^\/checkpoint\//i.test(ctx.path)) && /check the box to continue|\bi am human\b/i.test(page);
+        return form && /check the box to continue|\bi am human\b/i.test(page);
     } }
 ];
 
@@ -375,18 +376,15 @@ function bodyText(body, max = CHALLENGE_BODY_MAX) {
 }
 
 /**
- * What a signature is tested against: the head of the body, the URL's path,
- * and more of the body for a deep signature. Each is decoded only when a
- * signature asks for it -- most responses never are.
+ * What a signature is tested against: the head of the body, and more of the
+ * body for a deep signature. Each is decoded only when a signature asks for it
+ * -- most responses never are.
  */
 function signatureContext(r) {
     let text = null;
     let deep = null;
-    let path = '';
-    try { path = new URL(r.url).pathname; } catch (e) { void e; }
     return {
         get text() { return text === null ? (text = bodyText(r.body)) : text; },
-        path,
         deep: () => (deep === null ? (deep = bodyText(r.body, DEEP_SCAN_MAX)) : deep)
     };
 }
