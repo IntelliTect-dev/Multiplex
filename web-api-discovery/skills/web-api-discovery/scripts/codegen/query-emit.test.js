@@ -62,7 +62,20 @@ function described(urls) {
     }
     assert.ok(q['session-id'].description.includes('not baked in'), q['session-id'].description);
     assert.ok(q['session-id'].description.includes('the scrub'), q['session-id'].description);
-    assert.ok(q.rsh.description.includes('per-request timestamp or nonce'), q.rsh.description);
+
+    // A long number that differs on every call may be a nonce -- or the id or
+    // cursor the caller has to choose. The description says what was seen and
+    // does not tell a model the parameter is noise.
+    assert.strictEqual(q.rsh.description,
+        'The "rsh" query parameter. Every captured call that sent it sent a different long number or token ' +
+        '-- an id, a cursor, a timestamp or a nonce -- so no value is baked in. ' +
+        'Left out of the request unless you supply the one you mean.');
+    // A value that IS the time of its own call is called what it is.
+    const started = '2026-11-18T07:29:53.187Z';
+    const stamped = dedupePatterns([{ entry: { request: { method: 'GET', url: SITE + '?_=' + (Date.parse(started) - 40) }, startedDateTime: started } }]);
+    assert.strictEqual(describeQueryParameters(collectQueryParameters(stamped[0].samples))[0].description,
+        'The "_" query parameter. In the capture it looked like a per-request timestamp or nonce, so no value is baked in. ' +
+        'Left out of the request unless you supply one.');
 
     const once = described([SITE + '?alias=aps']);
     assert.strictEqual(once.alias.description,
@@ -146,7 +159,7 @@ function described(urls) {
 // ---- The README gives the true reason a value was not baked in ----
 {
     const url = SITE + '?fb_dtsg=NAdQx3kLr9WpT2vY&sid=redacted-3f9a1c0b7e2d4a68&v=7c9e6679-7425-40de-944b-e07fc1f90ae7&=x&a%7Cb=1';
-    const parameters = Object.values(described([url, url]));
+    const parameters = Object.values(described([url + '&order=4821937465021', url + '&order=4821937466377']));
     const section = queryReadmeSection(
         [{ name: 'get_search', methodName: 'GetSearchAsync', pattern: { method: 'GET', segments: [{ literal: 'search' }], queryParameters: parameters } }],
         { projectName: 'P' });
@@ -157,10 +170,12 @@ function described(urls) {
         '| `get_search` | `param` | (an empty name) | 2 of 2 | sends `"x"` (every captured call did) |',
         // A | in a name must not end the cell.
         '| `get_search` | `aB` | `a\\|b` | 2 of 2 | sends `"1"` (every captured call did) |',
+        // Different on every call: said as seen, since it may be the id the caller must choose.
+        '| `get_search` | `order` | `order` | 2 of 2 | **left out, never baked in**: a different long number or token on every call (an id, a cursor, a timestamp or a nonce) |',
     ]) {
         assert.ok(section.includes(row), 'README row missing: ' + row + '\n' + section);
     }
-    assert.ok(!/NAdQx3kLr9WpT2vY|3f9a1c0b7e2d4a68|7c9e6679/.test(section), 'and never the value itself');
+    assert.ok(!/NAdQx3kLr9WpT2vY|3f9a1c0b7e2d4a68|7c9e6679|48219374/.test(section), 'and never the value itself');
     assert.ok(section.includes('`tests/P.Tests/QueryStringTests.cs`'));
     console.log('PASS: the README says why each value was not baked in, and never shows it.');
 }
