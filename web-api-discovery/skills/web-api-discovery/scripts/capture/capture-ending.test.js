@@ -29,6 +29,7 @@
 //   E7  a modification time in the future is not a sign of progress
 //   E8  a recorder that finished and exited between two looks is finished
 //   E9  an interrupted wait restarts the allowance and is never called progress
+//   M1  the stalled message says where its time was counted from
 //   N1  the recorder's own record: registered once, moved at each phase
 //   W1  the wait goes on through four minutes of a scrub that keeps writing
 //   W1b it says where it is every thirty seconds, however fast the phases change
@@ -387,6 +388,30 @@ test('E9: an interrupted wait restarts the allowance, and is never reported as a
     assert.strictEqual(pending.state, 'stop-pending');
     assert.strictEqual(pending.registeredUtc, null);
     assert.strictEqual(pending.stopRequestedUtc, iso(T0 - 10 * MINUTE));
+});
+
+test('M1: what is said about a stall names where its time was counted from', () => {
+    // With no usable time on disk the message has no silence to state, only how
+    // long the allowance ran. Counted from a resumption, calling that "since
+    // this wait began" would be a different, and longer, claim.
+    const said = (over) => ending.unfinishedLines(ending.evaluate(evidence(Object.assign(
+        { session: registered('scrub', T0 + 5 * MINUTE) }, over)), T0), {}).join('\n');
+
+    const watched = said({ watchingSinceMs: T0 - 61 * SECOND });
+    assert.match(watched, /STALLED -- no sign of progress since this wait began 1m01s ago/);
+
+    const interrupted = said({ watchingSinceMs: T0 - 10 * MINUTE, resumedMs: T0 - 61 * SECOND });
+    assert.match(interrupted, /STALLED -- no sign of progress since this wait resumed 1m01s ago/);
+    assert.doesNotMatch(interrupted, /began 1m01s ago/);
+
+    // And the ordinary case states the silence itself, from the evidence.
+    const ordinary = ending.unfinishedLines(ending.evaluate(evidence(
+        { session: registered('scrub', T0 - 90 * SECOND) }), T0), {}).join('\n');
+    assert.match(ordinary, /STALLED -- no sign of progress for 1m30s\./);
+
+    // Nothing is said at all where there is nothing unfinished to report.
+    assert.strictEqual(ending.unfinishedLines(ending.evaluate(evidence(
+        { session: registered('complete', T0, { postProcess: { errors: [], warnings: [] } }) }), T0), {}), null);
 });
 
 // ---------------------------------------------------------------------------

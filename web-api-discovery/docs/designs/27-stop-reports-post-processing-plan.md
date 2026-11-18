@@ -106,9 +106,10 @@ since, and otherwise gives the same answer at once.
 - `stop` prints one JSON line on stdout once it has found the recording --
   every exit except 3 (no capture session found):
   `{ "stop": <state>, "sessionDir", "exitCode", "ending": {...} }`.
-- The recorder's own writes of the `ending` record go beside session.json and
-  are renamed over it, so a `stop` or `status` reading while it works never
-  finds the file truncated.
+- Every write the recorder makes to session.json from the ending onwards goes
+  beside it and is renamed over it, so a `stop` or `status` reading while it
+  works never finds the file truncated. (The writes made while the recording
+  is still running are unchanged: nothing polls for those.)
 
 ### 5. Three defects closed on the way
 
