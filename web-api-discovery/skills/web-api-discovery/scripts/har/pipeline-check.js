@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * pipeline-check.js -- "the pipeline worked", as four mechanical checks over a
+ * pipeline-check.js -- "the pipeline worked", as five mechanical checks over a
  * pinned set of raw captures (issue #21).
  *
  * Every verification of the post-capture pipeline used to be a person running
  * stages by hand against one or two captures and reading the output. That is
  * how a fix that passed eleven unit tests and left the real capture untouched
  * got as far as a pull request. This runs the real stages, as subprocesses,
- * over captures named by SHA-256, and answers four questions per capture:
+ * over captures named by SHA-256, and answers five questions per capture:
  *
  *   1. gate        verify-scrub exits 0 (or 4: advisory findings only).
  *   2. survivors   no value this run's own substitution table says to replace
@@ -21,6 +21,10 @@
  *   4. catalogue   the catalogue scaffold's rows account for every scrubbed
  *                  entry -- a row per group, and the groups' counts summing to
  *                  the entry count.
+ *   5. urls        every request URL that parsed before the scrub still parses
+ *                  after it (#66). A fake person's name written over a hostname
+ *                  label broke 160 URLs in one real capture while the gate
+ *                  passed; every reader that parses URLs then fails on them.
  *
  * NEVER PRINTS A VALUE. Output and run records carry counts, kinds, entry
  * indexes and exit codes. The children's own stderr can name fingerprints and
@@ -65,10 +69,10 @@ const EXIT = { ok: 0, error: 1, usage: 2, failed: 3, regressed: 4 };
 const SCRUB_SURVIVOR_EXIT = 5;
 const GATE_ADVISORY_EXIT = 4;
 const RECORD_SCHEMA = 1;
-// What the four checks ASK. Bumped whenever a check starts asking something
-// new: a capture that passed an older, weaker check and fails a stricter one
-// has not regressed, and comparing the two runs would say it had.
-const CHECKS_VERSION = 2;
+// What the checks ASK. Bumped whenever a check starts asking something new: a
+// capture that passed an older, weaker check and fails a stricter one has not
+// regressed, and comparing the two runs would say it had. 3: request URLs (#66).
+const CHECKS_VERSION = 3;
 // Bodies a check lists by location. Counts are always complete; the list is
 // capped so one badly broken capture cannot bury the rest of the report.
 const MAX_LOCATIONS = 20;
@@ -248,18 +252,20 @@ function piecesOf(entry) {
 }
 
 /**
- * Check 3. Walks the scrub's input and output in lockstep, one entry of each
- * at a time, so it holds two entries whatever the size of the capture.
+ * The scrub's input and output in lockstep, one entry of each at a time, so a
+ * check holds two entries whatever the size of the capture. `visit(before,
+ * after, index)` sees each pair; the counts say how many entries each side had.
  *
  * Entries are paired by POSITION. The scrub neither drops, adds nor reorders
  * entries, and a changed count fails the check outright; a scrub that dropped
- * one entry and duplicated another would pair unrelated entries, and this
- * check would not notice.
+ * one entry and duplicated another would pair unrelated entries, and the
+ * checks would not notice.
  */
-function comparePayloads(beforePath, afterPath) {
+function walkLockstep(beforePath, afterPath, result, visit) {
     const before = harDocument.iterateHarEntries(beforePath);
     const after = harDocument.iterateHarEntries(afterPath);
-    const result = { entriesBefore: 0, entriesAfter: 0, parsedBefore: 0, broken: 0, locations: [] };
+    result.entriesBefore = 0;
+    result.entriesAfter = 0;
     for (let index = 0; ; index++) {
         const b = before.next();
         const a = after.next();
@@ -268,8 +274,17 @@ function comparePayloads(beforePath, afterPath) {
         if (b.done && a.done) break;
         // One side ran out: keep walking the other so both counts are true.
         if (b.done || a.done) continue;
-        const was = piecesOf(b.value);
-        const now = piecesOf(a.value);
+        visit(b.value, a.value, index);
+    }
+    return result;
+}
+
+/** Check 3: every JSON piece that parsed before the scrub still parses. */
+function comparePayloads(beforePath, afterPath) {
+    const result = { entriesBefore: 0, entriesAfter: 0, parsedBefore: 0, broken: 0, locations: [] };
+    return walkLockstep(beforePath, afterPath, result, (b, a, index) => {
+        const was = piecesOf(b);
+        const now = piecesOf(a);
         for (const [where, text] of was) {
             if (!parses(text)) continue;
             result.parsedBefore++;
@@ -278,8 +293,35 @@ function comparePayloads(beforePath, afterPath) {
             result.broken++;
             if (result.locations.length < MAX_LOCATIONS) result.locations.push({ entry: index, where });
         }
-    }
-    return result;
+    });
+}
+
+function requestUrl(entry) {
+    return entry && entry.request && typeof entry.request.url === 'string' ? entry.request.url : null;
+}
+
+function urlParses(url) {
+    try { new URL(url); return true; } catch { return false; }
+}
+
+/**
+ * Check 5: every request URL that parsed before the scrub still parses (#66).
+ *
+ * A location is an ENTRY INDEX and nothing more. A URL is captured data -- a
+ * query value, a path segment, the fake that broke it -- so not even its host
+ * is printed.
+ */
+function compareUrls(beforePath, afterPath) {
+    const result = { entriesBefore: 0, entriesAfter: 0, parsedBefore: 0, broken: 0, locations: [] };
+    return walkLockstep(beforePath, afterPath, result, (b, a, index) => {
+        const was = requestUrl(b);
+        if (was === null || !urlParses(was)) return;
+        result.parsedBefore++;
+        const now = requestUrl(a);
+        if (now !== null && urlParses(now)) return;
+        result.broken++;
+        if (result.locations.length < MAX_LOCATIONS) result.locations.push({ entry: index });
+    });
 }
 
 /** Check 4. The scaffold the capture pipeline would write, reconciled. */
@@ -399,6 +441,15 @@ function checkCapture(capture, ctx) {
     }
 
     try {
+        const urls = compareUrls(trimmed, scrubbed);
+        result.checks.urls = urls.broken === 0 && urls.entriesBefore === urls.entriesAfter ? 'pass' : 'fail';
+        result.counts.urls = urls;
+    } catch (e) {
+        result.checks.urls = 'error';
+        result.counts.urls = { error: e.code || e.name };
+    }
+
+    try {
         const cat = reconcileCatalogue(scrubbed);
         result.checks.catalogue = cat.rowEntries === cat.entries && (cat.entries === 0 || cat.rows > 0)
             ? 'pass' : 'fail';
@@ -470,6 +521,7 @@ function compare(previous, current) {
             if (Number.isFinite(a) && Number.isFinite(b) && b > a) regressions.push({ label: now.label, what: `${what} ${a} -> ${b}` });
         };
         worse((c) => c.counts && c.counts.payloads && c.counts.payloads.broken, 'broken payloads');
+        worse((c) => c.counts && c.counts.urls && c.counts.urls.broken, 'broken URLs');
         worse((c) => c.counts && c.counts.gate && c.counts.gate.gating, 'gating findings');
     }
     return { comparable: true, against: path.basename(previous.file), regressions };
@@ -477,7 +529,7 @@ function compare(previous, current) {
 
 function summaryLines(record, comparison) {
     const lines = [];
-    const cols = ['trim', 'survivors', 'gate', 'payloads', 'catalogue'];
+    const cols = ['trim', 'survivors', 'gate', 'payloads', 'catalogue', 'urls'];
     lines.push(['capture'.padEnd(28), 'status'.padEnd(8), ...cols.map((c) => c.padEnd(10))].join(' '));
     for (const c of record.captures) {
         lines.push([c.label.padEnd(28), c.status.padEnd(8),
@@ -487,6 +539,11 @@ function summaryLines(record, comparison) {
         if (p && p.broken) {
             lines.push(`    ${p.broken} of ${p.parsedBefore} JSON bodies no longer parse, e.g. ` +
                 p.locations.slice(0, 5).map((l) => `entry ${l.entry} ${l.where}`).join(', '));
+        }
+        const u = c.counts.urls;
+        if (u && u.broken) {
+            lines.push(`    ${u.broken} of ${u.parsedBefore} request URLs no longer parse, e.g. ` +
+                u.locations.slice(0, 5).map((l) => `entry ${l.entry}`).join(', '));
         }
         const g = c.counts.gate;
         if (g && (g.gating || g.advisory)) {
@@ -586,4 +643,4 @@ function main() {
 
 if (require.main === module) process.exit(main());
 
-module.exports = { loadManifest, comparePayloads, reconcileCatalogue, compare, saltId, scrubCounts, EXIT };
+module.exports = { loadManifest, comparePayloads, compareUrls, reconcileCatalogue, compare, saltId, scrubCounts, EXIT };

@@ -6,12 +6,13 @@
 // The runner is run as a command against synthetic captures in a protected
 // temp repo, the way it runs against a real store. What is pinned:
 //
-//  1. A clean capture passes all four checks, and a record is written.
+//  1. A clean capture passes all five checks, and a record is written.
 //  2. A capture whose bytes no longer match the pinned SHA-256 fails.
 //  3. No captured value reaches the console or the record.
 //  4. Check 3 finds a body the scrub broke; check 4 finds entries the
-//     catalogue lost.
-//  5. The ratchet: pass -> fail is a regression; a changed salt is refused.
+//     catalogue lost; check 5 finds a request URL that no longer parses (#66).
+//  5. The ratchet: pass -> fail is a regression, and so is a rise in broken
+//     bodies or URLs; a changed salt is refused.
 //  6. No profile is a hard failure, not an unsalted run.
 //
 // All values here are synthetic.
@@ -107,19 +108,24 @@ const clean = har([
         resText: '{"ok":true}',
         headers: [{ name: 'Authorization', value: SECRET }],
     }),
+    // `widget` is enrolled as a person's name above (a `name` field), and is
+    // also a hostname label here -- the shape that broke 160 URLs in #66.
+    entry('https://cdn.widget.test/app.js'),
 ]);
 
-test('a clean capture passes all four checks and a record is written', () => {
+test('a clean capture passes all five checks and a record is written', () => {
     const s = store({ clean });
     const r = run(s.manifest);
     assert.strictEqual(r.code, 0, `exit ${r.code}\n${r.stdout}${r.stderr}`);
     const { doc } = latestRecord(s.dir);
     const c = doc.captures[0];
     assert.strictEqual(c.status, 'pass', JSON.stringify(c));
-    for (const k of ['trim', 'survivors', 'payloads', 'catalogue']) assert.strictEqual(c.checks[k], 'pass', k);
+    for (const k of ['trim', 'survivors', 'payloads', 'urls', 'catalogue']) assert.strictEqual(c.checks[k], 'pass', k);
     assert.ok(['pass', 'advisory'].includes(c.checks.gate), c.checks.gate);
     assert.strictEqual(c.counts.payloads.broken, 0);
     assert.ok(c.counts.payloads.parsedBefore >= 3, 'the JSON bodies were actually examined');
+    assert.strictEqual(c.counts.urls.broken, 0);
+    assert.strictEqual(c.counts.urls.parsedBefore, 3, 'every request URL was actually examined');
     assert.strictEqual(c.counts.catalogue.rowEntries, c.counts.catalogue.entries);
     assert.match(doc.saltId, /^[0-9a-f]{16}$/);
     // A passing capture leaves no scrubbed copy or substitution table behind.
@@ -205,6 +211,39 @@ test('check 3 counts both sides when the scrub changed the entry count', () => {
     const r = check.comparePayloads(before, after);
     assert.strictEqual(r.entriesBefore, 3);
     assert.strictEqual(r.entriesAfter, 1);
+});
+
+test('check 5 finds a request URL the scrub broke, by entry only', () => {
+    const tmp = makeTempRepo('pipeline-check-urls-');
+    const before = path.join(tmp, 'before.har');
+    const after = path.join(tmp, 'after.har');
+    fs.writeFileSync(before, JSON.stringify(har([
+        entry('https://api.example.test/x'),
+        entry('https://static01.cdnword.test/a.js'),
+        entry('not a url'),
+    ])));
+    // #66's shape: a fake person's name written over a hostname label. A space
+    // is a forbidden host code point, so the URL no longer parses.
+    fs.writeFileSync(after, JSON.stringify(har([
+        entry('https://api.example.test/x'),
+        entry('https://static01.Avery Brooks.test/a.js'),
+        entry('not a url'),
+    ])));
+    const r = check.compareUrls(before, after);
+    assert.strictEqual(r.parsedBefore, 2, 'a URL that never parsed is not held to parsing');
+    assert.strictEqual(r.broken, 1);
+    assert.deepStrictEqual(r.locations, [{ entry: 1 }], 'a location is an entry index, never a URL');
+    assert.strictEqual(r.entriesBefore, 3);
+    assert.strictEqual(r.entriesAfter, 3);
+});
+
+test('the ratchet: more broken request URLs is a regression', () => {
+    const rec = (broken) => ({
+        saltId: 's1', checksVersion: 3, file: '/runs/run-earlier.json',
+        captures: [{ label: 'a', sha256: 'h', status: 'fail', counts: { urls: { broken } } }],
+    });
+    assert.match(check.compare(rec(1), rec(4)).regressions[0].what, /broken URLs 1 -> 4/);
+    assert.strictEqual(check.compare(rec(4), rec(0)).regressions.length, 0, 'improvement is not a regression');
 });
 
 test('check 4 fails when catalogue rows do not account for every entry', () => {
