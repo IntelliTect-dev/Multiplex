@@ -73,14 +73,18 @@ public sealed partial class <Name>Tools
 
 | Operation | ReadOnly | Destructive | Idempotent |
 |---|---|---|---|
-| GET, HEAD, OPTIONS | true | false | true |
-| POST | false | false | false |
-| POST whose path names a change or removal (`/delete`, `/cancel`, `/update`, ...) | false | true | false |
+| GET (and HEAD, OPTIONS, which get no tool) | true | false | true |
+| POST | false | true | false |
+| POST with positive evidence that it only adds | false | false | false |
 | PUT | false | true | true |
 | PATCH | false | true | false |
 | DELETE | false | true | true |
 | GraphQL (query or mutation, unknown) | false | true | false |
 | anything else | false | true | false |
+
+This table is the one after the independent review; see **Changes after the
+independent review** for the rule a POST has to meet and for what the first
+version did.
 
 ### 4. The session is read at the first tool call
 
@@ -154,22 +158,66 @@ registrations and registers the session instead.
 - [x] Existing suites that hard-code the template lists and the emitted tree.
 - [x] `SKILL.md`, the skill README's tree, and the generated README.
 
+## Changes after the independent review
+
+The first version (`6bd1094..ab0d48c`) was reviewed by a different model. Two
+findings were Important and both changed the design; the accepted suggestions
+follow them. The full review and its triage are on the issue.
+
+- **I1 -- an unknown POST is destructive.** The first version called a POST
+  additive unless its path carried a word for changing or removing. POSTs to
+  `/payments/send`, `/orders/checkout`, `/transfers`, `/rpc` and a form-style
+  `/items/{id}` were all "additive". Now a POST is destructive and is additive
+  only when all of these hold: its path has no path parameter; no word of the
+  path is a veto (a word for changing or removing, for an action that is not
+  "one more record", for an opaque call, or for sign-in -- whole words, a
+  plural "s" aside); and either the path has a whole word `create`, `add` or
+  `new`, or the capture also holds the same path with an id appended on the
+  same host. Only an additive POST is described as adding.
+- **I2 -- not every endpoint is a tool.** Left out of the tool class, kept in
+  the client, listed with a reason in the generated README: an endpoint with a
+  sign-in segment (the word list and the compound rule are in `SKILL.md`),
+  every OPTIONS and HEAD, and an endpoint with no JSON response in the
+  capture. A person offers one deliberately by writing the tool in their own
+  part of the partial class. There is no option for it.
+- **S1** only a response key that reads as a field name is listed in a
+  description, and a map-like object has no field list. **S2** tool names are
+  capped at 64 characters with a hash of the whole name, then made unique.
+- **S3** the store is read again after any 3xx, 403, 419 or 440 as well as
+  302/401, and the README says exactly when it is read. **S4** a request that
+  timed out says the call may still have taken effect. **S5** cookie-looking
+  text is removed from the site's error text.
+- **S7** each falsifier breaks its own copy of a wrapper and names the case
+  that must fail. **S8** the smoke test fails rather than skips without the
+  SDK under CI, and the generated CI workflow runs it. **S9** the SDK-version
+  test skips, with its reason, where no host project is present. **S10** a
+  POST that is not additive no longer carries the client's "Creates ..."
+  summary.
+- **Not changed: S6.** A replaced client is still not disposed: another call
+  may be using it, and one is left behind per sign-in, not per failed call.
+- **Not here:** an empty 2xx body failing in the client's deserialization
+  (#35), query parameters (#34), a way to save a session (#36).
+
 ## Judgement calls
 
 Made without the owner; each is in the hand-off report.
 
-1. **POST is additive unless its path says otherwise.** The issue says "POST
-   additive = not idempotent". A POST to `/items/42/delete` is not additive, so
-   a path word naming a change or removal flips `Destructive` to true. A POST
-   the word list does not recognise is still reported as additive.
+1. **A POST is destructive unless the capture vouches for it** (changed by the
+   review; it was the other way round). The issue's "POST additive = not
+   idempotent" still holds for a POST shown to be additive. A real additive
+   POST captured without a sibling by id now asks for confirmation: that is
+   the safe direction, and it is a decision for the owner to confirm.
 2. **PUT is destructive and idempotent; PATCH is destructive and not
    idempotent.** Both replace existing data, which the SDK's own definition of
    "destructive" covers ("false if the tool performs only additive updates").
 3. **GraphQL gets one passthrough tool** with the conservative hints, because
    one endpoint carries both queries and mutations.
-4. **Every client method gets a tool**, including a captured `POST /api/login`
-   and any `OPTIONS` preflight. Filtering sign-in endpoints out of the tool
-   surface is a product decision and is not made here.
+4. **Sign-in endpoints, OPTIONS, HEAD and non-JSON endpoints get no tool**
+   (changed by the review; the first version made every client method a
+   tool). The sign-in rule is lexical: a real sign-in endpoint under a name
+   outside the word list still becomes a tool, and an ordinary endpoint whose
+   segment is one of the words (a conference's `/sessions`) loses its tool
+   until someone writes it by hand.
 5. **No way to sign in is added.** Nothing the generator emits runs
    `<Name>Authenticator`; adding a command to the generated program would be a
    new command-line option, which needs the owner.
