@@ -310,6 +310,37 @@ Describe 'MCP tool class (issue #17)' {
     }
 }
 
+Describe 'endpoints left out of the MCP tools are announced (issue #17)' {
+    # A sign-in endpoint, a preflight or a download gets a client method and no
+    # tool. The README lists them -- but someone who generates a wrapper and
+    # finds a tool missing looks at the console first.
+    BeforeAll {
+        $script:LeftOutHar = Join-Path $script:RepoRoot 'tests/fixtures/har/rest-left-out.har'
+        $script:AnnounceOut = New-OutDir
+        $script:AnnounceRes = Invoke-Gen -Har @($script:LeftOutHar) -Out $script:AnnounceOut
+        $script:QuietOut = New-OutDir
+        $script:QuietRes = Invoke-Gen -Har @($script:RestHar) -Out $script:QuietOut
+    }
+    AfterAll {
+        foreach ($dir in $script:AnnounceOut, $script:QuietOut) {
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+        }
+    }
+    It 'says once, on the console, how many endpoints got no tool and where they are listed' {
+        $script:AnnounceRes.ExitCode | Should -Be 0 -Because $script:AnnounceRes.Output
+        $lines = @($script:AnnounceRes.Output -split "`r?`n" | Where-Object { $_ -match 'left out of the MCP tools' })
+        $lines.Count | Should -Be 1
+        # rest-left-out.har: three sign-in endpoints, an OPTIONS, a HEAD and a CSV download.
+        $lines[0] | Should -Match '^generate-wrapper: 6 endpoint\(s\) left out of the MCP tools'
+        $lines[0] | Should -Match '"Left out of the tools"' -Because 'it names the README section'
+        $lines[0] | Should -Match 'README\.md'
+    }
+    It 'says nothing when every endpoint has a tool' {
+        $script:QuietRes.ExitCode | Should -Be 0 -Because $script:QuietRes.Output
+        $script:QuietRes.Output | Should -Not -Match 'left out of the MCP tools'
+    }
+}
+
 Describe 'auto-generated header' {
     It 'has do-not-edit banner + source HAR sha-256' {
         $out = New-OutDir

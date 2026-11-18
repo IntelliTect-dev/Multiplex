@@ -1119,7 +1119,9 @@ function leftOutReadmeLines(opts, patterns) {
     lines.push('');
     lines.push('Inside `RunAsync`, call the client method named in the table, or `SendRawAsync` as here. Set the');
     lines.push('hints to what the call really does. The smoke test goes on checking the generated tools; a tool');
-    lines.push('of your own is listed beside them and does not fail it.');
+    lines.push('of your own is listed beside them and does not fail it. Give it a name of its own, though: the');
+    lines.push('smoke test fails if a tool is listed under the name the generator would have given an endpoint');
+    lines.push('it left out (`create_login`, say), which is how it catches a sign-in tool coming back by mistake.');
     return lines;
 }
 
@@ -1478,6 +1480,14 @@ function run(args) {
 
     console.log('generate-wrapper: wrote ' + patterns.length + ' REST pattern(s)' +
         (gql.length ? ' + GraphQL' : '') + ' to ' + outDir);
+    // An endpoint with a client method and no MCP tool is said here as well as
+    // in the README: whoever finds a tool missing looks at this output first.
+    const leftOut = listLeftOut({ patterns, methodNameFor });
+    if (leftOut.length > 0) {
+        console.log('generate-wrapper: ' + leftOut.length + ' endpoint(s) left out of the MCP tools ' +
+            '(sign-in or credentials, OPTIONS/HEAD, or no JSON response); see "Left out of the tools" in ' +
+            path.join(outDir, 'README.md'));
+    }
     console.log('generate-wrapper: next step -- activate the pre-commit hook with:');
     console.log('                  git -C ' + outDir + ' config core.hooksPath .githooks');
 }
