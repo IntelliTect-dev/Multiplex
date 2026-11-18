@@ -86,14 +86,16 @@ internal static class NavigationLock
         }
     }
 
-    /// <summary>What to do about a page whose main frame has just committed <paramref name="url"/>.</summary>
+    /// <summary>
+    /// What to do about a page whose main frame has just committed <paramref name="url"/>.
+    /// Only an empty page and Chrome's error page are exempt; every other scheme (file:,
+    /// chrome:, view-source:, data:, javascript:, blob: …) is judged like a foreign host.
+    /// </summary>
     public static CommittedPageAction AfterNavigation(string url, IReadOnlyCollection<string> allowedHosts)
     {
         if (url is "" or "about:blank") return CommittedPageAction.Ignore;
         if (url.StartsWith("chrome-error:", StringComparison.Ordinal)) return CommittedPageAction.ErrorPage;
-        if (!IsAllowed(url, allowedHosts) && (url.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https:", StringComparison.OrdinalIgnoreCase)))
-            return CommittedPageAction.Blocked;
-        return CommittedPageAction.Allowed;
+        return IsAllowed(url, allowedHosts) ? CommittedPageAction.Allowed : CommittedPageAction.Blocked;
     }
 
     private static Dictionary<string, object> Fail(string requestId) => new()

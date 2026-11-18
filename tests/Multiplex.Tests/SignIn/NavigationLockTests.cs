@@ -81,6 +81,32 @@ public sealed class NavigationLockTests
         Assert.Equal("req-1", args["requestId"]);
     }
 
+    /// <summary>
+    /// The second line of the lock: a page may only show an allowed http(s) host. Any other
+    /// scheme a main frame commits (local files, browser pages, data, script) is sent back too.
+    /// </summary>
+    [Theory]
+    [InlineData("", "Ignore")]
+    [InlineData("about:blank", "Ignore")]
+    [InlineData("chrome-error://chromewebdata/", "ErrorPage")]
+    [InlineData("https://www.tripit.com/app/trips", "Allowed")]
+    [InlineData("https://ACCOUNTS.google.com/signin", "Allowed")]
+    [InlineData("http://www.tripit.com/", "Allowed")]
+    [InlineData("https://evil.example/", "Blocked")]
+    [InlineData("file:///C:/Users/someone/secret.txt", "Blocked")]
+    [InlineData("chrome://settings/passwords", "Blocked")]
+    [InlineData("view-source:https://www.tripit.com/", "Blocked")]
+    [InlineData("data:text/html,<h1>hi</h1>", "Blocked")]
+    [InlineData("javascript:alert(1)", "Blocked")]
+    [InlineData("blob:https://www.tripit.com/0b5c3f6e-1111-2222-3333-444455556666", "Blocked")]
+    [InlineData("devtools://devtools/bundled/inspector.html", "Blocked")]
+    [InlineData("about:srcdoc", "Blocked")]
+    [InlineData("not a url", "Blocked")]
+    public void Committed_page_is_judged_by_scheme_and_host(string url, string expected)
+    {
+        Assert.Equal(Enum.Parse<CommittedPageAction>(expected), NavigationLock.AfterNavigation(url, s_hosts));
+    }
+
     [Fact]
     public async Task Request_that_can_no_longer_be_answered_does_not_throw()
     {

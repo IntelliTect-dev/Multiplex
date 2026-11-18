@@ -715,7 +715,8 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     private async Task NotifyBlockedAsync(string url)
     {
         _lastBlockedAt = _services.Time.GetUtcNow();
-        var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "another site";
+        // file:, data: and the like have no host to name.
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Host.Length > 0 ? uri.Host : "another site";
         _services.Logger.LogInformation("Blocked a navigation from the {Site} sign-in to {Host}.", Slug, host);
         if (_client is { State: WebSocketState.Open } client) await SendTextAsync(client, MirrorProtocol.Blocked(host));
     }

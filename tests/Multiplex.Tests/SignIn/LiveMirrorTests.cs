@@ -163,6 +163,38 @@ public sealed class LiveMirrorTests
     }
 
     [ChromiumFact]
+    public async Task Main_page_that_shows_a_non_web_address_is_sent_back_to_the_sign_in_page()
+    {
+        await using var site = await StubLoginSite.StartAsync();
+        await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
+        host.Completer.Add("p1", "stub");
+        var client = host.NewClient();
+        var (gate, _) = await client.PassGateAsync("p1");
+        var attempt = Attempt(host, gate);
+        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
+        await mirror.WaitForStatusAsync("live", s_long);
+        var login = new Uri(site.BaseUrl, "/login").AbsoluteUri;
+        await WaitForAsync(() => Task.FromResult(attempt.ActivePage!.Url == login), TimeSpan.FromSeconds(30));
+
+        // A web page cannot open such an address itself (Chrome refuses), so drive the browser directly:
+        // this is the lock's second line, for whatever gets past the first.
+        try
+        {
+            await attempt.ActivePage!.GoToAsync("data:text/html,<h1 id='elsewhere'>Somewhere else</h1>",
+                new PuppeteerSharp.NavigationOptions { Timeout = 30_000 });
+        }
+        catch (PuppeteerSharp.PuppeteerException)
+        {
+            // The lock may already be navigating the page away.
+        }
+
+        var blocked = await mirror.WaitForAsync(m => m.GetProperty("t").GetString() == "blocked", s_long, "a blocked page");
+        Assert.Equal("another site", blocked.GetProperty("host").GetString());
+        await WaitForAsync(() => Task.FromResult(attempt.ActivePage!.Url == login), TimeSpan.FromSeconds(30));
+        Assert.Equal(AttemptState.Live, attempt.State);
+    }
+
+    [ChromiumFact]
     public async Task Attempt_that_times_out_closes_its_browser_and_deletes_its_profile()
     {
         await using var site = await StubLoginSite.StartAsync();
