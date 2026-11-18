@@ -640,6 +640,27 @@ test('C14: a usage error is still exit 2, with no verdict', () => {
     }
 });
 
+test('C15 (#24 N1): the session names the operator profile its scrub uses, resolved where the recording starts', () => {
+    // A recording scrubs with the .har-profile.json found from ITS OWN working
+    // directory. A later `Invoke-HarCapture -Scrub` runs from the store root,
+    // where a different profile -- or none with the same literals -- may be
+    // found, and so put back an identifier the recording had replaced. The
+    // session record is the one place the recorder can say which file it used;
+    // the check-only start prints the session object a real start writes.
+    const m = machine('c15-profile-path');
+    const outer = gates.plantOperatorProfile(m.root);
+    const run = check(m, []);
+    assertPasses(run, 'a folder with its own profile inside one that has another');
+    assert.strictEqual(run.json.scrubProfilePath, path.join(m.cwd, '.har-profile.json'),
+        'the profile nearest the folder the recording starts in is the one its scrub uses');
+    assert.notStrictEqual(run.json.scrubProfilePath, outer);
+
+    fs.rmSync(path.join(m.cwd, '.har-profile.json'));
+    const above = check(m, []);
+    assert.strictEqual(above.json && above.json.scrubProfilePath, outer,
+        'with none in the folder itself, it is the one found above it');
+});
+
 // ---------------------------------------------------------------------------
 
 (async () => {
