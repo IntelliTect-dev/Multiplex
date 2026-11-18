@@ -2196,15 +2196,19 @@ Generated rules:
   `/// <summary>TODO</summary>` where it can't infer better).
 - POST / PUT / DELETE wrappers are decorated `[Experimental]` until the
   user marks them stable.
-- **Every client method is an MCP tool.** The generator emits
-  `<Name>Tools.Generated.cs`: a class marked `[McpServerToolType]` with one
-  `[McpServerTool]` method per endpoint, each calling the client method it is
-  named after. The server registers tools with `WithToolsFromAssembly()`,
-  which finds a class by that attribute and by nothing else -- without it the
-  server starts and lists no tools. See **The MCP server and its tools** below.
+- **A client method is an MCP tool, unless it is one a model should not be
+  offered.** The generator emits `<Name>Tools.Generated.cs`: a class marked
+  `[McpServerToolType]` with one `[McpServerTool]` method per endpoint, each
+  calling the client method it is named after. The server registers tools
+  with `WithToolsFromAssembly()`, which finds a class by that attribute and by
+  nothing else -- without it the server starts and lists no tools. Sign-in
+  endpoints, `OPTIONS` / `HEAD` and endpoints with no JSON response get a
+  client method and no tool. See **The MCP server and its tools** below.
 - MCP tool descriptions are first-drafted from the operation: what it does,
   the HTTP method and path template, the site, the field names of the captured
-  response, and -- for a write -- what calling it does to the site. They are a
+  response, and -- for a write -- what calling it does to the site. Only a
+  response key that reads as a field name is listed; an object keyed by data
+  has no field list, because a description is text the model reads. They are a
   draft; refine them where the capture could not know what an endpoint is for.
 - **Send only the headers the API needs, under the client's own name.** A
   generated request carries the session (cookie or bearer), the CSRF token
@@ -2325,12 +2329,39 @@ process: no other pacing variable is its concern.
 over stdio (`McpProgram.cs`), on the same SDK version line as the Multiplex host:
 `ModelContextProtocol` 2.4.0, the package that carries the stdio transport.
 `tests/codegen-pipeline.Tests.ps1` reads the host's version and fails when the
-generated one differs.
+generated one differs (and skips, saying why, where no host project is beside
+the skill).
 
-- **One tool per client method**, in `<Name>Tools.Generated.cs`, GraphQL
-  included (one `graphql` tool). The name on the wire is set explicitly --
-  the client method without `Async`, in `snake_case`: `GetUsersByIdAsync` is
-  `get_users_by_id`.
+- **One tool per client method that is not left out**, in
+  `<Name>Tools.Generated.cs`, GraphQL included (one `graphql` tool). The name
+  on the wire is set explicitly -- the client method without `Async`, in
+  `snake_case`: `GetUsersByIdAsync` is `get_users_by_id`. A name longer than
+  64 characters, which a deep path makes, is cut and ends in the first eight
+  hex digits of the SHA-256 of the whole name, so it stays distinct and stays
+  the same from run to run; names are then made unique.
+- **Left out of the tools.** The client keeps a method for every endpoint.
+  The tool class has none for:
+  - an endpoint with a path segment about **signing in or credentials**. A
+    segment is one when, split into words (camelCase, `-`, `_` and `.` are
+    boundaries; `sign-in` and `log_out` count as one word), it has a sign-in
+    word -- `auth`, `login`, `logout`, `signin`, `signout`, `token`,
+    `session`, `oauth`, `sso`, `csrf`, `password`, `mfa`, `otp`, or
+    `authenticate`, `authorize`, `xsrf`, `totp`, `credential`; a plural `s` or
+    a version digit aside -- and every other word is one of its usual
+    companions (`refresh`, `access`, `reset`, `change`, `verify`, `callback`,
+    `user`, `current`, ...) or a number. So `auth`, `sessions`, `oauth2`,
+    `refresh-token` and `reset_password` are; `sessions-of-a-conference`,
+    `token-usage` and `authors` are not. The segments looked at are those the
+    endpoint was *captured* with, because the path matcher can fold a name
+    into a path parameter;
+  - every **`OPTIONS` and `HEAD`**;
+  - an endpoint **none of whose captured responses parsed as JSON**.
+
+  Such a call returns tokens, takes a password, or returns nothing typed, and
+  a model should be handed none of that by default. The generated README
+  lists each endpoint left out, with the reason, and says how to offer one
+  deliberately: write the tool in a file of your own, as another part of the
+  partial tool class. **No option turns them on.**
 - **Hints from the HTTP method and the operation.** A client reads these to
   decide whether a call needs confirming, so every tool sets all of them
   rather than inheriting the SDK's defaults (`Destructive` true, the others
@@ -2338,46 +2369,79 @@ generated one differs.
 
   | Operation | ReadOnly | Destructive | Idempotent |
   |---|---|---|---|
-  | `GET`, `HEAD`, `OPTIONS` | true | false | true |
-  | `POST` | false | false | false |
-  | `POST` whose path names a change or removal (`/delete`, `/cancel`, `/update`, ...) | false | true | false |
+  | `GET` (and `HEAD`, `OPTIONS`, which get no tool) | true | false | true |
+  | `POST` | false | **true** | false |
+  | `POST` with positive evidence that it only adds (below) | false | false | false |
   | `PUT` | false | true | true |
   | `PATCH` | false | true | false |
   | `DELETE` | false | true | true |
   | GraphQL (a query or a mutation; not known when the tool is listed) | false | true | false |
   | any other method | false | true | false |
 
-  They are a first draft. Nothing in a capture says what a site does with a
-  `POST`, and one the word list does not recognise is reported as additive.
+  **A `POST` is destructive unless something vouches for it.** A tool wrongly
+  called destructive costs a confirmation; one wrongly called additive can
+  skip it, and no list of dangerous words is ever complete. A `POST` is
+  additive only when all of these hold:
+  - its path has **no path parameter** -- a `POST` addressed to something
+    that exists (`/items/{id}`, `/items/{id}/anything`) changes it or acts on
+    it;
+  - **no word of its path is a veto**: a word for changing or removing
+    (`delete`, `cancel`, `update`, `set`, ...), for an action that is not "one
+    more record" (`send`, `pay`, `checkout`, `transfer`, `refund`, `close`,
+    `void`, `publish`, ...), for an opaque call whose command is in the body
+    (`rpc`, `batch`, `execute`, `graphql`, `query`, ...), or for sign-in.
+    Whole words, a plural `s` aside; no evidence overrides a veto;
+  - and **either the path says so** -- a whole word `create`, `add` or `new`
+    -- **or the capture does**: it also holds the same path with an id
+    appended, on the same host, so the path is a collection and a `POST`
+    makes one more of something.
+
+  So `POST /api/items` captured beside `/api/items/{id}` is additive and not
+  idempotent; the same `POST` captured alone asks for confirmation. Only an
+  additive `POST` is described as adding, and the client's "Creates ..."
+  summary is left off any other: beside a destructive hint it would tell the
+  model two things about one tool. The hints are a first draft all the same.
   The generated README sets the tools and their hints out in one table:
   review it before relying on a client that acts on hints without asking.
 - **The session is read at the first tool call, not at server start.** Every
-  tool goes through `<Name>ToolSession` (`ToolSession.cs`), which reads
-  `ISessionStore` when the first call arrives and remembers only a session it
-  found. So the server starts, and lists its tools, with nobody signed in; and
-  a session saved while it runs is picked up by the next call without a
-  restart. After the site refuses a session (302/401) the store is read again
-  at the next call, and the client is replaced only if the saved session has
-  changed: the pacing lives in the client, so a caller that keeps retrying
-  against a dead session is still spaced out.
+  tool goes through `<Name>ToolSession` (`ToolSession.cs`). When it reads
+  `ISessionStore`, exactly:
+  - while it has no session, at every tool call -- so the server starts, and
+    lists its tools, with nobody signed in, and a first sign-in needs no
+    restart;
+  - once it has one, not again while the site accepts it;
+  - after the site refuses it -- a redirect (any 3xx), 401, 403, 419 or 440
+    -- at the next tool call, so signing in again needs no restart either.
+
+  The client is replaced only if the saved session has changed: the pacing
+  lives in the client, so a caller that keeps retrying against a dead session
+  is still spaced out. What does need a restart is changing to another account
+  while the current session still works.
 - **The server never signs in and never prompts.** Over stdio its stdout is
   the protocol stream and its stdin is the client's; `<Name>Authenticator`
   writes to one and reads the other, so the server must not call it. A tool
   called with no session, or an expired one, fails with an error that says so.
 - **Only a failure the model can act on is put in words.** A missing or
-  expired session, a throttle, a block, an error status and a reply that is
-  not the expected JSON are thrown as `McpException`, whose message the SDK
-  sends to the client. Any other exception is reported without its detail.
-  The message never carries a cookie, or the session store's path.
+  refused session, a throttle, a block, an error status, a request that got
+  no answer in time and a reply that is not the expected JSON are thrown as
+  `McpException`, whose message the SDK sends to the client. The last two say
+  the call may still have taken effect on the site, so a write is not simply
+  sent again. Any other exception is reported without its detail. The message
+  never carries the session store's path, and text that looks like a `Cookie`
+  or `Set-Cookie` header is removed from the site's error text before the
+  model sees it.
 - **The wrapper's own smoke test starts the server.**
   `tests/<Name>.Tests/pester/Mcp.Tests.ps1` builds the wrapper, starts the
   built assembly over stdio (`McpStdio.ps1`, beside it), sends `initialize`
-  and `tools/list`, and asserts the server lists exactly the tools baked in
-  from the captured endpoints, each with a description and its hints, and that
-  stdout carried only protocol messages. It lists tools and never calls one:
-  a call would go to the real site. `ToolsTests.cs` and
-  `ToolSessionTests.cs` cover the calls, against fixtures.
-
+  and `tools/list`, and asserts the server lists every tool baked in from the
+  captured endpoints, each with a description and its hints, and that stdout
+  carried only protocol messages. (A tool written by hand is listed beside
+  them and is not its business.) It lists tools and never calls one: a call
+  would go to the real site. With no .NET SDK it skips the cases that need a
+  server -- and **fails instead when `CI` is set**, where one passing case
+  over a server that never started would be a false green. The generated
+  `.github/workflows/ci.yml` runs it, in a `pwsh` step after the build.
+  `ToolsTests.cs` and `ToolSessionTests.cs` cover the calls, against fixtures.
 **Authenticator contract (issue #97).** The generated
 `<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
 the interactive sign-in ceremony. It must **never**:
@@ -2611,13 +2675,19 @@ with a clear stage banner -- treat it as the skill's regression detector.
 
 `web-api-discovery/tests/generated-mcp-server.Tests.ps1` is the executable spec
 for the generated MCP server. It generates a wrapper from
-`tests/fixtures/har/rest-crud.har` (GET, POST, PUT, PATCH and DELETE) and from
-`graphql.har`, builds each, starts the server over stdio, and asserts against
-what the server answers: the tool names, the hints of each, the descriptions and
-argument schemas, that a tool called with no session saved says so, and that
-stdout carried only protocol messages. Two falsifiers change the generated
-wrapper the way a generator regression would -- a wrong hint, and no tool class
-at all -- and require the wrapper's own smoke test to fail.
+`tests/fixtures/har/rest-crud.har` (GET, POST, PUT, PATCH and DELETE), from
+`rest-left-out.har` (sign-in endpoints, a preflight, `HEAD`, a download that is
+not JSON, a response keyed by data and a nine-segment path, each beside an
+ordinary endpoint) and from `graphql.har`. It builds each, starts the server
+over stdio, and asserts against what the server answers: the tool names, the
+hints of each, the descriptions and argument schemas, which endpoints get no
+tool and that the README accounts for them, that a tool called with no session
+saved says so, and that stdout carried only protocol messages. It also writes
+the README's own example of a hand-written tool into a wrapper and requires it
+to build and be listed. Three falsifiers each break their own copy of a
+generated wrapper the way a regression would -- a wrong hint, no tool class at
+all, no .NET SDK under CI -- and require the wrapper's own smoke test to fail in
+the case that is about that break, by name.
 
 ### Phase 9 -- Capture Helper
 
