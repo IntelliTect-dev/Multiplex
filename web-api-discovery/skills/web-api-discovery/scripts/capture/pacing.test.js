@@ -834,6 +834,11 @@ test('L2: the pause and resume lines say until when, for how long, and why', () 
     assert.match(named, /carries on by itself/);
     const backoff = say({ action: 'pause', waitMs: MIN, until: start + MIN, signal: throttle(null) }, 'script');
     assert.match(backoff, /Paused until T\+1 -- the site is throttling \(HTTP 429\) and named no wait, so backing off 1 min/);
+    // A tool that does not hold the browser (capture-cdp.js) does not claim to.
+    const cdp = pacing.throttleLines({ action: 'pause', waitMs: MIN, until: start + MIN, signal: throttle(null) },
+        'script', { now: start, clock, noHold: true, tool: 'capture-cdp' }).map(([, t]) => t).join('\n');
+    assert.doesNotMatch(cdp, /browser holds/);
+    assert.match(cdp, /the next step waits/);
     const extended = say({ action: 'pause', extended: true, waitMs: 7 * MIN, until: start + 7 * MIN,
         signal: throttle(7 * MIN) }, 'agent');
     assert.match(extended, /^capture-har: Pause extended until T\+7/);

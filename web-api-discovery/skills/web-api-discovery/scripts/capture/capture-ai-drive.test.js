@@ -76,6 +76,9 @@
 //       with nobody at the terminal and no tailnet the recording ends
 //       `handed-over`, the agent is told the capture ended and exits by itself,
 //       and the browser is left running
+//   I5  the owner's case: nobody at the terminal, the hand-over prints a
+//       private phone link, the phone sees the live browser, taps "I'm done,
+//       continue", and the agent is told to carry on and finishes
 //
 // GUARDS (passed before this change; they must keep passing):
 //   G1  a run with no --ai is untouched: no agent, no prompt, no step log
@@ -1895,6 +1898,114 @@ test('I4: a bot check hands over -- the agent is told, and with nobody to take o
             assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid),
                 'a hand-over never touches the browser');
         } finally {
+            server.close();
+            if (agentPid && pidAlive(agentPid)) killTree(agentPid);
+            if (browserPid) killTree(browserPid);
+            if (recorder && recorder.exitCode === null) recorder.kill();
+        }
+    });
+
+/** GET or POST against the phone view, the way the phone's browser would. */
+function phoneRequest(url, opts = {}) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, method: opts.method || 'GET',
+            headers: opts.headers || {} }, (res) => {
+            if (opts.stream) { resolve(res); return; }
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (d) => { body += d; });
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        if (opts.body) req.write(opts.body);
+        req.end();
+    });
+}
+
+test('I5: THE OWNER\'S CASE -- a bot check, the live view on the phone, and the phone hands back',
+    async () => {
+        // Nobody at this terminal; the person is on their phone. The recorder
+        // hands over, prints a private link, serves the live browser there, and
+        // when the phone taps "I'm done, continue" the agent is told to carry
+        // on and finishes. Tailscale is faked to answer LOOPBACK (the stub's
+        // seam), so the view is real but no test touches a real tailnet.
+        const repo = makeRepo('ai-phone');
+        plantOperatorProfile(repo);
+        if (blockedOrSkipped('I5', integrationBlocker(repo))) return;
+
+        const { server, uri } = await fixtureServer();
+        const pruned = pathWithoutAgent();
+        assert.ok(!agentOnPath(pruned), 'the agent must be reachable only through the stub');
+        const childEnv = driverEnv({ PATH: pruned, HAR_STUB_AGENT_MODE: 'challenge',
+            HAR_CAPTURE_TAILSCALE: 'tailscale',
+            HAR_STUB_TAILSCALE_JSON: JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['127.0.0.1'] } }) });
+
+        let recorder = null;
+        let browserPid = null;
+        let agentPid = null;
+        let events = null;
+        try {
+            recorder = startStubDrivenCapture(repo, uri, childEnv);
+            let recorderErr = '';
+            recorder.stderr.on('data', (d) => { recorderErr += d; });
+            recorder.stdout.on('data', () => {});
+            const { sessionDir, session } = await waitForRecordingSession(repo, recorder, () => recorderErr);
+            browserPid = session.browserPid;
+
+            // THE LINK, as the operator (or the AI session relaying it) reads it.
+            const linked = await waitFor(() => /Open on your phone: (http:\/\/\S+)/.test(recorderErr), 120000);
+            assert.ok(linked, `no phone link was given:\n${recorderErr}`);
+            const link = /Open on your phone: (http:\/\/\S+)/.exec(recorderErr)[1];
+            assert.match(link, /^http:\/\/127\.0\.0\.1:\d+\/m\/[A-Za-z0-9_-]{43}\/$/, 'the address Tailscale gave, and a long token');
+            assert.match(recorderErr, /capture-har: Handed over to you: the site put up a bot check/);
+
+            // THE PHONE: open the page (claiming it), watch the live frames.
+            const page = await phoneRequest(link);
+            assert.strictEqual(page.status, 200);
+            assert.match(page.body, /I'm done, continue/);
+            const cookie = String(page.headers['set-cookie']).split(';')[0];
+            assert.strictEqual((await phoneRequest(link)).status, 404, 'a second browser with the link gets nothing');
+            events = await phoneRequest(link + 'events', { stream: true, headers: { cookie } });
+            let streamed = '';
+            events.setEncoding('utf8');
+            events.on('data', (d) => { streamed += d; });
+            assert.ok(await waitFor(() => /event: frame\ndata: \{"d":"\/9j\//.test(streamed), 30000),
+                'a live JPEG frame of the capture browser reaches the phone');
+            assert.match(streamed, /event: status\ndata: .*Handed over to you/);
+
+            // "I'm done, continue."
+            const done = await phoneRequest(link + 'input', { method: 'POST', body: '{"t":"done"}',
+                headers: { cookie, 'content-type': 'application/json', origin: new URL(link).origin } });
+            assert.strictEqual(done.status, 204);
+
+            const ended = await waitFor(() => recorder.exitCode !== null, 120000);
+            assert.ok(ended, `the recording never ended after the phone handed back:\n${recorderErr}`);
+            assert.match(streamed, /event: end\ndata: .*Handed back/, 'the phone is told the hand-over is over');
+
+            const finalSession = readJson(path.join(sessionDir, 'session.json'));
+            agentPid = finalSession.agentPid;
+            assert.strictEqual(finalSession.endedBy, 'agent-finished', `the agent carried on and finished:\n${recorderErr}`);
+            const [h] = finalSession.pauses || [];
+            assert.ok(h && h.kind === 'hand-over' && h.resumedBy === 'phone' && h.outcome === 'continued' && h.phone === true,
+                `the hand-over and who handed back: ${JSON.stringify(finalSession.pauses)}`);
+            assert.ok(!JSON.stringify(finalSession).includes(new URL(link).pathname.split('/')[2]),
+                'the token never goes into session.json -- the agent reads that file');
+            assert.match(recorderErr, /capture-har: Resumed after \d+ (s|min)[^\n]* -- you handed the browser back on your phone; the agent has been told to carry on\./);
+
+            const stepLog = fs.readFileSync(session.agentLogPath, 'utf8');
+            assert.match(stepLog, /capture-har -> agent: The person has finished\. Re-check the page and continue where you left off\./);
+            assert.match(stepLog, /the person has finished; re-checked the page and carried on/);
+            assert.ok(!stepLog.includes('/m/'), 'the agent is never given the phone link');
+            assert.match(stepLog, /agent ended .* \(exit 0\)/);
+            assert.ok(await waitFor(() => !pidAlive(agentPid), 15000), 'the agent ended by itself');
+
+            // The view is gone with the hand-over.
+            const after = await phoneRequest(link).then(() => null, (e) => e);
+            assert.ok(after, 'nothing listens once the hand-over is over');
+            assert.ok(await cdpAnswers(session.cdpEndpoint) && pidAlive(browserPid), 'the browser is left running');
+        } finally {
+            if (events) events.destroy();
             server.close();
             if (agentPid && pidAlive(agentPid)) killTree(agentPid);
             if (browserPid) killTree(browserPid);
