@@ -51,14 +51,13 @@ public sealed class FakeLinkedIn : ILinkedInApiFactory
         => Task.FromResult<ILinkedInApi>(Account(accountId));
 }
 
-/// <summary>One account's invitations, members and conversations; every change is logged in <see cref="Changes"/>.</summary>
+/// <summary>One account's invitations and conversations; every change is logged in <see cref="Changes"/>.</summary>
 public sealed class FakeLinkedInAccount : ILinkedInApi
 {
     private readonly object _gate = new();
 
     public List<LinkedInInvitation> Received { get; } = [];
     public List<LinkedInInvitation> Sent { get; } = [];
-    public Dictionary<string, LinkedInProfile> Profiles { get; } = new(StringComparer.Ordinal);
     public List<LinkedInConversation> Conversations { get; } = [];
     public Dictionary<string, List<LinkedInMessage>> Messages { get; } = new(StringComparer.Ordinal);
 
@@ -69,9 +68,6 @@ public sealed class FakeLinkedInAccount : ILinkedInApi
     public Exception? Fail { get; set; }
 
     public static LinkedInPerson Person(string id, string name, string? headline = null) => new(id, name, headline);
-
-    public void AddProfile(LinkedInPerson person, ConnectionDegree degree, bool? following = false, bool? invitationPending = false)
-        => Profiles[person.ProfileId] = new LinkedInProfile(person, degree, following, invitationPending);
 
     public Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, int start, int count, CancellationToken ct)
     {
@@ -93,18 +89,6 @@ public sealed class FakeLinkedInAccount : ILinkedInApi
     public Task IgnoreInvitationAsync(string invitationId, CancellationToken ct) => Change($"ignore {invitationId}",
         () => Received.RemoveAll(i => i.InvitationId == invitationId));
 
-    public Task<LinkedInProfile?> FindProfileAsync(string profileId, CancellationToken ct)
-    {
-        ThrowIfFailing();
-        return Task.FromResult(Profiles.GetValueOrDefault(profileId));
-    }
-
-    public Task SendInvitationAsync(string profileId, string? note, CancellationToken ct)
-        => Change($"invite {profileId} note={note ?? "(none)"}", () => { });
-
-    public Task SetFollowingAsync(string profileId, bool follow, CancellationToken ct)
-        => Change($"{(follow ? "follow" : "unfollow")} {profileId}", () => { });
-
     public Task<LinkedInConversationPage> ListConversationsAsync(string? cursor, CancellationToken ct)
     {
         ThrowIfFailing();
@@ -125,12 +109,6 @@ public sealed class FakeLinkedInAccount : ILinkedInApi
 
     public Task ReplyAsync(string conversationId, string text, CancellationToken ct)
         => Change($"reply {conversationId}: {text}", () => { });
-
-    public async Task<string?> StartConversationAsync(string profileId, string text, CancellationToken ct)
-    {
-        await Change($"start {profileId}: {text}", () => { });
-        return "conv-new";
-    }
 
     private Task Change(string what, Action apply)
     {

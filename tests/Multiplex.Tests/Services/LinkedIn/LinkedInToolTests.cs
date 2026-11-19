@@ -8,21 +8,16 @@ namespace Multiplex.Tests.Services.LinkedIn;
 /// <summary>
 /// The LinkedIn tools over real MCP JSON-RPC and real OAuth, in front of a stand-in LinkedIn:
 /// what each account sees, and that every change previews first, happens only with its confirm
-/// token, happens once, and reaches exactly one invitation, member or conversation.
+/// token, happens once, and reaches exactly one invitation or conversation.
 /// </summary>
 public sealed class LinkedInToolTests : IClassFixture<LinkedInTestApp>
 {
     private static readonly string[] s_readTools = ["linkedin_list_invitations", "linkedin_list_conversations", "linkedin_read_conversation"];
 
-    private static readonly string[] s_changeTools =
-    [
-        "linkedin_accept_invitation", "linkedin_ignore_invitation", "linkedin_send_invitation",
-        "linkedin_follow", "linkedin_unfollow", "linkedin_reply", "linkedin_start_conversation",
-    ];
+    private static readonly string[] s_changeTools = ["linkedin_accept_invitation", "linkedin_ignore_invitation", "linkedin_reply"];
 
     private static readonly LinkedInPerson s_jane = Person("jane-doe", "Jane Doe", "Engineer at Contoso");
     private static readonly LinkedInPerson s_sam = Person("sam-roe", "Sam Roe", "Recruiter at Fabrikam");
-    private static readonly LinkedInPerson s_ana = Person("ana-li", "Ana Li");
 
     private readonly LinkedInTestApp _app;
     private readonly string _account = "member-" + Guid.NewGuid().ToString("N")[..8];
@@ -180,93 +175,6 @@ public sealed class LinkedInToolTests : IClassFixture<LinkedInTestApp>
         Assert.Empty(LinkedIn.Changes);
     }
 
-    [Fact]
-    public async Task Sending_an_invitation_previews_the_person_and_note_then_sends_it_once()
-    {
-        LinkedIn.AddProfile(s_sam, ConnectionDegree.Second);
-        var arguments = new Dictionary<string, object?>
-        {
-            ["person"] = "https://www.linkedin.com/in/sam-roe/?trk=people",
-            ["note"] = "  Enjoyed your talk.  ",
-        };
-
-        var (preview, token) = await PreviewAsync("linkedin_send_invitation", arguments);
-        Assert.Contains("Sam Roe (Recruiter at Fabrikam)", preview, StringComparison.Ordinal);
-        Assert.Contains("\"Enjoyed your talk.\"", preview, StringComparison.Ordinal);
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_send_invitation", With(arguments, token));
-
-        Assert.False(isError, text);
-        Assert.Equal(["invite sam-roe note=Enjoyed your talk."], LinkedIn.Changes);
-    }
-
-    [Fact]
-    public async Task No_invitation_is_offered_to_someone_already_connected()
-    {
-        LinkedIn.AddProfile(s_jane, ConnectionDegree.First);
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_send_invitation", new { person = "jane-doe" });
-
-        Assert.False(isError, text);
-        var result = Parse(text);
-        Assert.True(result.GetProperty("nothing_changed").GetBoolean());
-        Assert.False(result.TryGetProperty("confirm_token", out _));
-        Assert.Contains("already connected", result.GetProperty("result").GetString(), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task A_note_longer_than_LinkedIn_allows_is_refused_before_LinkedIn_is_asked()
-    {
-        LinkedIn.AddProfile(s_sam, ConnectionDegree.Second);
-        LinkedIn.Fail = new InvalidOperationException("LinkedIn must not be called");
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_send_invitation", new { person = "sam-roe", note = new string('x', 301) });
-
-        Assert.True(isError);
-        Assert.Contains("at most 300", text, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("https://evil.example/in/sam-roe")]
-    [InlineData("https://www.linkedin.com/company/contoso/")]
-    [InlineData("https://www.linkedin.com/in/sam-roe/detail/contact-info/")]
-    [InlineData("sam roe")]
-    [InlineData("")]
-    public async Task Anything_but_one_member_profile_is_refused(string person)
-    {
-        LinkedIn.Fail = new InvalidOperationException("LinkedIn must not be called");
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_send_invitation", new { person });
-
-        Assert.True(isError, text);
-        Assert.Contains("person", text, StringComparison.Ordinal);
-        Assert.Empty(LinkedIn.Changes);
-    }
-
-    [Fact]
-    public async Task Following_someone_already_followed_changes_nothing()
-    {
-        LinkedIn.AddProfile(s_jane, ConnectionDegree.First, following: true);
-
-        var (_, text) = await Mcp.CallAsync("linkedin_follow", new { person = "jane-doe" });
-
-        Assert.Contains("already follow", Parse(text).GetProperty("result").GetString(), StringComparison.Ordinal);
-        Assert.Empty(LinkedIn.Changes);
-    }
-
-    [Fact]
-    public async Task Unfollowing_a_connection_says_they_stay_connected_then_unfollows()
-    {
-        LinkedIn.AddProfile(s_jane, ConnectionDegree.First, following: true);
-        var arguments = new Dictionary<string, object?> { ["person"] = "jane-doe" };
-
-        var (preview, token) = await PreviewAsync("linkedin_unfollow", arguments);
-        Assert.Contains("you stay connected", preview, StringComparison.Ordinal);
-
-        await Mcp.CallAsync("linkedin_unfollow", With(arguments, token));
-        Assert.Equal(["unfollow jane-doe"], LinkedIn.Changes);
-    }
-
     // ── Messages ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -298,34 +206,6 @@ public sealed class LinkedInToolTests : IClassFixture<LinkedInTestApp>
 
         Assert.True(isError);
         Assert.Empty(LinkedIn.Changes);
-    }
-
-    [Fact]
-    public async Task A_conversation_is_started_only_with_a_connection()
-    {
-        LinkedIn.AddProfile(s_ana, ConnectionDegree.Second);
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_start_conversation", new { person = "ana-li", text = "Hi Ana" });
-
-        Assert.True(isError);
-        Assert.Contains("not one of your 1st-degree connections", text, StringComparison.Ordinal);
-        Assert.Empty(LinkedIn.Changes);
-    }
-
-    [Fact]
-    public async Task Starting_a_conversation_with_a_connection_previews_then_sends()
-    {
-        LinkedIn.AddProfile(s_jane, ConnectionDegree.First);
-        var arguments = new Dictionary<string, object?> { ["person"] = "jane-doe", ["text"] = "Hi Jane" };
-
-        var (preview, token) = await PreviewAsync("linkedin_start_conversation", arguments);
-        Assert.Contains("Jane Doe", preview, StringComparison.Ordinal);
-
-        var (isError, text) = await Mcp.CallAsync("linkedin_start_conversation", With(arguments, token));
-
-        Assert.False(isError, text);
-        Assert.Equal("conv-new", Parse(text).GetProperty("conversation_id").GetString());
-        Assert.Equal(["start jane-doe: Hi Jane"], LinkedIn.Changes);
     }
 
     [Fact]
