@@ -22,14 +22,13 @@ public sealed class LinkedInMessagingTools(LinkedInToolContext linkedIn)
 
     [McpServerTool(Name = "linkedin_list_conversations", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description(
-        "Lists the signed-in person's LinkedIn conversations, most recent first: who is in each, the last " +
-        "message, when, and whether it is unread. Pass next_cursor back for older conversations." + UntrustedText)]
-    public Task<string> ListConversations(
-        [Description("next_cursor from the previous page; omit for the most recent conversations.")] string? cursor = null,
-        CancellationToken ct = default)
+        "Lists the signed-in person's 20 most recent LinkedIn conversations, newest first: who is in each, the " +
+        "last message, when, and whether it is unread. Older conversations cannot be reached, so reading or " +
+        "replying works only for these." + UntrustedText)]
+    public Task<string> ListConversations(CancellationToken ct = default)
         => linkedIn.RunAsync("linkedin_list_conversations", async api =>
         {
-            var page = await api.ListConversationsAsync(string.IsNullOrWhiteSpace(cursor) ? null : cursor, ct).ConfigureAwait(false);
+            var page = await api.ListConversationsAsync(ct).ConfigureAwait(false);
             return LinkedInToolContext.ToJson(new
             {
                 conversations = page.Conversations.Select(c => new
@@ -40,7 +39,6 @@ public sealed class LinkedInMessagingTools(LinkedInToolContext linkedIn)
                     last_activity_at = c.LastActivityAt,
                     unread = c.Unread,
                 }),
-                next_cursor = page.NextCursor,
             });
         }, ct);
 
@@ -118,6 +116,6 @@ public sealed class LinkedInMessagingTools(LinkedInToolContext linkedIn)
     private static async Task<LinkedInConversation> FindConversationAsync(ILinkedInApi api, string conversationId, CancellationToken ct)
         => await api.FindConversationAsync(conversationId, ct).ConfigureAwait(false)
            ?? throw new McpException(
-               "There is no conversation with that conversation_id on this account. Call linkedin_list_conversations " +
-               "again. Nothing was changed.");
+               "That conversation_id is not among this account's 20 most recent conversations. Call " +
+               "linkedin_list_conversations again. Nothing was changed.");
 }

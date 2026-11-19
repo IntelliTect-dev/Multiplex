@@ -33,8 +33,8 @@ public sealed record LinkedInConversation(
     DateTimeOffset? LastActivityAt,
     bool Unread);
 
-/// <param name="NextCursor">Pass back to get the next (older) page, or null on the last page.</param>
-public sealed record LinkedInConversationPage(IReadOnlyList<LinkedInConversation> Conversations, string? NextCursor);
+/// <param name="Conversations">The most recent conversations (LinkedIn sends 20), newest first.</param>
+public sealed record LinkedInConversationPage(IReadOnlyList<LinkedInConversation> Conversations);
 
 /// <param name="From">The sender; null when it is the signed-in person.</param>
 public sealed record LinkedInMessage(string MessageId, LinkedInPerson? From, string Text, DateTimeOffset SentAt);
@@ -58,9 +58,10 @@ public interface ILinkedInApi
 
     Task IgnoreInvitationAsync(string invitationId, CancellationToken ct);
 
-    Task<LinkedInConversationPage> ListConversationsAsync(string? cursor, CancellationToken ct);
+    /// <summary>The most recent conversations; older ones are not reachable (their paging was never recorded).</summary>
+    Task<LinkedInConversationPage> ListConversationsAsync(CancellationToken ct);
 
-    /// <summary>A conversation by id, or null when the account has none with that id.</summary>
+    /// <summary>One of the most recent conversations by id, or null when it is not among them.</summary>
     Task<LinkedInConversation?> FindConversationAsync(string conversationId, CancellationToken ct);
 
     Task<LinkedInMessagePage> ReadConversationAsync(string conversationId, string? olderCursor, CancellationToken ct);
