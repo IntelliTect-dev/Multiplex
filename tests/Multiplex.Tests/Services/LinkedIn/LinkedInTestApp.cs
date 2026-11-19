@@ -89,10 +89,10 @@ public sealed class FakeLinkedInAccount : ILinkedInApi
     public Task IgnoreInvitationAsync(string invitationId, CancellationToken ct) => Change($"ignore {invitationId}",
         () => Received.RemoveAll(i => i.InvitationId == invitationId));
 
-    public Task<LinkedInConversationPage> ListConversationsAsync(string? cursor, CancellationToken ct)
+    public Task<LinkedInConversationPage> ListConversationsAsync(CancellationToken ct)
     {
         ThrowIfFailing();
-        return Task.FromResult(new LinkedInConversationPage(Conversations, null));
+        return Task.FromResult(new LinkedInConversationPage(Conversations));
     }
 
     public Task<LinkedInConversation?> FindConversationAsync(string conversationId, CancellationToken ct)
