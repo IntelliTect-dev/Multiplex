@@ -17,7 +17,24 @@ public static class OAuthEndpoints
     private const int MaxRegistrationBytes = 16 * 1024;
     private const int MaxFormBytes = 16 * 1024;
 
-    private static readonly JsonSerializerOptions Json = new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
+    private static readonly JsonSerializerOptions Json = CreateJsonOptions();
+
+    /// <summary>
+    /// The JSON settings every OAuth and discovery response is written with, complete and read-only.
+    /// <c>Results.Json</c> fills in a missing <see cref="JsonSerializerOptions.TypeInfoResolver"/> on settings
+    /// that are not yet read-only; on these process-wide settings, two first responses doing that at once
+    /// let one lock them while the other is still setting it, and that request answers 500.
+    /// </summary>
+    internal static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+        };
+        options.MakeReadOnly();
+        return options;
+    }
 
     /// <summary>
     /// Maps RFC 8414 authorization server metadata (also at the OIDC discovery path), RFC 9728 protected
