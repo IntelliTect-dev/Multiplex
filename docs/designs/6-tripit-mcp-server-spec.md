@@ -218,11 +218,12 @@ metadata and the 401 challenge).
 2. **Gate page:** "Multiplex passcode". Wrong passcode → retry with back-off; five failures
    lock the gate for 15 minutes. No browser launches before the gate passes. The passcode
    leads straight to the live sign-in: no account the server already holds is offered.
-3. **Live TripIt page:** the server starts a fresh, empty Chrome profile for this sign-in at
-   a phone-sized viewport, opens TripIt's sign-in page, and streams it (CDP screencast frames
-   over a WebSocket) into the page. Taps become pointer events; typing goes through a text
-   field and is inserted into the focused element. Navigation is limited to TripIt and the
-   identity providers its own sign-in page links to; anything else is blocked.
+3. **Live TripIt page:** the server starts Chrome on a fresh, empty profile for this sign-in
+   at a phone-sized viewport, opens TripIt's sign-in page, and streams it (CDP screencast frames
+   over a WebSocket) into the page. Chrome is started as a person starts it, with no automation
+   switches (#61). Taps become pointer events; typing goes through a text field and is replayed
+   into the focused element as key presses at a typing pace. Navigation is limited to TripIt and
+   the identity providers its own sign-in page links to; anything else is blocked.
 4. The server watches for the session cookies and confirms with `v2/get/profile`, which names
    the account. The connection being added is bound to that account: the same connector can be
    added several times, each with a different TripIt account (#52).
@@ -485,6 +486,15 @@ lock, timeouts and the refresher's signed-out path.
   refresh briefly opens that window on the PC. The tool calls themselves are not made by
   that browser: the server's HTTP client sends the browser's identity headers with its
   cookies (section 9), so to TripIt they look like the browser's own requests.
+- TripIt's bot protection (Akamai) refused the mirrored password sign-in on submit, three
+  times out of three, while the sign-in browser was started with Puppeteer's defaults and
+  typing was inserted with no key presses (#61). The browser is now started the way the
+  capture tooling's native mode starts Chrome: a profile, a real debugging port and no
+  first-run screens, and none of Puppeteer's default switches. Chrome reports
+  `navigator.webdriver` for `--enable-automation` and also for an ephemeral debugging port
+  (`=0`), so neither is used. Typed text is replayed as one key press per character, 50 ms
+  apart. Nothing is disguised: the browser is what it is, a person signing in. Whether TripIt
+  accepts the sign-in now is not verified yet.
 - TripIt's only third-party sign-in is Google; allowed navigation hosts default to
   `www.tripit.com`, `tripit.com`, `accounts.google.com`.
 - Only email addresses TripIt marks confirmed are kept on an account.

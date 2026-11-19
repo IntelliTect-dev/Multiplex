@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Multiplex.Web.Sites;
 using PuppeteerSharp;
+using PuppeteerSharp.Input;
 
 namespace Multiplex.Web.SignIn;
 
@@ -32,6 +33,12 @@ public enum AttemptState
 /// </summary>
 public sealed class LiveSignInAttempt : IAsyncDisposable
 {
+    /// <summary>
+    /// The pause between the key presses that replay text typed on the phone: a typing pace.
+    /// The person typed every character; the phone sends them together when Send is tapped.
+    /// </summary>
+    internal static readonly TimeSpan KeystrokePause = TimeSpan.FromMilliseconds(50);
+
     private readonly LiveSignInServices _services;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Lock _stateLock = new();
@@ -641,7 +648,11 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
                     await page.Mouse.WheelAsync((decimal)(scroll.DeltaX * _frameCssWidth), (decimal)(scroll.DeltaY * _frameCssHeight));
                     break;
                 case TextInput text:
-                    await page.Keyboard.SendCharacterAsync(text.Text); // CDP Input.insertText into the focused element
+                    // One key press per character, at a typing pace, as the person typed it on the
+                    // phone; a character no key types is inserted as text. A site's bot protection
+                    // scores the keystrokes on its sign-in form, and text that appears with no key
+                    // presses is not how a person types (#61).
+                    await page.Keyboard.TypeAsync(text.Text, new TypeOptions { Delay = (int)KeystrokePause.TotalMilliseconds });
                     break;
                 case KeyInput key:
                     await page.Keyboard.PressAsync(key.Key);
