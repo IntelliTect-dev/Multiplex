@@ -202,8 +202,14 @@ Filter options, index 7:
 | 3, 4, 5 | Origin airport, date `[y, m, d]`, time `[h, m]`; **a zero minute is omitted** (`[11]` is 11:00) | A |
 | 6, 7, 8 | Destination airport, date, time | A |
 | 9 | Total minutes | A |
-| 13 | Layovers (X: `[minutes, arrive airport, depart airport, ...]`) | X |
+| 10 | **pending** (arrival day offset candidate; `null` on same-day trips) | A |
+| 13 | Layovers: `[[minutes, arrive airport, depart airport, null, arrive airport name, arrive city, depart airport name, depart city], ...]`. The two airports differ when the connection changes airport. All of A's itineraries were nonstop, so this is **X only** until a connecting capture lands | X |
 | 22 | Emissions. **Not read: the client exposes no emissions data** | A |
+
+`itinerary[6]` is **unknown**. Earlier notes read it as "separate tickets",
+but X has it `true` on 19 of 21 itineraries of one SEA-BOS search, which
+cannot all be separate tickets. Do not rely on it until a capture shows it
+changing.
 
 `itinerary[1]` = `[[null, price], "<selection token>"]`. **The price here is
 rounded to the whole currency unit** (A: 89 where the exact fare is 88.40).
@@ -305,6 +311,10 @@ The search page keeps its state in `?tfs=` (base64url protobuf) and
 
 The client does not need `tfs` to search. It needs it to produce a link a
 person can open to see the same search on Google Flights.
+
+**Proven both ways:** an encoder built from this table reproduces all three
+`tfs` values the page produced in B, byte for byte (airports, dates, trip type
+1, page type 1 and 2).
 
 ## 8. Not yet established
 
