@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.Options;
 using PuppeteerSharp;
 
@@ -61,17 +63,12 @@ public sealed class SiteBrowserManager(
         var o = options.Value;
         var headless = IsHeadless(site);
 
-        List<string> args = ["--no-first-run", "--no-default-browser-check"];
-        if (o.NoSandbox) args.Add("--no-sandbox");
-        if (!headless) args.Add($"--window-size={o.ViewportWidth + 40},{o.ViewportHeight + 140}");
-
-        // No user-agent override and no automation-hiding flags: the site sees the browser as it is.
         var browser = await Puppeteer.LaunchAsync(new LaunchOptions
         {
             HeadlessMode = headless ? HeadlessMode.True : HeadlessMode.False,
             ExecutablePath = await ExecutablePathAsync(ct),
-            UserDataDir = dir,
-            Args = [.. args],
+            IgnoreDefaultArgs = true,
+            Args = LaunchArguments(dir, headless, o),
             DefaultViewport = new ViewPortOptions
             {
                 Width = o.ViewportWidth,
@@ -83,6 +80,38 @@ public sealed class SiteBrowserManager(
         logger.LogInformation("Launched {Mode} browser for {Site} on profile {Profile}.",
             headless ? "headless" : "visible", site, Path.GetFileName(dir));
         return browser;
+    }
+
+    /// <summary>
+    /// The browser is started the way a person starts Chrome on a profile of its own, as the
+    /// capture tooling's native mode does: the profile, a debugging port to drive it, and no
+    /// first-run screens. Puppeteer's default switches are left out, above all
+    /// <c>--enable-automation</c>, and the port is a real one rather than Puppeteer's ephemeral
+    /// <c>0</c>: Chrome turns on <c>navigator.webdriver</c> for either, and TripIt's bot
+    /// protection refused a sign-in in such a browser (#61). Nothing is added to hide what the
+    /// browser is either: no user-agent override, no automation-hiding flags.
+    /// </summary>
+    private static string[] LaunchArguments(string profileDir, bool headless, SignInOptions o)
+    {
+        List<string> args =
+        [
+            $"--user-data-dir=\"{Path.TrimEndingDirectorySeparator(profileDir)}\"",
+            $"--remote-debugging-port={FreeLoopbackPort()}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ];
+        if (o.NoSandbox) args.Add("--no-sandbox");
+        args.Add(headless ? "--headless=new" : $"--window-size={o.ViewportWidth + 40},{o.ViewportHeight + 140}");
+        args.Add("about:blank");
+        return [.. args];
+    }
+
+    /// <summary>A loopback port free right now, for the browser's debugging port (Chrome listens on loopback only).</summary>
+    private static int FreeLoopbackPort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     /// <summary>Closes the browser and waits for Chrome to exit, so its profile folder can be moved or deleted.</summary>

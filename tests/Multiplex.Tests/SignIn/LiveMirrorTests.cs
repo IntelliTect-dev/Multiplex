@@ -250,6 +250,42 @@ public sealed class LiveMirrorTests
         Assert.Empty(host.Completer.Failed);
     }
 
+    [ChromiumFact]
+    public async Task Text_typed_on_the_phone_reaches_the_page_as_key_presses()
+    {
+        // A site's bot protection scores the keystrokes on its sign-in form; text that appears
+        // with no key presses is not how a person types (#61).
+        await using var site = await StubLoginSite.StartAsync();
+        await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
+        host.Completer.Add("p1", "stub");
+        var client = host.NewClient();
+        var (gate, _) = await client.PassGateAsync("p1");
+        var attempt = Attempt(host, gate);
+        await using var mirror = await client.OpenMirrorAsync(attempt.Id);
+        await mirror.WaitForStatusAsync("live", s_long);
+        var email = await CenterOfAsync(attempt, "#email");
+        await attempt.ActivePage!.EvaluateExpressionAsync(
+            "window.__keys = []; window.__times = []; document.getElementById('email').addEventListener('keydown', e => { window.__keys.push(e.key); window.__times.push(e.timeStamp); }); 0");
+
+        const string typed = "Tester+1@example.test";
+        await mirror.SendAsync(new { t = "tap", x = email.X, y = email.Y });
+        await mirror.SendAsync(new { t = "text", v = typed });
+
+        await WaitForAsync(async () => await attempt.ActivePage!.EvaluateExpressionAsync<string>("document.getElementById('email').value") == typed);
+        Assert.Equal(typed.Select(c => c.ToString()), await attempt.ActivePage!.EvaluateExpressionAsync<string[]>("window.__keys"));
+        // At a typing pace, not all at once.
+        var times = await attempt.ActivePage!.EvaluateExpressionAsync<double[]>("window.__times");
+        var shortestGap = times.Zip(times.Skip(1), (a, b) => b - a).Min();
+        Assert.True(shortestGap >= LiveSignInAttempt.KeystrokePause.TotalMilliseconds * 0.8,
+            $"Key presses {shortestGap:F0} ms apart; expected about {LiveSignInAttempt.KeystrokePause.TotalMilliseconds} ms.");
+
+        // A character no keyboard key types still arrives.
+        var password = await CenterOfAsync(attempt, "#password");
+        await mirror.SendAsync(new { t = "tap", x = password.X, y = password.Y });
+        await mirror.SendAsync(new { t = "text", v = "pässwörd-€" });
+        await WaitForAsync(async () => await attempt.ActivePage!.EvaluateExpressionAsync<string>("document.getElementById('password').value") == "pässwörd-€");
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /// <summary>
