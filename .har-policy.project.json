@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "secretHeaders": ["x-goog-batchexecute-bgr"],
+  "secretFields": ["f.sid"]
+}

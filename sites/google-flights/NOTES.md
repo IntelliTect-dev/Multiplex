@@ -30,6 +30,34 @@ Rules for anything in this folder that talks to Google:
 - **The client** paces itself and caches; see the client's own docs when it
   exists.
 
+## Gotcha: gRPC code 13 is ambiguous
+
+Google answers a soft-blocked client with HTTP 200 and a `wrb.fr` error item
+carrying gRPC code 13 (`INTERNAL`). It also answered code 13, in a capture on
+2026-11-19, to the page's own date-picker and search requests after only about
+four data requests (see the `date-picker-prices` and
+`round-trip-search-refused` references). Code 13 alone does not say why.
+Treat it as "stop and back off", never as "retry now".
+
+## Captures leak the operator's location unless you watch for it
+
+Google pre-fills "Where from?" from the network's location. The home page and
+the first autocomplete call therefore carry the operator's approximate
+location. Never extract them into a reference. A city can still appear in a
+search answer as a connecting airport; that is route data, not a leak.
+
+## Two values the scrub must replace
+
+`.har-policy.project.json` at the repository root adds the page's anti-bot
+token (`x-goog-batchexecute-bgr` header) and page session id (`f.sid` query
+parameter) to the scrub's secret names. Neither is a credential, but both are
+session-scoped and nothing in the client needs them.
+
+`extract-har-reference.js` does not apply that policy yet: it scrubs a copy
+staged outside the repository, where the policy file cannot be found. After
+extracting, scrub each reference once more in place with `sanitize-har.js`
+(the substitution tables go outside the repository) and gate it again.
+
 ## Evidence, not the spec
 
 The HAR references under `references/` record what Google's page did on one

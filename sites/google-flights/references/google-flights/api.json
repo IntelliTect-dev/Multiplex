@@ -1,0 +1,502 @@
+{
+  "schemaVersion": 1,
+  "provider": "google-flights",
+  "references": [
+    {
+      "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+      "entryCount": 15
+    },
+    {
+      "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+      "entryCount": 3
+    },
+    {
+      "harFile": "google-flights-one-way-search-2026-11-18.har",
+      "entryCount": 1
+    },
+    {
+      "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+      "entryCount": 1
+    }
+  ],
+  "capturesNeeded": [],
+  "endpoints": [
+    {
+      "host": "www.google.com",
+      "method": "POST",
+      "pathTemplate": "/_/FlightsFrontendUi/data/batchexecute",
+      "observedEntries": 15,
+      "statuses": [
+        200
+      ],
+      "requestContentTypes": [
+        "application/x-www-form-urlencoded;charset=utf-8"
+      ],
+      "responseContentTypes": [
+        "application/json; charset=utf-8"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [
+        {
+          "name": "f.req",
+          "in": "param",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "_reqid",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "bl",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "f.sid",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "hl",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "rpcids",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "rt",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-app",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-device",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-platform",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "source-path",
+          "in": "query",
+          "observedIn": 15,
+          "witnesses": [
+            {
+              "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "responseFields": [],
+      "unproven": [],
+      "witnesses": [
+        {
+          "harFile": "google-flights-airport-autocomplete-2026-11-19.har",
+          "entry": 0
+        }
+      ]
+    },
+    {
+      "host": "www.google.com",
+      "method": "POST",
+      "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarPicker",
+      "observedEntries": 3,
+      "statuses": [
+        200
+      ],
+      "requestContentTypes": [
+        "application/x-www-form-urlencoded;charset=utf-8"
+      ],
+      "responseContentTypes": [
+        "application/json; charset=utf-8"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [
+        {
+          "name": "f.req",
+          "in": "param",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "_reqid",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "bl",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "f.sid",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "hl",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "rt",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-app",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-device",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-platform",
+          "in": "query",
+          "observedIn": 3,
+          "witnesses": [
+            {
+              "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "responseFields": [],
+      "unproven": [],
+      "witnesses": [
+        {
+          "harFile": "google-flights-date-picker-prices-2026-11-19.har",
+          "entry": 0
+        }
+      ]
+    },
+    {
+      "host": "www.google.com",
+      "method": "POST",
+      "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "observedEntries": 2,
+      "statuses": [
+        200
+      ],
+      "requestContentTypes": [
+        "application/x-www-form-urlencoded;charset=utf-8"
+      ],
+      "responseContentTypes": [
+        "application/json; charset=utf-8"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [
+        {
+          "name": "f.req",
+          "in": "param",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "_reqid",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "bl",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "f.sid",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "hl",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "rt",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-app",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-device",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        },
+        {
+          "name": "soc-platform",
+          "in": "query",
+          "observedIn": 2,
+          "witnesses": [
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
+      "responseFields": [],
+      "unproven": [],
+      "witnesses": [
+        {
+          "harFile": "google-flights-one-way-search-2026-11-18.har",
+          "entry": 0
+        },
+        {
+          "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+          "entry": 0
+        }
+      ]
+    }
+  ]
+}
