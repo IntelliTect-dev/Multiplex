@@ -67,6 +67,28 @@
     "CapturedUtc": "2026-11-19T21:30:32.551Z"
   },
   {
+    "Action": "direct-search-refused",
+    "Description": "One direct HTTP GetShoppingResults (not a browser), one-way SEA-DEN 2026-12-15, sent with an honest User-Agent, no cookies, no browser headers and no anti-bot token, 60 minutes after the browser refusals. Answered HTTP 200 with a BARE gRPC 13 item ([13], no ErrorResponse detail) in about 200 ms, and set an NID cookie. The browser refusals carried an ErrorResponse with a search session id; this one did not. Redirects were not followed (there was none).",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-search-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 131,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T22:32:42.514Z"
+  },
+  {
     "Action": "one-way-search",
     "Description": "Signed out, browsed by hand: one-way SEA-SFO 2026-12-15. GetShoppingResults streamed 6 payload frames: frames 0, 1 and 5 carry the 3 best and 15 other flights (index 17 only in frame 0), frames 2-4 are status only. The fresh-search selection was [null,null,null,<search session id>]. Source of the itinerary, segment, itinerary-protobuf and selection-token field maps in docs/protocol.md.",
     "Provider": "google-flights",

@@ -355,6 +355,38 @@ So a client cannot tell from one answer whether it is being throttled. It
 treats every code 13 as **stop and back off**, never as **retry now**, and
 treats several in a row (the earlier project used 3) as a block.
 
+### The bare refusal: a direct request, gRPC 13 with no detail
+
+Captured once (reference `direct-search-refused`): a direct HTTP request,
+not a browser, 60 minutes after B's refusals.
+
+```
+HTTP/1.1 200
+content-type: application/json; charset=utf-8
+set-cookie: NID=...
+
+)]}'
+39
+[["wrb.fr",null,null,null,null,[13]]]
+55
+[["di",41],["af.httprm",41,"<id>",19]]
+25
+[["e",4,null,null,131]]
+```
+
+The same code 13, but **without** the `ErrorResponse` detail and its search
+session id: about 41 ms of server time, against 66-111 ms for the browser
+refusals. The earlier project recorded this bare shape throughout a block that
+lasted more than 6 hours.
+
+| Shape | Seen on | Reading (one sample each: provisional) |
+|---|---|---|
+| `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | B, the page's own requests | the request reached the flights service, which failed it |
+| `[13]` | a direct request | refused before the flights service; the throttle candidate |
+
+The client classifies both as refusals. Whether the shape alone separates
+"throttled" from "failed" is **pending** more samples.
+
 ### Other answers
 
 | Answer | Seen | Reading |
