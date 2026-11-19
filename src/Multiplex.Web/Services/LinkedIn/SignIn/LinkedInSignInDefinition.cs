@@ -52,7 +52,7 @@ public sealed class LinkedInSignInDefinition(IConfiguration config) : ISiteSignI
 
     public async Task<SiteAccount?> TryGetSignedInAccountAsync(IPage page, CancellationToken ct)
     {
-        if (!IsLinkedInPage(page.Url) || IsSignInPage(page.Url)) return null;
+        if (!IsLinkedInPage(page.Url) || IsSignInPage(page.Url) || IsCheckpointPage(page.Url)) return null;
         var cookies = await page.GetCookiesAsync(WebOrigin + "/").ConfigureAwait(false);
         if (!cookies.Any(c => c.Name == "li_at")) return null;
         var csrf = CsrfOf(cookies);
@@ -177,6 +177,11 @@ public sealed class LinkedInSignInDefinition(IConfiguration config) : ISiteSignI
                || path.StartsWith("/uas/login", StringComparison.OrdinalIgnoreCase)
                || path.StartsWith("/authwall", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>A security check or app-approval page: the sign-in is not finished while one is showing.</summary>
+    internal static bool IsCheckpointPage(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && IsLinkedInHost(uri.Host)
+        && uri.AbsolutePath.StartsWith("/checkpoint", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLinkedInPage(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && IsLinkedInHost(uri.Host);

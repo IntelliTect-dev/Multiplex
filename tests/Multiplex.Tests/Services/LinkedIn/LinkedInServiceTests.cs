@@ -49,9 +49,29 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
 
         Assert.False(isError, text);
         Assert.Empty(JsonDocument.Parse(text).RootElement.GetProperty("conversations").EnumerateArray());
-        var request = Assert.Single(_app.LinkedIn.Requests);
-        Assert.Equal("li_at=member", request.Headers["cookie"]);
+        var request = _app.LinkedIn.Requests.First(r => r.Headers["cookie"] == "li_at=member");
         Assert.Contains($"urn%3Ali%3Afsd_profile%3A{Member}", request.Query, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Two_connected_accounts_each_reach_LinkedIn_with_their_own_session()
+    {
+        const string other = "ACoAAOther0000000000000000000000000000008";
+        _app.Store.Data[Member] = Snapshot("li_at=member");
+        _app.Store.Data[other] = Snapshot("li_at=other", other);
+        _app.LinkedIn.Respond(_ => true, _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"data":{"messengerConversationsBySyncToken":{"elements":[]}}}""", Encoding.UTF8, "application/graphql"),
+        });
+
+        await _app.McpFor(Member).CallAsync("linkedin_list_conversations");
+        await _app.McpFor(other).CallAsync("linkedin_list_conversations");
+
+        var sent = _app.LinkedIn.Requests.Where(r => r.Query.Contains("mailboxUrn", StringComparison.Ordinal)).ToList();
+        Assert.Contains(sent, r => r.Headers["cookie"] == "li_at=member" && r.Query.Contains(Member, StringComparison.Ordinal));
+        Assert.Contains(sent, r => r.Headers["cookie"] == "li_at=other" && r.Query.Contains(other, StringComparison.Ordinal));
+        Assert.DoesNotContain(sent, r => r.Headers["cookie"] == "li_at=member" && r.Query.Contains(other, StringComparison.Ordinal));
+        Assert.DoesNotContain(sent, r => r.Headers["cookie"] == "li_at=other" && r.Query.Contains(Member, StringComparison.Ordinal));
     }
 
     [Fact]

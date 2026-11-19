@@ -92,7 +92,11 @@ public sealed class LinkedInMessagingTools(LinkedInToolContext linkedIn)
                     1 => Name(conversation.Participants[0]),
                     _ => "everyone in this group conversation: " + string.Join("; ", conversation.Participants.Select(Name)),
                 };
-                return Prepared.Change(conversation, $"Will send this LinkedIn message to {to}:\n\n{text}");
+                return Prepared.Change(conversation, $"Will send this LinkedIn message to {to}:\n\n{text}",
+                    new Dictionary<string, string?>
+                    {
+                        ["recipients"] = string.Join(",", conversation.Participants.Select(p => p.ProfileId).Order(StringComparer.Ordinal)),
+                    });
             },
             async (api, conversation) =>
             {
