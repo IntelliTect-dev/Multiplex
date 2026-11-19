@@ -279,11 +279,13 @@ public sealed class LiveMirrorTests
         Assert.True(shortestGap >= LiveSignInAttempt.KeystrokePause.TotalMilliseconds * 0.8,
             $"Key presses {shortestGap:F0} ms apart; expected about {LiveSignInAttempt.KeystrokePause.TotalMilliseconds} ms.");
 
-        // A character no keyboard key types still arrives.
+        // A character no keyboard key types still arrives, whole (the emoji is two UTF-16 units).
+        const string noKeys = "pässwörd-€-😀";
         var password = await CenterOfAsync(attempt, "#password");
         await mirror.SendAsync(new { t = "tap", x = password.X, y = password.Y });
-        await mirror.SendAsync(new { t = "text", v = "pässwörd-€" });
-        await WaitForAsync(async () => await attempt.ActivePage!.EvaluateExpressionAsync<string>("document.getElementById('password').value") == "pässwörd-€");
+        await mirror.SendAsync(new { t = "text", v = noKeys });
+        await WaitForAsync(async () => await attempt.ActivePage!.EvaluateExpressionAsync<string>("document.getElementById('password').value") == noKeys,
+            TimeSpan.FromSeconds(20));
     }
 
     // ---------------------------------------------------------------- helpers

@@ -102,6 +102,9 @@ public sealed class SiteBrowserManager(
         ];
         if (o.NoSandbox) args.Add("--no-sandbox");
         args.Add(headless ? "--headless=new" : $"--window-size={o.ViewportWidth + 40},{o.ViewportHeight + 140}");
+        // The person sees this window on their phone, not on the PC's screen, which may be locked
+        // or covered: keep it rendering (and its timers running) as a window in view would.
+        args.AddRange(["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"]);
         args.Add("about:blank");
         return [.. args];
     }

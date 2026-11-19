@@ -490,11 +490,13 @@ lock, timeouts and the refresher's signed-out path.
   times out of three, while the sign-in browser was started with Puppeteer's defaults and
   typing was inserted with no key presses (#61). The browser is now started the way the
   capture tooling's native mode starts Chrome: a profile, a real debugging port and no
-  first-run screens, and none of Puppeteer's default switches. Chrome reports
-  `navigator.webdriver` for `--enable-automation` and also for an ephemeral debugging port
-  (`=0`), so neither is used. Typed text is replayed as one key press per character, 50 ms
-  apart. Nothing is disguised: the browser is what it is, a person signing in. Whether TripIt
-  accepts the sign-in now is not verified yet.
+  first-run screens. Of Puppeteer's default switches it keeps only the three that keep a hidden
+  window rendering, because the person sees the window on their phone while the PC's screen
+  may be locked. Chrome reports `navigator.webdriver` for `--enable-automation` and also for an
+  ephemeral debugging port (`=0`), so neither is used. Typed text is replayed as one key press
+  per character, 50 ms apart, with line breaks and tabs dropped (Enter and Tab have their own
+  buttons). Nothing is disguised: the browser is what it is, a person signing in. Whether
+  TripIt accepts the sign-in now is not verified yet.
 - TripIt's only third-party sign-in is Google; allowed navigation hosts default to
   `www.tripit.com`, `tripit.com`, `accounts.google.com`.
 - Only email addresses TripIt marks confirmed are kept on an account.

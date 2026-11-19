@@ -35,6 +35,15 @@ public sealed class MirrorProtocolTests
     }
 
     [Fact]
+    public void Text_drops_line_breaks_tabs_and_other_control_characters()
+    {
+        // Replayed as key presses, a line break or a tab would press Enter or Tab part-way through the text.
+        Assert.Equal(new TextInput("abc"), Parse("""{"t":"text","v":"a\nb\r\tc"}"""));
+        Assert.Equal(new TextInput("pässwörd-€-😀"), Parse("""{"t":"text","v":"pässwörd-€-😀"}"""));
+        Assert.Null(Parse("""{"t":"text","v":"\n\t"}"""));
+    }
+
+    [Fact]
     public void Rejects_overlong_text_and_clamps_scrolls()
     {
         Assert.Null(Parse($$"""{"t":"text","v":"{{new string('a', MirrorProtocol.MaxTextLength + 1)}}"}"""));
