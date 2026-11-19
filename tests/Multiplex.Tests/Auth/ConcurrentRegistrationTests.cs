@@ -17,7 +17,7 @@ public class ConcurrentRegistrationTests
     private const int Apps = 64;
 
     /// <summary>
-    /// Writing a JSON response fills in any setting that is still missing on settings that are not yet
+    /// Building a JSON response fills in the type resolver when it is missing on settings that are not yet
     /// locked. Two responses doing that at once on shared settings make one of them answer 500 (#87).
     /// So the shared settings must be complete and locked before the first response is built with them,
     /// and writing a response must leave them as they were.
@@ -84,7 +84,11 @@ public class ConcurrentRegistrationTests
 
         Assert.All(metadataAnswers, a => Assert.True(a.StatusCode == HttpStatusCode.OK, $"Metadata answered {(int)a.StatusCode}: {a.Body}"));
         Assert.All(registrationAnswers, a => Assert.True(a.StatusCode == HttpStatusCode.Created, $"Register answered {(int)a.StatusCode}: {a.Body}"));
-        var clientIds = registrationAnswers.Select(a => JsonDocument.Parse(a.Body).RootElement.GetProperty("client_id").GetString()).ToHashSet();
+        var clientIds = registrationAnswers.Select(a =>
+        {
+            using var body = JsonDocument.Parse(a.Body);
+            return body.RootElement.GetProperty("client_id").GetString();
+        }).ToHashSet();
         Assert.Equal(Apps, clientIds.Count);
     }
 }
