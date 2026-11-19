@@ -304,7 +304,23 @@ still part of it.
 3. Registers a per-user scheduled task "Multiplex" that starts the server at logon and
    restarts it on failure (no admin rights needed).
 4. Optionally starts the tunnel: `tailscale funnel --bg 5190` (when Funnel is enabled), else
-   reports what to enable; `-Tunnel Cloudflare` runs a quick tunnel for testing.
+   reports what to enable; `-Tunnel Cloudflare` runs a quick tunnel for testing. The tunnel
+   starts with every start of the server (`Start-Multiplex.ps1`); whatever keeps it from coming
+   up goes to `logs\tunnel.log`, and the server then serves on this PC only (#51).
+   **Tailscale owned by another Windows account (#57).** Tailscale running unattended
+   ("server mode") for one Windows account refuses every `tailscale` command from any other,
+   including the one that runs Multiplex. The start then learns the PC's Tailscale name without
+   the CLI: the Tailscale adapter's DNS suffix is the tailnet (`<tailnet>.ts.net`), and MagicDNS
+   (`100.100.100.100`) names the adapter's address. The Windows host name is not used, because a
+   PC renamed in the admin console keeps it. The name becomes the public address only if a
+   Funnel set up outside Multiplex (for example as LocalSystem, which Tailscale always admits)
+   already reaches the port: before the server starts, a stand-in on the port must receive a
+   request sent to `https://<name>/healthz` and answer it with a one-time token. A 200 from
+   `/healthz` alone would not show that, since the server is not listening yet and any
+   Multiplex answers "Healthy". `logs\tunnel.log` then says the Funnel is managed outside
+   Multiplex, which neither starts nor stops it. The check travels over the tailnet, so it
+   cannot tell a Funnel from a tailnet-only Serve. A re-install with `-Tunnel Tailscale` keeps
+   this; with `-Tunnel None` there is no public address.
 5. Verifies: health check, protected resource metadata, AS metadata, and an unauthenticated
    MCP call returning 401 with the right `resource_metadata` — locally and through the
    public URL.
@@ -406,6 +422,10 @@ TripIt no longer issues v1 keys, but its docs and live XSDs are the best field r
 - Funnel must be enabled on the tailnet (admin console: HTTPS certificates + the `funnel`
   node attribute) for a stable public URL. Until then the Cloudflare quick-tunnel URL changes
   on every start, and connectors registered against it must be re-added.
+- Tailscale must run for the Windows account that runs Multiplex for Multiplex to manage the
+  Funnel. Where it runs unattended for another account, a Funnel set up outside Multiplex is
+  used if it reaches the port (section 7.1), but Multiplex cannot see whether it is open to the
+  internet, and nothing turns it back on if it is removed.
 - Unverified until tried by hand: Claude's and ChatGPT's connector flow against this server
   on a phone, and a real TripIt password sign-in through the mirrored page.
 - DCR is deprecated in the newest MCP revision; we support both DCR and client ID metadata
