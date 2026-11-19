@@ -324,9 +324,49 @@ request's last field, and every response position marked **pending** above.
 
 ## 9. Errors and throttling
 
+### The refusal Google actually sends: HTTP 200, gRPC 13
+
+Captured three times in B (references `date-picker-prices` entries 1-2 and
+`round-trip-search-refused`). All three are identical in shape:
+
+```
+HTTP/1.1 200
+content-type: application/json; charset=utf-8      (same headers as a success)
+
+)]}'
+<length>
+[["wrb.fr",null,null,null,null,[13,null,[["type.googleapis.com/travel.frontend.flights.ErrorResponse",[[null,[[<ids>],null,null,null,null,[[0]]],0,"<event id>","<search session id>"],0]]]]],["di",<ms>],["af.httprm",<ms>,"<id>",<n>]]
+<length>
+[["e",4,null,null,<bytes>]]
+```
+
+How to recognise it:
+
+- **Never by HTTP status.** The status, content type and response headers
+  are the same as for a successful answer.
+- A `wrb.fr` item whose payload (index 2) is `null` and whose index 5 is
+  `[code, null, [[typeUrl, detail]]]`. Code 13 = `INTERNAL`.
+- The detail is the same header a successful payload starts with (index 0),
+  followed by `0`. **Nothing in it distinguishes a throttle from any other
+  refusal**: the three captured refusals (two date-picker calls, one search)
+  are byte-for-byte alike apart from ids and timings.
+
+So a client cannot tell from one answer whether it is being throttled. It
+treats every code 13 as **stop and back off**, never as **retry now**, and
+treats several in a row (the earlier project used 3) as a block.
+
+### Other answers
+
 | Answer | Seen | Reading |
 |---|---|---|
-| HTTP 200 + `wrb.fr` error, code 13, `ErrorResponse` | B: the page's own date-picker and search requests, after about four data calls | **Ambiguous.** Google answers a soft-blocked client this way (the earlier project measured a block of more than 6 hours), but code 13 alone does not say whether this was a block. Under investigation. |
-| Code 3 | X notes: an unknown airport or invalid date | INVALID_ARGUMENT |
+| `wrb.fr` error, code 3 | X notes: an unknown airport or an invalid date | `INVALID_ARGUMENT`; do not retry |
+| `wrb.fr` error, code 14 | X notes only | `UNAVAILABLE`; transient |
+| HTTP 429 | **not yet seen** | throttled; honour `Retry-After` |
+| HTTP 302 to `/sorry/index` | **not yet seen**; Google's usual "unusual traffic" page elsewhere | blocked: a person must clear a check; never automated |
+| HTML body containing "unusual traffic" | **not yet seen** | blocked, as above |
 
-The client must treat code 13 as "stop and back off", never as "retry now".
+Every probe and capture in this work records a refusal **in full** (status,
+headers, body, any redirect, which is not followed). When one of the
+not-yet-seen forms appears, it is committed as a reference and becomes a
+fixture for the client's classifier. Throttling is never provoked on purpose:
+a real block costs the whole network its Google Flights for hours.
