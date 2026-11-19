@@ -32,6 +32,7 @@ Each service lives in its own folder, with its code, its tests and a README. The
 |---|---|---|---|---|
 | Time | `/time/mcp` | Current local time, time zone and UTC offset for a city or country, read from time.now's pages | Working | [README](../src/Multiplex.Web/Services/Time/README.md) |
 | TripIt | `/tripit/mcp` | Reads and changes the signed-in person's TripIt trips (deletes and other risky changes need a confirm step) | In progress | [Issue #6](https://github.com/IntelliTect-dev/Multiplex/issues/6) |
+| LinkedIn | `/linkedin/mcp` | Handles the signed-in person's LinkedIn invitations and messages, one person at a time, every change confirmed first. Uses LinkedIn's internal API, which LinkedIn's rules forbid | In progress | [README](../src/Multiplex.Web/Services/LinkedIn/README.md), [issue #86](https://github.com/IntelliTect-dev/Multiplex/issues/86) |
 
 ## What every service shares
 

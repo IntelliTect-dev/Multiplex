@@ -1,5 +1,6 @@
 using Multiplex.Web.Auth;
 using Multiplex.Web.Mcp;
+using Multiplex.Web.Services.LinkedIn;
 using Multiplex.Web.Services.TripIt;
 using Multiplex.Web.Services.TripIt.SignIn;
 using Multiplex.Web.SignIn;
@@ -17,8 +18,11 @@ builder.Services.AddRazorPages();
 builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
-builder.Services.AddMultiplexAuth(builder.Configuration).RequireAuthFor("tripit", "TripIt");
+builder.Services.AddMultiplexAuth(builder.Configuration)
+    .RequireAuthFor("tripit", "TripIt")
+    .RequireAuthFor("linkedin", "LinkedIn");
 builder.Services.AddTripItService(builder.Configuration);
+builder.Services.AddLinkedInService(builder.Configuration);
 builder.Services.AddSiteSignIn(builder.Configuration).AddSite<TripItSignInDefinition>();
 
 // Stateless Streamable HTTP: no Mcp-Session-Id, safe behind a load balancer without sticky sessions.

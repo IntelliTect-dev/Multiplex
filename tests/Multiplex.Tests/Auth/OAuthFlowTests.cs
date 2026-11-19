@@ -62,7 +62,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         Assert.Equal(["none"], Strings(json, "token_endpoint_auth_methods_supported"));
         Assert.True(json.GetProperty("client_id_metadata_document_supported").GetBoolean());
         Assert.True(json.GetProperty("authorization_response_iss_parameter_supported").GetBoolean());
-        Assert.Equal(["tripit", "other"], Strings(json, "scopes_supported"));
+        Assert.Equal(["tripit", "linkedin", "other"], Strings(json, "scopes_supported"));
     }
 
     // ---- Happy path ----
