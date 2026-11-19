@@ -274,15 +274,15 @@ public sealed class FakeTripIt : HttpMessageHandler
     }
 }
 
-/// <summary>Speaks MCP JSON-RPC over Streamable HTTP (stateless) to <c>/tripit/mcp</c>.</summary>
-public sealed class McpTestClient(HttpClient http, Func<Task<string>>? token)
+/// <summary>Speaks MCP JSON-RPC over Streamable HTTP (stateless) to one service's address (default <c>/tripit/mcp</c>).</summary>
+public sealed class McpTestClient(HttpClient http, Func<Task<string>>? token, string path = "/tripit/mcp")
 {
     private int _id;
 
     public async Task<(HttpStatusCode Status, JsonElement? Message)> SendAsync(string method, object? parameters = null)
     {
         var payload = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = Interlocked.Increment(ref _id), method, @params = parameters });
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/tripit/mcp")
+        using var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
