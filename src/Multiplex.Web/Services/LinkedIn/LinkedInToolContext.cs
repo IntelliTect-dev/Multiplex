@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using Multiplex.Web.Services.TripIt;
 using Multiplex.Web.Sites;
@@ -26,12 +27,21 @@ public sealed class LinkedInToolContext(
         "Your LinkedIn session has ended (you are signed out of LinkedIn). Reconnect the LinkedIn connector " +
         "(in Claude or ChatGPT, open the connector and choose Connect) to sign in again, then retry.";
 
-    internal static readonly JsonSerializerOptions Json = new()
+    // Shared by every request: complete and read-only before first use, so no two requests race to finish it.
+    internal static readonly JsonSerializerOptions Json = CreateJson();
+
+    private static JsonSerializerOptions CreateJson()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
-    };
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) },
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+        };
+        options.MakeReadOnly();
+        return options;
+    }
 
     private readonly ILogger _log = loggers.CreateLogger("Multiplex.Services.LinkedIn.Tools");
     private ILinkedInApi? _api;
