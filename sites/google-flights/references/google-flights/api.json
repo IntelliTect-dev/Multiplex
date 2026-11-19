@@ -11,6 +11,10 @@
       "entryCount": 3
     },
     {
+      "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+      "entryCount": 1
+    },
+    {
       "harFile": "google-flights-one-way-search-2026-11-18.har",
       "entryCount": 1
     },
@@ -19,7 +23,14 @@
       "entryCount": 1
     }
   ],
-  "capturesNeeded": [],
+  "capturesNeeded": [
+    {
+      "capture": "capture the same operation again and compare -- one corpus cannot tell the two apart",
+      "endpoints": [
+        "POST www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+      ]
+    }
+  ],
   "endpoints": [
     {
       "host": "www.google.com",
@@ -321,11 +332,12 @@
       "host": "www.google.com",
       "method": "POST",
       "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
-      "observedEntries": 2,
+      "observedEntries": 3,
       "statuses": [
         200
       ],
       "requestContentTypes": [
+        "application/x-www-form-urlencoded;charset=UTF-8",
         "application/x-www-form-urlencoded;charset=utf-8"
       ],
       "responseContentTypes": [
@@ -352,8 +364,12 @@
         {
           "name": "f.req",
           "in": "param",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -412,8 +428,12 @@
         {
           "name": "hl",
           "in": "query",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -427,8 +447,12 @@
         {
           "name": "rt",
           "in": "query",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -442,8 +466,12 @@
         {
           "name": "soc-app",
           "in": "query",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -457,8 +485,12 @@
         {
           "name": "soc-device",
           "in": "query",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -472,8 +504,12 @@
         {
           "name": "soc-platform",
           "in": "query",
-          "observedIn": 2,
+          "observedIn": 3,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-one-way-search-2026-11-18.har",
               "entry": 0
@@ -486,8 +522,37 @@
         }
       ],
       "responseFields": [],
-      "unproven": [],
+      "unproven": [
+        {
+          "kind": "request-field-presence-varies",
+          "subjects": [
+            "query:_reqid",
+            "query:bl",
+            "query:f.sid"
+          ],
+          "detail": "query:_reqid, query:bl, query:f.sid appear in some observed calls and not others (of 3 observed); whether that is a per-call difference or a change on the provider side is not established by these captures",
+          "closedBy": "capture the same operation again and compare -- one corpus cannot tell the two apart",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-one-way-search-2026-11-18.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-round-trip-search-refused-2026-11-19.har",
+              "entry": 0
+            }
+          ]
+        }
+      ],
       "witnesses": [
+        {
+          "harFile": "google-flights-direct-search-refused-2026-11-19.har",
+          "entry": 0
+        },
         {
           "harFile": "google-flights-one-way-search-2026-11-18.har",
           "entry": 0
