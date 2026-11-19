@@ -15,6 +15,11 @@
          logon, and starts it now;
       4. checks the endpoint locally and through the public address;
       5. with -ClaudeDesktopBridge, adds a local stdio bridge entry to Claude Desktop's config.
+    -Tunnel Tailscale opens a Tailscale Funnel on every start. Where Tailscale runs unattended
+    for another Windows account, it refuses the account that runs Multiplex; each start then
+    uses a Funnel set up outside Multiplex if a request through this PC's Tailscale name reaches
+    the port, and logs\tunnel.log says the Funnel is managed outside Multiplex (or why the server
+    serves on this PC only). Re-running the installer keeps that, so pass -Tunnel Tailscale.
     Adding the connector inside Claude or ChatGPT is a step in their apps; the script prints
     the address to paste. No TripIt account is named here: each connector added is its own
     connection, bound to the TripIt account signed in while it is added, behind the passcode.

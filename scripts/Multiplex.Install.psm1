@@ -198,6 +198,10 @@ function Get-QuickTunnelUrl {
 }
 
 $script:TailscaleTimeoutSeconds = 20
+# How tailscale words its refusal of every Windows account but the one it runs unattended for.
+$script:TailscaleServerModePattern = 'server mode \("([^"]+)"\)'
+# Tailscale's own DNS resolver (MagicDNS): the same address on every PC in every tailnet.
+$script:MagicDnsServer = '100.100.100.100'
 
 function Invoke-TailscaleCommand {
     <#
@@ -246,7 +250,7 @@ function Get-TailscaleProblem {
     $said = (@($Result.ErrorOutput, $Result.Output) | Where-Object { $_ }) -join ' '
     $words = if ($said) { " Tailscale said: $said" } else { ' Tailscale said nothing.' }
     if ($Result.RunError) { return "Tailscale could not be run ($($Result.RunError)). Is it installed?" }
-    if ($said -match 'server mode \("([^"]+)"\)') {
+    if ($said -match $script:TailscaleServerModePattern) {
         $owner = $Matches[1] -replace '\\\\', '\'
         $me = "$([Environment]::UserDomainName)\$([Environment]::UserName)"
         return "Tailscale on this PC runs unattended for the Windows account $owner and refuses every other " +
@@ -291,13 +295,19 @@ function Get-DictionaryValue {
 function Get-TailscaleDnsName {
     <#
     This PC's Tailscale DNS name (without the trailing dot) when Tailscale is connected, else
-    Problem says why, including when Tailscale refuses this Windows account. Never throws.
+    Problem says why, including when Tailscale refuses this Windows account; Refused is true
+    then (it runs unattended for another account). Never throws.
     #>
     [CmdletBinding()] param([Parameter(Mandatory)] [string] $Tailscale)
     $run = Invoke-TailscaleCommand -Tailscale $Tailscale -Arguments 'status', '--json'
-    if ($run.ExitCode -ne 0) { return [pscustomobject]@{ DnsName = $null; Problem = Get-TailscaleProblem -Result $run } }
+    if ($run.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            DnsName = $null; Problem = Get-TailscaleProblem -Result $run
+            Refused = "$($run.ErrorOutput) $($run.Output)" -match $script:TailscaleServerModePattern
+        }
+    }
     $json = ConvertFrom-TailscaleJson -Result $run
-    if ($json.Problem) { return [pscustomobject]@{ DnsName = $null; Problem = $json.Problem } }
+    if ($json.Problem) { return [pscustomobject]@{ DnsName = $null; Problem = $json.Problem; Refused = $false } }
     $state = Get-DictionaryValue $json.Value 'BackendState'
     $problem = switch ($state) {
         'NeedsLogin' { 'Tailscale is not signed in on this PC; open Tailscale and sign in.' }
@@ -307,7 +317,7 @@ function Get-TailscaleDnsName {
     if (-not $problem -and $state -and $state -ne 'Running') { $problem = "Tailscale is not connected on this PC (state $state)." }
     $name = "$(Get-DictionaryValue $json.Value 'Self', 'DNSName')".TrimEnd('.')
     if (-not $problem -and -not $name) { $problem = "Tailscale did not report this PC's DNS name (is MagicDNS on for the tailnet?)." }
-    [pscustomobject]@{ DnsName = ($problem ? $null : $name); Problem = $problem }
+    [pscustomobject]@{ DnsName = ($problem ? $null : $name); Problem = $problem; Refused = $false }
 }
 
 function Invoke-TailscaleFunnel {
@@ -339,12 +349,129 @@ function Invoke-TailscaleFunnel {
     [pscustomobject]@{ Started = $true; Problem = $null }
 }
 
+function Get-TailscaleDnsNameFromAdapter {
+    <#
+    This PC's Tailscale DNS name, learned without tailscale itself, which refuses every Windows
+    account but the one it runs unattended for. The Tailscale network adapter carries the
+    tailnet as its DNS suffix (<tailnet>.ts.net), and MagicDNS, asked which name has that
+    adapter's address, answers with this PC's name in the tailnet. That is Tailscale's own name
+    for the PC; <host name>.<tailnet> is not always it, because a PC renamed in the Tailscale
+    admin console, or given "-1" when its name was taken, keeps its Windows host name. MagicDNS
+    is asked directly: Windows answers that question for its own addresses from the host name.
+    Else Problem says why there is no name. Never throws.
+    #>
+    [CmdletBinding()] param()
+    function New-Result([string] $DnsName, [string] $Problem) { [pscustomobject]@{ DnsName = $DnsName ? $DnsName : $null; Problem = $Problem ? $Problem : $null } }
+    try {
+        $adapter = Get-DnsClient -ErrorAction Stop | Where-Object { "$($_.ConnectionSpecificSuffix)" -like '*.ts.net' } | Select-Object -First 1
+        if (-not $adapter) {
+            return New-Result -Problem 'No network adapter on this PC has a Tailscale (*.ts.net) DNS suffix, so its Tailscale name is unknown (is Tailscale connected, with MagicDNS on for the tailnet?).'
+        }
+        $tailnet = "$($adapter.ConnectionSpecificSuffix)".TrimEnd('.')
+        $address = Get-NetIPAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty IPAddress
+        if (-not $address) { return New-Result -Problem "The Tailscale network adapter ($($adapter.InterfaceAlias)) has no IPv4 address, so this PC's Tailscale name is unknown." }
+        try {
+            $record = Resolve-DnsName -Name $address -Type PTR -Server $script:MagicDnsServer -DnsOnly -QuickTimeout -ErrorAction Stop |
+                Where-Object { $_.Type -eq 'PTR' } | Select-Object -First 1
+        }
+        catch { return New-Result -Problem "MagicDNS ($script:MagicDnsServer) did not name this PC's Tailscale address ${address}: $($_.Exception.Message)" }
+        $name = if ($record) { "$($record.NameHost)".TrimEnd('.') }
+        if (-not $name) { return New-Result -Problem "MagicDNS ($script:MagicDnsServer) has no name for this PC's Tailscale address $address." }
+        if (-not $name.EndsWith(".$tailnet", [StringComparison]::OrdinalIgnoreCase)) {
+            return New-Result -Problem "MagicDNS names this PC's Tailscale address $address $name, which is not in the tailnet $tailnet of the Tailscale network adapter."
+        }
+        return New-Result -DnsName $name
+    }
+    catch { return New-Result -Problem "This PC's Tailscale name could not be read from its network adapter: $($_.Exception.Message)" }
+}
+
+function Test-UrlReachesLocalPort {
+    <#
+    Whether a request to -Url arrives at -Port on this PC. Start-up asks this before the server
+    listens, so a stand-in listens on 127.0.0.1:<Port> (where `tailscale funnel <port>` sends
+    requests) and answers every request with a one-time token; only a response carrying that
+    token counts. Requesting /healthz and expecting 200 "Healthy" would prove less: nothing
+    answers the port yet (Funnel would say 502), and "Healthy" is what any ASP.NET Core health
+    check says, Multiplex on another PC in the same tailnet included. Reached, else Problem says
+    why not. Gives up after -TimeoutSeconds, never throws, and leaves the port free.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Url, [Parameter(Mandatory)] [int] $Port, [int] $TimeoutSeconds = 10)
+    function New-Result([string] $Problem) { [pscustomobject]@{ Reached = -not $Problem; Problem = $Problem ? $Problem : $null } }
+    $token = [guid]::NewGuid().ToString('N')
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+    try { $listener.Start() }
+    catch {
+        $why = $_.Exception.GetBaseException()
+        $why = ($why -is [System.Net.Sockets.SocketException] -and $why.SocketErrorCode -eq 'AddressAlreadyInUse') ?
+            "port $Port on this PC is already in use" : "port $Port on this PC could not be opened ($($why.Message))"
+        return New-Result "Could not check whether $Url reaches port $Port on this PC: $why."
+    }
+    # Straight to the name, never through a web proxy: the request is meant to take Tailscale's path.
+    $http = [System.Net.Http.HttpClient]::new([System.Net.Http.SocketsHttpHandler]@{ UseProxy = $false })
+    $http.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+    try {
+        try {
+            $request = $http.GetAsync($Url)   # completes once the whole answer is read, or on the timeout
+            $accept = $listener.AcceptTcpClientAsync()
+            while (-not $request.IsCompleted) {
+                if (-not $accept.Wait(100)) { continue }
+                $client = $accept.Result
+                try {
+                    $client.ReceiveTimeout = 5000
+                    $client.SendTimeout = 5000
+                    $stream = $client.GetStream()
+                    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::ASCII, $false, 1024, $true)
+                    while ($reader.ReadLine()) { }   # the request line and headers, up to the blank line
+                    $answer = [System.Text.Encoding]::ASCII.GetBytes(
+                        "HTTP/1.1 200 OK`r`nContent-Type: text/plain`r`nContent-Length: $($token.Length)`r`nConnection: close`r`n`r`n$token")
+                    $stream.Write($answer, 0, $answer.Length)
+                }
+                catch { Write-Verbose "The stand-in on port $Port could not answer a request: $($_.Exception.Message)" }
+                finally { $client.Dispose() }
+                $accept = $listener.AcceptTcpClientAsync()
+            }
+        }
+        finally { $listener.Stop() }
+        if ($request.IsFaulted) { return New-Result "$Url could not be reached: $($request.Exception.GetBaseException().Message)" }
+        if ($request.IsCanceled) { return New-Result "$Url did not answer within $TimeoutSeconds s." }
+        $response = $request.Result
+        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if ([int]$response.StatusCode -eq 200 -and $body -eq $token) { return New-Result }
+        return New-Result "$Url answered HTTP $([int]$response.StatusCode), but not from port $Port on this PC."
+    }
+    catch { return New-Result "Could not check whether $Url reaches port $Port on this PC: $($_.Exception.GetBaseException().Message)" }
+    finally { $http.Dispose() }
+}
+
+function Find-TailscaleFunnelOutsideMultiplex {
+    <#
+    For when Tailscale refuses this Windows account, so Multiplex can neither start a Funnel nor
+    ask about one: the Tailscale name of a Funnel set up outside Multiplex that already reaches
+    -Port on this PC, else Problem says why there is none. The check goes through the name over
+    the tailnet, so it cannot tell a Funnel (open to the internet) from a Serve (tailnet only);
+    seeing that needs the tailscale command this account is refused. Never throws.
+    #>
+    [CmdletBinding()] param([Parameter(Mandatory)] [int] $Port)
+    $self = Get-TailscaleDnsNameFromAdapter
+    $problem = $self.Problem
+    if (-not $problem) {
+        $check = Test-UrlReachesLocalPort -Url "https://$($self.DnsName)/healthz" -Port $Port
+        if (-not $check.Reached) { $problem = $check.Problem }
+    }
+    if ($problem) { return [pscustomobject]@{ DnsName = $null; Problem = "No Funnel set up outside Multiplex was found for port $Port either: $problem" } }
+    [pscustomobject]@{ DnsName = $self.DnsName; Problem = $null }
+}
+
 function Start-MultiplexTunnel {
     <#
     Starts the configured tunnel and records its public address in the config. The recorded
     address is cleared (and the config written) first, so only a tunnel that actually came up
-    sets it: a stale address would point every OAuth discovery document at a dead host.
-    Returns the tunnel process when this function owns one (Cloudflare), else nothing.
+    sets it: a stale address would point every OAuth discovery document at a dead host. When
+    Tailscale refuses this Windows account, a Funnel set up outside Multiplex is used if it
+    already reaches the port, and logs\tunnel.log says so. Returns the tunnel process when this
+    function owns one (Cloudflare), else nothing.
     #>
     [CmdletBinding()]
     param(
@@ -379,20 +506,46 @@ function Start-MultiplexTunnel {
         'Tailscale' {
             # Never let Tailscale keep the server from starting: whatever goes wrong is logged and
             # said, and the server serves on this PC only.
+            $tunnelLog = Join-Path $LogDir 'tunnel.log'
+            $problem = $null
+            $outsideNote = $null
             try {
                 $ts = (Get-Command tailscale -ErrorAction SilentlyContinue)?.Source ?? 'C:\Program Files\Tailscale\tailscale.exe'
                 $self = Get-TailscaleDnsName -Tailscale $ts
-                $problem = $self.Problem ?? (Invoke-TailscaleFunnel -Tailscale $ts -Port $Config.Port -DnsName $self.DnsName).Problem
+                if ($self.Refused) {
+                    # Tailscale runs unattended for another Windows account and refuses this one,
+                    # so Multiplex can neither start a Funnel nor ask about one. A Funnel set up
+                    # outside Multiplex (for example as LocalSystem, which Tailscale always admits)
+                    # may already serve the port: use its name once a request through it is seen
+                    # to arrive here, and say the Funnel is not Multiplex's (#57).
+                    $outside = Find-TailscaleFunnelOutsideMultiplex -Port $Config.Port
+                    $dnsName = $outside.DnsName
+                    if ($dnsName) {
+                        $outsideNote = "Tailscale refuses this Windows account, but https://$dnsName already reaches port $($Config.Port) " +
+                            'on this PC, so Multiplex uses it as its public address. That Funnel is managed outside Multiplex: ' +
+                            'Multiplex neither starts nor stops it, and cannot see whether it is open to the internet or only to ' +
+                            "the tailnet. $($self.Problem)"
+                    }
+                    else { $problem = "$($self.Problem) $($outside.Problem)" }
+                }
+                else {
+                    $dnsName = $self.DnsName
+                    $problem = $self.Problem ?? (Invoke-TailscaleFunnel -Tailscale $ts -Port $Config.Port -DnsName $dnsName).Problem
+                }
             }
             catch { $problem = "Starting Tailscale Funnel failed unexpectedly: $($_.Exception.Message)" }
             if ($problem) {
-                Add-Content -LiteralPath (Join-Path $LogDir 'tunnel.log') "$(Get-Date -Format o) Tailscale Funnel is not available, so Multiplex serves on this PC only. $problem"
+                Add-Content -LiteralPath $tunnelLog "$(Get-Date -Format o) Tailscale Funnel is not available, so Multiplex serves on this PC only. $problem"
                 Write-Warning "Tailscale Funnel is not available; serving on this PC only. $problem"
                 return
             }
-            $Config.PublicBaseUrl = "https://$($self.DnsName)"
+            $Config.PublicBaseUrl = "https://$dnsName"
             Write-MultiplexConfig -Config $Config -Path $ConfigPath
-            Write-Host "Public address: $($Config.PublicBaseUrl)"
+            if ($outsideNote) {
+                Add-Content -LiteralPath $tunnelLog "$(Get-Date -Format o) $outsideNote"
+                Write-Host "Public address: $($Config.PublicBaseUrl) (a Tailscale Funnel managed outside Multiplex)"
+            }
+            else { Write-Host "Public address: $($Config.PublicBaseUrl)" }
         }
     }
 }

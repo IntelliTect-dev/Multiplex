@@ -9,6 +9,10 @@
     start), then runs the server in the foreground with its configuration in environment
     variables. Stopping the server stops the tunnel. Each step, and any failure with the step
     it happened in, is written to logs\start.log: the task runs hidden, so nothing else shows it.
+    Where Tailscale runs unattended for another Windows account, it refuses this one; a Funnel
+    set up outside Multiplex is then used if a request through this PC's Tailscale name reaches
+    the port, and logs\tunnel.log says the Funnel is managed outside Multiplex, or why the server
+    serves on this PC only.
 #>
 [CmdletBinding()]
 param([string] $Root = (Split-Path -Parent $PSCommandPath))
@@ -33,7 +37,9 @@ try {
 
     $step = "starting the tunnel ($($config.Tunnel))"
     Write-StartLog "Step: $step."
-    # Clears the recorded public address first, so only a tunnel that came up sets it.
+    # Clears the recorded public address first, so only a tunnel that came up sets it, or, when
+    # Tailscale refuses this account, a Funnel managed outside Multiplex that reaches the port.
+    # That check runs here, before the server listens, so a stand-in briefly holds the port.
     $tunnel = Start-MultiplexTunnel -Config $config -ConfigPath $configPath -LogDir $logDir
 
     $step = 'starting the server'

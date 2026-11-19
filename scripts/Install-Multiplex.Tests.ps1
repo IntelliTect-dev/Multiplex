@@ -1,6 +1,13 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Force
+    # A loopback port nothing listens on: tests never use the real server's port, which a live
+    # install on the same PC may hold.
+    function Get-FreeLoopbackPort {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        try { $listener.LocalEndpoint.Port } finally { $listener.Stop() }
+    }
 }
 
 Describe 'owner passcode' {
@@ -145,6 +152,10 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
         }
         function Get-TunnelLog { Get-Content -LiteralPath (Join-Path $script:logDir 'tunnel.log') -Raw -ErrorAction SilentlyContinue }
         function Get-Calls { @(Get-Content -LiteralPath (Join-Path $script:fake 'calls.log') -ErrorAction SilentlyContinue) }
+        # Never this PC's own Tailscale adapter, name or ports: a test that needs them says what they show.
+        Mock -ModuleName Multiplex.Install Get-TailscaleDnsNameFromAdapter {
+            [pscustomobject]@{ DnsName = $null; Problem = 'No network adapter on this PC has a Tailscale (*.ts.net) DNS suffix.' } }
+        Mock -ModuleName Multiplex.Install Test-UrlReachesLocalPort { [pscustomobject]@{ Reached = $false; Problem = 'Not checked in this test.' } }
     }
 
     AfterEach {
@@ -161,6 +172,58 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
         $log | Should -Match 'Run unattended'
         "$script:warned" | Should -Match ([regex]::Escape('PC\Owner'))
         Get-Calls | Should -Not -Match '^funnel'   # no Funnel attempt once Tailscale has refused
+    }
+
+    It 'Tailscale owned by another Windows account, with a Funnel set up outside Multiplex reaching the port: uses its name and says it is managed outside Multiplex' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = $script:refused } }
+        Mock -ModuleName Multiplex.Install Get-TailscaleDnsNameFromAdapter { [pscustomobject]@{ DnsName = 'box.example.ts.net'; Problem = $null } }
+        Mock -ModuleName Multiplex.Install Test-UrlReachesLocalPort { [pscustomobject]@{ Reached = $true; Problem = $null } } `
+            -ParameterFilter { $Url -eq 'https://box.example.ts.net/healthz' -and $Port -eq 5190 }
+        Start-Tunnel
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -Be 'https://box.example.ts.net'
+        $log = Get-TunnelLog
+        $log | Should -Match ([regex]::Escape('https://box.example.ts.net already reaches port 5190 on this PC'))
+        $log | Should -Match 'managed outside Multiplex'
+        $log | Should -Match ([regex]::Escape('PC\Owner'))   # and still why Multiplex cannot manage it itself
+        "$script:warned" | Should -BeNullOrEmpty
+        Get-Calls | Should -Not -Match '^funnel'   # a Funnel Multiplex does not own is never touched
+    }
+
+    It 'Tailscale owned by another Windows account, and its name does not reach the port: serves locally and says why' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = $script:refused } }
+        Mock -ModuleName Multiplex.Install Get-TailscaleDnsNameFromAdapter { [pscustomobject]@{ DnsName = 'box.example.ts.net'; Problem = $null } }
+        Mock -ModuleName Multiplex.Install Test-UrlReachesLocalPort {
+            [pscustomobject]@{ Reached = $false; Problem = 'https://box.example.ts.net/healthz answered HTTP 502, but not from port 5190 on this PC.' } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        $log = Get-TunnelLog
+        $log | Should -Match 'serves on this PC only'
+        $log | Should -Match ([regex]::Escape('PC\Owner'))
+        $log | Should -Match ([regex]::Escape('answered HTTP 502, but not from port 5190 on this PC'))
+        "$script:warned" | Should -Match 'answered HTTP 502'
+    }
+
+    It 'Tailscale owned by another Windows account, and no Tailscale name found: serves locally and says why' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = $script:refused } }
+        { Start-Tunnel } | Should -Not -Throw
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
+        Get-TunnelLog | Should -Match ([regex]::Escape('No network adapter on this PC has a Tailscale (*.ts.net) DNS suffix.'))
+        Should -Invoke -ModuleName Multiplex.Install Test-UrlReachesLocalPort -Times 0 -Exactly
+    }
+
+    It 'a Tailscale that fails for any other reason never looks for a Funnel outside Multiplex' {
+        New-FakeTailscale -Dir $script:fake -Responses @{ status = @{ Exit = 1; Err = 'failed to connect to local tailscaled; it doesn''t appear to be running' } }
+        { Start-Tunnel } | Should -Not -Throw
+        Get-TunnelLog | Should -Match 'not running on this PC'
+
+        New-FakeTailscale -Dir $script:fake -Responses @{
+            status   = @{ Out = $script:running }
+            'funnel' = @{ Exit = 1; Err = 'error enabling https feature: permission denied' } }
+        { Start-Tunnel } | Should -Not -Throw
+
+        Should -Invoke -ModuleName Multiplex.Install Get-TailscaleDnsNameFromAdapter -Times 0 -Exactly
+        Should -Invoke -ModuleName Multiplex.Install Test-UrlReachesLocalPort -Times 0 -Exactly
+        (Read-MultiplexConfig -Path $script:path).PublicBaseUrl | Should -BeNullOrEmpty
     }
 
     It 'a non-zero exit with nothing said: serves locally and reports the exit code' {
@@ -253,6 +316,9 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
             Copy-Item (Join-Path $env:SystemRoot 'System32\HOSTNAME.EXE') (Join-Path $script:root 'app\Multiplex.Web.exe')
             $c = Read-MultiplexConfig -Path (Join-Path $script:root 'multiplex.config.json')
             $c.Tunnel = 'Tailscale'
+            # A separate process, so nothing is mocked there: on a PC with Tailscale it looks for a
+            # Funnel set up outside Multiplex for real, so it must never be the real server's port.
+            $c.Port = Get-FreeLoopbackPort
             Write-MultiplexConfig -Config $c -Path (Join-Path $script:root 'multiplex.config.json')
             function Invoke-Start { & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $script:root 'Start-Multiplex.ps1') *>&1 | Out-Null; $LASTEXITCODE }
             function Get-Log([string] $Name) { Get-Content -LiteralPath (Join-Path $script:root "logs\$Name") -Raw -ErrorAction SilentlyContinue }
@@ -271,6 +337,142 @@ Describe 'Tailscale Funnel at start-up' -Skip:(-not $IsWindows) {
             Invoke-Start | Should -Not -Be 0
             Get-Log 'start.log' | Should -Match 'Start-up failed while reading the configuration'
         }
+    }
+}
+
+Describe 'this PC''s Tailscale name, learned without tailscale' -Skip:(-not $IsWindows) {
+    # Read from the Tailscale network adapter and MagicDNS, because tailscale itself refuses an
+    # account it does not run for. The Windows host name here is not the Tailscale name.
+    BeforeEach {
+        Mock -ModuleName Multiplex.Install Get-DnsClient {
+            [pscustomobject]@{ InterfaceAlias = 'Ethernet'; InterfaceIndex = 11; ConnectionSpecificSuffix = 'localdomain' }
+            [pscustomobject]@{ InterfaceAlias = 'Tailscale'; InterfaceIndex = 40; ConnectionSpecificSuffix = 'tail1234.ts.net' }
+        }
+        Mock -ModuleName Multiplex.Install Get-NetIPAddress { [pscustomobject]@{ IPAddress = '100.101.102.103'; AddressFamily = 'IPv4' } }
+        Mock -ModuleName Multiplex.Install Resolve-DnsName {
+            [pscustomobject]@{ Name = '103.102.101.100.in-addr.arpa'; Type = 'PTR'; Section = 'Answer'; NameHost = 'renamed-box.tail1234.ts.net.' } }
+        function Get-Name { InModuleScope Multiplex.Install { Get-TailscaleDnsNameFromAdapter } }
+    }
+
+    It 'asks MagicDNS for the name of the Tailscale adapter''s address' {
+        $result = Get-Name
+        $result.DnsName | Should -Be 'renamed-box.tail1234.ts.net'
+        $result.Problem | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName Multiplex.Install Get-NetIPAddress -ParameterFilter { $InterfaceIndex -eq 40 }
+        Should -Invoke -ModuleName Multiplex.Install Resolve-DnsName -ParameterFilter {
+            $Name -eq '100.101.102.103' -and $Type -eq 'PTR' -and $Server -contains '100.100.100.100' }
+    }
+
+    It 'finds no name, and says why, when no adapter has a Tailscale DNS suffix' {
+        Mock -ModuleName Multiplex.Install Get-DnsClient { [pscustomobject]@{ InterfaceAlias = 'Ethernet'; InterfaceIndex = 11; ConnectionSpecificSuffix = 'localdomain' } }
+        $result = Get-Name
+        $result.DnsName | Should -BeNullOrEmpty
+        $result.Problem | Should -Match ([regex]::Escape('*.ts.net'))
+    }
+
+    It 'finds no name, and says why, when the Tailscale adapter has no IPv4 address' {
+        Mock -ModuleName Multiplex.Install Get-NetIPAddress { }
+        $result = Get-Name
+        $result.DnsName | Should -BeNullOrEmpty
+        $result.Problem | Should -Match 'no IPv4 address'
+    }
+
+    It 'finds no name, and says why, when MagicDNS does not answer' {
+        Mock -ModuleName Multiplex.Install Resolve-DnsName { throw 'This operation returned because the timeout period expired' }
+        $result = Get-Name
+        $result.DnsName | Should -BeNullOrEmpty
+        $result.Problem | Should -Match '100\.101\.102\.103.*timeout period expired'
+    }
+
+    It 'refuses a name outside the adapter''s tailnet' {
+        Mock -ModuleName Multiplex.Install Resolve-DnsName { [pscustomobject]@{ Type = 'PTR'; Section = 'Answer'; NameHost = 'box.elsewhere.example.' } }
+        $result = Get-Name
+        $result.DnsName | Should -BeNullOrEmpty
+        $result.Problem | Should -Match ([regex]::Escape('box.elsewhere.example'))
+        $result.Problem | Should -Match ([regex]::Escape('tail1234.ts.net'))
+    }
+
+    It 'never throws' {
+        Mock -ModuleName Multiplex.Install Get-DnsClient { throw 'Invalid class' }
+        { Get-Name } | Should -Not -Throw
+        (Get-Name).Problem | Should -Match 'Invalid class'
+    }
+}
+
+Describe 'checking that an address reaches a port on this PC' {
+    # Start-up runs this before the server listens, so a stand-in answers on the port with a
+    # one-time token; only that token counts, not merely HTTP 200.
+    BeforeEach {
+        $script:port = Get-FreeLoopbackPort
+        function Test-Reach([string] $Url, [int] $Port = $script:port, [int] $TimeoutSeconds = 10) {
+            InModuleScope Multiplex.Install -Parameters @{ Url = $Url; Port = $Port; TimeoutSeconds = $TimeoutSeconds } {
+                Test-UrlReachesLocalPort -Url $Url -Port $Port -TimeoutSeconds $TimeoutSeconds }
+        }
+        # Another server on another port that answers every request with 200 "Healthy", as any
+        # Multiplex does: a second PC on the same tailnet, say.
+        function Start-OtherServer {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+            $listener.Start()
+            $job = Start-ThreadJob -ArgumentList $listener {
+                param($listener)
+                try {
+                    $client = $listener.AcceptTcpClient()
+                    $stream = $client.GetStream()
+                    $reader = [IO.StreamReader]::new($stream)
+                    while ($reader.ReadLine()) { }
+                    $bytes = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/plain`r`nContent-Length: 7`r`nConnection: close`r`n`r`nHealthy")
+                    $stream.Write($bytes, 0, $bytes.Length)
+                    $client.Dispose()
+                }
+                finally { $listener.Stop() }
+            }
+            [pscustomobject]@{ Port = $listener.LocalEndpoint.Port; Job = $job }
+        }
+    }
+
+    It 'confirms an address whose requests arrive at the port, and leaves the port free for the server at once' {
+        $result = Test-Reach -Url "http://127.0.0.1:$script:port/healthz"
+        $result.Reached | Should -BeTrue
+        $result.Problem | Should -BeNullOrEmpty
+        $server = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $script:port)
+        { $server.Start() } | Should -Not -Throw
+        $server.Stop()
+    }
+
+    It 'does not count an address that answers 200 "Healthy" from somewhere else' {
+        $other = Start-OtherServer
+        try { $result = Test-Reach -Url "http://127.0.0.1:$($other.Port)/healthz" }
+        finally { $other.Job | Wait-Job -Timeout 10 | Remove-Job -Force }
+        $result.Reached | Should -BeFalse
+        $result.Problem | Should -Match ([regex]::Escape("answered HTTP 200, but not from port $script:port on this PC"))
+    }
+
+    It 'says so when the address cannot be reached at all' {
+        $nothing = Get-FreeLoopbackPort
+        $result = Test-Reach -Url "http://127.0.0.1:$nothing/healthz"
+        $result.Reached | Should -BeFalse
+        $result.Problem | Should -Match ([regex]::Escape("http://127.0.0.1:$nothing/healthz could not be reached"))
+    }
+
+    It 'gives up on an address that does not answer, so start-up goes on' {
+        $silent = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $silent.Start()   # accepts connections, never answers
+        try {
+            $elapsed = Measure-Command { $script:result = Test-Reach -Url "http://127.0.0.1:$($silent.LocalEndpoint.Port)/healthz" -TimeoutSeconds 2 }
+        }
+        finally { $silent.Stop() }
+        $elapsed.TotalSeconds | Should -BeLessThan 10
+        $script:result.Reached | Should -BeFalse
+        $script:result.Problem | Should -Match 'did not answer within 2 s'
+    }
+
+    It 'does not check through a port something else already holds' {
+        $holder = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $script:port)
+        $holder.Start()
+        try { $result = Test-Reach -Url "http://127.0.0.1:$script:port/healthz" }
+        finally { $holder.Stop() }
+        $result.Reached | Should -BeFalse
+        $result.Problem | Should -Match "port $script:port on this PC is already in use"
     }
 }
 
