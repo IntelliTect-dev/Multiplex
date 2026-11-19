@@ -1,0 +1,92 @@
+[
+  {
+    "Action": "airport-autocomplete",
+    "Description": "Typed 'Seattle' into Where from? and 'Denv' into Where to?, then chose SEA and DEN. H028ib is called once per keystroke (12 kept); origin calls send kinds [1,2,3,5], destination calls add 4. Choosing an airport calls tDoGIe for its details (name, city id, coordinates, country) and BVAT3 once for the route pair (four booleans, meaning pending). The page's first H028ib call, made with the origin Google pre-fills from the network's location, is left out on purpose: it carries the operator's approximate location.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/batchexecute"
+    ],
+    "EntryCount": 15,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-airport-autocomplete-2026-11-19.har",
+    "RequestBodies": 15,
+    "RequestBytes": 2122,
+    "ResponseBytes": 22288,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      70
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "date-picker-prices",
+    "Description": "Opened the Departure date picker for a SEA-DEN round trip: GetCalendarPicker asked for 2026-11-19..2026-12-31 with a 7-day trip and answered 43 priced cells. Then chose Tue 2027-01-12: the page asked twice for return-date prices 2027-01-12..31 and BOTH answered HTTP 200 carrying gRPC code 13 and a travel.frontend.flights.ErrorResponse -- the failure path, recorded on purpose.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarPicker"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-date-picker-prices-2026-11-19.har",
+    "RequestBodies": 3,
+    "RequestBytes": 1408,
+    "ResponseBytes": 8379,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "round-trip-search-refused",
+    "Description": "Searched SEA-DEN round trip 2027-01-12/19 from the home page form: GetShoppingResults answered HTTP 200 carrying gRPC code 13 and a travel.frontend.flights.ErrorResponse, with no flights. The request is the page's own fresh-search filter (selection [], sort 0), so this pins how a refused search looks on the wire, not why it was refused.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-round-trip-search-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 571,
+    "ResponseBytes": 362,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "one-way-search",
+    "Description": "Signed out, browsed by hand: one-way SEA-SFO 2026-12-15. GetShoppingResults streamed 6 payload frames: frames 0, 1 and 5 carry the 3 best and 15 other flights (index 17 only in frame 0), frames 2-4 are status only. The fresh-search selection was [null,null,null,<search session id>]. Source of the itinerary, segment, itinerary-protobuf and selection-token field maps in docs/protocol.md.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-one-way-search-2026-11-18.har",
+    "RequestBodies": 1,
+    "RequestBytes": 467,
+    "ResponseBytes": 106580,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      70
+    ],
+    "CapturedUtc": "2026-11-18T20:44:20.593Z"
+  }
+]
