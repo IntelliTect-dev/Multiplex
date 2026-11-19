@@ -7,9 +7,8 @@ using static Multiplex.Web.Services.LinkedIn.LinkedInInvitationTools;
 namespace Multiplex.Web.Services.LinkedIn;
 
 /// <summary>
-/// LinkedIn messaging tools at <c>/linkedin/mcp</c>, for the request's signed-in account. Sending
-/// takes the confirm step, reaches one conversation per call, and starts conversations only with
-/// 1st-degree connections (never InMail).
+/// LinkedIn messaging tools at <c>/linkedin/mcp</c>, for the request's signed-in account. A reply
+/// takes the confirm step and goes to one existing conversation per call.
 /// </summary>
 [McpServerToolType]
 [McpEndpoint("linkedin")]
@@ -106,41 +105,6 @@ public sealed class LinkedInMessagingTools(LinkedInToolContext linkedIn)
                     conversation_id = conversation.ConversationId,
                     to = conversation.Participants.Select(Describe),
                 });
-            }, ct);
-    }
-
-    [McpServerTool(Name = "linkedin_start_conversation", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true)]
-    [Description(
-        "Starts a new LinkedIn conversation with one 1st-degree connection and sends one message. Refuses " +
-        "members who are not connections (it never sends InMail). One member per call: never call it in a loop " +
-        "over a list of people. The text is sent exactly as given." + ConfirmStep)]
-    public Task<string> StartConversation(
-        [Description(PersonHelp)] string person,
-        [Description("The message to send, exactly as the person wants it.")] string text,
-        [Description(ConfirmTokenHelp)] string? confirm_token = null,
-        CancellationToken ct = default)
-    {
-        var profileId = LinkedInProfileId.Normalize(person, "person");
-        CheckText(text);
-        return linkedIn.RunConfirmedAsync("linkedin_start_conversation", confirm_token,
-            new Dictionary<string, string?> { ["person"] = person, ["text"] = text },
-            async api =>
-            {
-                var profile = await FindProfileAsync(api, profileId, ct).ConfigureAwait(false);
-                if (profile.Degree == ConnectionDegree.Self)
-                    throw new McpException("That is the signed-in person's own profile. Nothing was sent.");
-                if (profile.Degree != ConnectionDegree.First)
-                {
-                    throw new McpException(
-                        $"{Name(profile.Person)} is not one of your 1st-degree connections. This tool only messages " +
-                        "connections; send a connection request with linkedin_send_invitation instead. Nothing was sent.");
-                }
-                return Prepared.Change(profile, $"Will start a new LinkedIn conversation with {Name(profile.Person)} and send:\n\n{text}");
-            },
-            async (api, profile) =>
-            {
-                var conversationId = await api.StartConversationAsync(profileId, text, ct).ConfigureAwait(false);
-                return LinkedInToolContext.ToJson(new { sent = true, conversation_id = conversationId, to = Describe(profile.Person) });
             }, ct);
     }
 

@@ -10,23 +10,6 @@ public sealed record LinkedInPerson(string ProfileId, string Name, string? Headl
     public string ProfileUrl => $"https://www.linkedin.com/in/{Uri.EscapeDataString(ProfileId)}/";
 }
 
-/// <summary>How far a member is from the signed-in person in their network.</summary>
-public enum ConnectionDegree
-{
-    Unknown,
-    Self,
-    First,
-    Second,
-    Third,
-    OutOfNetwork,
-}
-
-/// <summary>What the tools need to know about a member before acting on them.</summary>
-/// <param name="Degree">Connected (<see cref="ConnectionDegree.First"/>) or not.</param>
-/// <param name="Following">Whether the signed-in person follows them; null when LinkedIn did not say.</param>
-/// <param name="InvitationPending">Whether an invitation between the two is already waiting; null when LinkedIn did not say.</param>
-public sealed record LinkedInProfile(LinkedInPerson Person, ConnectionDegree Degree, bool? Following, bool? InvitationPending);
-
 public enum InvitationDirection
 {
     Received,
@@ -62,7 +45,7 @@ public sealed record LinkedInMessagePage(IReadOnlyList<LinkedInMessage> Messages
 
 /// <summary>
 /// The LinkedIn operations the invitation and messaging tools use, for one signed-in account.
-/// Every change acts on exactly one invitation, one member or one conversation.
+/// Every change acts on exactly one invitation or one conversation.
 /// </summary>
 public interface ILinkedInApi
 {
@@ -75,13 +58,6 @@ public interface ILinkedInApi
 
     Task IgnoreInvitationAsync(string invitationId, CancellationToken ct);
 
-    /// <summary>A member by public profile id, or null when LinkedIn has no such member.</summary>
-    Task<LinkedInProfile?> FindProfileAsync(string profileId, CancellationToken ct);
-
-    Task SendInvitationAsync(string profileId, string? note, CancellationToken ct);
-
-    Task SetFollowingAsync(string profileId, bool follow, CancellationToken ct);
-
     Task<LinkedInConversationPage> ListConversationsAsync(string? cursor, CancellationToken ct);
 
     /// <summary>A conversation by id, or null when the account has none with that id.</summary>
@@ -90,9 +66,6 @@ public interface ILinkedInApi
     Task<LinkedInMessagePage> ReadConversationAsync(string conversationId, string? olderCursor, CancellationToken ct);
 
     Task ReplyAsync(string conversationId, string text, CancellationToken ct);
-
-    /// <summary>Starts a conversation with one member; returns its id when LinkedIn reports it.</summary>
-    Task<string?> StartConversationAsync(string profileId, string text, CancellationToken ct);
 }
 
 /// <summary>Creates the <see cref="ILinkedInApi"/> of one account for one request.</summary>

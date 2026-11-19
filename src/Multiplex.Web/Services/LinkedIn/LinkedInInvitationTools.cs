@@ -6,17 +6,14 @@ using Multiplex.Web.Mcp;
 namespace Multiplex.Web.Services.LinkedIn;
 
 /// <summary>
-/// LinkedIn invitation and follow tools at <c>/linkedin/mcp</c>, for the request's signed-in account.
-/// Every change names exactly one invitation or one member and takes the confirm step: the first
-/// call only previews, the change happens on a second call with the returned token.
+/// LinkedIn invitation tools at <c>/linkedin/mcp</c>, for the request's signed-in account. Every
+/// change names exactly one invitation and takes the confirm step: the first call only previews,
+/// the change happens on a second call with the returned token.
 /// </summary>
 [McpServerToolType]
 [McpEndpoint("linkedin")]
 public sealed class LinkedInInvitationTools(LinkedInToolContext linkedIn)
 {
-    /// <summary>LinkedIn's longest connection-request note.</summary>
-    public const int MaxNoteLength = 300;
-
     internal const string ConfirmTokenHelp =
         "Leave empty on the first call: nothing changes and you get a preview plus a confirm_token. Show the " +
         "preview to the person; only if they agree, call again with the same arguments and that confirm_token " +
@@ -24,9 +21,6 @@ public sealed class LinkedInInvitationTools(LinkedInToolContext linkedIn)
 
     internal const string ConfirmStep =
         " Two-step: the first call (no confirm_token) only previews; the change happens on a second call with the token.";
-
-    internal const string PersonHelp =
-        "One member: their public profile id (the part after /in/ in their profile URL) or the profile URL itself.";
 
     [McpServerTool(Name = "linkedin_list_invitations", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
     [Description(
@@ -113,101 +107,11 @@ public sealed class LinkedInInvitationTools(LinkedInToolContext linkedIn)
                 return LinkedInToolContext.ToJson(new { ignored = true, person = Describe(invitation.Person) });
             }, ct);
 
-    [McpServerTool(Name = "linkedin_send_invitation", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true)]
-    [Description(
-        "Sends one LinkedIn connection request to one member, with an optional note (at most 300 characters). " +
-        "Refuses members who are already connected or already have an invitation waiting. One member per call: " +
-        "never call it in a loop over a list of people." + ConfirmStep)]
-    public Task<string> SendInvitation(
-        [Description(PersonHelp)] string person,
-        [Description("Optional note sent with the request, at most 300 characters.")] string? note = null,
-        [Description(ConfirmTokenHelp)] string? confirm_token = null,
-        CancellationToken ct = default)
-    {
-        var profileId = LinkedInProfileId.Normalize(person, "person");
-        var text = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
-        if (text is { Length: > MaxNoteLength })
-            throw new McpException($"note is {text.Length} characters; LinkedIn allows at most {MaxNoteLength}. Nothing was sent.");
-
-        return linkedIn.RunConfirmedAsync("linkedin_send_invitation", confirm_token,
-            new Dictionary<string, string?> { ["person"] = person, ["note"] = note },
-            async api =>
-            {
-                var profile = await FindProfileAsync(api, profileId, ct).ConfigureAwait(false);
-                if (profile.Degree == ConnectionDegree.Self)
-                    throw new McpException("That is the signed-in person's own profile. Nothing was sent.");
-                if (profile.Degree == ConnectionDegree.First)
-                    return Prepared.Nothing<LinkedInProfile>($"You are already connected with {Name(profile.Person)}.");
-                if (profile.InvitationPending == true)
-                    return Prepared.Nothing<LinkedInProfile>($"An invitation between you and {Name(profile.Person)} is already waiting.");
-                return Prepared.Change(profile,
-                    $"Will send a LinkedIn connection request to {Name(profile.Person)}, " +
-                    (text is null ? "with no note." : $"with this note: \"{text}\""));
-            },
-            async (api, profile) =>
-            {
-                await api.SendInvitationAsync(profileId, text, ct).ConfigureAwait(false);
-                return LinkedInToolContext.ToJson(new { sent = true, person = Describe(profile.Person), note = text });
-            }, ct);
-    }
-
-    [McpServerTool(Name = "linkedin_follow", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = true)]
-    [Description(
-        "Follows one LinkedIn member, so their posts can appear in the signed-in person's feed. Does not send " +
-        "a connection request." + ConfirmStep)]
-    public Task<string> Follow(
-        [Description(PersonHelp)] string person,
-        [Description(ConfirmTokenHelp)] string? confirm_token = null,
-        CancellationToken ct = default)
-        => SetFollowing("linkedin_follow", person, follow: true, confirm_token, ct);
-
-    [McpServerTool(Name = "linkedin_unfollow", ReadOnly = false, Destructive = true, Idempotent = true, OpenWorld = true)]
-    [Description(
-        "Stops following one LinkedIn member. A connection stays connected; only their posts stop appearing " +
-        "in the feed." + ConfirmStep)]
-    public Task<string> Unfollow(
-        [Description(PersonHelp)] string person,
-        [Description(ConfirmTokenHelp)] string? confirm_token = null,
-        CancellationToken ct = default)
-        => SetFollowing("linkedin_unfollow", person, follow: false, confirm_token, ct);
-
-    private Task<string> SetFollowing(string tool, string person, bool follow, string? confirmToken, CancellationToken ct)
-    {
-        var profileId = LinkedInProfileId.Normalize(person, "person");
-        return linkedIn.RunConfirmedAsync(tool, confirmToken,
-            new Dictionary<string, string?> { ["person"] = person },
-            async api =>
-            {
-                var profile = await FindProfileAsync(api, profileId, ct).ConfigureAwait(false);
-                if (profile.Degree == ConnectionDegree.Self)
-                    throw new McpException("That is the signed-in person's own profile. Nothing was changed.");
-                if (profile.Following == follow)
-                {
-                    return Prepared.Nothing<LinkedInProfile>(follow
-                        ? $"You already follow {Name(profile.Person)}."
-                        : $"You do not follow {Name(profile.Person)}.");
-                }
-                return Prepared.Change(profile, follow
-                    ? $"Will follow {Name(profile.Person)} on LinkedIn."
-                    : $"Will stop following {Name(profile.Person)} on LinkedIn" +
-                      (profile.Degree == ConnectionDegree.First ? "; you stay connected." : "."));
-            },
-            async (api, profile) =>
-            {
-                await api.SetFollowingAsync(profileId, follow, ct).ConfigureAwait(false);
-                return LinkedInToolContext.ToJson(new { following = follow, person = Describe(profile.Person) });
-            }, ct);
-    }
-
     private static async Task<LinkedInInvitation> FindReceivedAsync(ILinkedInApi api, string invitationId, CancellationToken ct)
         => await api.FindReceivedInvitationAsync(invitationId, ct).ConfigureAwait(false)
            ?? throw new McpException(
                "There is no waiting received invitation with that invitation_id; it may have been accepted, ignored or " +
                "withdrawn already. Call linkedin_list_invitations again. Nothing was changed.");
-
-    internal static async Task<LinkedInProfile> FindProfileAsync(ILinkedInApi api, string profileId, CancellationToken ct)
-        => await api.FindProfileAsync(profileId, ct).ConfigureAwait(false)
-           ?? throw new McpException($"LinkedIn has no member with the profile id '{profileId}'. Nothing was changed.");
 
     /// <summary>"Jane Doe (Engineer at Contoso), https://www.linkedin.com/in/jane-doe/".</summary>
     internal static string Name(LinkedInPerson person) =>
