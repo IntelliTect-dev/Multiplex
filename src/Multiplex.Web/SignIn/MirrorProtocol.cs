@@ -57,7 +57,8 @@ public static class MirrorProtocol
                 "scroll" when Fraction(root, "x") is { } x && Fraction(root, "y") is { } y =>
                     new ScrollInput(x, y, Delta(root, "dx"), Delta(root, "dy")),
                 "text" when root.TryGetProperty("v", out var v) && v.ValueKind == JsonValueKind.String
-                            && v.GetString() is { Length: > 0 and <= MaxTextLength } text => new TextInput(text),
+                            && v.GetString() is { Length: > 0 and <= MaxTextLength } raw
+                            && WithoutControlCharacters(raw) is { Length: > 0 } text => new TextInput(text),
                 "key" when root.TryGetProperty("k", out var k) && k.ValueKind == JsonValueKind.String
                            && AllowedKeys.Contains(k.GetString()!) => new KeyInput(k.GetString()!),
                 "back" => new BackInput(),
@@ -71,6 +72,13 @@ public static class MirrorProtocol
             return null;
         }
     }
+
+    /// <summary>
+    /// Text is replayed as key presses, so a line break or a tab in it would press Enter or Tab
+    /// part-way through. Those keys have their own buttons on the phone page.
+    /// </summary>
+    private static string WithoutControlCharacters(string text) =>
+        text.Any(char.IsControl) ? string.Concat(text.Where(c => !char.IsControl(c))) : text;
 
     private static double? Fraction(JsonElement root, string name) =>
         root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out var d)
