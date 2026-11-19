@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using TripIt.Http;
 
@@ -28,9 +29,9 @@ public sealed class LinkedInQueryIds
 
 /// <summary>
 /// Calls LinkedIn's own web API for one signed-in account, with the requests LinkedIn's web app
-/// was recorded sending on 2026-11-19: the messaging GraphQL queries and <c>createMessage</c>.
-/// Only those; none of the read receipts, typing indicators or delivery acknowledgements the
-/// page also sends. Every request carries the session's cookie, its CSRF token and the browser
+/// was recorded sending on 2026-11-19: the messaging GraphQL queries and <c>createMessage</c>, and
+/// the invitations page with the accept and ignore actions it carries. Only those; none of the read
+/// receipts, typing indicators, delivery acknowledgements or tracking calls the pages also send. Every request carries the session's cookie, its CSRF token and the browser
 /// headers the page itself sent.
 /// </summary>
 public sealed partial class LinkedInClient(
@@ -44,7 +45,9 @@ public sealed partial class LinkedInClient(
     private const string GraphQlPath = "/voyager/api/voyagerMessagingGraphQL/graphql";
     private const int OlderPageSize = 20;
 
-    private const string NotYet = "Invitations are not connected to LinkedIn yet on this server. Nothing was read or changed.";
+    private const string ReceivedScreen = "com.linkedin.sdui.flagshipnav.mynetwork.invitations.InvitationReceivedWithType";
+    private const string ActionMarker =
+        """{"$type":"proto.sdui.actions.core.ServerRequest","value":{"requestId":"com.linkedin.sdui.requests.mynetwork.addaInvitationAction""";
 
     private LinkedInSession _session = session;
 
@@ -105,17 +108,158 @@ public sealed partial class LinkedInClient(
         }, isRead: false, "the message", ct).ConfigureAwait(false);
     }
 
-    // ── Invitations: not connected yet ──────────────────────────────────────
+    // ── Invitations (LinkedIn's server-driven invitations page) ─────────────
 
-    public Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, int start, int count, CancellationToken ct)
-        => throw new LinkedInApiException(NotYet);
+    public async Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, CancellationToken ct)
+    {
+        if (direction == InvitationDirection.Sent)
+            throw new LinkedInApiException("Listing sent invitations is not connected to LinkedIn yet on this server. Nothing was read.");
+        var page = await ReadInvitationsPageAsync(ct).ConfigureAwait(false);
+        return new LinkedInInvitationPage(page.Select(ToInvitation).ToList());
+    }
 
-    public Task<LinkedInInvitation?> FindReceivedInvitationAsync(string invitationId, CancellationToken ct)
-        => throw new LinkedInApiException(NotYet);
+    public async Task<LinkedInInvitation?> FindReceivedInvitationAsync(string invitationId, CancellationToken ct)
+    {
+        CheckInvitationId(invitationId);
+        var page = await ReadInvitationsPageAsync(ct).ConfigureAwait(false);
+        return page.FirstOrDefault(i => i.InvitationId == invitationId) is { } found ? ToInvitation(found) : null;
+    }
 
-    public Task AcceptInvitationAsync(string invitationId, CancellationToken ct) => throw new LinkedInApiException(NotYet);
+    public async Task AcceptInvitationAsync(string invitationId, CancellationToken ct)
+    {
+        var invitation = await WaitingInvitationAsync(invitationId, ct).ConfigureAwait(false);
+        if (invitation.AcceptAction is { } accept)
+        {
+            await PostActionAsync(accept, ReceivedScreen, "the acceptance", ct).ConfigureAwait(false);
+            return;
+        }
+        // LinkedIn warns before this one: open its warning as the page would, and send what its Accept invite button sends.
+        var fromWarning = await WarningAcceptActionAsync(invitation, ct).ConfigureAwait(false);
+        await PostActionAsync(fromWarning, LinkedInInvitationsPage.WarningScreen, "the acceptance", ct).ConfigureAwait(false);
+    }
 
-    public Task IgnoreInvitationAsync(string invitationId, CancellationToken ct) => throw new LinkedInApiException(NotYet);
+    public async Task IgnoreInvitationAsync(string invitationId, CancellationToken ct)
+    {
+        var invitation = await WaitingInvitationAsync(invitationId, ct).ConfigureAwait(false);
+        await PostActionAsync(invitation.IgnoreAction, ReceivedScreen, "the ignore", ct).ConfigureAwait(false);
+    }
+
+    private async Task<PageInvitation> WaitingInvitationAsync(string invitationId, CancellationToken ct)
+    {
+        CheckInvitationId(invitationId);
+        var page = await ReadInvitationsPageAsync(ct).ConfigureAwait(false);
+        return page.FirstOrDefault(i => i.InvitationId == invitationId)
+               ?? throw new LinkedInApiException("That invitation is no longer waiting on LinkedIn's invitations page. Nothing was changed.");
+    }
+
+    private async Task<IReadOnlyList<PageInvitation>> ReadInvitationsPageAsync(CancellationToken ct)
+    {
+        using var response = await SendAsync(
+            s => Request(HttpMethod.Get, Origin + "/mynetwork/invitation-manager/received/", s, "text/html,application/xhtml+xml"),
+            isRead: true, "the invitations page", ct).ConfigureAwait(false);
+        var html = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        return LinkedInInvitationsPage.Parse(html);
+    }
+
+    /// <summary>Opens LinkedIn's accept warning for <paramref name="invitation"/> and returns its Accept invite action.</summary>
+    private async Task<string> WarningAcceptActionAsync(PageInvitation invitation, CancellationToken ct)
+    {
+        var navigation = JsonNode.Parse(invitation.WarningNavigation!)!.AsObject();
+        var screen = navigation["screenId"]?.GetValue<string>() ?? LinkedInInvitationsPage.WarningScreen;
+        var arguments = navigation["requestedArguments"]!.DeepClone().AsObject();
+        arguments["states"] = new JsonArray();
+        arguments["screenId"] = screen;
+        arguments["knownTemplateIds"] = new JsonArray();
+        var body = new JsonObject { ["clientArguments"] = arguments, ["isModal"] = true }.ToJsonString();
+        var url = $"{Origin}/flagship-web/rsc-action/actions/navigation?screenId={Uri.EscapeDataString(screen)}&sduiid={Uri.EscapeDataString(screen)}";
+
+        using var response = await SendAsync(s =>
+        {
+            var request = Request(HttpMethod.Post, url, s, "*/*", rsc: true);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            return request;
+        }, isRead: true, "LinkedIn's warning", ct).ConfigureAwait(false);
+        var flight = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        foreach (var obj in LinkedInSdui.Objects(flight, ActionMarker))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(obj);
+                var value = doc.RootElement.GetProperty("value");
+                var payload = value.GetProperty("requestedArguments").GetProperty("payload");
+                if (payload.TryGetProperty("inviteeActionType", out var type) && type.GetString() == "InviteeActionType_ACCEPT"
+                    && payload.TryGetProperty("invitationUrn", out var urn) && urn.TryGetProperty("invitationId", out var id)
+                    && id.GetString() == invitation.InvitationId)
+                {
+                    return value.GetRawText();
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+            {
+            }
+        }
+        throw new LinkedInApiException(
+            "LinkedIn's warning for this invitation did not offer an Accept invite button this server recognises. Nothing was " +
+            "changed; accept it on LinkedIn yourself if you want to.");
+    }
+
+    /// <summary>Sends one of the page's addaInvitationAction actions, in the envelope LinkedIn's page sends it in.</summary>
+    private async Task PostActionAsync(string actionValueJson, string screenId, string what, CancellationToken ct)
+    {
+        var body = ActionEnvelope(actionValueJson, screenId);
+        using var response = await SendAsync(s =>
+        {
+            var request = Request(HttpMethod.Post, Origin + "/flagship-web/rsc-action/actions/server-request?sduiid=" +
+                                                   LinkedInInvitationsPage.ActionRequestId, s, "*/*", rsc: true);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            return request;
+        }, isRead: false, what, ct).ConfigureAwait(false);
+        var answer = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (answer.Contains("\"errors\":[]", StringComparison.Ordinal)) return;
+        throw new LinkedInApiException(answer.Contains("\"errors\":[", StringComparison.Ordinal)
+            ? $"LinkedIn refused {what}. Nothing more was tried."
+            : $"LinkedIn's answer to {what} was not one this server recognises. Please check LinkedIn before trying again.");
+    }
+
+    /// <summary>
+    /// The body LinkedIn's page posts for a ServerRequest action (recorded 2026-11-19): the action's own
+    /// <c>requestedArguments</c>, unchanged, once inside <c>serverRequest</c> and once at the top with the screen.
+    /// </summary>
+    internal static string ActionEnvelope(string actionValueJson, string screenId)
+    {
+        var value = JsonNode.Parse(actionValueJson)!.AsObject();
+        var requestId = value["requestId"]!.GetValue<string>();
+        var arguments = value["requestedArguments"]!;
+        var top = arguments.DeepClone().AsObject();
+        top["states"] = new JsonArray();
+        top["screenId"] = screenId;
+        top["knownTemplateIds"] = new JsonArray();
+        var server = new JsonObject
+        {
+            ["requestId"] = requestId,
+            ["requestedArguments"] = arguments.DeepClone(),
+            ["onClientRequestFailureAction"] = value["onClientRequestFailureAction"]?.DeepClone() ?? new JsonObject { ["actions"] = new JsonArray() },
+            ["isApfcEnabled"] = false,
+            ["isStreaming"] = false,
+            ["rumPageKey"] = "",
+        };
+        return new JsonObject
+        {
+            ["requestId"] = requestId,
+            ["serverRequest"] = server,
+            ["states"] = new JsonArray(),
+            ["requestedArguments"] = top,
+        }.ToJsonString();
+    }
+
+    private static LinkedInInvitation ToInvitation(PageInvitation p) => new(p.InvitationId, p.Person, p.Note, null, p.WarningTitle);
+
+    private static void CheckInvitationId(string? invitationId)
+    {
+        if (invitationId is null || !InvitationIdPattern().IsMatch(invitationId))
+            throw new LinkedInApiException("That is not an invitation_id from linkedin_list_invitations. Nothing was read or changed.");
+    }
 
     // ── Requests ────────────────────────────────────────────────────────────
 
@@ -165,7 +309,7 @@ public sealed partial class LinkedInClient(
         }
     }
 
-    private HttpRequestMessage Request(HttpMethod method, string url, LinkedInSession s, string accept)
+    private HttpRequestMessage Request(HttpMethod method, string url, LinkedInSession s, string accept, bool rsc = false)
     {
         var request = new HttpRequestMessage(method, new Uri(url, UriKind.Absolute));
         foreach (var (name, value) in s.Headers)
@@ -179,6 +323,7 @@ public sealed partial class LinkedInClient(
         request.Headers.TryAddWithoutValidation("Cookie", s.Cookie);
         request.Headers.TryAddWithoutValidation("csrf-token", s.CsrfToken);
         if (!request.Headers.Contains("Origin") && method != HttpMethod.Get) request.Headers.TryAddWithoutValidation("Origin", Origin);
+        if (rsc) request.Headers.TryAddWithoutValidation("x-li-rsc-stream", "true");
         if (pacingKey is not null) request.Options.Set(RequestPacer.KeyOption, pacingKey);
         return request;
     }
@@ -361,6 +506,9 @@ public sealed partial class LinkedInClient(
 
     [GeneratedRegex(@"^\d{10,16}$")]
     private static partial Regex TimestampPattern();
+
+    [GeneratedRegex(@"^\d{6,25}$")]
+    private static partial Regex InvitationIdPattern();
 
     [GeneratedRegex(@"^messenger[A-Za-z]+\.[0-9a-f]{6,64}$")]
     private static partial Regex QueryIdPattern();

@@ -69,12 +69,10 @@ public sealed class FakeLinkedInAccount : ILinkedInApi
 
     public static LinkedInPerson Person(string id, string name, string? headline = null) => new(id, name, headline);
 
-    public Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, int start, int count, CancellationToken ct)
+    public Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, CancellationToken ct)
     {
         ThrowIfFailing();
-        var all = direction == InvitationDirection.Received ? Received : Sent;
-        var page = all.Skip(start).Take(count).ToList();
-        return Task.FromResult(new LinkedInInvitationPage(page, start + page.Count < all.Count ? start + page.Count : null));
+        return Task.FromResult(new LinkedInInvitationPage((direction == InvitationDirection.Received ? Received : Sent).ToList()));
     }
 
     public Task<LinkedInInvitation?> FindReceivedInvitationAsync(string invitationId, CancellationToken ct)
