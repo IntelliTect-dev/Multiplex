@@ -152,6 +152,20 @@ public sealed class LinkedInToolTests : IClassFixture<LinkedInTestApp>
     }
 
     [Fact]
+    public async Task Accepting_an_invitation_LinkedIn_warns_about_shows_the_warning_before_anything_happens()
+    {
+        LinkedIn.Received.Add(new LinkedInInvitation("inv-w", s_sam, null, null, Warning: "Take care when connecting"));
+        var arguments = new Dictionary<string, object?> { ["invitationId"] = "inv-w" };
+
+        var (preview, token) = await PreviewAsync("linkedin_accept_invitation", arguments);
+        Assert.StartsWith("LinkedIn shows a warning for this invitation: \"Take care when connecting\"", preview, StringComparison.Ordinal);
+
+        var (isError, text) = await Mcp.CallAsync("linkedin_accept_invitation", With(arguments, token));
+        Assert.False(isError, text);
+        Assert.Equal(["accept inv-w"], LinkedIn.Changes);
+    }
+
+    [Fact]
     public async Task A_token_for_one_invitation_does_not_ignore_another()
     {
         LinkedIn.Received.Add(new LinkedInInvitation("inv-1", s_jane, null, null));

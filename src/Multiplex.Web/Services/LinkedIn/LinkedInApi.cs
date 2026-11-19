@@ -19,10 +19,11 @@ public enum InvitationDirection
 /// <param name="InvitationId">Opaque id the accept and ignore tools take.</param>
 /// <param name="Person">Who sent it (received) or who it was sent to (sent).</param>
 /// <param name="Note">The note that came with it, if any.</param>
-public sealed record LinkedInInvitation(string InvitationId, LinkedInPerson Person, string? Note, DateTimeOffset? SentAt);
+/// <param name="Warning">LinkedIn's own warning about accepting it (e.g. "Take care when connecting"), if LinkedIn shows one.</param>
+public sealed record LinkedInInvitation(string InvitationId, LinkedInPerson Person, string? Note, DateTimeOffset? SentAt, string? Warning = null);
 
-/// <param name="NextStart">Where the next page starts, or null on the last page.</param>
-public sealed record LinkedInInvitationPage(IReadOnlyList<LinkedInInvitation> Invitations, int? NextStart);
+/// <param name="Invitations">The invitations LinkedIn's page shows first (its most recent ones).</param>
+public sealed record LinkedInInvitationPage(IReadOnlyList<LinkedInInvitation> Invitations);
 
 /// <param name="ConversationId">Opaque id the read and reply tools take.</param>
 /// <param name="Participants">Everyone in it except the signed-in person.</param>
@@ -49,9 +50,10 @@ public sealed record LinkedInMessagePage(IReadOnlyList<LinkedInMessage> Messages
 /// </summary>
 public interface ILinkedInApi
 {
-    Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, int start, int count, CancellationToken ct);
+    /// <summary>The waiting invitations LinkedIn's page shows first; older ones are not reachable (its paging was not built).</summary>
+    Task<LinkedInInvitationPage> ListInvitationsAsync(InvitationDirection direction, CancellationToken ct);
 
-    /// <summary>A received invitation that is still waiting, or null when there is none with that id.</summary>
+    /// <summary>A received invitation that is still waiting and among those listed, or null.</summary>
     Task<LinkedInInvitation?> FindReceivedInvitationAsync(string invitationId, CancellationToken ct);
 
     Task AcceptInvitationAsync(string invitationId, CancellationToken ct);
