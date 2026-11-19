@@ -235,6 +235,7 @@ public sealed class LinkedInClientTests
                 .ReplyAsync(Thread, "Hi", CancellationToken.None));
 
         Assert.Single(_http.Requests);
+        Assert.Equal(0, renewals);
         Assert.Contains("check LinkedIn", error.Message, StringComparison.Ordinal);
     }
 

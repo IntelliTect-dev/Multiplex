@@ -76,7 +76,8 @@ public sealed class LinkedInInvitationTools(LinkedInToolContext linkedIn)
                       "trust this person. ";
                 return Prepared.Change(invitation,
                     warning + $"Will accept the LinkedIn invitation from {Name(invitation.Person)}. You will be connected, " +
-                    "and they can see that you accepted.");
+                    "and they can see that you accepted.",
+                    new Dictionary<string, string?> { ["linkedin_warning"] = invitation.Warning ?? "" });
             },
             async (api, invitation) =>
             {

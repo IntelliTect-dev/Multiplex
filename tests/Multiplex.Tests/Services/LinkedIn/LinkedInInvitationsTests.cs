@@ -165,7 +165,7 @@ public sealed class LinkedInInvitationsTests
     public async Task A_refusal_from_LinkedIn_is_reported()
     {
         _http.Respond(r => r.Method == HttpMethod.Get, _ => Html(Page([s_jane])));
-        _http.Respond(r => r.Method == HttpMethod.Post, _ => Flight("""0:{"response":{"errors":[{"message":"nope"}],"isRetryable":false}}"""));
+        _http.Respond(r => r.Method == HttpMethod.Post, _ => Flight("""0:{"response":{"$type":"proto.sdui.responses.ServerRequestResponse","errors":[{"message":"nope"}],"isRetryable":false}}"""));
 
         var error = await Assert.ThrowsAsync<LinkedInApiException>(() => Client().AcceptInvitationAsync(s_jane.Id, CancellationToken.None));
 

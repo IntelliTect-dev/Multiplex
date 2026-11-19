@@ -216,10 +216,39 @@ public sealed partial class LinkedInClient(
             return request;
         }, isRead: false, what, ct).ConfigureAwait(false);
         var answer = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        if (answer.Contains("\"errors\":[]", StringComparison.Ordinal)) return;
-        throw new LinkedInApiException(answer.Contains("\"errors\":[", StringComparison.Ordinal)
-            ? $"LinkedIn refused {what}. Nothing more was tried."
-            : $"LinkedIn's answer to {what} was not one this server recognises. Please check LinkedIn before trying again.");
+        switch (ServerRequestSucceeded(answer))
+        {
+            case true:
+                return;
+            case false:
+                throw new LinkedInApiException($"LinkedIn refused {what}. Nothing more was tried.");
+            default:
+                throw new LinkedInApiException(OutcomeUnknown(what, "LinkedIn's answer was not one this server recognises"));
+        }
+    }
+
+    /// <summary>
+    /// Reads the <c>ServerRequestResponse</c> in a flight answer: true when its <c>errors</c> array is
+    /// empty, false when it lists errors, null when there is no such response to read.
+    /// </summary>
+    internal static bool? ServerRequestSucceeded(string flight)
+    {
+        bool? result = null;
+        foreach (var obj in LinkedInSdui.Objects(flight, """{"$type":"proto.sdui.responses.ServerRequestResponse"""))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(obj);
+                if (!doc.RootElement.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array) return null;
+                if (errors.GetArrayLength() > 0) return false;
+                result = true;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -337,7 +366,16 @@ public sealed partial class LinkedInClient(
         CancellationToken ct, string? staleQuery = null)
     {
         var s = _session;
-        var response = await SendOnceAsync(build(s), ct).ConfigureAwait(false);
+        HttpResponseMessage response;
+        try
+        {
+            response = await SendOnceAsync(build(s), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!isRead && (ex is HttpRequestException or IOException || (ex is OperationCanceledException && !ct.IsCancellationRequested)))
+        {
+            // The request may have reached LinkedIn before the connection failed or timed out.
+            throw new LinkedInApiException(OutcomeUnknown(what, "the connection failed before LinkedIn answered"), ex);
+        }
         if (IsRejected(response))
         {
             response.Dispose();
@@ -361,6 +399,7 @@ public sealed partial class LinkedInClient(
 
         var status = (int)response.StatusCode;
         response.Dispose();
+        if (!isRead) throw new LinkedInApiException(OutcomeUnknown(what, $"LinkedIn answered HTTP {status}"));
         if (status == 429)
             throw new LinkedInApiException("LinkedIn is limiting requests from this account right now. Nothing more was tried; try again later.");
         if (staleQuery is not null && status is 400 or 404)
@@ -393,6 +432,11 @@ public sealed partial class LinkedInClient(
             return response;
         }
     }
+
+    /// <summary>For a change whose result LinkedIn did not confirm: it may or may not have happened, and must not simply be repeated.</summary>
+    private static string OutcomeUnknown(string what, string why) =>
+        $"{char.ToUpperInvariant(why[0])}{why[1..]}, so {what} may or may not have taken effect. Please check LinkedIn before " +
+        "trying again, so it does not happen twice.";
 
     private static LinkedInApiException NotAccepted() => new(
         "LinkedIn did not accept this account's session, and it could not be renewed right now. Try again in a minute; if it keeps " +
@@ -501,15 +545,15 @@ public sealed partial class LinkedInClient(
     /// <summary>An AttributedText's <c>text</c>, e.g. <c>firstName.text</c>.</summary>
     private static string? Text(JsonElement e, string name) => Obj(e, name) is { } t ? Str(t, "text") : null;
 
-    [GeneratedRegex(@"^2-[A-Za-z0-9+/=_-]{4,256}$")]
+    [GeneratedRegex(@"^2-[A-Za-z0-9+/=_-]{4,256}\z")]
     private static partial Regex ThreadPattern();
 
-    [GeneratedRegex(@"^\d{10,16}$")]
+    [GeneratedRegex(@"^[0-9]{10,16}\z")]
     private static partial Regex TimestampPattern();
 
-    [GeneratedRegex(@"^\d{6,25}$")]
+    [GeneratedRegex(@"^[0-9]{6,25}\z")]
     private static partial Regex InvitationIdPattern();
 
-    [GeneratedRegex(@"^messenger[A-Za-z]+\.[0-9a-f]{6,64}$")]
+    [GeneratedRegex(@"^messenger[A-Za-z]+\.[0-9a-f]{6,64}\z")]
     private static partial Regex QueryIdPattern();
 }

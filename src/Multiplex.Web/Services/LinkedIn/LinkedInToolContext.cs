@@ -83,10 +83,11 @@ public sealed class LinkedInToolContext(
     /// Runs a change with the confirm step. <paramref name="prepare"/> checks the request and
     /// describes it; it returns null text when there is nothing to do (for example, already
     /// following), and then nothing is issued or performed. Without <paramref name="confirmToken"/>
-    /// the tool only previews and returns a token bound to account, tool and
-    /// <paramref name="arguments"/>; with a valid, unused token for the same request it performs
-    /// the change. The token is used up before the change is attempted, so a change whose outcome
-    /// is unknown is never sent twice with one token.
+    /// the tool only previews and returns a token bound to account, tool, <paramref name="arguments"/>
+    /// and what the preview showed (<see cref="Prepared{T}.Shown"/>: LinkedIn's warning, a reply's
+    /// recipients); with a valid, unused token for the same request, and the same facts checked again,
+    /// it performs the change. The token is used up before the change is attempted, so a change whose
+    /// outcome is unknown is never sent twice with one token.
     /// </summary>
     public Task<string> RunConfirmedAsync<T>(string tool, string? confirmToken, IReadOnlyDictionary<string, string?> arguments,
         Func<ILinkedInApi, Task<Prepared<T>>> prepare, Func<ILinkedInApi, T, Task<string>> perform, CancellationToken ct)
@@ -98,6 +99,9 @@ public sealed class LinkedInToolContext(
             {
                 return ToJson(new { nothing_changed = true, result = prepared.NothingToDo ?? "Nothing to do." });
             }
+            // What the person was shown is part of what they agree to: if it changed, the token no longer fits.
+            var bound = new Dictionary<string, string?>(arguments, StringComparer.Ordinal);
+            foreach (var (key, value) in prepared.Shown ?? new Dictionary<string, string?>()) bound["shown:" + key] = value;
             if (string.IsNullOrWhiteSpace(confirmToken))
             {
                 return ToJson(new
@@ -105,13 +109,13 @@ public sealed class LinkedInToolContext(
                     confirmation_required = true,
                     nothing_changed = true,
                     preview = prepared.Preview,
-                    confirm_token = confirmTokens.Issue(accountId, tool, arguments),
+                    confirm_token = confirmTokens.Issue(accountId, tool, bound),
                     expires_in_seconds = (int)ConfirmTokens.Lifetime.TotalSeconds,
                     next_step = $"Show the preview to the person and ask whether to go ahead. Only if they agree, call {tool} " +
                                 "again with exactly the same arguments plus this confirm_token.",
                 });
             }
-            confirmTokens.Redeem(confirmToken, accountId, tool, arguments);
+            confirmTokens.Redeem(confirmToken, accountId, tool, bound);
             var result = await perform(api, state).ConfigureAwait(false);
             _log.LogInformation("LinkedIn {Tool} performed for account {Account} (client {ClientId}).", tool, accountId, ClientId);
             return result;
@@ -143,12 +147,14 @@ public sealed class LinkedInToolContext(
 /// <summary>
 /// What a change will do (<see cref="Preview"/>) and what it found while checking
 /// (<see cref="State"/>, handed to the change itself), or why there is nothing to do (<see cref="NothingToDo"/>).
+/// <see cref="Shown"/> names the facts the preview showed that the confirm token must also match.
 /// </summary>
-public sealed record Prepared<T>(T? State, string? Preview, string? NothingToDo);
+public sealed record Prepared<T>(T? State, string? Preview, string? NothingToDo, IReadOnlyDictionary<string, string?>? Shown = null);
 
 public static class Prepared
 {
-    public static Prepared<T> Change<T>(T state, string preview) => new(state, preview, null);
+    public static Prepared<T> Change<T>(T state, string preview, IReadOnlyDictionary<string, string?>? shown = null) =>
+        new(state, preview, null, shown);
 
     public static Prepared<T> Nothing<T>(string why) => new(default, null, why);
 }
