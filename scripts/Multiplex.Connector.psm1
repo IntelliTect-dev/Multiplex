@@ -145,7 +145,8 @@ function Get-MultiplexServiceCompletion {
         if (-not $known -or [datetime]::UtcNow -ge $known.Until) {
             try {
                 $services = @(Get-MultiplexAccountService -BaseUrl $BaseUrl -TimeoutSec $TimeoutSec -Budget ([TimeSpan]::FromSeconds($TimeoutSec)))
-                # No services (a server still starting) or names not yet read: ask again soon.
+                # No services (a server still starting) or names not read: ask again soon. On a
+                # link always too slow for every name, the last ones keep their short names.
                 $complete = $services -and -not ($services | Where-Object { -not $_.Named })
                 $lifetime = $complete ? $script:ServiceCompletionLifetime : $script:ServiceCompletionRetry
                 $known = [pscustomobject]@{ Services = $services; Problem = $null; Until = [datetime]::UtcNow + $lifetime }
