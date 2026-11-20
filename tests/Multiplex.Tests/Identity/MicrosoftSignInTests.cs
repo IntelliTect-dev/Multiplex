@@ -237,13 +237,15 @@ public sealed class MicrosoftSignInTests : IDisposable
         Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, (await HomeThroughTunnelAsync(browser)).Headers.Location!.AbsoluteUri);
     }
 
-    public enum BadToken { OtherAudience, UnknownKey, OtherTenantsKey, WrongNonce }
+    public enum BadToken { OtherAudience, UnknownKey, OtherTenantsKey, WrongNonce, PersonalTenantFromAnotherIssuer, PersonalTenantWithAnotherTenantsKey }
 
     [Theory]
     [InlineData(BadToken.OtherAudience)]
     [InlineData(BadToken.UnknownKey)]
     [InlineData(BadToken.OtherTenantsKey)]
     [InlineData(BadToken.WrongNonce)]
+    [InlineData(BadToken.PersonalTenantFromAnotherIssuer)]
+    [InlineData(BadToken.PersonalTenantWithAnotherTenantsKey)]
     public async Task An_ID_token_that_is_not_for_this_app_this_sign_in_or_signed_by_its_tenants_key_is_refused(BadToken bad)
     {
         var browser = _app.Browser();
@@ -254,6 +256,11 @@ public sealed class MicrosoftSignInTests : IDisposable
             BadToken.OtherAudience => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, audience: "some-other-app"),
             BadToken.UnknownKey => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, signWith: microsoft.UnknownKey),
             BadToken.OtherTenantsKey => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, signWith: microsoft.OtherTenantKey),
+            // A work tenant claiming to be the personal-accounts tenant, to skip xms_edov.
+            BadToken.PersonalTenantFromAnotherIssuer => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, null,
+                tenant: FakeMicrosoft.PersonalTenant, issuerTenant: FakeMicrosoft.OtherTenant),
+            BadToken.PersonalTenantWithAnotherTenantsKey => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, null,
+                tenant: FakeMicrosoft.PersonalTenant, signWith: microsoft.OtherTenantKey),
             _ => microsoft.IdToken("not-the-nonce-sent", TestPeople.Owner, true),
         };
 
