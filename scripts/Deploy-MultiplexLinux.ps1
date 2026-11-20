@@ -102,7 +102,7 @@ do {
     if (($checks | Where-Object Check -EQ 'health').Passed -or [DateTime]::UtcNow -ge $deadline) { break }
     Start-Sleep -Seconds 5
 } while ($true)
-$checks | Format-Table -AutoSize | Out-Host
+Write-Host ($checks | Format-Table -AutoSize | Out-String -Width 200).TrimEnd()
 
 Write-Host @"
 Multiplex runs at $($result.BaseUrl) (image $($result.Image)), for devices on your tailnet only.
