@@ -326,6 +326,19 @@ public class GoogleFlightsClientTests
     }
 
     [Fact]
+    public async Task A_one_way_calendar_is_refused_before_any_request()
+    {
+        // The one form tried was refused by Google (bare gRPC 13, live 2026-11-20); the page's own is not recorded.
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<ArgumentException>(() =>
+            client.GetCalendarAsync(new CalendarRequest(FlightSearchRequest.OneWay("SEA", "DEN", Dec15), Dec15, Dec22)));
+
+        Assert.Contains("round trips only", e.Message, StringComparison.Ordinal);
+        Assert.Empty(_google.Sent);
+    }
+
+    [Fact]
     public async Task A_multi_city_trip_has_no_calendar()
     {
         using var client = Client();

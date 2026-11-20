@@ -27,8 +27,42 @@ Rules for anything in this folder that talks to Google:
   capture sessions. A capture session stops at the first `INTERNAL`, 429 or
   "unusual traffic" page.
 - **Live tests** run on a small, fixed budget and never in a loop.
-- **The client** paces itself and caches; see the client's own docs when it
-  exists.
+- **The client** paces itself and caches (below).
+
+## The client's defenses, and why each default is what it is
+
+All in `src/GoogleFlights/Http/` and `GoogleFlightsClientOptions`.
+
+- **Pacing** (a token bucket from `Microsoft.Extensions.Http.Resilience`'s
+  rate limiter): 4 requests back to back, then one per 20 seconds, at most 4
+  waiting. That is at most about 105 requests in 35 minutes, under half of what
+  got the earlier project blocked. One client per process (the web app and the
+  PowerShell session each share one), so the budget is per process.
+- **Refusals are never retried.** gRPC 13, HTTP 429 and the "unusual traffic"
+  check all stop the client for 15 minutes, doubling with each refusal in a row
+  up to 6 hours; during that cool-down a call fails at once without reaching
+  Google. Only transient failures (5xx, timeouts, dropped connections) are
+  retried, twice, with back-off.
+- **Cache**: 12 minutes, keyed on the exact bytes the client would send (RPC,
+  language, region, currency and the encoded request), so two calls written
+  differently but meaning the same share one answer. `verify` skips the read and
+  refreshes the entry. Booking options are never cached: they are what a
+  person is about to buy.
+- **Selections are self-contained.** A flight's `Selection` holds the search,
+  the flights chosen so far and Google's token, so the next call needs nothing
+  from the server. The MCP tools pass it as a compact handle (Brotli-compressed
+  JSON, base64url); it holds no secret.
+
+## Gotcha: a bare gRPC 13 is not only the User-Agent
+
+The bare `[13]` (no `ErrorResponse` detail) was first seen only for a
+User-Agent not in the `Mozilla/5.0 (compatible; ...)` form. On 2026-11-20 the
+C# client, with the right User-Agent, got the same bare `[13]` for a one-way
+price graph (`GetCalendarGraph` with no trip length,
+`[null, filter, [from, to], null, null]`), 12 minutes after a search it sent
+was answered. So a bare 13 can also mean "a request the service will not
+take". The client treats it as a refusal either way, and offers no one-way
+calendar until a capture shows the page's own request.
 
 ## No browser: the client is direct HTTP, with an honest-bot User-Agent
 

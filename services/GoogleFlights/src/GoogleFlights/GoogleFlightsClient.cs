@@ -90,9 +90,10 @@ public sealed class GoogleFlightsClient : IDisposable
     }
 
     /// <summary>
-    /// The lowest price per date over a range. A round trip keeps its trip length, or, with
+    /// The lowest price per date over a range, for a round trip: it keeps its trip length, or, with
     /// <see cref="CalendarRequest.ReturnFrom"/> and <see cref="CalendarRequest.ReturnTo"/>, prices every
-    /// departure-by-return pair. Multi-city trips have no calendar.
+    /// departure-by-return pair. One-way trips are not supported yet (no recorded request); multi-city trips have
+    /// no calendar.
     /// </summary>
     public async Task<PriceCalendar> GetCalendarAsync(CalendarRequest request, bool verify = false, CancellationToken ct = default)
     {
@@ -100,6 +101,13 @@ public sealed class GoogleFlightsClient : IDisposable
         var search = Normalize(request.Search ?? throw new ArgumentException("The calendar needs a search.", nameof(request)));
         if (search.TripType == TripType.MultiCity)
             throw new ArgumentException("Google Flights has no price calendar for multi-city trips.", nameof(request));
+        if (search.TripType == TripType.OneWay)
+        {
+            // The page was never recorded asking for a one-way calendar, and the one form tried was refused
+            // (protocol.md section 5). Until a capture shows the page's own request, the client does not guess.
+            throw new ArgumentException(
+                "The price calendar is available for round trips only: give a trip length or a return date range.", nameof(request));
+        }
         if (request.DepartureTo < request.DepartureFrom)
             throw new ArgumentException("The departure range ends before it starts.", nameof(request));
 
@@ -119,9 +127,9 @@ public sealed class GoogleFlightsClient : IDisposable
         }
         else
         {
-            int? tripDays = search.TripType == TripType.RoundTrip ? search.Legs[1].Date.DayNumber - search.Legs[0].Date.DayNumber : null;
             rpc = "GetCalendarGraph";
-            inner = RequestEncoder.CalendarGraph(search, request.DepartureFrom, request.DepartureTo, tripDays);
+            inner = RequestEncoder.CalendarGraph(search, request.DepartureFrom, request.DepartureTo,
+                search.Legs[1].Date.DayNumber - search.Legs[0].Date.DayNumber);
         }
 
         var normalized = request with { Search = search };
