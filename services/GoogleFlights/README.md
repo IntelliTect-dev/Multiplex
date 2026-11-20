@@ -63,11 +63,13 @@ var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Select
 
 ## Limits and safety
 
-- **Google throttles.** A block applies to the whole network for hours. The
-  client paces itself (4 requests back to back, then one per 20 seconds),
-  caches answers for 12 minutes, never retries a refusal, and after one stops
-  sending anything for 15 minutes (doubling with each refusal in a row, up to 6
-  hours). See `NOTES.md`.
+- **Google throttles, and allows this client little.** A block applies to the
+  whole network. On 2026-11-20 Google started refusing the client after about
+  16 requests from the network that day; the allowance and how long a refusal
+  lasts are not measured yet. The client paces itself (4 requests back to back,
+  then one per 20 seconds), caches answers for 12 minutes, never retries a
+  refusal, and after one stops sending anything for 15 minutes (doubling with
+  each refusal in a row, up to 6 hours). See `NOTES.md`.
 - **Identity.** The client says who it is:
   `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`. It
   does not pose as a browser and sends no browser headers or page tokens.

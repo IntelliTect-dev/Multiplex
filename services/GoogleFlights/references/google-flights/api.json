@@ -23,6 +23,10 @@
       "entryCount": 1
     },
     {
+      "harFile": "google-flights-direct-client-search-refused-2026-11-20.har",
+      "entryCount": 1
+    },
+    {
       "harFile": "google-flights-direct-honest-bot-user-agent-2026-11-20.har",
       "entryCount": 2
     },
@@ -1249,7 +1253,7 @@
       "host": "www.google.com",
       "method": "POST",
       "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
-      "observedEntries": 50,
+      "observedEntries": 51,
       "statuses": [
         200
       ],
@@ -1313,10 +1317,14 @@
         {
           "name": "f.req",
           "in": "param",
-          "observedIn": 50,
+          "observedIn": 51,
           "witnesses": [
             {
               "harFile": "google-flights-direct-client-search-2026-11-20.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-direct-client-search-refused-2026-11-20.har",
               "entry": 0
             },
             {
@@ -1888,11 +1896,15 @@
             "query:soc-device",
             "query:soc-platform"
           ],
-          "detail": "query:_reqid, query:bl, query:f.sid, query:gl, query:hl, query:rt, query:soc-app, query:soc-device, query:soc-platform appear in some observed calls and not others (of 50 observed); whether that is a per-call difference or a change on the provider side is not established by these captures",
+          "detail": "query:_reqid, query:bl, query:f.sid, query:gl, query:hl, query:rt, query:soc-app, query:soc-device, query:soc-platform appear in some observed calls and not others (of 51 observed); whether that is a per-call difference or a change on the provider side is not established by these captures",
           "closedBy": "capture the same operation again and compare -- one corpus cannot tell the two apart",
           "witnesses": [
             {
               "harFile": "google-flights-direct-client-search-2026-11-20.har",
+              "entry": 0
+            },
+            {
+              "harFile": "google-flights-direct-client-search-refused-2026-11-20.har",
               "entry": 0
             },
             {
@@ -1957,6 +1969,10 @@
       "witnesses": [
         {
           "harFile": "google-flights-direct-client-search-2026-11-20.har",
+          "entry": 0
+        },
+        {
+          "harFile": "google-flights-direct-client-search-refused-2026-11-20.har",
           "entry": 0
         },
         {

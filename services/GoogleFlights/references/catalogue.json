@@ -406,7 +406,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T20:49:01.000Z"
+    "CapturedUtc": "2026-11-20T20:49:01Z"
   },
   {
     "Action": "direct-client-search",
@@ -428,7 +428,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T21:07:58.000Z"
+    "CapturedUtc": "2026-11-20T21:07:58Z"
   },
   {
     "Action": "direct-one-way-graph-refused",
@@ -450,6 +450,28 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T21:19:31.000Z"
+    "CapturedUtc": "2026-11-20T21:19:31Z"
+  },
+  {
+    "Action": "direct-client-search-refused",
+    "Description": "The same one-way search the C# client had answered at 13:07 local (direct-client-search), sent again after the 15-minute cool-down that followed the refused one-way graph: refused with a bare gRPC 13, same User-Agent and headers. About 16 direct requests had left this network that day. So the honest-bot client is being refused on this network, not one request form; live testing stopped for the day.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-client-search-refused-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 131,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:36:37.000Z"
   }
 ]
