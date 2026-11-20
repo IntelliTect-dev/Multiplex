@@ -10,6 +10,71 @@ format, so Claude Code, GitHub Copilot, OpenAI Codex and Gemini CLI can all
 use it. It also ships as **PowerShell commands** you can run yourself. It works
 in any folder, including an empty one.
 
+## What it does
+
+Many sites have an API behind their pages but publish no description of it.
+The skill works that API out from the site's own traffic, in two stages. The
+first always runs and is a complete result on its own. The second is optional,
+for when you want a client.
+
+![The two stages of the web-api-discovery skill. Stage 1 always runs: a target URL and a one-line purpose go through Discover, Record the session, Scrub and verify, and Catalogue, and produce an API reference. Recording and scrubbing happen inside a private capture store that is never committed. Stage 2 is optional: Confirm scope, Classify auth, Group endpoints, Generate code, and Tests and security gates produce a buildable .NET project with a typed C# client, a PowerShell module and an MCP server.](docs/web-api-discovery-overview.png)
+
+### Stage 1: capture → API reference (always runs)
+
+You provide the site's URL and one sentence saying what the recording is for
+(for example, "sign in, create a post, then delete it"). Nothing else is asked
+before recording.
+
+1. **Discover.** The skill checks that the site responds and looks for its
+   sign-in provider (Google, Microsoft or Facebook, for example).
+2. **Record.** Chrome opens and, signed in as a dedicated test account (never
+   your own), you do the things worth documenting. Alternatively, with `-AI`,
+   an agent browses for you and is told to keep a human pace (1.5 to 4 seconds
+   between page loads, at most 12 a minute).
+3. **Scrub and verify.** Tokens, cookies and personal data are replaced with
+   placeholders. A separate verification pass then checks the result, and the
+   capture goes no further unless it passes.
+4. **Catalogue.** An AI writes down what was done to produce each capture (the
+   one thing a recording cannot say about itself). The tooling, not the AI,
+   counts the methods, endpoints and request bodies in the recording and checks
+   each row against them.
+
+The result is a scrubbed API reference you can review and commit. The raw
+recording, however, carries live session cookies, so it stays in a private
+capture store that git ignores. Only scrubbed, verified data leaves it.
+
+### Stage 2: generate a .NET wrapper (optional)
+
+Before generating anything, the skill confirms the project name, namespace and
+output folder; the auth model (or leaves it to the detector); whether the site
+has a mobile app worth including; and a GitHub issue that describes the scope.
+Then it:
+
+1. **Classifies auth** from the traffic: cookie, cookie plus CSRF token, bearer
+   token, SSO (Google, Microsoft or Facebook) or OAuth with PKCE.
+2. **Groups endpoints** by method and path template, merges the response shapes
+   it saw, and works out which query parameters are constants and which a
+   caller chooses.
+3. **Generates code**: a .NET solution with a typed C# client, a PowerShell
+   module and an MCP server, plus sign-in and a README. Re-running it updates
+   only the generated files, so code you add alongside them survives.
+4. **Adds tests and security gates**: unit, functional and Pester tests, plus
+   gitleaks secret scanning in a pre-commit hook and in CI.
+
+Finally, it initializes the project as its own git repository.
+
+**Throughout**, the skill records only as a test account. The reason is that
+the scrub is a safeguard, not a guarantee (at worst, a test account's capture
+discloses fake data). It uses no stealth measures and solves no CAPTCHAs; when
+a site blocks or challenges, it hands the browser to you. It honours the site's
+throttling and never invents an endpoint the recording didn't show. To keep
+secrets out of commits, raw captures are git-ignored, and the generated project
+scans every commit with gitleaks. See
+[Pacing and throttling](#pacing-and-throttling) for the details.
+
+The diagram is also available as an editable PowerPoint slide:
+[`docs/web-api-discovery-overview.pptx`](docs/web-api-discovery-overview.pptx).
+
 ## Install
 
 Requirements: PowerShell 7, git, Node.js 20+, Playwright
@@ -125,6 +190,7 @@ skills/web-api-discovery/   the skill: SKILL.md plus all its tooling
 WebApiDiscovery.psd1/.psm1  the PowerShell module (commands generated from the scripts)
 Install.ps1                 links the skill and the module from this clone
 tests/                      Pester suites; they also run the Node tests
+docs/                       the overview diagram, as a picture and as editable PowerPoint
 docs/designs/               design notes from the skill's history
 ```
 
