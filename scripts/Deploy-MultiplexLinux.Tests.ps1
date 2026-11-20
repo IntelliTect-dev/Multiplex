@@ -369,6 +369,19 @@ Describe 'what the Linux host publishes' {
         }
     }
 
+    It 'gives the owner one sign-in link that lasts longer than the deploy waits, not a new one every minute' {
+        # The Tailscale container gives up on an unfinished sign-in after TS_BOOT_TIMEOUT (60 s by default)
+        # and restarts with a new link; a link opened after that adds a dead device that takes the name.
+        $compose = Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw
+        $found = [regex]::Match($compose, '(?m)^\s+TS_BOOT_TIMEOUT:\s*"?(\d+)m"?\s*$')
+        $found.Success | Should -BeTrue -Because 'compose.yaml must set TS_BOOT_TIMEOUT in minutes'
+        [int]$found.Groups[1].Value | Should -BeGreaterThan 15 -Because 'Invoke-MultiplexLinuxDeploy waits 15 minutes for the sign-in'
+    }
+
+    It 'signs a device in once: a restart of a signed-in device never asks for a new sign-in' {
+        Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw | Should -Match '(?m)^\s+TS_AUTH_ONCE:\s*"true"\s*$'
+    }
+
     It 'runs the server inside the Tailscale device''s network, so Serve reaches it on loopback' {
         Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw | Should -Match '(?m)^\s+network_mode:\s*service:tailscale\s*$'
     }
