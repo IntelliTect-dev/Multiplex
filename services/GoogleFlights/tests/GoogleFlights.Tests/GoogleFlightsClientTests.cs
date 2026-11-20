@@ -387,6 +387,22 @@ public class GoogleFlightsClientTests
     }
 
     [Fact]
+    public async Task An_error_code_the_client_does_not_know_is_treated_as_a_refusal()
+    {
+        // 2026-11-20: a refused network answered one search with gRPC 9, never seen before. Unknown means "stop".
+        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[9]]]\n");
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        Assert.Equal(ThrottleReason.Refused, e.Reason);
+        Assert.Contains("gRPC 9", e.Message, StringComparison.Ordinal);
+
+        var again = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        Assert.Equal(ThrottleReason.CoolingDown, again.Reason);
+        Assert.Single(_google.Sent);
+    }
+
+    [Fact]
     public async Task A_throttle_status_wins_over_a_body_that_does_not_parse()
     {
         // Re-review suggestion: a 429 whose body looks framed but is garbled is still a throttle, with a cool-down.
