@@ -84,8 +84,9 @@ The app registration, once, in the Microsoft Entra admin center:
    for each address the host uses (the installer prints it), and
    `http://localhost:5190/signin-microsoft` for testing on the host.
 3. **Token configuration > Add optional claim > ID:** `email` and `xms_edov`.
-   Without `xms_edov` Microsoft does not say the email is verified, and
-   Multiplex refuses the sign-in.
+   A work or school account gets in only when `xms_edov` says its tenant
+   verified the address. A personal account's address counts as verified
+   (Microsoft proves it at sign-up and never sends `xms_edov` for them).
 4. **Certificates & secrets:** a client secret. Note when it expires.
 
 ## Running it on a Linux server

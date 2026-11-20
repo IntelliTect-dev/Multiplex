@@ -84,7 +84,8 @@ public sealed class MicrosoftSignInTests : IDisposable
         var browser = _app.Browser();
         var authorize = await AuthorizeUrlAsync();
         var (_, signIn) = await ChallengeAsync(browser, authorize);
-        _app.Microsoft.NextIdToken = _app.Microsoft.IdToken(signIn["nonce"], TestPeople.Owner, verified: true, tenant: FakeMicrosoft.PersonalTenant);
+        // As Microsoft sends it: xms_edov is for Entra ID only, so a personal account never carries it (#80, N2).
+        _app.Microsoft.NextIdToken = _app.Microsoft.IdToken(signIn["nonce"], TestPeople.Owner, verified: null, tenant: FakeMicrosoft.PersonalTenant);
 
         var back = await ReturnFromMicrosoftAsync(browser, signIn);
 
