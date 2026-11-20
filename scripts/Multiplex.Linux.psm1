@@ -6,13 +6,14 @@
 Set-StrictMode -Version Latest
 
 # Everything on the server lives in ~/multiplex: compose.yaml, serve.json, .env (which image runs) and
-# multiplex.env (the server's address and passcode hash). Uploads are unpacked in ~/multiplex/incoming.
+# multiplex.env (the server's address). identity.env, the Microsoft sign-in the owner keeps there
+# (#80), is never written, read or uploaded by the deploy. Uploads are unpacked in ~/multiplex/incoming.
 $script:RemoteRoot = 'multiplex'
 
 function ConvertTo-MultiplexEnvFile {
     <#
     KEY='value' lines with Linux line endings, as Docker Compose reads them. Single quotes make Compose
-    take a value literally, so the $ signs in a passcode hash are never expanded as variables. A value
+    take a value literally, so a $ in a value is never expanded as a variable. A value
     that cannot be single-quoted (a quote or a line break in it) is refused, not written wrongly.
     #>
     [CmdletBinding()] [OutputType([string])]
@@ -27,14 +28,14 @@ function ConvertTo-MultiplexEnvFile {
 
 function Get-MultiplexLinuxServerEnvironment {
     <#
-    The settings that differ per server: its public address and the owner passcode's hash. The rest
-    (listening address, data folder, browser, display) is fixed in deploy/linux/Dockerfile.
+    The settings that differ per server: its public address. The rest (listening address, data
+    folder, browser, display) is fixed in deploy/linux/Dockerfile, and the Microsoft sign-in is in
+    the identity.env the owner keeps on the server.
     #>
     [CmdletBinding()] [OutputType([System.Collections.Specialized.OrderedDictionary])]
-    param([Parameter(Mandatory)] [string] $PublicBaseUrl, [Parameter(Mandatory)] [string] $PasscodeHash)
+    param([Parameter(Mandatory)] [string] $PublicBaseUrl)
     return [ordered]@{
-        Multiplex__PublicBaseUrl      = $PublicBaseUrl.TrimEnd('/')
-        Multiplex__Gate__PasscodeHash = $PasscodeHash
+        Multiplex__PublicBaseUrl = $PublicBaseUrl.TrimEnd('/')
     }
 }
 
@@ -184,7 +185,6 @@ function Invoke-MultiplexLinuxDeploy {
         [Parameter(Mandatory)] [scriptblock] $Remote,
         [Parameter(Mandatory)] [scriptblock] $Upload,
         [Parameter(Mandatory)] [scriptblock] $Publish,
-        [Parameter(Mandatory)] [string] $PasscodeHash,
         [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9_.-]+$')] [string] $Tag,
         [string] $DeployFolder = (Join-Path $PSScriptRoot '..' 'deploy' 'linux'),
         [TimeSpan] $LoginTimeout = [TimeSpan]::FromMinutes(15),
@@ -236,7 +236,7 @@ docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
     # Compose reads both files to load the project, even to start only the Tailscale device. A first
     # deploy has neither yet: give it placeholders, which the start step below replaces. A redeploy
     # keeps the running ones, so the running server is untouched until then.
-    $placeholder = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl 'http://localhost:5190' -PasscodeHash $PasscodeHash
+    $placeholder = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl 'http://localhost:5190'
     Invoke-MultiplexLinuxStep $Remote 'install-files' -Failure 'Could not put the compose files in ~/multiplex.' -Body @"
 cp -f '$root/incoming/compose.yaml' '$root/incoming/serve.json' '$root/incoming/chrome-seccomp.json' '$root/'
 if [ ! -f '$root/.env' ]; then
@@ -280,7 +280,7 @@ fi
     $baseUrl = "https://$($status.DnsName)"
 
     Write-Host "Starting the server at $baseUrl..."
-    $settings = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl $baseUrl -PasscodeHash $PasscodeHash
+    $settings = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl $baseUrl
     # The pull comes first and may fail (no registry): the device then keeps the image it has, and the
     # settings are rewritten only when the server is about to start with them.
     Invoke-MultiplexLinuxStep $Remote 'start' -Failure 'The server did not start.' -Body @"

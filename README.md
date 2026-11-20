@@ -73,7 +73,8 @@ server; each connector belongs to the person who added it.
 
 Set them on the host, never in the repository: on Windows as User
 environment variables (`Multiplex__Identity__Microsoft__ClientId` and so on;
-the installer shows the lines), then run the installer again.
+the installer shows the lines), then run the installer again; on a Linux
+server in `~/multiplex/identity.env` (see below).
 
 The app registration, once, in the Microsoft Entra admin center:
 
@@ -110,8 +111,15 @@ a Tailscale device named `multiplex` that serves it over HTTPS at
 - **The first deploy** prints a Tailscale link: open it and sign in to add the
   `multiplex` device to your tailnet. The tailnet must issue HTTPS certificates
   (Tailscale admin console, DNS page).
-- **The passcode** is the one this PC already keeps (`./scripts/Install-Multiplex.ps1
-  -ShowPasscode`), or a new one kept the same way. Only its hash is sent.
+- **Sign-in** ([Signing in to Multiplex](#signing-in-to-multiplex)) is kept on
+  the server in `~/multiplex/identity.env`, which you write yourself, mode 0600:
+  `Multiplex__Identity__Microsoft__ClientId=...`,
+  `Multiplex__Identity__Microsoft__ClientSecret=...` and
+  `Multiplex__Identity__AllowedEmails=...`. The deploy never writes, reads or
+  uploads it. After editing it, run `cd ~/multiplex && docker compose up -d` on
+  the server (`docker compose up -d --force-recreate multiplex` if it does not
+  restart). Register `https://multiplex.<your-tailnet>.ts.net/signin-microsoft`
+  as a redirect URI. It is a plain file on disk, protected by its mode only.
 - **Updating** is running the script again. Until the new image has built and the
   Tailscale device is up, the running server is left as it was. The server keeps
   the last three images (`docker image ls multiplex-server`); to go back to one of

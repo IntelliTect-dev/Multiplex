@@ -15,8 +15,10 @@ Tailscale device is up, the running server is left as it was.
 The server needs an x64 processor, Docker with the Compose plugin, and must accept this PC's SSH key
 for -Target; the SSH user must be allowed to run docker. This PC needs the .NET SDK, ssh and scp.
 
-The owner passcode is the one this PC already keeps (show it with ./scripts/Install-Multiplex.ps1
--ShowPasscode); if there is none, one is made and kept the same way. Only its hash goes to the server.
+People sign in to Multiplex with Microsoft (#80). The owner keeps that setup on the server, in
+~/multiplex/identity.env (mode 0600): Multiplex__Identity__Microsoft__ClientId,
+Multiplex__Identity__Microsoft__ClientSecret and Multiplex__Identity__AllowedEmails. The deploy never
+writes, reads or uploads it; after editing it, run `cd ~/multiplex && docker compose up -d` there.
 
 On the first deploy the Tailscale device prints a link: open it and sign in to Tailscale to add the
 device to your tailnet. The tailnet must issue HTTPS certificates (Tailscale admin console, DNS page).
@@ -78,22 +80,9 @@ If the server asks for a password, add this PC's key once (it asks for the serve
 "@
 }
 
-$root = Get-MultiplexRoot
-$secretPath = Join-Path $root 'passcode.dpapi'
-if (Test-Path -LiteralPath $secretPath) {
-    $passcode = Read-MultiplexPasscodeSecret -Path $secretPath
-    Write-Host "Using the owner passcode this PC keeps (show it with ./scripts/Install-Multiplex.ps1 -ShowPasscode)."
-}
-else {
-    $passcode = New-MultiplexPasscode
-    Save-MultiplexPasscodeSecret -Passcode $passcode -Path $secretPath
-    Write-Host "A new owner passcode was made and kept on this PC. Show it with: ./scripts/Install-Multiplex.ps1 -ShowPasscode"
-}
-$hash = ConvertTo-MultiplexPasscodeHash -Passcode $passcode
-
 $commit = if (Get-Command git -ErrorAction SilentlyContinue) { (& git -C $repoRoot rev-parse --short HEAD 2>$null) ?? 'local' } else { 'local' }
 $tag = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), $commit
-$result = Invoke-MultiplexLinuxDeploy -Remote $remote -Upload $upload -Publish $publish -PasscodeHash $hash -Tag $tag
+$result = Invoke-MultiplexLinuxDeploy -Remote $remote -Upload $upload -Publish $publish -Tag $tag
 
 Write-Host "Checking $($result.BaseUrl) from this PC (the first HTTPS request waits for its certificate)..."
 $deadline = [DateTime]::UtcNow.AddMinutes(2)
