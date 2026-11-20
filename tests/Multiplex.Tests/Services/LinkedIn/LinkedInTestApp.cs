@@ -47,7 +47,7 @@ public sealed class FakeLinkedIn : ILinkedInApiFactory
 
     public FakeLinkedInAccount Account(string accountId) => _accounts.GetOrAdd(accountId, _ => new FakeLinkedInAccount());
 
-    public Task<ILinkedInApi> CreateAsync(string accountId, IServiceProvider requestServices, CancellationToken ct)
+    public Task<ILinkedInApi> CreateAsync(string owner, string accountId, IServiceProvider requestServices, CancellationToken ct)
         => Task.FromResult<ILinkedInApi>(Account(accountId));
 }
 

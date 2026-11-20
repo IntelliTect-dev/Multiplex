@@ -6,7 +6,7 @@ namespace Multiplex.Web.SignIn;
 
 /// <summary>
 /// The live sign-in attempts in flight: at most one per pending authorization (one live
-/// browser per gate session) and at most <see cref="SignInOptions.MaxLiveBrowsers"/> overall.
+/// browser per connection being added) and at most <see cref="SignInOptions.MaxLiveBrowsers"/> overall.
 /// Ended attempts are kept for a while so a returning phone page still learns the outcome.
 /// </summary>
 public sealed class LiveSignInRegistry(
@@ -27,12 +27,12 @@ public sealed class LiveSignInRegistry(
     /// Starts a live sign-in for <paramref name="pendingId"/>, or returns the one already running
     /// for it. Returns null when every live browser slot is taken.
     /// </summary>
-    public LiveSignInAttempt? StartOrResume(ISiteSignInDefinition definition, string pendingId)
+    public LiveSignInAttempt? StartOrResume(ISiteSignInDefinition definition, string pendingId, string owner)
     {
         Sweep();
         lock (_startLock)
         {
-            if (FindForPending(pendingId) is { CanBeReplaced: false } existing && existing.Slug == definition.Slug)
+            if (FindForPending(pendingId) is { CanBeReplaced: false } existing && existing.Slug == definition.Slug && existing.Owner == owner)
                 return existing;
 
             var slot = manager.TryAcquireLiveSlot();
@@ -45,7 +45,7 @@ public sealed class LiveSignInRegistry(
             LiveSignInAttempt attempt;
             try
             {
-                attempt = new LiveSignInAttempt(definition, pendingId, new LiveSignInServices(
+                attempt = new LiveSignInAttempt(definition, pendingId, owner, new LiveSignInServices(
                     manager, store, index, options.Value,
                     services.GetService<IAuthorizationCompleter>, time, logger));
                 attempt.Start(slot);

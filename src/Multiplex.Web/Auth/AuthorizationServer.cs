@@ -30,8 +30,11 @@ public sealed partial class AuthorizationServer(
 
     /// <param name="clientAddress">The caller's rate-limit key (<see cref="RequestOrigin.ClientAddress"/>); only a
     /// keyed hash of it is stored, to cap how many pending authorizations one caller holds.</param>
-    public async Task<AuthorizeOutcome> AuthorizeAsync(IQueryCollection query, PathString pathBase, string clientAddress, CancellationToken ct)
+    /// <param name="owner">The person signed in to Multiplex who is connecting; the grant will be theirs.</param>
+    public async Task<AuthorizeOutcome> AuthorizeAsync(
+        IQueryCollection query, PathString pathBase, string clientAddress, string owner, CancellationToken ct)
     {
+        ArgumentException.ThrowIfNullOrEmpty(owner);
         // Until the client and redirect URI are trusted, errors are shown here, never redirected (RFC 6749 4.1.2.1).
         if (query["client_id"] is not [{ Length: > 0 } clientId])
         {
@@ -84,7 +87,7 @@ public sealed partial class AuthorizationServer(
         var caller = OAuthCrypto.CallerKey(clientAddress);
         var pending = new PendingAuthorizationRecord(
             OAuthCrypto.NewId(), endpoint.Slug, client.ClientId, client.ClientName, redirectUri, state, challenge,
-            endpoint.Resource, endpoint.Slug, now + AuthLifetimes.PendingAuthorization, caller);
+            endpoint.Resource, endpoint.Slug, now + AuthLifetimes.PendingAuthorization, caller, owner);
         var refusal = await store.WriteAsync(st =>
         {
             // Counted after pruning, so expired authorizations make room again.
@@ -110,18 +113,20 @@ public sealed partial class AuthorizationServer(
     {
         var now = time.GetUtcNow();
         var pending = await store.ReadAsync(s => s.PendingAuthorizations.GetValueOrDefault(pendingId), ct);
-        return pending is null || pending.ExpiresAt <= now
+        return pending is null || pending.ExpiresAt <= now || pending.Owner is null
             ? null
             : new PendingAuthorization(pending.Id, pending.Site, pending.ClientName, pending.ExpiresAt,
-                Uri.TryCreate(pending.RedirectUri, UriKind.Absolute, out var back) ? back.Authority : null);
+                Uri.TryCreate(pending.RedirectUri, UriKind.Absolute, out var back) ? back.Authority : null,
+                pending.Owner, endpoints.FindBySlug(pending.Site)?.DisplayName ?? pending.Site);
     }
 
     /// <exception cref="InvalidOperationException">The pending authorization is unknown, already ended, or expired.</exception>
-    /// <exception cref="ArgumentException">The account belongs to a different site than the pending authorization.</exception>
-    public async Task<Uri> CompleteAsync(string pendingId, SiteAccount account, CancellationToken ct)
+    /// <exception cref="ArgumentException">Another person started the authorization; the account belongs to a different
+    /// site; or an account was given for a service that uses none, or none for one that does.</exception>
+    public async Task<Uri> CompleteAsync(string pendingId, string owner, SiteAccount? account, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(account);
-        ArgumentException.ThrowIfNullOrEmpty(account.AccountId);
+        ArgumentException.ThrowIfNullOrEmpty(owner);
+        if (account is not null) ArgumentException.ThrowIfNullOrEmpty(account.AccountId);
 
         var now = time.GetUtcNow();
         var code = OAuthCrypto.NewToken();
@@ -129,28 +134,28 @@ public sealed partial class AuthorizationServer(
         {
             var problem = !s.PendingAuthorizations.TryGetValue(pendingId, out var p) ? "unknown"
                 : p.ExpiresAt <= now ? "expired"
-                : !string.Equals(p.Site, account.Site, StringComparison.Ordinal) ? "site"
-                : null;
+                : !string.Equals(p.Owner, owner, StringComparison.Ordinal) ? "owner"
+                : AccountProblem(p.Site, account);
             if (problem is null)
             {
                 s.PendingAuthorizations.Remove(pendingId);
                 s.AuthorizationCodes[OAuthCrypto.Hash(code)] = new AuthorizationCodeRecord(
-                    p!.ClientId, p.RedirectUri, p.CodeChallenge, p.Resource, p.Scope, p.Site, account.AccountId,
-                    now + AuthLifetimes.AuthorizationCode);
+                    p!.ClientId, p.RedirectUri, p.CodeChallenge, p.Resource, p.Scope, p.Site, account?.AccountId,
+                    now + AuthLifetimes.AuthorizationCode, Owner: owner);
             }
             return new StoreWrite<(PendingAuthorizationRecord?, string?)>((p, problem), Changed: problem is null);
         }, ct);
 
         switch (problem)
         {
+            case null: break;
             case "unknown": throw new InvalidOperationException("The pending authorization is unknown or has already ended.");
             case "expired": throw new InvalidOperationException("The pending authorization has expired.");
-            case "site":
-                throw new ArgumentException(
-                    $"The account is for site '{account.Site}', but the authorization is for '{pending!.Site}'.", nameof(account));
+            case "owner": throw new ArgumentException("The pending authorization was started by another person.", nameof(owner));
+            default: throw new ArgumentException(problem, nameof(account));
         }
 
-        LogCompleted(logger, pending!.ClientId, pending.Site, account.AccountId);
+        LogCompleted(logger, pending!.ClientId, pending.Site, account?.AccountId ?? "(none)");
         return new Uri(QueryHelpers.AddQueryString(pending.RedirectUri, new Dictionary<string, string?>
         {
             ["code"] = code,
@@ -174,6 +179,20 @@ public sealed partial class AuthorizationServer(
 
         LogFailed(logger, pending.ClientId, pending.Site, error);
         return new Uri(ErrorRedirect(pending.RedirectUri, error, description, pending.State));
+    }
+
+    /// <summary>Why <paramref name="account"/> cannot complete an authorization for <paramref name="site"/>, or null.</summary>
+    private string? AccountProblem(string site, SiteAccount? account)
+    {
+        var needsAccount = endpoints.FindBySlug(site)?.NeedsSiteAccount ?? true;
+        return (needsAccount, account) switch
+        {
+            (true, null) => $"The service '{site}' needs a site account.",
+            (false, not null) => $"The service '{site}' uses no site account.",
+            (true, { } a) when !string.Equals(a.Site, site, StringComparison.Ordinal) =>
+                $"The account is for site '{a.Site}', but the authorization is for '{site}'.",
+            _ => null,
+        };
     }
 
     private string ErrorRedirect(string redirectUri, string error, string description, string? state)

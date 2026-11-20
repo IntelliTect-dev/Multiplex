@@ -9,11 +9,11 @@ namespace Multiplex.Web.SignIn;
 public sealed class SiteRefreshException(string message, Exception? inner = null) : Exception(message, inner);
 
 /// <summary>
-/// <see cref="ISiteSessionRefresher"/>: relaunches the account's persistent profile, loads the
+/// <see cref="ISiteSessionRefresher"/>: relaunches the person's persistent profile for the account, loads the
 /// site's refresh page and re-reads the session. Three outcomes, never more:
 /// signed in → new snapshot stored and returned; on the site's login page → session removed,
 /// grants revoked, browser profile deleted, <c>null</c>; anything else (block page, timeout, launch failure) →
-/// <see cref="SiteRefreshException"/> with nothing touched. One refresh per account at a time,
+/// <see cref="SiteRefreshException"/> with nothing touched. One refresh per person and account at a time,
 /// and a repeat within <see cref="SignInOptions.RefreshCooldown"/> returns the last result.
 /// </summary>
 public sealed class SiteSessionRefresher(
@@ -28,24 +28,24 @@ public sealed class SiteSessionRefresher(
 {
     private readonly ConcurrentDictionary<string, LastRefresh> _last = new(StringComparer.Ordinal);
 
-    public async Task<string?> RefreshAsync(string site, string accountId, CancellationToken ct)
+    public async Task<string?> RefreshAsync(string owner, string site, string accountId, CancellationToken ct)
     {
         var definition = definitions.FirstOrDefault(d => string.Equals(d.Slug, site, StringComparison.OrdinalIgnoreCase))
             ?? throw new SiteRefreshException($"No sign-in definition for site '{site}'.");
-        var key = definition.Slug + "\n" + accountId;
+        var key = SignInPaths.CheckOwner(owner) + "\n" + definition.Slug + "\n" + accountId;
 
-        using (await manager.LockAccountAsync(definition.Slug, accountId, ct))
+        using (await manager.LockAccountAsync(owner, definition.Slug, accountId, ct))
         {
             if (_last.TryGetValue(key, out var last) && time.GetUtcNow() - last.At < options.Value.RefreshCooldown)
             {
                 if (last.Failure is not null)
                     throw new SiteRefreshException("The last refresh for this account failed moments ago; try again shortly.", last.Failure);
-                return await store.GetAsync(definition.Slug, accountId, ct);
+                return await store.GetAsync(owner, definition.Slug, accountId, ct);
             }
 
             try
             {
-                var snapshot = await RefreshLockedAsync(definition, accountId, ct);
+                var snapshot = await RefreshLockedAsync(owner, definition, accountId, ct);
                 _last[key] = new LastRefresh(time.GetUtcNow(), null);
                 return snapshot;
             }
@@ -57,10 +57,10 @@ public sealed class SiteSessionRefresher(
         }
     }
 
-    private async Task<string?> RefreshLockedAsync(ISiteSignInDefinition definition, string accountId, CancellationToken ct)
+    private async Task<string?> RefreshLockedAsync(string owner, ISiteSignInDefinition definition, string accountId, CancellationToken ct)
     {
         var site = definition.Slug;
-        var profile = manager.Paths.AccountProfile(site, accountId);
+        var profile = manager.Paths.AccountProfile(owner, site, accountId);
         if (!Directory.Exists(profile))
             throw new SiteRefreshException($"No browser profile is kept for this {definition.DisplayName} account.");
 
@@ -86,21 +86,21 @@ public sealed class SiteSessionRefresher(
                 {
                     logger.LogWarning("The {Site} profile for account {AccountId} is now signed in as {Other}; treating {AccountId} as signed out.",
                         site, accountId, account.AccountId, accountId);
-                    await SignedOutAsync(site, accountId, ct);
+                    await SignedOutAsync(owner, site, accountId, ct);
                     signedOut = true;
                     return null;
                 }
 
                 var snapshot = await definition.CaptureSnapshotAsync(page, ct);
-                await store.SetAsync(site, accountId, snapshot, ct);
-                await index.UpsertAsync(account, ct);
+                await store.SetAsync(owner, site, accountId, snapshot, ct);
+                await index.UpsertAsync(owner, account, ct);
                 logger.LogInformation("Refreshed the {Site} session for account {AccountId}.", site, accountId);
                 return snapshot;
             }
 
             if (outcome.SignedOut)
             {
-                await SignedOutAsync(site, accountId, ct);
+                await SignedOutAsync(owner, site, accountId, ct);
                 signedOut = true;
                 return null;
             }
@@ -131,13 +131,13 @@ public sealed class SiteSessionRefresher(
         }
     }
 
-    private async Task SignedOutAsync(string site, string accountId, CancellationToken ct)
+    private async Task SignedOutAsync(string owner, string site, string accountId, CancellationToken ct)
     {
         logger.LogWarning("The {Site} account {AccountId} is signed out; removing its session and revoking its grants.", site, accountId);
-        await store.RemoveAsync(site, accountId, ct);
-        await index.RemoveAsync(site, accountId, ct);
+        await store.RemoveAsync(owner, site, accountId, ct);
+        await index.RemoveAsync(owner, site, accountId, ct);
         if (services.GetService<IGrantRevoker>() is { } revoker)
-            await revoker.RevokeAccountAsync(site, accountId, ct);
+            await revoker.RevokeAccountAsync(owner, site, accountId, ct);
         else
             logger.LogWarning("No IGrantRevoker is registered; grants for {Site} account {AccountId} were not revoked.", site, accountId);
     }

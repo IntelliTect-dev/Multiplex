@@ -58,7 +58,7 @@ public class AuthCapacityTests
         Assert.Equal(AuthTestApp.BaseUrl, query["iss"]);
 
         // An authorization already started still finishes, which frees its place.
-        await driver.Completer.CompleteAsync(pendingId, Account(), CancellationToken.None);
+        await driver.Completer.CompleteAsync(pendingId, await driver.OwnerAsync(), Account(), CancellationToken.None);
         await driver.StartAsync(AuthorizeParameters(clientId, NewPkce()));
     }
 

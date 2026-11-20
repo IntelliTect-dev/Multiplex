@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 
 namespace Multiplex.Tests.SignIn;
@@ -12,6 +13,8 @@ namespace Multiplex.Tests.SignIn;
 /// </summary>
 public sealed class StaleProfileTests
 {
+    private static readonly string Owner = TestPeople.OwnerOf();
+
     [Fact]
     public async Task Server_start_deletes_leftover_sign_in_profiles_and_keeps_account_profiles()
     {
@@ -32,23 +35,25 @@ public sealed class StaleProfileTests
     }
 
     [Fact]
-    public async Task Sweep_covers_every_site_and_leaves_other_folders_alone()
+    public async Task Sweep_covers_every_site_and_every_person_and_leaves_other_folders_alone()
     {
         var dataPath = Path.Combine(Path.GetTempPath(), "multiplex-sweep-tests", Guid.NewGuid().ToString("N"));
         try
         {
             var (sweeper, paths) = Sweeper(dataPath, "stub", "other");
-            var stubTemp = Seed(paths.ProfilesDirectory("stub"), "temp-abc");
-            var otherTemp = Seed(paths.ProfilesDirectory("other"), "TEMP-def");
-            var otherOld = Seed(paths.ProfilesDirectory("other"), "acct.old-ABCDEF12");
-            var otherAccount = Seed(paths.ProfilesDirectory("other"), "acct");
-            var sessions = Seed(paths.SessionsDirectory("other"), "temp-not-a-profile");
+            var stubTemp = Seed(paths.ProfilesDirectory(Owner, "stub"), "temp-abc");
+            var otherTemp = Seed(paths.ProfilesDirectory(Owner, "other"), "TEMP-def");
+            var otherOld = Seed(paths.ProfilesDirectory(Owner, "other"), "acct.old-ABCDEF12");
+            var otherAccount = Seed(paths.ProfilesDirectory(Owner, "other"), "acct");
+            var friendTemp = Seed(paths.ProfilesDirectory(TestPeople.OwnerOf(TestPeople.Friend), "stub"), "temp-ghi");
+            var sessions = Seed(paths.SessionsDirectory(Owner, "other"), "temp-not-a-profile");
 
             await sweeper.StartAsync(CancellationToken.None);
 
             Assert.False(Directory.Exists(stubTemp));
             Assert.False(Directory.Exists(otherTemp));
             Assert.False(Directory.Exists(otherOld));
+            Assert.False(Directory.Exists(friendTemp));
             Assert.True(Directory.Exists(otherAccount));
             Assert.True(Directory.Exists(sessions)); // only profile folders are swept
         }
@@ -66,8 +71,8 @@ public sealed class StaleProfileTests
         try
         {
             var (sweeper, paths) = Sweeper(dataPath, "stub");
-            var busy = Seed(paths.ProfilesDirectory("stub"), "temp-busy");
-            var idle = Seed(paths.ProfilesDirectory("stub"), "temp-idle");
+            var busy = Seed(paths.ProfilesDirectory(Owner, "stub"), "temp-busy");
+            var idle = Seed(paths.ProfilesDirectory(Owner, "stub"), "temp-idle");
             File.WriteAllText(Path.Combine(idle, "lockfile"), ""); // left by a Chrome that has exited
             using (new FileStream(Path.Combine(busy, "lockfile"), FileMode.Create, FileAccess.ReadWrite, FileShare.None))
             {

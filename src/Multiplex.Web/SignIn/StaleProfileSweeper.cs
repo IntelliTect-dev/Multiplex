@@ -33,10 +33,7 @@ public sealed class StaleProfileSweeper(
 
     private async Task SweepAsync(string site, CancellationToken ct)
     {
-        var profiles = manager.Paths.ProfilesDirectory(site);
-        if (!Directory.Exists(profiles)) return;
-
-        foreach (var folder in Directory.GetDirectories(profiles))
+        foreach (var folder in manager.Paths.AllProfilesDirectories(site).SelectMany(Directory.GetDirectories))
         {
             ct.ThrowIfCancellationRequested();
             var name = Path.GetFileName(folder);

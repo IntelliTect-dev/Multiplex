@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 using Xunit;
 
@@ -24,6 +25,9 @@ public sealed class ProfilePromotionTests
 {
     private const string Account = "account-1";
 
+    /// <summary>The person the profiles belong to.</summary>
+    private static readonly string Owner = TestPeople.OwnerOf();
+
     private static FileStream Hold(string folder, string name = "Cookies")
     {
         Directory.CreateDirectory(folder);
@@ -41,12 +45,12 @@ public sealed class ProfilePromotionTests
     {
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
-        var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+        var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
         var held = Hold(temp);
         var release = ReleaseAfter(held, TimeSpan.FromSeconds(7)); // longer than the 5 s the promote used to allow
         try
         {
-            var target = await manager.PromoteProfileAsync(StubSignInDefinition.SiteSlug, temp, Account);
+            var target = await manager.PromoteProfileAsync(Owner, StubSignInDefinition.SiteSlug, temp, Account);
 
             Assert.True(File.Exists(Path.Combine(target, "Cookies")));
             Assert.False(Directory.Exists(temp));
@@ -62,16 +66,16 @@ public sealed class ProfilePromotionTests
     {
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
-        var existing = manager.Paths.AccountProfile(StubSignInDefinition.SiteSlug, Account);
+        var existing = manager.Paths.AccountProfile(Owner, StubSignInDefinition.SiteSlug, Account);
         var held = Hold(existing);
         var release = ReleaseAfter(held, TimeSpan.FromSeconds(7));
         try
         {
-            var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+            var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
             Directory.CreateDirectory(temp);
             await File.WriteAllTextAsync(Path.Combine(temp, "new"), "new profile");
 
-            var target = await manager.PromoteProfileAsync(StubSignInDefinition.SiteSlug, temp, Account);
+            var target = await manager.PromoteProfileAsync(Owner, StubSignInDefinition.SiteSlug, temp, Account);
 
             Assert.True(File.Exists(Path.Combine(target, "new")));
             Assert.False(File.Exists(Path.Combine(target, "Cookies")));
@@ -88,14 +92,14 @@ public sealed class ProfilePromotionTests
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
         manager.ProfileReleaseTimeout = TimeSpan.FromSeconds(2);
-        var existing = manager.Paths.AccountProfile(StubSignInDefinition.SiteSlug, Account);
+        var existing = manager.Paths.AccountProfile(Owner, StubSignInDefinition.SiteSlug, Account);
         Directory.CreateDirectory(existing);
         await File.WriteAllTextAsync(Path.Combine(existing, "old"), "old profile");
-        var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+        var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
         await using (Hold(temp))
         {
             var clock = Stopwatch.StartNew();
-            var error = await Assert.ThrowsAnyAsync<Exception>(() => manager.PromoteProfileAsync(StubSignInDefinition.SiteSlug, temp, Account));
+            var error = await Assert.ThrowsAnyAsync<Exception>(() => manager.PromoteProfileAsync(Owner, StubSignInDefinition.SiteSlug, temp, Account));
 
             Assert.True(error is IOException or UnauthorizedAccessException, error.GetType().Name);
             Assert.InRange(clock.Elapsed, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(8));
@@ -109,14 +113,14 @@ public sealed class ProfilePromotionTests
     {
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
-        var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+        var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
         await using (Hold(temp))
         {
             using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(1));
             var clock = Stopwatch.StartNew();
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                manager.PromoteProfileAsync(StubSignInDefinition.SiteSlug, temp, Account, cancel.Token));
+                manager.PromoteProfileAsync(Owner, StubSignInDefinition.SiteSlug, temp, Account, cancel.Token));
 
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"took {clock.Elapsed}");
             Assert.True(Directory.Exists(temp));
@@ -129,24 +133,24 @@ public sealed class ProfilePromotionTests
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
         manager.DiscardTimeout = TimeSpan.FromSeconds(1);
-        var existing = manager.Paths.AccountProfile(StubSignInDefinition.SiteSlug, Account);
+        var existing = manager.Paths.AccountProfile(Owner, StubSignInDefinition.SiteSlug, Account);
         Directory.CreateDirectory(existing);
         var stuck = Path.Combine(existing, "read-only");
         await File.WriteAllTextAsync(stuck, "old"); // a read-only file can be moved with its folder but not deleted
         File.SetAttributes(stuck, FileAttributes.ReadOnly);
-        var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+        var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
         Directory.CreateDirectory(temp);
         await File.WriteAllTextAsync(Path.Combine(temp, "new"), "new profile");
         try
         {
-            var target = await manager.PromoteProfileAsync(StubSignInDefinition.SiteSlug, temp, Account);
+            var target = await manager.PromoteProfileAsync(Owner, StubSignInDefinition.SiteSlug, temp, Account);
 
             Assert.True(File.Exists(Path.Combine(target, "new")), "The new sign-in's profile is in place.");
             Assert.False(Directory.Exists(temp));
         }
         finally
         {
-            foreach (var file in Directory.GetFiles(manager.Paths.ProfilesDirectory(StubSignInDefinition.SiteSlug), "*", SearchOption.AllDirectories))
+            foreach (var file in Directory.GetFiles(manager.Paths.ProfilesDirectory(Owner, StubSignInDefinition.SiteSlug), "*", SearchOption.AllDirectories))
                 File.SetAttributes(file, FileAttributes.Normal);
         }
     }
@@ -157,7 +161,7 @@ public sealed class ProfilePromotionTests
         await using var host = new SignInTestHost();
         var manager = host.Get<SiteBrowserManager>();
         manager.DiscardTimeout = TimeSpan.FromSeconds(1);
-        var temp = manager.Paths.NewTempProfile(StubSignInDefinition.SiteSlug);
+        var temp = manager.Paths.NewTempProfile(Owner, StubSignInDefinition.SiteSlug);
         await using (Hold(temp))
         {
             var clock = Stopwatch.StartNew();

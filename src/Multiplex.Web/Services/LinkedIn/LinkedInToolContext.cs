@@ -46,20 +46,29 @@ public sealed class LinkedInToolContext(
     private readonly ILogger _log = loggers.CreateLogger("Multiplex.Services.LinkedIn.Tools");
     private ILinkedInApi? _api;
 
-    /// <summary>The LinkedIn account the authenticated request acts for.</summary>
-    public string AccountId
+    /// <summary>
+    /// The person and LinkedIn account the authenticated request acts for. Only that person's own session
+    /// for the account is ever used, even when another person connected the same LinkedIn account.
+    /// </summary>
+    public (string Owner, string AccountId) Account
     {
         get
         {
             var account = SiteClaims.AccountOf(httpContext.HttpContext?.User);
             if (account is not { } a || !string.Equals(a.Site, Site, StringComparison.Ordinal))
             {
-                // Auth/ authenticates every /linkedin/mcp request before it gets here.
+                // The access gate authenticates every /linkedin/mcp request before it gets here.
                 throw new McpException("This request is not signed in to a LinkedIn account. Reconnect the LinkedIn connector.");
             }
-            return a.AccountId;
+            return (a.Owner, a.AccountId);
         }
     }
+
+    /// <summary>The LinkedIn account the authenticated request acts for.</summary>
+    public string AccountId => Account.AccountId;
+
+    /// <summary>What confirm tokens are bound to: the person and the account, so one person's token never works for another.</summary>
+    private string ConfirmKey => $"{Account.Owner}/{Account.AccountId}";
 
     private string ClientId => httpContext.HttpContext?.User.FindFirst(SiteClaims.ClientId)?.Value ?? "(unknown)";
 
@@ -70,7 +79,7 @@ public sealed class LinkedInToolContext(
     {
         try
         {
-            _api ??= await apis.CreateAsync(AccountId, requestServices, ct).ConfigureAwait(false);
+            _api ??= await apis.CreateAsync(Account.Owner, Account.AccountId, requestServices, ct).ConfigureAwait(false);
             return await work(_api).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -109,13 +118,13 @@ public sealed class LinkedInToolContext(
                     confirmation_required = true,
                     nothing_changed = true,
                     preview = prepared.Preview,
-                    confirm_token = confirmTokens.Issue(accountId, tool, bound),
+                    confirm_token = confirmTokens.Issue(ConfirmKey, tool, bound),
                     expires_in_seconds = (int)ConfirmTokens.Lifetime.TotalSeconds,
                     next_step = $"Show the preview to the person and ask whether to go ahead. Only if they agree, call {tool} " +
                                 "again with exactly the same arguments plus this confirm_token.",
                 });
             }
-            confirmTokens.Redeem(confirmToken, accountId, tool, bound);
+            confirmTokens.Redeem(confirmToken, ConfirmKey, tool, bound);
             var result = await perform(api, state).ConfigureAwait(false);
             _log.LogInformation("LinkedIn {Tool} performed for account {Account} (client {ClientId}).", tool, accountId, ClientId);
             return result;

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Serialization;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 using Multiplex.Web.Sites;
 
@@ -22,14 +23,15 @@ public sealed class LiveMirrorTests
         host.Completer.Add("p1", "stub", clientName: "Claude");
         var client = host.NewClient();
 
-        var (gate, _) = await client.PassGateAsync("p1");
-        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        var (livePage, html) = await client.GetAsync(gate.Headers.Location!.OriginalString);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        Assert.Equal(HttpStatusCode.SeeOther, started.StatusCode);
+        var (livePage, html) = await client.GetAsync(started.Headers.Location!.OriginalString);
         Assert.Equal(HttpStatusCode.OK, livePage.StatusCode);
         Assert.Contains("id=\"txt\"", html);
         Assert.Contains("Stub hint.", html);
 
-        var attempt = Attempt(host, gate);
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
         await mirror.WaitForFramesAsync(1, s_long);
@@ -44,8 +46,11 @@ public sealed class LiveMirrorTests
         var (done, _) = await client.GetAsync(next);
         Assert.Equal(HttpStatusCode.Redirect, done.StatusCode);
         Assert.Equal("https://client.example.test/callback?code=code-for-p1&state=s1", done.Headers.Location!.AbsoluteUri);
+        var owner = TestPeople.OwnerOf();
         var completed = Assert.Single(host.Completer.Completed);
         Assert.Equal("p1", completed.PendingId);
+        Assert.Equal(owner, completed.Owner);
+        Assert.NotNull(completed.Account);
         Assert.Equal("stub", completed.Account.Site);
         Assert.Equal(StubLoginSite.AccountId, completed.Account.AccountId);
         Assert.Equal(StubLoginSite.DisplayName, completed.Account.DisplayName);
@@ -56,16 +61,16 @@ public sealed class LiveMirrorTests
         Assert.Equal(done.Headers.Location, again.Headers.Location);
         Assert.Single(host.Completer.Completed);
 
-        // Session stored encrypted; temp profile became the account's profile.
-        var snapshot = await host.Get<ISiteSessionStore>().GetAsync("stub", StubLoginSite.AccountId, CancellationToken.None);
+        // Session stored encrypted, under the person; temp profile became the account's profile.
+        var snapshot = await host.Get<ISiteSessionStore>().GetAsync(owner, "stub", StubLoginSite.AccountId, CancellationToken.None);
         Assert.Contains($"{StubLoginSite.CookieName}=", snapshot);
         await attempt.Completion;
         Assert.Empty(host.TempProfiles());
         Assert.True(Directory.Exists(Path.Combine(host.ProfilesDirectory, StubLoginSite.AccountId)));
-        Assert.Contains(await host.Get<SiteAccountIndex>().ListAsync("stub", CancellationToken.None), a => a.AccountId == StubLoginSite.AccountId);
+        Assert.Contains(await host.Get<SiteAccountIndex>().ListAsync(owner, "stub", CancellationToken.None), a => a.AccountId == StubLoginSite.AccountId);
 
         // The kept profile is still signed in: the real refresher reads a fresh snapshot from it.
-        var refreshed = await host.Get<ISiteSessionRefresher>().RefreshAsync("stub", StubLoginSite.AccountId, CancellationToken.None);
+        var refreshed = await host.Get<ISiteSessionRefresher>().RefreshAsync(owner, "stub", StubLoginSite.AccountId, CancellationToken.None);
         Assert.Contains($"{StubLoginSite.CookieName}=", refreshed);
         Assert.Empty(host.Revoker.Revoked);
     }
@@ -73,7 +78,7 @@ public sealed class LiveMirrorTests
     [ChromiumFact]
     public async Task Two_connections_sign_in_as_different_accounts_and_each_is_bound_to_its_own()
     {
-        // No account list is configured: the passcode is the gate, and each connection gets the account signed in while adding it.
+        // No account list is configured: each connection gets the account signed in while adding it.
         await using var site = await StubLoginSite.StartAsync();
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
@@ -81,22 +86,25 @@ public sealed class LiveMirrorTests
 
         // The first connection signs in as the first account.
         var first = host.NewClient();
-        var (gate1, _) = await first.PassGateAsync("p1");
-        await SignInLiveAsync(host, first, gate1, StubLoginSite.Email, StubLoginSite.Password);
+        await first.SignInAsync();
+        var (started1, _) = await first.StartSignInAsync("p1");
+        await SignInLiveAsync(host, first, started1, StubLoginSite.Email, StubLoginSite.Password);
 
         // The same connector added again, from another client: the first account is not on offer, so it signs in as another.
         var second = host.NewClient();
-        var (gate2, _) = await second.PassGateAsync("p2");
-        await SignInLiveAsync(host, second, gate2, StubLoginSite.OtherEmail, StubLoginSite.OtherPassword);
+        await second.SignInAsync();
+        var (started2, _) = await second.StartSignInAsync("p2");
+        await SignInLiveAsync(host, second, started2, StubLoginSite.OtherEmail, StubLoginSite.OtherPassword);
 
+        var owner = TestPeople.OwnerOf();
         Assert.Equal(
-            [("p1", StubLoginSite.AccountId), ("p2", StubLoginSite.OtherAccountId)],
-            host.Completer.Completed.Select(c => (c.PendingId, c.Account.AccountId)));
+            [("p1", owner, StubLoginSite.AccountId), ("p2", owner, StubLoginSite.OtherAccountId)],
+            host.Completer.Completed.Select(c => (c.PendingId, c.Owner, c.Account?.AccountId)));
         Assert.Empty(host.Completer.Failed);
         // Each account keeps its own session and its own browser profile.
         var store = host.Get<ISiteSessionStore>();
-        var firstSession = await store.GetAsync("stub", StubLoginSite.AccountId, CancellationToken.None);
-        var secondSession = await store.GetAsync("stub", StubLoginSite.OtherAccountId, CancellationToken.None);
+        var firstSession = await store.GetAsync(owner, "stub", StubLoginSite.AccountId, CancellationToken.None);
+        var secondSession = await store.GetAsync(owner, "stub", StubLoginSite.OtherAccountId, CancellationToken.None);
         Assert.Contains($"{StubLoginSite.CookieName}=", firstSession);
         Assert.Contains($"{StubLoginSite.CookieName}=", secondSession);
         Assert.NotEqual(firstSession, secondSession);
@@ -112,9 +120,10 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var (_, liveHtml) = await client.GetAsync(gate.Headers.Location!.OriginalString);
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var (_, liveHtml) = await client.GetAsync(started.Headers.Location!.OriginalString);
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
 
@@ -144,8 +153,9 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
         var login = attempt.ActivePage!;
@@ -175,8 +185,9 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
         var login = new Uri(site.BaseUrl, "/login").AbsoluteUri;
@@ -211,8 +222,9 @@ public sealed class LiveMirrorTests
         });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = Attempt(host, started);
         await using var firstTab = await client.OpenMirrorAsync(attempt.Id);
         await firstTab.WaitForStatusAsync("live", s_long);
         Assert.NotEmpty(host.TempProfiles());
@@ -237,8 +249,9 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
 
@@ -259,8 +272,9 @@ public sealed class LiveMirrorTests
         await using var host = new SignInTestHost(new SignInTestOptions { StubBaseUrl = site.BaseUrl });
         host.Completer.Add("p1", "stub");
         var client = host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
-        var attempt = Attempt(host, gate);
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = Attempt(host, started);
         await using var mirror = await client.OpenMirrorAsync(attempt.Id);
         await mirror.WaitForStatusAsync("live", s_long);
         var email = await CenterOfAsync(attempt, "#email");
@@ -306,10 +320,10 @@ public sealed class LiveMirrorTests
         await attempt.Completion.WaitAsync(s_long);
     }
 
-    internal static LiveSignInAttempt Attempt(SignInTestHost host, HttpResponseMessage gate)
+    internal static LiveSignInAttempt Attempt(SignInTestHost host, HttpResponseMessage started)
     {
-        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        var id = ConnectClient.AttemptIdOf(gate.Headers.Location!);
+        Assert.Equal(HttpStatusCode.SeeOther, started.StatusCode);
+        var id = ConnectClient.AttemptIdOf(started.Headers.Location!);
         return host.Get<LiveSignInRegistry>().Find(id) ?? throw new InvalidOperationException("No attempt " + id);
     }
 

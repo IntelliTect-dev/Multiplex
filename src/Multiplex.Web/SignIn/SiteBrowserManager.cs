@@ -41,12 +41,13 @@ public sealed class SiteBrowserManager(
     public IDisposable? TryAcquireLiveSlot() => _liveSlots.Wait(0) ? new Releaser(_liveSlots) : null;
 
     /// <summary>
-    /// One lock per account, shared by refresh, profile replacement and adopt, so Chrome never
+    /// One lock per person and account, shared by refresh and profile replacement, so Chrome never
     /// opens a profile that is being replaced (Chrome also locks a profile to one process).
     /// </summary>
-    public async Task<IDisposable> LockAccountAsync(string site, string accountId, CancellationToken ct)
+    public async Task<IDisposable> LockAccountAsync(string owner, string site, string accountId, CancellationToken ct)
     {
-        var gate = _accountLocks.GetOrAdd(SignInPaths.CheckSlug(site) + "\n" + accountId, _ => new SemaphoreSlim(1, 1));
+        var key = SignInPaths.CheckOwner(owner) + "\n" + SignInPaths.CheckSlug(site) + "\n" + accountId;
+        var gate = _accountLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         return new Releaser(gate);
     }
@@ -182,10 +183,10 @@ public sealed class SiteBrowserManager(
     /// cancelled. If the new profile cannot move in, the old one is put back. Deleting the old
     /// profile afterwards is best effort and never costs the new sign-in.
     /// </summary>
-    public async Task<string> PromoteProfileAsync(string site, string tempProfile, string accountId, CancellationToken ct = default)
+    public async Task<string> PromoteProfileAsync(string owner, string site, string tempProfile, string accountId, CancellationToken ct = default)
     {
         var source = paths.EnsureInsideDataPath(tempProfile);
-        var target = paths.EnsureInsideDataPath(paths.AccountProfile(site, accountId));
+        var target = paths.EnsureInsideDataPath(paths.AccountProfile(owner, site, accountId));
         var started = TimeProvider.System.GetTimestamp();
         string? old = null;
         if (Directory.Exists(target))

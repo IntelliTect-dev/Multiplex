@@ -8,12 +8,16 @@ public sealed class FakeCompleter : IAuthorizationCompleter
 {
     private readonly ConcurrentDictionary<string, PendingAuthorization> _pending = new();
 
-    public ConcurrentQueue<(string PendingId, SiteAccount Account)> Completed { get; } = new();
+    public ConcurrentQueue<(string PendingId, string Owner, SiteAccount? Account)> Completed { get; } = new();
     public ConcurrentQueue<(string PendingId, string Error, string Description)> Failed { get; } = new();
 
-    public PendingAuthorization Add(string id, string site, string clientName = "Test Client", TimeSpan? lifetime = null)
+    /// <param name="owner">The person who started it (default: <see cref="Identity.TestPeople.Owner"/>); the connect pages let only them go on.</param>
+    /// <param name="serviceName">Display name; defaults to the slug.</param>
+    public PendingAuthorization Add(string id, string site, string clientName = "Test Client", TimeSpan? lifetime = null,
+        string? owner = null, string? serviceName = null)
     {
-        var pending = new PendingAuthorization(id, site, clientName, DateTimeOffset.UtcNow + (lifetime ?? TimeSpan.FromMinutes(10)));
+        var pending = new PendingAuthorization(id, site, clientName, DateTimeOffset.UtcNow + (lifetime ?? TimeSpan.FromMinutes(10)),
+            "client.example.test", owner ?? Identity.TestPeople.OwnerOf(), serviceName ?? site);
         _pending[id] = pending;
         return pending;
     }
@@ -21,9 +25,11 @@ public sealed class FakeCompleter : IAuthorizationCompleter
     public Task<PendingAuthorization?> FindAsync(string pendingId, CancellationToken ct) =>
         Task.FromResult(_pending.TryGetValue(pendingId, out var p) ? p : null);
 
-    public Task<Uri> CompleteAsync(string pendingId, SiteAccount account, CancellationToken ct)
+    public Task<Uri> CompleteAsync(string pendingId, string owner, SiteAccount? account, CancellationToken ct)
     {
-        Completed.Enqueue((pendingId, account));
+        if (!_pending.TryGetValue(pendingId, out var pending)) throw new InvalidOperationException("Unknown pending authorization.");
+        if (pending.Owner != owner) throw new ArgumentException("Started by another person.", nameof(owner));
+        Completed.Enqueue((pendingId, owner, account));
         _pending.TryRemove(pendingId, out _);
         return Task.FromResult(new Uri($"https://client.example.test/callback?code=code-for-{pendingId}&state=s1"));
     }
@@ -38,11 +44,11 @@ public sealed class FakeCompleter : IAuthorizationCompleter
 
 public sealed class FakeRevoker : IGrantRevoker
 {
-    public ConcurrentQueue<(string Site, string AccountId)> Revoked { get; } = new();
+    public ConcurrentQueue<(string Owner, string Site, string AccountId)> Revoked { get; } = new();
 
-    public Task RevokeAccountAsync(string site, string accountId, CancellationToken ct)
+    public Task RevokeAccountAsync(string owner, string site, string accountId, CancellationToken ct)
     {
-        Revoked.Enqueue((site, accountId));
+        Revoked.Enqueue((owner, site, accountId));
         return Task.CompletedTask;
     }
 }
@@ -51,11 +57,11 @@ public sealed class FakeRevoker : IGrantRevoker
 public sealed class FakeRefresher : ISiteSessionRefresher
 {
     public string? Result { get; set; } = """{"cookie":"refreshed"}""";
-    public ConcurrentQueue<(string Site, string AccountId)> Calls { get; } = new();
+    public ConcurrentQueue<(string Owner, string Site, string AccountId)> Calls { get; } = new();
 
-    public Task<string?> RefreshAsync(string site, string accountId, CancellationToken ct)
+    public Task<string?> RefreshAsync(string owner, string site, string accountId, CancellationToken ct)
     {
-        Calls.Enqueue((site, accountId));
+        Calls.Enqueue((owner, site, accountId));
         return Task.FromResult(Result);
     }
 }
