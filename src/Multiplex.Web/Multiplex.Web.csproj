@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../tripit/src/TripIt/TripIt.csproj" />
+    <ProjectReference Include="../../services/GoogleFlights/src/GoogleFlights/GoogleFlights.csproj" />
   </ItemGroup>
 
 </Project>

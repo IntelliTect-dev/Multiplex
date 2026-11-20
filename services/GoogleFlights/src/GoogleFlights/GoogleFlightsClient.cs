@@ -22,8 +22,11 @@ public sealed class GoogleFlightsClient : IDisposable
     {
     }
 
-    /// <param name="transport">The handler that reaches Google; tests replace it. Pacing, retries and timeouts still wrap it.</param>
-    internal GoogleFlightsClient(GoogleFlightsClientOptions? options, TimeProvider? timeProvider, HttpMessageHandler? transport)
+    /// <param name="transport">
+    /// The handler that reaches Google, in place of the client's own (tests use a fake). Pacing, retries, timeouts
+    /// and the refusal cool-down still wrap it. It must not follow redirects: they are how Google signals a block.
+    /// </param>
+    public GoogleFlightsClient(GoogleFlightsClientOptions? options, TimeProvider? timeProvider, HttpMessageHandler? transport)
     {
         _options = options ?? new GoogleFlightsClientOptions();
         _time = timeProvider ?? TimeProvider.System;

@@ -1,0 +1,1435 @@
+<?xml version="1.0" encoding="utf-8"?>
+<helpItems schema="maml" xmlns="http://msh">
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Find-Airport</command:name>
+      <command:verb>Find</command:verb>
+      <command:noun>Airport</command:noun>
+      <maml:description>
+        <maml:para>Finds airports for a place name, city or code, as Google Flights' own airport box does, e.g. 'Denver', 'Paris' or 'SEA'.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Finds airports for a place name, city or code, as Google Flights' own airport box does, e.g. 'Denver', 'Paris' or 'SEA'. Returns each matching place with its airports' IATA codes, to use in the other tools. Answers are cached for about 12 minutes; set verify to true when the user asks to verify, confirm, double-check or refresh.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Find-Airport</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="True (ByValue)" position="0">
+          <maml:name>Name</maml:name>
+          <maml:description>
+            <maml:para>What to look up: a city, airport name or code, e.g. 'Denver'.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="true" globbing="false" pipelineInput="True (ByValue)" position="0">
+        <maml:name>Name</maml:name>
+        <maml:description>
+          <maml:para>What to look up: a city, airport name or code, e.g. 'Denver'.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.Airport</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Find-Airport Denver</dev:code>
+        <dev:remarks>
+          <maml:para>Airports for Denver.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Find-Flight</command:name>
+      <command:verb>Find</command:verb>
+      <command:noun>Flight</command:noun>
+      <maml:description>
+        <maml:para>Searches Google Flights for one-way, round-trip or multi-city flights and lists the options for the first leg, with prices, times, stops, layovers and airlines.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Searches Google Flights for one-way, round-trip or multi-city flights and lists the options for the first leg, with prices, times, stops, layovers and airlines. A round trip's or multi-city trip's prices are for the whole trip. Each option has a selection: pass it to get_return_flights (Get-FlightReturn) for the next leg, or, once every leg is chosen, to get_booking_options (Get-FlightBookingOption). Airports are three-letter IATA codes; look them up first with lookup_airport (Find-Airport). Answers are cached for about 12 minutes; set verify to true when the user asks to verify, confirm, double-check or refresh.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Find-Flight</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="0">
+          <maml:name>Origin</maml:name>
+          <maml:description>
+            <maml:para>Departure airport: a three-letter IATA code such as SEA.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="1">
+          <maml:name>Destination</maml:name>
+          <maml:description>
+            <maml:para>Arrival airport: a three-letter IATA code such as DEN.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="2">
+          <maml:name>DepartureDate</maml:name>
+          <maml:description>
+            <maml:para>Departure date, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="3">
+          <maml:name>ReturnDate</maml:name>
+          <maml:description>
+            <maml:para>Return date for a round trip, yyyy-MM-dd. Omit for one way.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxStops</maml:name>
+          <maml:description>
+            <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">MaxStops</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Airline</maml:name>
+          <maml:description>
+            <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String[]</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Alliance</maml:name>
+          <maml:description>
+            <maml:para>Only these alliances: oneworld, skyteam or star_alliance.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Alliance[]</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.Alliance[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>DepartAfterHour</maml:name>
+          <maml:description>
+            <maml:para>Earliest departure hour, 0-23, local time at the departure airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>DepartBeforeHour</maml:name>
+          <maml:description>
+            <maml:para>Departures before this hour, 1-24, local time at the departure airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ArriveAfterHour</maml:name>
+          <maml:description>
+            <maml:para>Earliest arrival hour, 0-23, local time at the arrival airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ArriveBeforeHour</maml:name>
+          <maml:description>
+            <maml:para>Arrivals before this hour, 1-24, local time at the arrival airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxDurationHours</maml:name>
+          <maml:description>
+            <maml:para>Longest total travel time per leg, in hours.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Double</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Double</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Cabin</maml:name>
+          <maml:description>
+            <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">CabinClass</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ExcludeBasicEconomy</maml:name>
+          <maml:description>
+            <maml:para>Economy without Basic Economy fares.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Adults</maml:name>
+          <maml:description>
+            <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Children</maml:name>
+          <maml:description>
+            <maml:para>Children aged 2-11.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>InfantsOnLap</maml:name>
+          <maml:description>
+            <maml:para>Infants on a lap; no more than adults.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>InfantsInSeat</maml:name>
+          <maml:description>
+            <maml:para>Infants in their own seat.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxPrice</maml:name>
+          <maml:description>
+            <maml:para>Highest price, in whole units of the currency.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>SortBy</maml:name>
+          <maml:description>
+            <maml:para>Order: best (Google's default), price, departure_time, arrival_time or duration.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">FlightSort</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.FlightSort</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Currency</maml:name>
+          <maml:description>
+            <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Region</maml:name>
+          <maml:description>
+            <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+      <command:syntaxItem>
+        <maml:name>Find-Flight</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Leg</maml:name>
+          <maml:description>
+            <maml:para>Multi-city legs, in order, each 'ORIGIN-DESTINATION-yyyy-MM-dd' (e.g. 'SEA-DEN-2026-12-15'). Use instead of origin, destination and the dates.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String[]</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxStops</maml:name>
+          <maml:description>
+            <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">MaxStops</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Airline</maml:name>
+          <maml:description>
+            <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String[]</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Alliance</maml:name>
+          <maml:description>
+            <maml:para>Only these alliances: oneworld, skyteam or star_alliance.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Alliance[]</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.Alliance[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>DepartAfterHour</maml:name>
+          <maml:description>
+            <maml:para>Earliest departure hour, 0-23, local time at the departure airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>DepartBeforeHour</maml:name>
+          <maml:description>
+            <maml:para>Departures before this hour, 1-24, local time at the departure airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ArriveAfterHour</maml:name>
+          <maml:description>
+            <maml:para>Earliest arrival hour, 0-23, local time at the arrival airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ArriveBeforeHour</maml:name>
+          <maml:description>
+            <maml:para>Arrivals before this hour, 1-24, local time at the arrival airport.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxDurationHours</maml:name>
+          <maml:description>
+            <maml:para>Longest total travel time per leg, in hours.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Double</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Double</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Cabin</maml:name>
+          <maml:description>
+            <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">CabinClass</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ExcludeBasicEconomy</maml:name>
+          <maml:description>
+            <maml:para>Economy without Basic Economy fares.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Adults</maml:name>
+          <maml:description>
+            <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Children</maml:name>
+          <maml:description>
+            <maml:para>Children aged 2-11.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>InfantsOnLap</maml:name>
+          <maml:description>
+            <maml:para>Infants on a lap; no more than adults.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>InfantsInSeat</maml:name>
+          <maml:description>
+            <maml:para>Infants in their own seat.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxPrice</maml:name>
+          <maml:description>
+            <maml:para>Highest price, in whole units of the currency.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>SortBy</maml:name>
+          <maml:description>
+            <maml:para>Order: best (Google's default), price, departure_time, arrival_time or duration.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">FlightSort</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.FlightSort</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Currency</maml:name>
+          <maml:description>
+            <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Region</maml:name>
+          <maml:description>
+            <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="0">
+        <maml:name>Origin</maml:name>
+        <maml:description>
+          <maml:para>Departure airport: a three-letter IATA code such as SEA.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="1">
+        <maml:name>Destination</maml:name>
+        <maml:description>
+          <maml:para>Arrival airport: a three-letter IATA code such as DEN.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="2">
+        <maml:name>DepartureDate</maml:name>
+        <maml:description>
+          <maml:para>Departure date, yyyy-MM-dd.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="3">
+        <maml:name>ReturnDate</maml:name>
+        <maml:description>
+          <maml:para>Return date for a round trip, yyyy-MM-dd. Omit for one way.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Leg</maml:name>
+        <maml:description>
+          <maml:para>Multi-city legs, in order, each 'ORIGIN-DESTINATION-yyyy-MM-dd' (e.g. 'SEA-DEN-2026-12-15'). Use instead of origin, destination and the dates.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String[]</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String[]</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>MaxStops</maml:name>
+        <maml:description>
+          <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">MaxStops</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Airline</maml:name>
+        <maml:description>
+          <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String[]</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String[]</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Alliance</maml:name>
+        <maml:description>
+          <maml:para>Only these alliances: oneworld, skyteam or star_alliance.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Alliance[]</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.Alliance[]</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>DepartAfterHour</maml:name>
+        <maml:description>
+          <maml:para>Earliest departure hour, 0-23, local time at the departure airport.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>DepartBeforeHour</maml:name>
+        <maml:description>
+          <maml:para>Departures before this hour, 1-24, local time at the departure airport.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>ArriveAfterHour</maml:name>
+        <maml:description>
+          <maml:para>Earliest arrival hour, 0-23, local time at the arrival airport.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>ArriveBeforeHour</maml:name>
+        <maml:description>
+          <maml:para>Arrivals before this hour, 1-24, local time at the arrival airport.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>MaxDurationHours</maml:name>
+        <maml:description>
+          <maml:para>Longest total travel time per leg, in hours.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Double</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Double</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Cabin</maml:name>
+        <maml:description>
+          <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">CabinClass</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>ExcludeBasicEconomy</maml:name>
+        <maml:description>
+          <maml:para>Economy without Basic Economy fares.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Adults</maml:name>
+        <maml:description>
+          <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Children</maml:name>
+        <maml:description>
+          <maml:para>Children aged 2-11.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>InfantsOnLap</maml:name>
+        <maml:description>
+          <maml:para>Infants on a lap; no more than adults.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>InfantsInSeat</maml:name>
+        <maml:description>
+          <maml:para>Infants in their own seat.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>MaxPrice</maml:name>
+        <maml:description>
+          <maml:para>Highest price, in whole units of the currency.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>SortBy</maml:name>
+        <maml:description>
+          <maml:para>Order: best (Google's default), price, departure_time, arrival_time or duration.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">FlightSort</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.FlightSort</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Currency</maml:name>
+        <maml:description>
+          <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Region</maml:name>
+        <maml:description>
+          <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.FlightOption</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Find-Flight SEA DEN 2026-12-15 -ReturnDate 2026-12-22 -MaxStops Nonstop</dev:code>
+        <dev:remarks>
+          <maml:para>Round-trip nonstop flights; the list is the outbound leg.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Find-Flight -Leg SEA-DEN-2026-12-15, DEN-LAX-2026-12-19 -Alliance SkyTeam</dev:code>
+        <dev:remarks>
+          <maml:para>A multi-city trip on SkyTeam airlines; the list is the first leg.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-Airline</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>Airline</command:noun>
+      <maml:description>
+        <maml:para>Finds airlines and alliances in the client's data file by IATA code ('DL'), name ('delta') or alliance ('SkyTeam', 'Star Alliance', 'oneworld', which lists its members).</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Finds airlines and alliances in the client's data file by IATA code ('DL'), name ('delta') or alliance ('SkyTeam', 'Star Alliance', 'oneworld', which lists its members). Use the codes and alliance names in search_flights' (Find-Flight's) airlines and alliances. The file is a dated snapshot; verify changes nothing here.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-Airline</maml:name>
+        <command:parameter required="false" globbing="false" pipelineInput="True (ByValue)" position="0">
+          <maml:name>Name</maml:name>
+          <maml:description>
+            <maml:para>An IATA code, part of a name, or an alliance. Empty lists every airline in the file.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="false" globbing="false" pipelineInput="True (ByValue)" position="0">
+        <maml:name>Name</maml:name>
+        <maml:description>
+          <maml:para>An IATA code, part of a name, or an alliance. Empty lists every airline in the file.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.AirlineInfo</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Get-Airline 'star alliance'</dev:code>
+        <dev:remarks>
+          <maml:para>The Star Alliance members in the data file.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-FlightBookingOption</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>FlightBookingOption</command:noun>
+      <maml:description>
+        <maml:para>Lists where a fully chosen trip can be bought: each seller (the airline or an agency), fare brand and price, and a Google Flights link to the booking page for the person to open.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Lists where a fully chosen trip can be bought: each seller (the airline or an agency), fare brand and price, and a Google Flights link to the booking page for the person to open. Pass the selection of the last leg chosen. Booking options are always fetched fresh, never from the cache; verify changes nothing here. Nothing is booked.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-FlightBookingOption</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="True (ByPropertyName)" position="0">
+          <maml:name>Selection</maml:name>
+          <maml:description>
+            <maml:para>The selection of the chosen option, exactly as a previous result gave it.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">FlightSelection</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.FlightSelection</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="true" globbing="false" pipelineInput="True (ByPropertyName)" position="0">
+        <maml:name>Selection</maml:name>
+        <maml:description>
+          <maml:para>The selection of the chosen option, exactly as a previous result gave it.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">FlightSelection</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.FlightSelection</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.BookingOption</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Find-Flight SEA DEN 2026-12-15 | Select-Object -First 1 | Get-FlightBookingOption</dev:code>
+        <dev:remarks>
+          <maml:para>Where to buy the first one-way option.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-FlightPriceCalendar</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>FlightPriceCalendar</command:noun>
+      <maml:description>
+        <maml:para>Lists the lowest price for each departure date in a range, for a one-way or round trip.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Lists the lowest price for each departure date in a range, for a one-way or round trip. A round trip keeps trip_length_days fixed, or, given return_date_from and return_date_to, prices every departure-by-return pair. Use it to find the cheapest dates before searching. Answers are cached for about 12 minutes; set verify to true when the user asks to verify, confirm, double-check or refresh.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-FlightPriceCalendar</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="0">
+          <maml:name>Origin</maml:name>
+          <maml:description>
+            <maml:para>Departure airport: a three-letter IATA code such as SEA.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="1">
+          <maml:name>Destination</maml:name>
+          <maml:description>
+            <maml:para>Arrival airport: a three-letter IATA code such as DEN.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="2">
+          <maml:name>DepartureFrom</maml:name>
+          <maml:description>
+            <maml:para>First departure date to price, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="3">
+          <maml:name>DepartureTo</maml:name>
+          <maml:description>
+            <maml:para>Last departure date to price, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>TripLengthDays</maml:name>
+          <maml:description>
+            <maml:para>For a round trip: days between departure and return. Omit for one way.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxStops</maml:name>
+          <maml:description>
+            <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">MaxStops</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Airline</maml:name>
+          <maml:description>
+            <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String[]</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Cabin</maml:name>
+          <maml:description>
+            <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">CabinClass</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Adults</maml:name>
+          <maml:description>
+            <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Currency</maml:name>
+          <maml:description>
+            <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Region</maml:name>
+          <maml:description>
+            <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+      <command:syntaxItem>
+        <maml:name>Get-FlightPriceCalendar</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="0">
+          <maml:name>Origin</maml:name>
+          <maml:description>
+            <maml:para>Departure airport: a three-letter IATA code such as SEA.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="1">
+          <maml:name>Destination</maml:name>
+          <maml:description>
+            <maml:para>Arrival airport: a three-letter IATA code such as DEN.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="2">
+          <maml:name>DepartureFrom</maml:name>
+          <maml:description>
+            <maml:para>First departure date to price, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="3">
+          <maml:name>DepartureTo</maml:name>
+          <maml:description>
+            <maml:para>Last departure date to price, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ReturnFrom</maml:name>
+          <maml:description>
+            <maml:para>For a round trip's date grid: first return date, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+          <maml:name>ReturnTo</maml:name>
+          <maml:description>
+            <maml:para>For a round trip's date grid: last return date, yyyy-MM-dd.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">DateTime</command:parameterValue>
+          <dev:type>
+            <maml:name>System.DateTime</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>MaxStops</maml:name>
+          <maml:description>
+            <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">MaxStops</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Airline</maml:name>
+          <maml:description>
+            <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String[]</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String[]</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Cabin</maml:name>
+          <maml:description>
+            <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">CabinClass</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Adults</maml:name>
+          <maml:description>
+            <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">Int32</command:parameterValue>
+          <dev:type>
+            <maml:name>System.Int32</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Currency</maml:name>
+          <maml:description>
+            <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Region</maml:name>
+          <maml:description>
+            <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">String</command:parameterValue>
+          <dev:type>
+            <maml:name>System.String</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="0">
+        <maml:name>Origin</maml:name>
+        <maml:description>
+          <maml:para>Departure airport: a three-letter IATA code such as SEA.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="1">
+        <maml:name>Destination</maml:name>
+        <maml:description>
+          <maml:para>Arrival airport: a three-letter IATA code such as DEN.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="2">
+        <maml:name>DepartureFrom</maml:name>
+        <maml:description>
+          <maml:para>First departure date to price, yyyy-MM-dd.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="3">
+        <maml:name>DepartureTo</maml:name>
+        <maml:description>
+          <maml:para>Last departure date to price, yyyy-MM-dd.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>TripLengthDays</maml:name>
+        <maml:description>
+          <maml:para>For a round trip: days between departure and return. Omit for one way.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+        <maml:name>ReturnFrom</maml:name>
+        <maml:description>
+          <maml:para>For a round trip's date grid: first return date, yyyy-MM-dd.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="true" globbing="false" pipelineInput="False" position="named">
+        <maml:name>ReturnTo</maml:name>
+        <maml:description>
+          <maml:para>For a round trip's date grid: last return date, yyyy-MM-dd.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">DateTime</command:parameterValue>
+        <dev:type>
+          <maml:name>System.DateTime</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>MaxStops</maml:name>
+        <maml:description>
+          <maml:para>Most stops allowed: any (default), nonstop, one or two.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">MaxStops</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.MaxStops</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Airline</maml:name>
+        <maml:description>
+          <maml:para>Only these airlines: IATA codes such as DL or AS. Find codes with lookup_airline (Get-Airline).</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String[]</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String[]</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Cabin</maml:name>
+        <maml:description>
+          <maml:para>Cabin: economy (default), premium_economy, business or first.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">CabinClass</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.CabinClass</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Adults</maml:name>
+        <maml:description>
+          <maml:para>Adults (default 1). At most 9 travelers in all.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">Int32</command:parameterValue>
+        <dev:type>
+          <maml:name>System.Int32</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Currency</maml:name>
+        <maml:description>
+          <maml:para>ISO 4217 currency for prices, e.g. USD (default), EUR, GBP.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Region</maml:name>
+        <maml:description>
+          <maml:para>Two-letter country Google prices for, e.g. US (default).</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">String</command:parameterValue>
+        <dev:type>
+          <maml:name>System.String</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.CalendarPrice</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Get-FlightPriceCalendar SEA DEN 2026-12-01 2026-12-31 -TripLengthDays 7 | Sort-Object { $_.Price.Amount } | Select-Object -First 5</dev:code>
+        <dev:remarks>
+          <maml:para>The five cheapest week-long trips departing in December.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-FlightReturn</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>FlightReturn</command:noun>
+      <maml:description>
+        <maml:para>Lists the flights for the next leg after one is chosen: a round trip's return flights, or the next flight of a multi-city trip.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Lists the flights for the next leg after one is chosen: a round trip's return flights, or the next flight of a multi-city trip. Pass the selection of the option chosen. On the last leg, separate_tickets says when Google sells that choice as separate tickets. Answers are cached for about 12 minutes; set verify to true when the user asks to verify, confirm, double-check or refresh.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-FlightReturn</maml:name>
+        <command:parameter required="true" globbing="false" pipelineInput="True (ByPropertyName)" position="0">
+          <maml:name>Selection</maml:name>
+          <maml:description>
+            <maml:para>The selection of the chosen option, exactly as a previous result gave it.</maml:para>
+          </maml:description>
+          <command:parameterValue required="true">FlightSelection</command:parameterValue>
+          <dev:type>
+            <maml:name>Multiplex.Sites.GoogleFlights.FlightSelection</maml:name>
+          </dev:type>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+          <maml:name>Verify</maml:name>
+          <maml:description>
+            <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+          </maml:description>
+          <dev:type>
+            <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+          </dev:type>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="true" globbing="false" pipelineInput="True (ByPropertyName)" position="0">
+        <maml:name>Selection</maml:name>
+        <maml:description>
+          <maml:para>The selection of the chosen option, exactly as a previous result gave it.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true">FlightSelection</command:parameterValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.FlightSelection</maml:name>
+        </dev:type>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
+        <maml:name>Verify</maml:name>
+        <maml:description>
+          <maml:para>Ask Google again instead of using a cached answer. Set it when the user asks to verify, confirm, double-check or refresh.</maml:para>
+        </maml:description>
+        <dev:type>
+          <maml:name>System.Management.Automation.SwitchParameter</maml:name>
+        </dev:type>
+      </command:parameter>
+    </command:parameters>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type>
+          <maml:name>Multiplex.Sites.GoogleFlights.FlightOption</maml:name>
+        </dev:type>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Find-Flight SEA DEN 2026-12-15 -ReturnDate 2026-12-22 | Select-Object -First 1 | Get-FlightReturn</dev:code>
+        <dev:remarks>
+          <maml:para>Return flights after choosing the first outbound.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+  </command:command>
+</helpItems>
