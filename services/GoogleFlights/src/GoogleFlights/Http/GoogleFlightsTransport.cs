@@ -1,0 +1,217 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.RateLimiting;
+using Microsoft.Extensions.Http.Resilience;
+using Multiplex.Sites.GoogleFlights.Wire;
+using Polly;
+using Polly.RateLimiting;
+using Polly.Timeout;
+
+namespace Multiplex.Sites.GoogleFlights.Http;
+
+/// <summary>
+/// Sends Google Flights RPCs over direct HTTP and turns each answer into frames or the right exception.
+/// Retries, back-off, pacing and timeouts come from the shared resilience package
+/// (Microsoft.Extensions.Http.Resilience); refusals go to the <see cref="RefusalGate"/> and are never retried.
+/// </summary>
+internal sealed class GoogleFlightsTransport : IDisposable
+{
+    private const string ServiceUrl =
+        "https://www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/{0}?hl=en-US&soc-app=162&soc-platform=1&soc-device=1&rt=c";
+
+    private const string BatchUrl =
+        "https://www.google.com/_/FlightsFrontendUi/data/batchexecute?rpcids={0}&source-path=%2Ftravel%2Fflights&hl=en-US&soc-app=162&soc-platform=1&soc-device=1&rt=c";
+
+    private readonly HttpClient _http;
+    private readonly RefusalGate _gate;
+    private readonly TimeProvider _time;
+    private readonly RateLimiter? _ownedLimiter;
+    private readonly TimeSpan _interval;
+
+    public GoogleFlightsTransport(GoogleFlightsClientOptions options, TimeProvider time, HttpMessageHandler? transport)
+    {
+        _time = time;
+        _interval = options.RequestInterval;
+        _gate = new RefusalGate(options.RefusalCooldown, options.MaxRefusalCooldown, time);
+
+        var limiter = options.RateLimiter;
+        if (limiter is null)
+        {
+            limiter = _ownedLimiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+            {
+                TokenLimit = Math.Max(1, options.BurstRequests),
+                TokensPerPeriod = 1,
+                ReplenishmentPeriod = options.RequestInterval,
+                QueueLimit = Math.Max(0, options.MaxWaitingRequests),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                AutoReplenishment = true,
+            });
+        }
+
+        var builder = new ResiliencePipelineBuilder<HttpResponseMessage> { TimeProvider = time }
+            .AddTimeout(options.TotalTimeout);
+        if (options.MaxRetries > 0)
+        {
+            builder.AddRetry(new HttpRetryStrategyOptions
+            {
+                MaxRetryAttempts = options.MaxRetries,
+                BackoffType = DelayBackoffType.Exponential,
+                UseJitter = true,
+                Delay = options.RetryDelay,
+                // 429 is Google throttling: handled as a refusal, never retried.
+                ShouldRetryAfterHeader = false,
+                ShouldHandle = args => ValueTask.FromResult(IsTransient(args.Outcome)),
+            });
+        }
+        var pipeline = builder
+            .AddRateLimiter(limiter)
+            .AddTimeout(options.AttemptTimeout)
+            .Build();
+
+        var inner = transport ?? new SocketsHttpHandler
+        {
+            // A redirect is how Google says "unusual traffic": the client must see it, never follow it.
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            // NID, which Google sets on its first answer, is sent back as any HTTP client would. Nothing else.
+            UseCookies = true,
+            CookieContainer = new CookieContainer(),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+        };
+        _http = new HttpClient(new ResilienceHandler(pipeline) { InnerHandler = inner })
+        {
+            Timeout = Timeout.InfiniteTimeSpan, // the pipeline's timeouts apply
+        };
+    }
+
+    public Task<RpcFrames> ServiceAsync(string rpc, string inner, string jspb, CancellationToken ct) =>
+        SendAsync(string.Format(System.Globalization.CultureInfo.InvariantCulture, ServiceUrl, rpc), RequestEncoder.ServiceBody(inner), jspb, ct);
+
+    public Task<RpcFrames> BatchAsync(string rpcId, string inner, string jspb, CancellationToken ct) =>
+        SendAsync(string.Format(System.Globalization.CultureInfo.InvariantCulture, BatchUrl, rpcId), RequestEncoder.BatchBody(rpcId, inner), jspb, ct);
+
+    private async Task<RpcFrames> SendAsync(string url, string body, string jspb, CancellationToken ct)
+    {
+        _gate.ThrowIfCoolingDown();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        // Exactly the header Google answered; ByteArrayContent sets none of its own.
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
+        request.Headers.TryAddWithoutValidation("User-Agent", GoogleFlightsClientOptions.UserAgent);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+        request.Headers.TryAddWithoutValidation("x-same-domain", "1");
+        request.Headers.TryAddWithoutValidation("x-goog-ext-259736195-jspb", jspb);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+        }
+        catch (RateLimiterRejectedException e)
+        {
+            throw new GoogleFlightsThrottledException(
+                "Too many Google Flights requests are already waiting their turn; the client paces itself to avoid a block. Try again shortly.",
+                ThrottleReason.Paced, _time.GetUtcNow() + (e.RetryAfter ?? _interval));
+        }
+        catch (TimeoutRejectedException e)
+        {
+            throw new GoogleFlightsTransientException("Google Flights did not answer in time.", e);
+        }
+        catch (HttpRequestException e)
+        {
+            throw new GoogleFlightsTransientException($"Could not reach Google Flights: {e.Message}", e);
+        }
+
+        using (response)
+        {
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return Classify(response, text);
+        }
+    }
+
+    private RpcFrames Classify(HttpResponseMessage response, string text)
+    {
+        var status = (int)response.StatusCode;
+        var location = response.Headers.Location?.ToString() ?? "";
+
+        var framed = ResponseFrames.TryParse(text, out var frames);
+        if (location.Contains("/sorry/", StringComparison.OrdinalIgnoreCase)
+            || (!framed && text.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase)))
+        {
+            var until = _gate.Refused();
+            throw new GoogleFlightsThrottledException(
+                "Google Flights is asking for a check that a person must clear in a browser (\"unusual traffic\"). The client never clears it; it has stopped sending requests.",
+                ThrottleReason.Challenge, until);
+        }
+
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            var until = _gate.Refused(RetryAfter(response));
+            throw new GoogleFlightsThrottledException(
+                $"Google Flights is limiting requests from this network (HTTP 429). The client will not ask again until {until:u}.",
+                ThrottleReason.TooManyRequests, until);
+        }
+
+        if (status is >= 500 and < 600)
+            throw new GoogleFlightsTransientException($"Google Flights had a server error (HTTP {status}).");
+
+        if (status != 200)
+        {
+            throw new GoogleFlightsFormatException(location.Length > 0
+                ? $"Google Flights answered HTTP {status}, redirecting to {location}, where an answer was expected."
+                : $"Google Flights answered HTTP {status} where an answer was expected.");
+        }
+
+        if (!framed)
+            throw new GoogleFlightsFormatException("Google Flights' answer was not in its usual framed format.");
+
+        if (frames.Errors.Count > 0 && frames.Payloads.Count == 0)
+        {
+            var code = frames.Errors[0].Code;
+            switch (code)
+            {
+                case 13:
+                    var until = _gate.Refused();
+                    throw new GoogleFlightsThrottledException(
+                        $"Google Flights refused the request (gRPC 13). It does not say why; the client will not ask again until {until:u}, to avoid a block on this network.",
+                        ThrottleReason.Refused, until);
+                case 3:
+                    _gate.Answered();
+                    throw new GoogleFlightsRequestException(
+                        "Google Flights rejected the request as invalid (gRPC 3): check the airports, dates and filters.");
+                case 14:
+                    throw new GoogleFlightsTransientException("Google Flights is unavailable just now (gRPC 14).");
+                default:
+                    throw new GoogleFlightsException($"Google Flights answered with an error (gRPC {code}).");
+            }
+        }
+
+        _gate.Answered();
+        return frames;
+    }
+
+    private DateTimeOffset? RetryAfter(HttpResponseMessage response)
+    {
+        var retry = response.Headers.RetryAfter;
+        if (retry?.Date is { } date)
+            return date;
+        if (retry?.Delta is { } delta)
+            return _time.GetUtcNow() + delta;
+        return null;
+    }
+
+    private static bool IsTransient(Outcome<HttpResponseMessage> outcome) => outcome switch
+    {
+        { Exception: HttpRequestException or TimeoutRejectedException } => true,
+        { Result: { } r } => (int)r.StatusCode >= 500 || r.StatusCode == HttpStatusCode.RequestTimeout,
+        _ => false,
+    };
+
+    public void Dispose()
+    {
+        _http.Dispose();
+        _ownedLimiter?.Dispose();
+    }
+}
