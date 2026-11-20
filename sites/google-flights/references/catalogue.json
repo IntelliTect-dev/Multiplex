@@ -311,5 +311,31 @@
       89
     ],
     "CapturedUtc": "2026-11-20T01:17:57.000Z"
+  },
+  {
+    "Action": "direct-http-probes",
+    "Description": "Four direct HTTP requests (not a browser), 75 s apart, a day after the browser captures, all with an honest non-browser User-Agent and redirects not followed. 1: P1's one-way search again (selection []) -- still a bare gRPC 13. 2: GET flights.google.com -- 301 to www.google.com/travel/flights. 3: GET of a round-trip search page -- 302 to /travel/flights/unsupported with an empty body (Google treats the client as an unsupported browser), sets NID. 4: P1's search sent to flights.google.com -- 405, no data endpoint on that host.",
+    "Provider": "google-flights",
+    "Methods": [
+      "GET",
+      "POST"
+    ],
+    "Endpoints": [
+      "flights.google.com/",
+      "flights.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/travel/flights/search"
+    ],
+    "EntryCount": 4,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-http-probes-2026-11-20.har",
+    "RequestBodies": 2,
+    "RequestBytes": 762,
+    "ResponseBytes": 2114,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:07:00.000Z"
   }
 ]

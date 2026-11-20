@@ -84,6 +84,13 @@ for the whole process.
 - **Throttling (owner, 2026-11-19):** "Be careful of throttling as you work...
   take your time." Discovery and live tests run on a small, paced request
   budget; see `sites/google-flights/NOTES.md`.
+- **Browser use needs approval (owner, 2026-11-20):** "WE should not use a
+  browser by default - for any provider", "Browser for auth only", then "any
+  browser use by the MCP needs approval on per provider, per use case basis".
+  This **replaces** Phase 2 item 6's "fall back to a read-only browser only if
+  direct HTTP is blocked": the client fetches over direct HTTP, and a browser
+  is used only for a provider and use case the owner has approved. Google
+  Flights has no such approval.
 - **Design scenario (owner, 2026-11-19):** a sample multi-country
   island-hopping research question, not to be run for real, recorded without
   personal details on the issue:

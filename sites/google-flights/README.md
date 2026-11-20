@@ -9,12 +9,13 @@ flight API or scraping service is involved.
 
 ## Status
 
-**Phase 1, discovery: captured and decoded, awaiting review.** Every flow in
-the spec is recorded and its field maps are in `docs/protocol.md`. Direct HTTP
-is refused from the owner's network; Google's own page is answered, so the
-client will read data through a read-only browser (`NOTES.md`). The client
-library, MCP server and PowerShell module follow once the findings are
-reviewed.
+**Phase 1, discovery: captured and decoded; the client is blocked.** Every
+flow in the spec is recorded and its field maps are in `docs/protocol.md`. The
+client must fetch over direct HTTP (no browser without the owner's approval
+for this provider and use case), and from the owner's network Google refuses
+direct HTTP: the data endpoint answers gRPC 13, and the search page redirects
+an honestly named client to "unsupported" (`NOTES.md`). The client library,
+MCP server and PowerShell module wait on how the client may identify itself.
 
 ## What is here
 

@@ -83,12 +83,16 @@ No `at=` token is sent: the page is signed out.
 
 ### Direct HTTP is refused; the page is not
 
-| When (2026-11-19, local) | Client | Sent | Answer |
+| When (local) | Client | Sent | Answer |
 |---|---|---|---|
-| 14:32 (P1) | direct HTTP | honest non-browser User-Agent, `x-same-domain`, the jspb header; no cookies, no token, no `f.sid`/`bl` | bare `[13]` |
-| 16:34 (P2) | direct HTTP | the same | bare `[13]` |
-| 16:39 (C) | the page, in Chrome | everything in the table above | **flights** (3 best, 10 other) |
-| 16:42-16:44 (D) | the page, in Chrome | the same | flights, return flights, booking options |
+| 11-19 14:32 (P1) | direct HTTP | honest non-browser User-Agent, `x-same-domain`, the jspb header; no cookies, no token, no `f.sid`/`bl`; selection `[]` | bare `[13]` |
+| 11-19 16:34 (P2) | direct HTTP | the same | bare `[13]` |
+| 11-19 16:39 (C) | the page, in Chrome | everything in the table above | **flights** (3 best, 10 other) |
+| 11-19 16:42-16:44 (D) | the page, in Chrome | the same | flights, return flights, booking options |
+| 11-20 09:07 (P3) | direct HTTP | as P1, 24 hours later | bare `[13]` |
+| 11-20 09:08 (P4) | direct HTTP | `GET https://flights.google.com/` | **301** to `https://www.google.com/travel/flights` |
+| 11-20 09:09 (P5) | direct HTTP | `GET /travel/flights/search?tfs=...` (C's round trip), honest User-Agent | **302** to `/travel/flights/unsupported?...&ucpp=<the original URL, base64>`, empty body; sets `NID` |
+| 11-20 09:12 (P7) | direct HTTP | P1's search, sent to `flights.google.com` | **405**: no data endpoint on that host |
 
 Five minutes after P2 was refused, the page itself searched normally on the
 same network. So the network is not blocked; plain requests are. The earlier
@@ -97,11 +101,15 @@ Flights kept working in a browser while plain requests and even an in-page
 `fetch` from automated Chrome were refused.
 
 The requests differ in the page's anti-bot token, Google's cookies, Chrome's
-client headers and the User-Agent. Finding out which one matters would mean
-forging the token or posing as Chrome, and neither is done here. The
-conclusion that stands: **a client gets data by letting Google's own page make
-the request** (the read-only browser path the spec allows when direct HTTP is
-blocked). Encoding and parsing are unchanged by this; only the transport is.
+client headers, the User-Agent, and (for searches) the session id. A direct
+client cannot use the page's token or pose as Chrome. The one browser-free
+route left is the page itself: its HTML carries the first answer and the
+session id (section 5). P5 shows Google redirecting an honestly named client
+away from that page as "unsupported". Whether some other honest client gets
+the page is **not established**, and how the client may identify itself is
+the owner's decision. A browser is not an option without the owner's approval
+for this provider and use case (`../NOTES.md`). Encoding and parsing are the
+same whichever transport ends up carrying them.
 
 ## 3. Response framing
 
@@ -378,11 +386,11 @@ A list of places, each `[[kind, "Seattle, Washington", "Seattle", "<description>
 ## 7. The `tfs` URL parameter
 
 The search page keeps its state in `?tfs=` (base64url protobuf) and
-`?tfu=`. **This is how the client searches**: loading
-`/travel/flights/search?tfs=...` (or `/travel/flights/booking?tfs=...`) makes
-Google run the search for that page (section 5), and searches started any
-other way were refused. It is also the link a person can open to see the same
-search.
+`?tfu=`. **Loading `/travel/flights/search?tfs=...`** (or
+`/travel/flights/booking?tfs=...`) makes Google run the search for that page
+(section 5); in the captures, searches started any other way were refused. So
+`tfs` is both the search's identity on Google's side and the link a person can
+open to see the same search.
 
 Every field is the filter (section 4) re-encoded:
 
