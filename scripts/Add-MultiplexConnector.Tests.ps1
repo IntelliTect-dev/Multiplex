@@ -3,23 +3,28 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Multiplex.Connector.psm1') -Force
     $script:Base = 'https://box.example.ts.net'
 
-    # What a Multiplex at $Base with TripIt and LinkedIn answers; a test may change it before calling.
-    function Use-FakeMultiplex([string] $Issuer = $script:Base, [string[]] $Slugs = @('tripit', 'linkedin')) {
-        $script:FakeIssuer = $Issuer
-        $script:FakeSlugs = $Slugs
+    # What a Multiplex at $Base with TripIt and LinkedIn answers. -Server replaces its sign-in
+    # settings and -Resources the settings of a service, so a test can leave a field out.
+    function Use-FakeMultiplex([string] $Issuer = $script:Base, [string[]] $Slugs = @('tripit', 'linkedin'),
+        [hashtable] $Server, [hashtable] $Resources = @{}) {
+        $global:MultiplexConnectorFakeServer = $Server ?? @{ issuer = $Issuer; scopes_supported = $Slugs }
+        $global:MultiplexConnectorFakeResources = $Resources
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
             switch -Regex ($Uri) {
-                '/\.well-known/oauth-authorization-server$' { return [pscustomobject]@{ issuer = $script:FakeIssuer; scopes_supported = $script:FakeSlugs } }
+                '/\.well-known/oauth-authorization-server$' { return [pscustomobject]$global:MultiplexConnectorFakeServer }
                 '/\.well-known/oauth-protected-resource/(?<slug>[^/]+)/mcp$' {
                     $slug = $Matches.slug
+                    if ($global:MultiplexConnectorFakeResources.ContainsKey($slug)) { return [pscustomobject]$global:MultiplexConnectorFakeResources[$slug] }
                     $name = @{ tripit = 'TripIt'; linkedin = 'LinkedIn' }[$slug]
-                    return [pscustomobject]@{ resource = "$script:FakeIssuer/$slug/mcp"; resource_name = $name }
+                    return [pscustomobject]@{ resource = "$($global:MultiplexConnectorFakeServer['issuer'])/$slug/mcp"; resource_name = $name }
                 }
                 default { throw "Unexpected request: $Uri" }
             }
         }
     }
 }
+# Global: the fake answers calls made from inside the command's own script scope too.
+AfterAll { Remove-Variable MultiplexConnectorFakeServer, MultiplexConnectorFakeResources -Scope Global -ErrorAction SilentlyContinue }
 
 Describe 'the public address to give Claude and ChatGPT' {
     It 'uses the address given, without a trailing slash' {
@@ -56,6 +61,16 @@ Describe 'the public address to give Claude and ChatGPT' {
     It 'refuses a service address in place of the address of Multiplex itself' {
         { Resolve-MultiplexConnectorBaseUrl -BaseUrl "$Base/tripit/mcp" } | Should -Throw '*address of Multiplex itself*'
     }
+
+    It 'refuses an address with a user name and password in it, which would be printed and sent on' {
+        { Resolve-MultiplexConnectorBaseUrl -BaseUrl 'https://me:secret@box.example.ts.net' } | Should -Throw '*user name*'
+    }
+
+    It 'says what to pass when the configuration on this PC cannot be read' {
+        $config = Join-Path $TestDrive 'broken.json'
+        Set-Content $config '{ not json'
+        { Resolve-MultiplexConnectorBaseUrl -ConfigPath $config } | Should -Throw "*$config*could not be read*-BaseUrl*"
+    }
 }
 
 Describe 'finding the services that can go on an account' {
@@ -75,6 +90,39 @@ Describe 'finding the services that can go on an account' {
     It 'says the server could not be reached, and where' {
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
         { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*$Base*No such host is known.*"
+    }
+
+    It 'uses a service''s short name when the server gives it no name' {
+        Use-FakeMultiplex -Slugs tripit -Resources @{ tripit = @{ resource = "$Base/tripit/mcp" } }
+        $service = Get-MultiplexAccountService -BaseUrl $Base
+        $service.Name | Should -Be 'tripit'
+        $service.Address | Should -Be "$Base/tripit/mcp"
+    }
+
+    It 'stops when the server gives a service an address other than its own' {
+        Use-FakeMultiplex -Slugs tripit -Resources @{ tripit = @{ resource = 'https://elsewhere.example/mcp'; resource_name = 'TripIt' } }
+        { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*https://elsewhere.example/mcp*$Base/tripit/mcp*"
+    }
+
+    It 'stops on a service name like <slug>, which could reach another address or a shell, before asking about it' -ForEach @(
+        @{ slug = 'a/../../x' }
+        @{ slug = 'x; calc' }
+        @{ slug = 'x y' }
+        @{ slug = '-x' }
+    ) {
+        Use-FakeMultiplex -Slugs $slug
+        { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*'$slug'*not a valid service name*"
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 1 -Exactly   # the sign-in settings only
+    }
+
+    It 'stops when the server does not give its public address' {
+        Use-FakeMultiplex -Server @{ scopes_supported = @('tripit') }
+        { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*$Base*did not give its public address*"
+    }
+
+    It 'finds nothing when the server lists no services at all' {
+        Use-FakeMultiplex -Server @{ issuer = $Base }
+        @(Get-MultiplexAccountService -BaseUrl $Base).Count | Should -Be 0
     }
 }
 
@@ -116,6 +164,11 @@ Describe 'adding the services to your accounts' {
 
         Add-MultiplexConnector -BaseUrl $Base -Service 'TripIt' -Agent Claude 6>$null
         Should -Invoke -ModuleName Multiplex.Connector Open-MultiplexConnectorPage -Times 1 -Exactly -ParameterFilter { $Url -like '*connectorName=TripIt&*' }
+    }
+
+    It 'adds a service named twice, in any case, once' {
+        Add-MultiplexConnector -BaseUrl $Base -Service 'TRIPIT', 'tripit', 'TripIt' -Agent Claude 6>$null
+        Should -Invoke -ModuleName Multiplex.Connector Open-MultiplexConnectorPage -Times 1 -Exactly
     }
 
     It 'leaves the clipboard alone when there are several addresses to paste' {
@@ -171,6 +224,24 @@ Describe 'adding the services to your accounts' {
 }
 
 Describe 'the command' {
+    BeforeEach {
+        Use-FakeMultiplex
+        Mock -ModuleName Multiplex.Connector Open-MultiplexConnectorPage { }
+        Mock -ModuleName Multiplex.Connector Set-MultiplexConnectorClipboard { }
+        $script:Command = Join-Path $PSScriptRoot 'Add-MultiplexConnector.ps1'
+    }
+
+    It 'opens the pages for what it is given' {
+        & $Command -BaseUrl $Base -Service tripit -Agent Claude 6>$null
+        Should -Invoke -ModuleName Multiplex.Connector Open-MultiplexConnectorPage -Times 1 -Exactly -ParameterFilter { $Url -like '*connectorName=TripIt&*' }
+    }
+
+    It 'with -WhatIf opens nothing and copies nothing' {
+        & $Command -BaseUrl $Base -Service tripit -WhatIf 6>$null
+        Should -Invoke -ModuleName Multiplex.Connector Open-MultiplexConnectorPage -Times 0 -Exactly
+        Should -Invoke -ModuleName Multiplex.Connector Set-MultiplexConnectorClipboard -Times 0 -Exactly
+    }
+
     It 'passes what it is given through, so a local address is refused before anything opens' {
         { & (Join-Path $PSScriptRoot 'Add-MultiplexConnector.ps1') -BaseUrl 'http://localhost:5190' -WhatIf 6>$null } |
             Should -Throw '*public https address*'

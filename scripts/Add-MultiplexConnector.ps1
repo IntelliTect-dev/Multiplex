@@ -34,6 +34,7 @@ param(
     [ValidateSet('Claude', 'ChatGPT')] [string[]] $Agent = @('Claude', 'ChatGPT'))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'Multiplex.Connector.psm1') -Force
+# Not -Force: a copy already loaded in this session is used as it is (the tests rely on that).
+Import-Module (Join-Path $PSScriptRoot 'Multiplex.Connector.psm1')
 
-Add-MultiplexConnector -BaseUrl (Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl) -Service $Service -Agent $Agent -WhatIf:$WhatIfPreference
+Add-MultiplexConnector @PSBoundParameters   # -WhatIf and -Confirm included

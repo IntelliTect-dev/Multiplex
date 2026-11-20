@@ -21,7 +21,8 @@ function Resolve-MultiplexConnectorBaseUrl {
         [string] $ConfigPath = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.multiplex\multiplex.config.json'))
     if (-not $BaseUrl) {
         $recorded = if (Test-Path -LiteralPath $ConfigPath) {
-            (Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -AsHashtable)['PublicBaseUrl']
+            try { (Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop)['PublicBaseUrl'] }
+            catch { throw "The Multiplex configuration at $ConfigPath could not be read ($($_.Exception.Message)). Pass -BaseUrl with the public address of the PC that runs Multiplex." }
         }
         if (-not $recorded) {
             throw "This PC has no public address for Multiplex (no install here, or one without a tunnel). " +
@@ -35,6 +36,7 @@ function Resolve-MultiplexConnectorBaseUrl {
     if (-not $public) {
         throw "Claude and ChatGPT connect from the internet, so they need Multiplex's public https address; $BaseUrl is not one."
     }
+    if ($uri.UserInfo) { throw 'Leave the user name and password out of the address: it is printed, and given to Claude and ChatGPT.' }
     if ($uri.AbsolutePath -ne '/' -or $uri.Query) {
         throw "Give the address of Multiplex itself, like $($uri.GetLeftPart([UriPartial]::Authority)), not $BaseUrl."
     }
@@ -53,21 +55,36 @@ function Get-MultiplexAccountService {
     $settings = "$BaseUrl/.well-known/oauth-authorization-server"
     try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec 15 -ErrorAction Stop }
     catch { throw "Could not read Multiplex's sign-in settings at ${settings}: $($_.Exception.Message) Is Multiplex running and reachable at ${BaseUrl}?" }
-    $issuer = "$($server.issuer)".TrimEnd('/')
+    $issuer = "$(Get-JsonProperty $server 'issuer')".TrimEnd('/')
+    if (-not $issuer) { throw "The server at $BaseUrl did not give its public address in $settings. Is it Multiplex?" }
     if ($issuer -ne $BaseUrl) {
         throw "The Multiplex at $BaseUrl gives its public address as $issuer, so a connector added at $BaseUrl would fail to sign in. Use -BaseUrl $issuer."
     }
-    foreach ($slug in @($server.scopes_supported)) {
+    foreach ($slug in @(Get-JsonProperty $server 'scopes_supported')) {
         if (-not $slug) { continue }
+        # A service's name goes into a request path and into commands printed to paste.
+        if ("$slug" -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+            throw "The Multiplex at $BaseUrl lists a service named '$slug', which is not a valid service name; nothing was opened."
+        }
+        $address = "$BaseUrl/$slug/mcp"
         $metadata = "$BaseUrl/.well-known/oauth-protected-resource/$slug/mcp"
         try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec 15 -ErrorAction Stop }
         catch { throw "Could not read the settings of the $slug service at ${metadata}: $($_.Exception.Message)" }
-        [pscustomobject]@{
-            Slug    = "$slug"
-            Name    = $resource.resource_name ? "$($resource.resource_name)" : "$slug"
-            Address = $resource.resource ? "$($resource.resource)" : "$BaseUrl/$slug/mcp"
+        $reported = "$(Get-JsonProperty $resource 'resource')"
+        if ($reported -and $reported -ne $address) {
+            throw "The Multiplex at $BaseUrl gives the address of its $slug service as $reported, not $address, so a connector added at either would fail to sign in."
         }
+        $name = "$(Get-JsonProperty $resource 'resource_name')"
+        [pscustomobject]@{ Slug = "$slug"; Name = $name ? $name : "$slug"; Address = $address }
     }
+}
+
+function Get-JsonProperty {
+    <# A property of parsed JSON, or nothing when it is missing (strict mode throws on a missing one). #>
+    param($Object, [Parameter(Mandatory)] [string] $Name)
+    if ($null -eq $Object) { return }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { $property.Value }
 }
 
 function Get-MultiplexClaudeConnectorLink {
@@ -93,7 +110,8 @@ function Set-MultiplexConnectorClipboard {
 
 function Add-MultiplexConnector {
     <#
-    Adds the services of the Multiplex at -BaseUrl to your Claude and ChatGPT accounts, as far
+    Adds the services of the Multiplex at -BaseUrl (by default, the public address of the one
+    installed on this PC) to your Claude and ChatGPT accounts, as far
     as a command can: for Claude it opens the add-connector dialog already filled in, one per
     service; for ChatGPT it opens the add page once and, for a single service, copies its
     address. You finish in the browser: confirm, then sign in (the Multiplex passcode, then the
@@ -102,7 +120,7 @@ function Add-MultiplexConnector {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory)] [string] $BaseUrl,
+        [string] $BaseUrl,
         [string[]] $Service,
         [ValidateSet('Claude', 'ChatGPT')] [string[]] $Agent = @('Claude', 'ChatGPT'))
     $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl
@@ -162,7 +180,7 @@ function Add-MultiplexConnector {
         Write-Host "  Codex:       codex mcp add $($s.Slug) --url $($s.Address)"
         Write-Host "  Copilot CLI: copilot mcp add --transport http $($s.Slug) $($s.Address)"
     }
-    Write-Host '  Claude Code already has the connectors on your Claude account.'
+    Write-Host '  Claude Code, signed in with your Claude account, already has that account''s connectors.'
 }
 
 Export-ModuleMember -Function *-Multiplex*
