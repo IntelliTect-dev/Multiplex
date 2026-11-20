@@ -5,7 +5,8 @@ Flights' own web page calls (`www.google.com/travel/flights`). No third-party
 flight API or scraping service is involved.
 
 - Issue: https://github.com/IntelliTect-dev/Multiplex/issues/89
-- Layout: the per-site design in #4 (`sites/<site>/`).
+- Layout: one folder per provider, `services/<Name>/` (the owner's decision in
+  #83, which refines #4's per-site outputs).
 
 ## Status
 
