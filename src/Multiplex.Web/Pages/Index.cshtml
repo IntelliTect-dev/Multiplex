@@ -1,11 +1,23 @@
 ﻿@page
 @model IndexModel
+@using Multiplex.Web.Identity
 @using Multiplex.Web.Mcp
 @{
     ViewData["Title"] = "Hello World";
+    var person = MultiplexIdentity.PersonOf(User);
 }
 
 <h1>Hello, World!</h1>
+@if (person is not null)
+{
+    <form method="post" action="@MultiplexIdentity.SignOutPath">
+        <p>Signed in as <strong>@person.Email</strong>. <button type="submit">Sign out</button></p>
+    </form>
+}
+else
+{
+    <p>Opened on the Multiplex host itself, so no sign-in is needed here.</p>
+}
 <p>Multiplex is up. Each service's MCP address:</p>
 <ul>
     @foreach (var path in McpEndpointRouting.EndpointPaths)

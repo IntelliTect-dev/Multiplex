@@ -27,20 +27,29 @@ public sealed class TripItToolContext(
     private readonly ILogger _log = loggers.CreateLogger("Multiplex.Services.TripIt.Tools");
     private TripItClient? _client;
 
-    /// <summary>The TripIt account the authenticated request acts for.</summary>
-    public string AccountId
+    /// <summary>
+    /// The person and TripIt account the authenticated request acts for. Only that person's own session
+    /// for the account is ever used, even when another person connected the same TripIt account.
+    /// </summary>
+    public (string Owner, string AccountId) Account
     {
         get
         {
             var account = SiteClaims.AccountOf(httpContext.HttpContext?.User);
             if (account is not { } a || !string.Equals(a.Site, TripItAccountSessions.Site, StringComparison.Ordinal))
             {
-                // Auth/ authenticates every /tripit/mcp request before it gets here.
+                // The access gate authenticates every /tripit/mcp request before it gets here.
                 throw new McpException("This request is not signed in to a TripIt account. Reconnect the TripIt connector.");
             }
-            return a.AccountId;
+            return (a.Owner, a.AccountId);
         }
     }
+
+    /// <summary>The TripIt account the authenticated request acts for.</summary>
+    public string AccountId => Account.AccountId;
+
+    /// <summary>What confirm tokens are bound to: the person and the account, so one person's token never works for another.</summary>
+    private string ConfirmKey => $"{Account.Owner}/{Account.AccountId}";
 
     private string ClientId => httpContext.HttpContext?.User.FindFirst(SiteClaims.ClientId)?.Value ?? "(unknown)";
 
@@ -48,10 +57,10 @@ public sealed class TripItToolContext(
     public async Task<TripItClient> ClientAsync(CancellationToken ct)
     {
         if (_client is not null) return _client;
-        var accountId = AccountId;
-        var snapshot = await sessions.LoadAsync(requestServices, accountId, ct).ConfigureAwait(false);
+        var (owner, accountId) = Account;
+        var snapshot = await sessions.LoadAsync(requestServices, owner, accountId, ct).ConfigureAwait(false);
         var provider = new SnapshotSessionProvider(snapshot,
-            (rejected, c) => sessions.RenewAsync(requestServices, accountId, rejected, c));
+            (rejected, c) => sessions.RenewAsync(requestServices, owner, accountId, rejected, c));
         _client = new TripItClient(provider, httpClients.CreateClient(TripItServiceRegistration.HttpClientName),
             loggers.CreateLogger<TripItClient>(), pacingKey: accountId);
         return _client;
@@ -91,13 +100,13 @@ public sealed class TripItToolContext(
                     confirmation_required = true,
                     nothing_changed = true,
                     preview = text,
-                    confirm_token = confirmTokens.Issue(accountId, tool, arguments),
+                    confirm_token = confirmTokens.Issue(ConfirmKey, tool, arguments),
                     expires_in_seconds = (int)ConfirmTokens.Lifetime.TotalSeconds,
                     next_step = $"Show the preview to the person and ask whether to go ahead. Only if they agree, call {tool} " +
                                 "again with exactly the same arguments plus this confirm_token.",
                 });
             }
-            confirmTokens.Redeem(confirmToken, accountId, tool, arguments);
+            confirmTokens.Redeem(confirmToken, ConfirmKey, tool, arguments);
             var result = await perform(ops).ConfigureAwait(false);
             _log.LogInformation("TripIt {Tool} performed for account {Account} (client {ClientId}).", tool, accountId, ClientId);
             return result;

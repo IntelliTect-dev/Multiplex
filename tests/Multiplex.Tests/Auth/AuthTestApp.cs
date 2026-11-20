@@ -33,6 +33,7 @@ public class AuthTestApp : WebApplicationFactory<Program>
         ["Multiplex:Auth:RegisterPermitLimit"] = "10000",
         ["Multiplex:Auth:TokenPermitLimit"] = "10000",
         ["Multiplex:Auth:AuthorizePermitLimit"] = "10000",
+        [Multiplex.Web.Identity.AllowedPeople.Key] = Identity.TestPeople.AllowList,
     };
 
     /// <summary>False keeps the app's own encrypted file store under <c>Multiplex:DataPath</c>.</summary>
@@ -58,6 +59,13 @@ public class AuthTestApp : WebApplicationFactory<Program>
 
     /// <summary>A client that does not follow redirects, so authorize responses can be inspected.</summary>
     public HttpClient Client() => CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+    /// <summary>A client that does not follow redirects, signed in to Multiplex as <paramref name="email"/>.</summary>
+    public async Task<HttpClient> SignedInClientAsync(string email = Identity.TestPeople.Owner)
+    {
+        var (_, cookie) = await Identity.TestPeople.SignInAsync(Services, email);
+        return Identity.TestPeople.WithCookie(Client(), cookie);
+    }
 }
 
 /// <summary>The app as deployed: encrypted file store and key ring under one data folder.</summary>

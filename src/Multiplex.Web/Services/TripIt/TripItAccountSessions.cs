@@ -36,9 +36,9 @@ public sealed class TripItAccountSessions(
     private readonly ConcurrentDictionary<string, AccountState> _accounts = new(StringComparer.Ordinal);
 
     /// <summary>The account's stored snapshot, or <see cref="TripItSession.Empty"/> when there is none or it is unreadable.</summary>
-    public async Task<TripItSession> LoadAsync(IServiceProvider services, string accountId, CancellationToken ct)
+    public async Task<TripItSession> LoadAsync(IServiceProvider services, string owner, string accountId, CancellationToken ct)
     {
-        var json = await Store(services).GetAsync(Site, accountId, ct).ConfigureAwait(false);
+        var json = await Store(services).GetAsync(owner, Site, accountId, ct).ConfigureAwait(false);
         return Parse(accountId, json, "stored");
     }
 
@@ -47,16 +47,16 @@ public sealed class TripItAccountSessions(
     /// Returns a snapshot with a different cookie to retry with, or null when none is available
     /// right now. Throws <see cref="TripItSessionEndedException"/> when the person is signed out.
     /// </summary>
-    public async Task<TripItSession?> RenewAsync(IServiceProvider services, string accountId, TripItSession rejected,
+    public async Task<TripItSession?> RenewAsync(IServiceProvider services, string owner, string accountId, TripItSession rejected,
         CancellationToken ct)
     {
-        var state = _accounts.GetOrAdd(accountId, static _ => new AccountState());
+        var state = _accounts.GetOrAdd(owner + "/" + accountId, static _ => new AccountState());
         await state.Lock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // Another request may have refreshed while this one waited (or the sign-in part
             // stored a new snapshot): use it without refreshing again.
-            var stored = await LoadAsync(services, accountId, ct).ConfigureAwait(false);
+            var stored = await LoadAsync(services, owner, accountId, ct).ConfigureAwait(false);
             if (stored.IsConfigured && stored.Cookie != rejected.Cookie) return stored;
 
             var refresher = services.GetService<ISiteSessionRefresher>();
@@ -80,7 +80,7 @@ public sealed class TripItAccountSessions(
             string? json;
             try
             {
-                json = await refresher.RefreshAsync(Site, accountId, ct).ConfigureAwait(false);
+                json = await refresher.RefreshAsync(owner, Site, accountId, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -99,10 +99,10 @@ public sealed class TripItAccountSessions(
             if (!renewed.IsConfigured) return null;
             // Keep the store current, so the next request starts from the refreshed snapshot.
             var store = Store(services);
-            var current = await store.GetAsync(Site, accountId, ct).ConfigureAwait(false);
+            var current = await store.GetAsync(owner, Site, accountId, ct).ConfigureAwait(false);
             if (!string.Equals(current, json, StringComparison.Ordinal))
             {
-                await store.SetAsync(Site, accountId, json, ct).ConfigureAwait(false);
+                await store.SetAsync(owner, Site, accountId, json, ct).ConfigureAwait(false);
             }
             return renewed.Cookie != rejected.Cookie ? renewed : null;
         }

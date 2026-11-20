@@ -10,7 +10,9 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Tests.Identity;
 using Multiplex.Tests.SignIn;
+using Multiplex.Web.Identity;
 using Multiplex.Web.Auth.Store;
 using Multiplex.Web.Services.TripIt;
 using Multiplex.Web.SignIn;
@@ -48,7 +50,7 @@ public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = nul
         builder.UseSetting("Multiplex:Auth:RegisterPermitLimit", "10000");
         builder.UseSetting("Multiplex:Auth:TokenPermitLimit", "10000");
         builder.UseSetting("Multiplex:Auth:AuthorizePermitLimit", "10000");
-        builder.UseSetting(PasscodeGate.HashKey, SignInTestHost.PasscodeHash);
+        builder.UseSetting(AllowedPeople.Key, TestPeople.AllowList);
         if (fakeTripIt)
         {
             builder.UseSetting($"{TripItServiceOptions.Section}:MinRequestSpacingMs", "0");
@@ -86,9 +88,9 @@ public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = nul
         });
     }
 
-    /// <summary>Stores a session snapshot for <paramref name="account"/> whose cookie is <paramref name="cookie"/>.</summary>
-    public void SignIn(string account, string cookie)
-        => Store.Data[account] = Snapshot(cookie);
+    /// <summary>Stores <paramref name="person"/>'s session snapshot for <paramref name="account"/>, whose cookie is <paramref name="cookie"/>.</summary>
+    public void SignIn(string account, string cookie, string person = TestPeople.Owner)
+        => Store.Data[FakeSessionStore.Key(TestPeople.OwnerOf(person), account)] = Snapshot(cookie);
 
     public static string Snapshot(string cookie)
         => JsonSerializer.Serialize(new { cookie, csrf_token = "csrf-" + cookie, spa_headers = new Dictionary<string, string> { ["user-agent"] = "Test" }, captured_at = "2026-11-17T08:00:00Z" });
@@ -97,38 +99,40 @@ public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = nul
     private const string ClaudeRedirect = "https://claude.ai/api/mcp/auth_callback";
     private readonly ConcurrentDictionary<string, Task<string>> _tokens = new();
 
-    /// <summary>An MCP JSON-RPC client for one account (null: no token at all).</summary>
-    public McpTestClient McpFor(string? account) =>
+    /// <summary>An MCP JSON-RPC client for one person's connection to one account (account null: no token at all).</summary>
+    public McpTestClient McpFor(string? account, string person = TestPeople.Owner) =>
         new(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }),
-            account is null ? null : () => _tokens.GetOrAdd(account, TokenForAsync));
+            account is null ? null : () => _tokens.GetOrAdd(person + "/" + account, _ => TokenForAsync(person, account)));
 
-    /// <summary>Connects as <paramref name="account"/> the way Claude does and returns the access token.</summary>
-    private async Task<string> TokenForAsync(string account)
+    /// <summary>Connects <paramref name="person"/> to <paramref name="account"/> the way Claude does and returns the access token.</summary>
+    private async Task<string> TokenForAsync(string person, string account)
     {
-        using var http = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        var (signedIn, cookie) = await TestPeople.SignInAsync(Services, person);
+        using var http = CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }).WithCookie(cookie);
         var (clientId, verifier, pendingId) = await AuthorizeAsync(http);
 
         var completer = Services.GetRequiredService<IAuthorizationCompleter>();
-        var back = await completer.CompleteAsync(pendingId, new SiteAccount("tripit", account, [], account), CancellationToken.None);
+        var back = await completer.CompleteAsync(pendingId, signedIn.Owner, new SiteAccount("tripit", account, [], account), CancellationToken.None);
 
         return await ExchangeAsync(http, clientId, verifier, back);
     }
 
     /// <summary>
     /// Adds one connection the whole way a person does (needs <c>signInSite</c>): the client
-    /// registers and authorizes; the person enters the passcode, is taken straight to the live
-    /// sign-in and signs in there as <paramref name="email"/>; the client exchanges the code.
+    /// registers and authorizes for <paramref name="person"/>, who is signed in to Multiplex; they press
+    /// "Sign in" and sign in on the live page as <paramref name="email"/>; the client exchanges the code.
     /// Returns that connection's MCP client.
     /// </summary>
-    public async Task<McpTestClient> ConnectThroughPagesAsync(string email, string password)
+    public async Task<McpTestClient> ConnectThroughPagesAsync(string email, string password, string person = TestPeople.Owner)
     {
         var browser = new ConnectClient(this);
+        await browser.SignInAsync(person);
         var (clientId, verifier, pendingId) = await AuthorizeAsync(browser.Http);
 
-        var (gate, _) = await browser.PassGateAsync(pendingId, slug: TripItAccountSessions.Site);
-        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        var attempt = Services.GetRequiredService<LiveSignInRegistry>().Find(ConnectClient.AttemptIdOf(gate.Headers.Location!))
-            ?? throw new InvalidOperationException("The passcode did not lead to a live sign-in: " + gate.Headers.Location);
+        var (start, _) = await browser.StartSignInAsync(pendingId, slug: TripItAccountSessions.Site);
+        Assert.Equal(HttpStatusCode.SeeOther, start.StatusCode);
+        var attempt = Services.GetRequiredService<LiveSignInRegistry>().Find(ConnectClient.AttemptIdOf(start.Headers.Location!))
+            ?? throw new InvalidOperationException("Signing in did not lead to a live sign-in: " + start.Headers.Location);
         await using (var mirror = await browser.OpenMirrorAsync(attempt.Id, TripItAccountSessions.Site))
         {
             await mirror.WaitForStatusAsync("live", s_signInTimeout);
@@ -143,10 +147,11 @@ public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = nul
         }
     }
 
-    /// <summary>The session cookie the live sign-in stored for <paramref name="account"/>.</summary>
-    public async Task<string> StoredCookieAsync(string account)
+    /// <summary>The session cookie the live sign-in stored for <paramref name="person"/>'s <paramref name="account"/>.</summary>
+    public async Task<string> StoredCookieAsync(string account, string person = TestPeople.Owner)
     {
-        var snapshot = await Services.GetRequiredService<ISiteSessionStore>().GetAsync(TripItAccountSessions.Site, account, CancellationToken.None)
+        var snapshot = await Services.GetRequiredService<ISiteSessionStore>()
+            .GetAsync(TestPeople.OwnerOf(person), TripItAccountSessions.Site, account, CancellationToken.None)
             ?? throw new InvalidOperationException("No session is stored for " + account);
         return JsonDocument.Parse(snapshot).RootElement.GetProperty("cookie").GetString()!;
     }
@@ -195,24 +200,30 @@ public sealed class TripItTestHost(bool fakeTripIt = true, Uri? signInSite = nul
     }
 }
 
+/// <summary>Sessions by person and account (<see cref="Key"/>), as the real store keeps them.</summary>
 public sealed class FakeSessionStore : ISiteSessionStore
 {
     public ConcurrentDictionary<string, string> Data { get; } = new();
     public List<string> Writes { get; } = [];
 
-    public Task<string?> GetAsync(string site, string accountId, CancellationToken ct)
-        => Task.FromResult(site == "tripit" && Data.TryGetValue(accountId, out var json) ? json : null);
+    public static string Key(string owner, string accountId) => owner + "/" + accountId;
 
-    public Task SetAsync(string site, string accountId, string snapshotJson, CancellationToken ct)
+    /// <summary>The default test person's session for <paramref name="accountId"/>.</summary>
+    public string this[string accountId] => Data[Key(TestPeople.OwnerOf(), accountId)];
+
+    public Task<string?> GetAsync(string owner, string site, string accountId, CancellationToken ct)
+        => Task.FromResult(site == "tripit" && Data.TryGetValue(Key(owner, accountId), out var json) ? json : null);
+
+    public Task SetAsync(string owner, string site, string accountId, string snapshotJson, CancellationToken ct)
     {
         lock (Writes) Writes.Add(accountId);
-        Data[accountId] = snapshotJson;
+        Data[Key(owner, accountId)] = snapshotJson;
         return Task.CompletedTask;
     }
 
-    public Task RemoveAsync(string site, string accountId, CancellationToken ct)
+    public Task RemoveAsync(string owner, string site, string accountId, CancellationToken ct)
     {
-        Data.TryRemove(accountId, out _);
+        Data.TryRemove(Key(owner, accountId), out _);
         return Task.CompletedTask;
     }
 }
@@ -223,7 +234,7 @@ public sealed class FakeRefresher : ISiteSessionRefresher
     public ConcurrentDictionary<string, Func<string?>> Next { get; } = new();
     public ConcurrentDictionary<string, int> Calls { get; } = new();
 
-    public Task<string?> RefreshAsync(string site, string accountId, CancellationToken ct)
+    public Task<string?> RefreshAsync(string owner, string site, string accountId, CancellationToken ct)
     {
         Calls.AddOrUpdate(accountId, 1, (_, n) => n + 1);
         return Task.FromResult(Next.TryGetValue(accountId, out var next) ? next() : null);

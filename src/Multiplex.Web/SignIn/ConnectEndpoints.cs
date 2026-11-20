@@ -4,11 +4,12 @@ using Multiplex.Web.Sites;
 namespace Multiplex.Web.SignIn;
 
 /// <summary>
-/// The connect pages, reached from <c>/oauth/authorize</c> as <c>/connect/{slug}?p={pendingId}</c>:
-/// passcode gate → live sign-in → back to the client with a code or an error.
-/// Each pending authorization is one connection being added, bound to the account signed in to
-/// here. The passcode only lets a person reach the sign-in: every connection proves its account by
-/// signing in, and no account the server holds a session for is ever offered or selectable (#52).
+/// The connect pages, reached from <c>/oauth/authorize</c> as <c>/connect/{slug}?p={pendingId}</c>, after the
+/// person signed in to Multiplex there. Each pending authorization is one connection being added by that
+/// person, and only they may go on with it. For a service that acts on a site account: live sign-in to the
+/// site, then back to the client with a code bound to the account signed in to here; no account the server
+/// holds a session for is ever offered or selectable (#52). For a service that uses no site account: one
+/// "Allow" and back to the client.
 /// </summary>
 public static class ConnectEndpoints
 {
@@ -16,8 +17,8 @@ public static class ConnectEndpoints
     {
         var group = endpoints.MapGroup("/connect/{slug}");
         group.MapGet("", ShowAsync);
-        group.MapPost("", PasscodeAsync);
         group.MapPost("/start", StartAsync);
+        group.MapPost("/allow", AllowAsync);
         group.MapGet("/live", LiveAsync);
         group.MapGet("/done", DoneAsync);
         group.MapPost("/cancel", CancelAsync);
@@ -28,77 +29,61 @@ public static class ConnectEndpoints
 
     private static async Task ShowAsync(HttpContext context, string slug, string? p)
     {
-        if (await ResolveAsync(context, slug, p) is not ({ } site, { } pending)) return;
-        var services = context.RequestServices;
-        var gate = services.GetRequiredService<PasscodeGate>();
-
-        if (!gate.IsConfigured) { await NotConfiguredAsync(context); return; }
-
-        if (services.GetRequiredService<GateCookie>().HasPassed(context, site.Slug, pending.Id))
-        {
-            await WriteHtmlAsync(context, 200, nonce => ConnectHtml.SignIn(nonce, site, pending, Token(context)));
-            return;
-        }
-
-        await WriteHtmlAsync(context, 200, nonce => ConnectHtml.Gate(nonce, site, pending, Token(context), null));
-    }
-
-    // ---------------------------------------------------------------- POST /connect/{slug}?p=  (passcode)
-
-    private static async Task PasscodeAsync(HttpContext context, string slug, string? p)
-    {
-        if (await ResolveAsync(context, slug, p) is not ({ } site, { } pending)) return;
-        var services = context.RequestServices;
-        var gate = services.GetRequiredService<PasscodeGate>();
-        if (!gate.IsConfigured) { await NotConfiguredAsync(context); return; }
-        if (!await ValidAntiforgeryAsync(context)) return;
-
-        var form = await context.Request.ReadFormAsync(context.RequestAborted);
-        var result = gate.Check(pending.Id, ClientIp(context), form["passcode"]);
-        switch (result)
-        {
-            case GateResult.NotConfigured:
-                await NotConfiguredAsync(context);
-                return;
-            case GateResult.LockedOut:
-                await LockedOutAsync(context);
-                return;
-            case GateResult.Wrong:
-                await WriteHtmlAsync(context, 401, nonce => ConnectHtml.Gate(nonce, site, pending, Token(context), "That passcode is not right. Try again."));
-                return;
-        }
-
-        services.GetRequiredService<GateCookie>().Issue(context, site.Slug, pending.Id);
-        await StartLiveAsync(context, site, pending.Id);
+        if (await ResolveAsync(context, slug, p) is not ({ } pending, var site, { } person)) return;
+        await WriteHtmlAsync(context, 200, nonce => site is null
+            ? ConnectHtml.Consent(nonce, pending, person.Email, Token(context))
+            : ConnectHtml.SignIn(nonce, site, pending, person.Email, Token(context)));
     }
 
     // ---------------------------------------------------------------- POST /connect/{slug}/start?p=
 
     private static async Task StartAsync(HttpContext context, string slug, string? p)
     {
-        if (await ResolveAsync(context, slug, p) is not ({ } site, { } pending)) return;
-        if (!await ValidAntiforgeryAsync(context) || !await RequireGateAsync(context, site, pending.Id)) return;
-        await StartLiveAsync(context, site, pending.Id);
+        if (await ResolveAsync(context, slug, p) is not ({ } pending, var site, { } person)) return;
+        if (!await ValidAntiforgeryAsync(context)) return;
+        if (site is null)
+        {
+            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Not found", "This service has no sign-in to start."));
+            return;
+        }
+        await StartLiveAsync(context, site, pending.Id, person.Owner);
+    }
+
+    // ---------------------------------------------------------------- POST /connect/{slug}/allow?p=
+
+    private static async Task AllowAsync(HttpContext context, string slug, string? p)
+    {
+        if (await ResolveAsync(context, slug, p) is not ({ } pending, var site, { } person)) return;
+        if (!await ValidAntiforgeryAsync(context)) return;
+        if (site is not null)
+        {
+            // A service that acts on a site account is connected only by signing in to the site.
+            await WriteHtmlAsync(context, 400, nonce => ConnectHtml.Message(nonce, "Sign in first",
+                $"Connecting {site.DisplayName} needs a sign-in to {site.DisplayName}.", $"/connect/{site.Slug}?p={Uri.EscapeDataString(pending.Id)}", "Back"));
+            return;
+        }
+
+        Uri redirect;
+        try
+        {
+            redirect = await context.RequestServices.GetRequiredService<IAuthorizationCompleter>()
+                .CompleteAsync(pending.Id, person.Owner, account: null, context.RequestAborted);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            Logger(context).LogWarning("Could not complete the connection to {Site}: {Error}", slug, ex.GetType().Name);
+            await LinkExpiredAsync(context);
+            return;
+        }
+        Logger(context).LogInformation("Connect for {Site} completed after consent.", pending.Site);
+        SeeOther(context, redirect.AbsoluteUri);
     }
 
     // ---------------------------------------------------------------- GET /connect/{slug}/live?a=  (page or WebSocket)
 
     private static async Task LiveAsync(HttpContext context, string slug, string? a)
     {
-        var services = context.RequestServices;
-        var attempt = services.GetRequiredService<LiveSignInRegistry>().Find(a);
-        if (attempt is null || !string.Equals(attempt.Slug, slug, StringComparison.OrdinalIgnoreCase))
-        {
-            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Sign-in ended",
-                "This sign-in has ended. Go back to the app and connect again."));
-            return;
-        }
-        if (!services.GetRequiredService<GateCookie>().HasPassed(context, attempt.Slug, attempt.PendingId))
-        {
-            await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Not allowed",
-                "Open this sign-in from the link the app gave you and enter the passcode first."));
-            return;
-        }
+        if (await FindAttemptAsync(context, slug, a) is not { } attempt) return;
 
         if (context.WebSockets.IsWebSocketRequest)
         {
@@ -123,16 +108,8 @@ public static class ConnectEndpoints
 
     private static async Task DoneAsync(HttpContext context, string slug, string? a)
     {
-        var services = context.RequestServices;
-        var attempt = services.GetRequiredService<LiveSignInRegistry>().Find(a);
-        if (attempt is null || !string.Equals(attempt.Slug, slug, StringComparison.OrdinalIgnoreCase)
-            || !services.GetRequiredService<GateCookie>().HasPassed(context, attempt.Slug, attempt.PendingId))
-        {
-            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Sign-in ended",
-                "This sign-in has ended. Go back to the app and connect again."));
-            return;
-        }
-        if (services.GetService<IAuthorizationCompleter>() is not { } completer)
+        if (await FindAttemptAsync(context, slug, a) is not { } attempt) return;
+        if (context.RequestServices.GetService<IAuthorizationCompleter>() is not { } completer)
         {
             await NoAuthorizationServerAsync(context);
             return;
@@ -155,20 +132,29 @@ public static class ConnectEndpoints
         if (!await ValidAntiforgeryAsync(context)) return;
         var services = context.RequestServices;
         var completer = services.GetService<IAuthorizationCompleter>();
+        var person = PersonOf(context);
         Uri? redirect = null;
 
         if (services.GetRequiredService<LiveSignInRegistry>().Find(a) is { } attempt
             && string.Equals(attempt.Slug, slug, StringComparison.OrdinalIgnoreCase))
         {
-            if (!await RequireGateAsync(context, attempt.Definition, attempt.PendingId)) return;
+            if (person?.Owner != attempt.Owner)
+            {
+                await NotYoursAsync(context);
+                return;
+            }
             redirect = await attempt.CancelAsync(completer);
         }
         else if (!string.IsNullOrEmpty(p) && completer is not null)
         {
-            // Cancel before or instead of a live sign-in: the pending id itself is the capability.
             var pending = await completer.FindAsync(p, context.RequestAborted);
             if (pending is not null && string.Equals(pending.Site, slug, StringComparison.OrdinalIgnoreCase))
             {
+                if (person?.Owner != pending.Owner)
+                {
+                    await NotYoursAsync(context);
+                    return;
+                }
                 if (services.GetRequiredService<LiveSignInRegistry>().FindForPending(p) is { } running)
                     await running.CancelAsync(null);
                 redirect = await completer.FailAsync(p, "access_denied", "Sign-in cancelled", context.RequestAborted);
@@ -185,9 +171,17 @@ public static class ConnectEndpoints
 
     // ---------------------------------------------------------------- helpers
 
-    private static async Task StartLiveAsync(HttpContext context, ISiteSignInDefinition site, string pendingId)
+    /// <summary>The person signed in to Multiplex on this request (the access gate admits no one else here).</summary>
+    private sealed record Person(string Owner, string Email);
+
+    private static Person? PersonOf(HttpContext context) =>
+        context.User.Identity?.IsAuthenticated == true && context.User.FindFirst(SiteClaims.Owner)?.Value is { } owner
+            ? new Person(owner, context.User.FindFirst("email")?.Value ?? "")
+            : null;
+
+    private static async Task StartLiveAsync(HttpContext context, ISiteSignInDefinition site, string pendingId, string owner)
     {
-        var attempt = context.RequestServices.GetRequiredService<LiveSignInRegistry>().StartOrResume(site, pendingId);
+        var attempt = context.RequestServices.GetRequiredService<LiveSignInRegistry>().StartOrResume(site, pendingId, owner);
         if (attempt is null)
         {
             await WriteHtmlAsync(context, 503, nonce => ConnectHtml.Busy(nonce, site, pendingId, Token(context)));
@@ -196,16 +190,17 @@ public static class ConnectEndpoints
         SeeOther(context, $"/connect/{site.Slug}/live?a={Uri.EscapeDataString(attempt.Id)}");
     }
 
-    /// <summary>Finds the site and the pending authorization; on failure writes the friendly error page and returns null.</summary>
-    private static async Task<(ISiteSignInDefinition Site, PendingAuthorization Pending)?> ResolveAsync(
+    /// <summary>
+    /// Finds the pending authorization, the site's sign-in (null for a service that uses no site account) and
+    /// the signed-in person, who must be the one that started it. On failure writes the page and returns null.
+    /// </summary>
+    private static async Task<(PendingAuthorization Pending, ISiteSignInDefinition? Site, Person Person)?> ResolveAsync(
         HttpContext context, string slug, string? pendingId)
     {
         var services = context.RequestServices;
-        var site = services.GetServices<ISiteSignInDefinition>()
-            .FirstOrDefault(d => string.Equals(d.Slug, slug, StringComparison.OrdinalIgnoreCase));
-        if (site is null)
+        if (PersonOf(context) is not { } person)
         {
-            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Not found", "There is no such sign-in on this server."));
+            await NotYoursAsync(context);
             return null;
         }
 
@@ -224,22 +219,38 @@ public static class ConnectEndpoints
 
         var pending = await completer.FindAsync(pendingId, context.RequestAborted);
         var now = services.GetRequiredService<TimeProvider>().GetUtcNow();
-        if (pending is null || pending.ExpiresAt <= now || !string.Equals(pending.Site, site.Slug, StringComparison.OrdinalIgnoreCase))
+        if (pending is null || pending.ExpiresAt <= now || !string.Equals(pending.Site, slug, StringComparison.OrdinalIgnoreCase))
         {
-            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Link expired",
-                "This sign-in link has expired or is not valid. Go back to the app and try connecting again."));
+            await LinkExpiredAsync(context);
+            return null;
+        }
+        if (!string.Equals(pending.Owner, person.Owner, StringComparison.Ordinal))
+        {
+            await NotYoursAsync(context);
             return null;
         }
 
-        return (site, pending);
+        var site = services.GetServices<ISiteSignInDefinition>()
+            .FirstOrDefault(d => string.Equals(d.Slug, pending.Site, StringComparison.OrdinalIgnoreCase));
+        return (pending, site, person);
     }
 
-    private static async Task<bool> RequireGateAsync(HttpContext context, ISiteSignInDefinition site, string pendingId)
+    /// <summary>The live sign-in, when it exists for this slug and belongs to the signed-in person; otherwise writes the page.</summary>
+    private static async Task<LiveSignInAttempt?> FindAttemptAsync(HttpContext context, string slug, string? attemptId)
     {
-        if (context.RequestServices.GetRequiredService<GateCookie>().HasPassed(context, site.Slug, pendingId)) return true;
-        await WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Passcode needed",
-            "Enter the passcode first.", $"/connect/{site.Slug}?p={Uri.EscapeDataString(pendingId)}", "Enter passcode"));
-        return false;
+        var attempt = context.RequestServices.GetRequiredService<LiveSignInRegistry>().Find(attemptId);
+        if (attempt is null || !string.Equals(attempt.Slug, slug, StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Sign-in ended",
+                "This sign-in has ended. Go back to the app and connect again."));
+            return null;
+        }
+        if (PersonOf(context)?.Owner != attempt.Owner)
+        {
+            await NotYoursAsync(context);
+            return null;
+        }
+        return attempt;
     }
 
     private static async Task<bool> ValidAntiforgeryAsync(HttpContext context)
@@ -263,14 +274,13 @@ public static class ConnectEndpoints
         return new FormToken(tokens.FormFieldName, tokens.RequestToken ?? "");
     }
 
-    private static Task NotConfiguredAsync(HttpContext context) =>
-        WriteHtmlAsync(context, 503, nonce => ConnectHtml.Message(nonce, "Not set up yet",
-            "This server is not ready for connections: its owner has not set a connect passcode yet. " +
-            "The owner needs to run the install script, which sets Multiplex:Gate:PasscodeHash."));
+    private static Task LinkExpiredAsync(HttpContext context) =>
+        WriteHtmlAsync(context, 404, nonce => ConnectHtml.Message(nonce, "Link expired",
+            "This sign-in link has expired or is not valid. Go back to the app and try connecting again."));
 
-    private static Task LockedOutAsync(HttpContext context) =>
-        WriteHtmlAsync(context, 429, nonce => ConnectHtml.Message(nonce, "Too many tries",
-            "Too many wrong passcodes. Wait 15 minutes, then try again."));
+    private static Task NotYoursAsync(HttpContext context) =>
+        WriteHtmlAsync(context, 403, nonce => ConnectHtml.Message(nonce, "Not allowed",
+            "This connection was started by a different sign-in to Multiplex. Go back to the app and connect again."));
 
     private static Task NoAuthorizationServerAsync(HttpContext context) =>
         WriteHtmlAsync(context, 503, nonce => ConnectHtml.Message(nonce, "Not available",
@@ -280,7 +290,7 @@ public static class ConnectEndpoints
     private static bool SameOrigin(HttpContext context)
     {
         var origin = context.Request.Headers.Origin.ToString();
-        if (string.IsNullOrEmpty(origin)) return true; // not a browser; the gate cookie still applies
+        if (string.IsNullOrEmpty(origin)) return true; // not a browser; the sign-in cookie and owner check still apply
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)) return false;
         var originAuthority = originUri.Authority;
 
@@ -297,12 +307,6 @@ public static class ConnectEndpoints
 
     private static string? AuthorityOf(string? url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Authority : null;
 
-    /// <summary>
-    /// The connecting address. Behind a tunnel this is the tunnel's local end (usually loopback),
-    /// so the per-address lockout then covers everyone; forwarded headers are not trusted for it.
-    /// </summary>
-    private static string ClientIp(HttpContext context) => RequestOrigin.ClientAddress(context);
-
     private static ILogger Logger(HttpContext context) =>
         context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Multiplex.Web.SignIn.Connect");
 
@@ -313,7 +317,8 @@ public static class ConnectEndpoints
         context.Response.Headers.CacheControl = "no-store";
     }
 
-    private static async Task WriteHtmlAsync(HttpContext context, int status, Func<string, string> render)
+    /// <summary>Writes one of the self-contained HTML pages with a per-response CSP nonce. Also used by Identity/.</summary>
+    internal static async Task WriteHtmlAsync(HttpContext context, int status, Func<string, string> render)
     {
         var nonce = ConnectHtml.NewNonce();
         var headers = context.Response.Headers;

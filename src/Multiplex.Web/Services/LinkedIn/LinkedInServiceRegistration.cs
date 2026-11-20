@@ -65,12 +65,12 @@ public sealed class LinkedInApiFactory(
     LinkedInAccountSessions sessions,
     IOptions<LinkedInServiceOptions> options) : ILinkedInApiFactory
 {
-    public async Task<ILinkedInApi> CreateAsync(string accountId, IServiceProvider requestServices, CancellationToken ct)
+    public async Task<ILinkedInApi> CreateAsync(string owner, string accountId, IServiceProvider requestServices, CancellationToken ct)
     {
-        var session = await sessions.LoadAsync(requestServices, accountId, ct).ConfigureAwait(false);
+        var session = await sessions.LoadAsync(requestServices, owner, accountId, ct).ConfigureAwait(false);
         if (!session.IsConfigured)
             throw new LinkedInApiException("There is no LinkedIn session for this account yet. Reconnect the LinkedIn connector to sign in.");
         return new LinkedInClient(session, httpClients.CreateClient(LinkedInServiceRegistration.HttpClientName), options.Value.QueryIds,
-            (rejected, c) => sessions.RenewAsync(requestServices, accountId, rejected, c), pacingKey: accountId);
+            (rejected, c) => sessions.RenewAsync(requestServices, owner, accountId, rejected, c), pacingKey: accountId);
     }
 }

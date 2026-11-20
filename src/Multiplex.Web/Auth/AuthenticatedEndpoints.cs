@@ -7,7 +7,8 @@ namespace Multiplex.Web.Auth;
 /// <param name="DisplayName">Name shown in protected resource metadata.</param>
 /// <param name="Resource">The canonical resource URL and token audience: <c>&lt;issuer&gt;/&lt;slug&gt;/mcp</c>.</param>
 /// <param name="ResourceMetadataUrl">Where its RFC 9728 metadata is served.</param>
-public sealed record AuthenticatedEndpoint(string Slug, string DisplayName, string Resource, string ResourceMetadataUrl);
+/// <param name="NeedsSiteAccount">Whether its tools act on a person's site account (see <see cref="MultiplexAuthBuilder.RequireAuthFor"/>).</param>
+public sealed record AuthenticatedEndpoint(string Slug, string DisplayName, string Resource, string ResourceMetadataUrl, bool NeedsSiteAccount = true);
 
 /// <summary>The registry of authenticated slugs (see <see cref="MultiplexAuthBuilder.RequireAuthFor"/>).</summary>
 public sealed class AuthenticatedEndpoints
@@ -22,7 +23,8 @@ public sealed class AuthenticatedEndpoints
                 e.Slug,
                 e.DisplayName,
                 $"{issuer.Issuer}/{e.Slug}/mcp",
-                $"{issuer.Issuer}/.well-known/oauth-protected-resource/{e.Slug}/mcp"))
+                $"{issuer.Issuer}/.well-known/oauth-protected-resource/{e.Slug}/mcp",
+                e.NeedsSiteAccount))
             .ToList());
     }
 

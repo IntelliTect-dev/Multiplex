@@ -13,6 +13,22 @@ public static class McpEndpointRouting
         .Select(slug => $"/{slug}/mcp")
         .ToList();
 
+    /// <summary>
+    /// Fails startup when an MCP endpoint is not registered as requiring sign-in. The access gate
+    /// already refuses such an endpoint (404); this makes the mistake loud instead of a silent 404.
+    /// </summary>
+    public static void EnsureEveryEndpointRequiresSignIn(Auth.AuthenticatedEndpoints endpoints)
+    {
+        var missing = EndpointPaths.Select(p => p.Trim('/')[..^"/mcp".Length])
+            .Where(slug => endpoints.FindBySlug(slug) is null)
+            .ToList();
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Every MCP endpoint must require sign-in; register {string.Join(", ", missing)} with RequireAuthFor.");
+        }
+    }
+
     /// <summary>Maps an MCP endpoint at each of <see cref="EndpointPaths"/>.</summary>
     public static void MapMcpEndpoints(this IEndpointRouteBuilder app)
     {

@@ -1,12 +1,13 @@
 using System.Net;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 using Multiplex.Web.Sites;
 
 namespace Multiplex.Tests.SignIn;
 
 /// <summary>
-/// The sessions the server holds are never a shortcut into a new connection: the passcode only
-/// reaches the connect page, and every connection proves its account by signing in live. The
+/// The sessions the server holds are never a shortcut into a new connection: signing in to Multiplex
+/// only reaches the connect page, and every connection proves its account by signing in live. The
 /// refresher is faked, and no browser can start (a live sign-in fails at launch, unobserved).
 /// </summary>
 public sealed class SavedAccountTests : IAsyncLifetime
@@ -36,28 +37,32 @@ public sealed class SavedAccountTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _host.DisposeAsync();
 
+    /// <summary>The person signed in on the test's browser, whose earlier sign-ins are seeded.</summary>
+    private static readonly string s_owner = TestPeople.OwnerOf();
+
     /// <summary>What a finished earlier sign-in leaves behind: index entry, stored session, kept profile.</summary>
     private async Task SeedSavedAccountAsync(SiteAccount account)
     {
-        await _host.Get<SiteAccountIndex>().UpsertAsync(account, CancellationToken.None);
-        await _host.Get<SiteSessionStore>().SetAsync(account.Site, account.AccountId, """{"cookie":"old"}""", CancellationToken.None);
-        Directory.CreateDirectory(_host.Get<SignInPaths>().AccountProfile(account.Site, account.AccountId));
+        await _host.Get<SiteAccountIndex>().UpsertAsync(s_owner, account, CancellationToken.None);
+        await _host.Get<SiteSessionStore>().SetAsync(s_owner, account.Site, account.AccountId, """{"cookie":"old"}""", CancellationToken.None);
+        Directory.CreateDirectory(_host.Get<SignInPaths>().AccountProfile(s_owner, account.Site, account.AccountId));
     }
 
     [Fact]
-    public async Task No_saved_account_is_offered_after_the_gate()
+    public async Task No_saved_account_is_offered_to_the_signed_in_person()
     {
         await SeedSavedAccountAsync(s_account);
         await SeedSavedAccountAsync(s_otherAccount);
         _host.Completer.Add("p1", "stub");
         var client = _host.NewClient();
 
-        var (gate, _) = await client.PassGateAsync("p1");
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
         var (_, page) = await client.GetAsync("/connect/stub?p=p1");
 
-        // The passcode leads straight to a live sign-in; nothing the server holds is on offer.
-        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        Assert.StartsWith("/connect/stub/live?a=", gate.Headers.Location!.OriginalString);
+        // The connect page leads straight to a live sign-in; nothing the server holds is on offer.
+        Assert.Equal(HttpStatusCode.SeeOther, started.StatusCode);
+        Assert.StartsWith("/connect/stub/live?a=", started.Headers.Location!.OriginalString);
         Assert.Contains("Sign in to Stub Site", page);
         foreach (var held in new[] { s_account, s_otherAccount })
         {
@@ -71,11 +76,11 @@ public sealed class SavedAccountTests : IAsyncLifetime
     [Fact]
     public async Task A_posted_account_id_never_binds_a_connection_to_a_saved_account()
     {
-        // Someone else's account has a saved session on this server; a passcode holder names it.
+        // An account has a saved session on this server; the signed-in person names it.
         await SeedSavedAccountAsync(s_otherAccount);
         _host.Completer.Add("p1", "stub");
         var client = _host.NewClient();
-        await client.PassGateAsync("p1");
+        await client.SignInAsync();
         var (_, page) = await client.GetAsync("/connect/stub?p=p1");
 
         var (continued, _) = await client.PostAsync("/connect/stub/continue?p=p1", page, ("account", s_otherAccount.AccountId));
@@ -90,7 +95,7 @@ public sealed class SavedAccountTests : IAsyncLifetime
         Assert.NotNull(await _host.Completer.FindAsync("p1", CancellationToken.None));
         Assert.Empty(_refresher.Calls);
         Assert.Equal("""{"cookie":"old"}""",
-            await _host.Get<ISiteSessionStore>().GetAsync("stub", s_otherAccount.AccountId, CancellationToken.None));
+            await _host.Get<ISiteSessionStore>().GetAsync(s_owner, "stub", s_otherAccount.AccountId, CancellationToken.None));
     }
 
     [Fact]
@@ -100,10 +105,12 @@ public sealed class SavedAccountTests : IAsyncLifetime
         await StartAsync(new() { [$"Multiplex:Sites:{StubSignInDefinition.SiteSlug}:AllowedAccounts:0"] = "someone-else@example.test" });
         _host.Completer.Add("p1", "stub");
 
-        var (gate, _) = await _host.NewClient().PassGateAsync("p1");
+        var client = _host.NewClient();
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
 
-        Assert.Equal(HttpStatusCode.SeeOther, gate.StatusCode);
-        Assert.StartsWith("/connect/stub/live?a=", gate.Headers.Location!.OriginalString);
+        Assert.Equal(HttpStatusCode.SeeOther, started.StatusCode);
+        Assert.StartsWith("/connect/stub/live?a=", started.Headers.Location!.OriginalString);
         var notice = Assert.Single(_host.Logs.Entries, e => e.AllText.Contains("AllowedAccounts", StringComparison.Ordinal));
         Assert.Contains("no longer used", notice.Message);
     }
@@ -113,9 +120,10 @@ public sealed class SavedAccountTests : IAsyncLifetime
     {
         _host.Completer.Add("p1", "stub");
         var client = _host.NewClient();
-        var (_, gatePage) = await client.GetAsync("/connect/stub?p=p1");
+        await client.SignInAsync();
+        var (_, connectPage) = await client.GetAsync("/connect/stub?p=p1");
 
-        var (response, _) = await client.PostAsync("/connect/stub/cancel?p=p1", gatePage);
+        var (response, _) = await client.PostAsync("/connect/stub/cancel?p=p1", connectPage);
 
         Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
         Assert.Contains("error=access_denied", response.Headers.Location!.AbsoluteUri);

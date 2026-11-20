@@ -115,8 +115,11 @@ public static class OAuthEndpoints
 
     private static async Task<IResult> Authorize(HttpContext context, AuthorizationServer server)
     {
+        // The access gate lets no one this far who has not signed in to Multiplex.
+        var person = Identity.MultiplexIdentity.PersonOf(context.User)
+                     ?? throw new InvalidOperationException("/oauth/authorize was reached without a signed-in person.");
         var outcome = await server.AuthorizeAsync(
-            context.Request.Query, context.Request.PathBase, Sites.RequestOrigin.ClientAddress(context), context.RequestAborted);
+            context.Request.Query, context.Request.PathBase, Sites.RequestOrigin.ClientAddress(context), person.Owner, context.RequestAborted);
         NoStore(context.Response);
         return outcome switch
         {

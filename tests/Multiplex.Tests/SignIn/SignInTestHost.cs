@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Mvc.Testing.Handlers;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Tests.Identity;
+using Multiplex.Web.Identity;
 using Multiplex.Web.SignIn;
 using Multiplex.Web.Sites;
 
@@ -26,8 +28,6 @@ public sealed class SignInBrowserCollection
 
 public sealed class SignInTestOptions
 {
-    public bool WithPasscode { get; set; } = true;
-
     /// <summary>The stub site the definition points at; null registers the definition against an unused address.</summary>
     public Uri? StubBaseUrl { get; set; }
 
@@ -45,16 +45,10 @@ public sealed class SignInTestOptions
 
 /// <summary>
 /// Multiplex in-process with Auth/ faked, a throwaway data folder, the stub site's sign-in
-/// definition and (optionally) a passcode. Nothing touches the real %LOCALAPPDATA%.
+/// definition and the test allowlist (<see cref="TestPeople"/>). Nothing touches the real %LOCALAPPDATA%.
 /// </summary>
 public sealed class SignInTestHost : IAsyncDisposable
 {
-    public const string Passcode = "test-passcode-42";
-    private static readonly Lazy<string> s_passcodeHash = new(() => PasscodeHasher.Hash(Passcode));
-
-    /// <summary>The stored form of <see cref="Passcode"/>, for any host that serves the connect pages.</summary>
-    public static string PasscodeHash => s_passcodeHash.Value;
-
     public string DataPath { get; } = Path.Combine(Path.GetTempPath(), "multiplex-signin-tests", Guid.NewGuid().ToString("N"));
     public FakeCompleter Completer { get; } = new();
     public FakeRevoker Revoker { get; } = new();
@@ -77,7 +71,7 @@ public sealed class SignInTestHost : IAsyncDisposable
             b.UseSetting("SignIn:PollInterval", "00:00:00.500");
             b.UseSetting("SignIn:AttemptTimeout", options.AttemptTimeout.ToString("c"));
             b.UseSetting("SignIn:RefreshTimeout", "00:00:20");
-            b.UseSetting(PasscodeGate.HashKey, options.WithPasscode ? s_passcodeHash.Value : "");
+            b.UseSetting(AllowedPeople.Key, TestPeople.AllowList);
             foreach (var (key, value) in options.Settings) b.UseSetting(key, value);
 
             b.ConfigureTestServices(services =>
@@ -112,7 +106,8 @@ public sealed class SignInTestHost : IAsyncDisposable
 
     public T Get<T>() where T : notnull => Factory.Services.GetRequiredService<T>();
 
-    public string ProfilesDirectory => Path.Combine(DataPath, "sites", StubSignInDefinition.SiteSlug, "profiles");
+    /// <summary>The default test person's profiles for the stub site.</summary>
+    public string ProfilesDirectory => Path.Combine(DataPath, "users", TestPeople.OwnerOf(), "sites", StubSignInDefinition.SiteSlug, "profiles");
 
     public string[] TempProfiles() =>
         Directory.Exists(ProfilesDirectory) ? Directory.GetDirectories(ProfilesDirectory, "temp-*") : [];
@@ -160,12 +155,23 @@ public sealed partial class ConnectClient
         return (response, await response.Content.ReadAsStringAsync());
     }
 
-    /// <summary>Opens the connect page and submits the passcode; returns the POST's response.</summary>
-    public async Task<(HttpResponseMessage Response, string Html)> PassGateAsync(
-        string pendingId, string passcode = SignInTestHost.Passcode, string slug = StubSignInDefinition.SiteSlug)
+    /// <summary>
+    /// Signs <paramref name="email"/> in to Multiplex on this browser (admitted through the real allowlist,
+    /// with the app's own sign-in cookie), as if they had just come back from Microsoft.
+    /// </summary>
+    public async Task<MultiplexPerson> SignInAsync(string email = TestPeople.Owner)
+    {
+        var (person, cookie) = await TestPeople.SignInAsync(_factory.Services, email);
+        var separator = cookie.IndexOf('=');
+        Cookies.Add(new Uri("http://localhost"), new Cookie(cookie[..separator], cookie[(separator + 1)..]) { Path = "/" });
+        return person;
+    }
+
+    /// <summary>Opens the connect page and presses its sign-in button; returns the POST's response.</summary>
+    public async Task<(HttpResponseMessage Response, string Html)> StartSignInAsync(string pendingId, string slug = StubSignInDefinition.SiteSlug)
     {
         var (_, page) = await GetAsync($"/connect/{slug}?p={pendingId}");
-        return await PostAsync($"/connect/{slug}?p={pendingId}", page, ("passcode", passcode));
+        return await PostAsync($"/connect/{slug}/start?p={pendingId}", page);
     }
 
     public static string? TokenOf(string html) =>

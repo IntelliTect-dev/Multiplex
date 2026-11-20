@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Multiplex.Tests.Identity;
 using Multiplex.Tests.Auth;
 using Multiplex.Tests.Services.TripIt;
 using Multiplex.Web.Services.LinkedIn;
@@ -90,7 +91,7 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
             NullLogger<LinkedInAccountSessions>.Instance);
         var store = new MemoryStore { Data = { ["acct"] = Snapshot("li_at=other", "ACoAAOther0000000000000000000000000000008") } };
 
-        var session = await sessions.LoadAsync(Services(store), "acct", CancellationToken.None);
+        var session = await sessions.LoadAsync(Services(store), TestPeople.OwnerOf(), "acct", CancellationToken.None);
 
         Assert.False(session.IsConfigured);
     }
@@ -103,7 +104,7 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
         var sessions = new LinkedInAccountSessions(TimeProvider.System, Options.Create(new LinkedInServiceOptions()),
             NullLogger<LinkedInAccountSessions>.Instance);
 
-        var renewed = await sessions.RenewAsync(Services(store, refresher), Member, new LinkedInSession { Cookie = "li_at=old" }, CancellationToken.None);
+        var renewed = await sessions.RenewAsync(Services(store, refresher), TestPeople.OwnerOf(), Member, new LinkedInSession { Cookie = "li_at=old" }, CancellationToken.None);
 
         Assert.Equal("li_at=newer", renewed?.Cookie);
         Assert.Equal(0, refresher.Calls);
@@ -118,10 +119,10 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
             NullLogger<LinkedInAccountSessions>.Instance);
 
         await Assert.ThrowsAsync<LinkedInSessionEndedException>(() =>
-            sessions.RenewAsync(Services(store, new CountingRefresher(() => null)), Member, rejected, CancellationToken.None));
+            sessions.RenewAsync(Services(store, new CountingRefresher(() => null)), TestPeople.OwnerOf(), Member, rejected, CancellationToken.None));
 
         var again = new CountingRefresher(() => Snapshot("li_at=new"));
-        Assert.Null(await sessions.RenewAsync(Services(store, again), Member, rejected, CancellationToken.None));
+        Assert.Null(await sessions.RenewAsync(Services(store, again), TestPeople.OwnerOf(), Member, rejected, CancellationToken.None));
         Assert.Equal(0, again.Calls);
     }
 
@@ -163,16 +164,17 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
     {
         public ConcurrentDictionary<string, string> Data { get; } = new();
 
-        public Task<string?> GetAsync(string site, string accountId, CancellationToken ct) =>
-            Task.FromResult(site == "linkedin" && Data.TryGetValue(accountId, out var json) ? json : null);
+        // The default test person's sessions only: no one else has any.
+        public Task<string?> GetAsync(string owner, string site, string accountId, CancellationToken ct) =>
+            Task.FromResult(owner == TestPeople.OwnerOf() && site == "linkedin" && Data.TryGetValue(accountId, out var json) ? json : null);
 
-        public Task SetAsync(string site, string accountId, string snapshotJson, CancellationToken ct)
+        public Task SetAsync(string owner, string site, string accountId, string snapshotJson, CancellationToken ct)
         {
             Data[accountId] = snapshotJson;
             return Task.CompletedTask;
         }
 
-        public Task RemoveAsync(string site, string accountId, CancellationToken ct)
+        public Task RemoveAsync(string owner, string site, string accountId, CancellationToken ct)
         {
             Data.TryRemove(accountId, out _);
             return Task.CompletedTask;
@@ -183,7 +185,7 @@ public sealed class LinkedInServiceTests : IClassFixture<LinkedInServiceTests.Wi
     {
         public int Calls { get; private set; }
 
-        public Task<string?> RefreshAsync(string site, string accountId, CancellationToken ct)
+        public Task<string?> RefreshAsync(string owner, string site, string accountId, CancellationToken ct)
         {
             Calls++;
             return Task.FromResult(next());

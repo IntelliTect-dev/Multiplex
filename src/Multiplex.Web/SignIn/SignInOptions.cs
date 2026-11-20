@@ -38,12 +38,13 @@ public sealed class SignInOptions
 
     /// <summary>Passes --no-sandbox to Chrome. Only for containers that cannot sandbox; off by default.</summary>
     public bool NoSandbox { get; set; }
-
-    /// <summary>How long the gate stays passed for one pending authorization.</summary>
-    public TimeSpan GateLifetime { get; set; } = TimeSpan.FromMinutes(30);
 }
 
-/// <summary>Where the sign-in machinery keeps its files, all under <c>Multiplex:DataPath</c>.</summary>
+/// <summary>
+/// Where the sign-in machinery keeps its files, all under <c>Multiplex:DataPath</c>. Everything a person
+/// signs in to is kept under their own folder, <c>users/{owner}/sites/{slug}</c>, so one person's site
+/// sessions and browser profiles are never read for another.
+/// </summary>
 public sealed partial class SignInPaths(IConfiguration config)
 {
     /// <summary><c>Multiplex:DataPath</c>, default <c>%LOCALAPPDATA%\Multiplex\data</c>.</summary>
@@ -60,24 +61,49 @@ public sealed partial class SignInPaths(IConfiguration config)
 
     public string KeysDirectory => Path.Combine(DataPath, "keys");
 
-    public string SiteDirectory(string site) => Path.Combine(DataPath, "sites", CheckSlug(site));
+    /// <summary>Every person's folder.</summary>
+    public string UsersDirectory => Path.Combine(DataPath, "users");
 
-    public string SessionsDirectory(string site) => Path.Combine(SiteDirectory(site), "sessions");
+    /// <summary>
+    /// Where site sessions were kept before they belonged to a person (<c>sites</c> directly under the
+    /// data folder). They belong to no one, so <see cref="UnownedSiteDataSweeper"/> removes them.
+    /// </summary>
+    public string UnownedSitesDirectory => Path.Combine(DataPath, "sites");
 
-    public string SessionFile(string site, string accountId) =>
-        Path.Combine(SessionsDirectory(site), HashName(accountId) + ".bin");
+    public string UserDirectory(string owner) => Path.Combine(UsersDirectory, CheckOwner(owner));
 
-    public string AccountIndexFile(string site) => Path.Combine(SiteDirectory(site), "accounts.bin");
+    public string SiteDirectory(string owner, string site) => Path.Combine(UserDirectory(owner), "sites", CheckSlug(site));
 
-    public string ProfilesDirectory(string site) => Path.Combine(SiteDirectory(site), "profiles");
+    public string SessionsDirectory(string owner, string site) => Path.Combine(SiteDirectory(owner, site), "sessions");
 
-    /// <summary>The persistent browser profile of one signed-in account.</summary>
-    public string AccountProfile(string site, string accountId) =>
-        Path.Combine(ProfilesDirectory(site), ProfileName(accountId));
+    public string SessionFile(string owner, string site, string accountId) =>
+        Path.Combine(SessionsDirectory(owner, site), HashName(accountId) + ".bin");
+
+    public string AccountIndexFile(string owner, string site) => Path.Combine(SiteDirectory(owner, site), "accounts.bin");
+
+    public string ProfilesDirectory(string owner, string site) => Path.Combine(SiteDirectory(owner, site), "profiles");
+
+    /// <summary>The persistent browser profile of one person's signed-in account.</summary>
+    public string AccountProfile(string owner, string site, string accountId) =>
+        Path.Combine(ProfilesDirectory(owner, site), ProfileName(accountId));
 
     /// <summary>A fresh, empty profile for one sign-in attempt.</summary>
-    public string NewTempProfile(string site) =>
-        Path.Combine(ProfilesDirectory(site), TempProfilePrefix + Guid.NewGuid().ToString("N"));
+    public string NewTempProfile(string owner, string site) =>
+        Path.Combine(ProfilesDirectory(owner, site), TempProfilePrefix + Guid.NewGuid().ToString("N"));
+
+    /// <summary>Every person's profile folder for <paramref name="site"/> that exists.</summary>
+    public IEnumerable<string> AllProfilesDirectories(string site) =>
+        Directory.Exists(UsersDirectory)
+            ? Directory.GetDirectories(UsersDirectory)
+                .Where(dir => OwnerPattern().IsMatch(Path.GetFileName(dir)))
+                .Select(dir => Path.Combine(dir, "sites", CheckSlug(site), "profiles"))
+                .Where(Directory.Exists)
+            : [];
+
+    /// <summary>A Multiplex user id: <c>u</c> and 32 lower-case hex digits, so always a safe folder name.</summary>
+    public static string CheckOwner(string owner) =>
+        owner is not null && OwnerPattern().IsMatch(owner) ? owner
+            : throw new ArgumentException("Invalid owner (Multiplex user id).", nameof(owner));
 
     /// <summary>Where an account's replaced profile is moved, beside it, until it is deleted.</summary>
     public static string OldProfile(string accountProfile) =>
@@ -131,6 +157,9 @@ public sealed partial class SignInPaths(IConfiguration config)
 
     [GeneratedRegex("^[A-Za-z0-9-]{1,40}$")]
     private static partial Regex SlugPattern();
+
+    [GeneratedRegex("^u[0-9a-f]{32}$")]
+    private static partial Regex OwnerPattern();
 
     // No leading or trailing dot (Windows drops trailing dots, so "a." and "a" would collide).
     [GeneratedRegex(@"^[A-Za-z0-9_-](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?$")]

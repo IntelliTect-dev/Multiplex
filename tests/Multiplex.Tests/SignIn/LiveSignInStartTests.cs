@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 
 namespace Multiplex.Tests.SignIn;
@@ -17,8 +18,10 @@ public sealed class LiveSignInStartTests
         var missingBrowser = Path.Combine(Path.GetTempPath(), "no-such-chrome-" + Guid.NewGuid().ToString("N"), "chrome.exe");
         await using var host = new SignInTestHost(new SignInTestOptions { ExecutablePath = missingBrowser });
         host.Completer.Add("p1", "stub");
-        var (gate, _) = await host.NewClient().PassGateAsync("p1");
-        var attempt = LiveMirrorTests.Attempt(host, gate);
+        var client = host.NewClient();
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+        var attempt = LiveMirrorTests.Attempt(host, started);
 
         await attempt.Completion.WaitAsync(TimeSpan.FromSeconds(60));
 
@@ -38,9 +41,10 @@ public sealed class LiveSignInStartTests
         var registry = host.Get<LiveSignInRegistry>();
 
         // An invalid slug cannot name a profile folder, so the attempt cannot be created.
-        Assert.Throws<ArgumentException>(() => registry.StartOrResume(new SlugOnlyDefinition("Not a slug!"), "p-broken"));
+        var owner = TestPeople.OwnerOf();
+        Assert.Throws<ArgumentException>(() => registry.StartOrResume(new SlugOnlyDefinition("Not a slug!"), "p-broken", owner));
         Assert.Null(registry.FindForPending("p-broken"));
 
-        Assert.NotNull(registry.StartOrResume(host.Definition, "p1"));
+        Assert.NotNull(registry.StartOrResume(host.Definition, "p1", owner));
     }
 }

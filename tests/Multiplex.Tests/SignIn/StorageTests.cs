@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 using Multiplex.Web.Sites;
 
@@ -9,6 +10,8 @@ namespace Multiplex.Tests.SignIn;
 
 public sealed class StorageTests : IDisposable
 {
+    private static readonly string Owner = TestPeople.OwnerOf();
+
     private readonly string _dataPath = Path.Combine(Path.GetTempPath(), "multiplex-storage-tests", Guid.NewGuid().ToString("N"));
     private readonly SignInPaths _paths;
     private readonly IDataProtectionProvider _protection;
@@ -33,10 +36,10 @@ public sealed class StorageTests : IDisposable
         var store = Store();
         const string snapshot = """{"cookie":"it_session_id=SECRET-VALUE","csrf_token":"CSRF-VALUE"}""";
 
-        await store.SetAsync("tripit", "ref-123", snapshot, CancellationToken.None);
+        await store.SetAsync(Owner, "tripit", "ref-123", snapshot, CancellationToken.None);
 
-        Assert.Equal(snapshot, await store.GetAsync("tripit", "ref-123", CancellationToken.None));
-        var file = Assert.Single(Directory.GetFiles(Path.Combine(_dataPath, "sites", "tripit", "sessions")));
+        Assert.Equal(snapshot, await store.GetAsync(Owner, "tripit", "ref-123", CancellationToken.None));
+        var file = Assert.Single(Directory.GetFiles(Path.Combine(_dataPath, "users", Owner, "sites", "tripit", "sessions")));
         Assert.Equal(SignInPaths.HashName("ref-123") + ".bin", Path.GetFileName(file));
         var raw = Encoding.UTF8.GetString(await File.ReadAllBytesAsync(file));
         Assert.DoesNotContain("SECRET-VALUE", raw);
@@ -47,43 +50,43 @@ public sealed class StorageTests : IDisposable
     public async Task Overwrite_replaces_and_remove_deletes()
     {
         var store = Store();
-        await store.SetAsync("tripit", "a", "one", CancellationToken.None);
-        await store.SetAsync("tripit", "a", "two", CancellationToken.None);
-        Assert.Equal("two", await store.GetAsync("tripit", "a", CancellationToken.None));
+        await store.SetAsync(Owner, "tripit", "a", "one", CancellationToken.None);
+        await store.SetAsync(Owner, "tripit", "a", "two", CancellationToken.None);
+        Assert.Equal("two", await store.GetAsync(Owner, "tripit", "a", CancellationToken.None));
 
-        await store.RemoveAsync("tripit", "a", CancellationToken.None);
+        await store.RemoveAsync(Owner, "tripit", "a", CancellationToken.None);
 
-        Assert.Null(await store.GetAsync("tripit", "a", CancellationToken.None));
-        Assert.False(store.Exists("tripit", "a"));
-        Assert.Empty(Directory.GetFiles(Path.Combine(_dataPath, "sites", "tripit", "sessions")));
+        Assert.Null(await store.GetAsync(Owner, "tripit", "a", CancellationToken.None));
+        Assert.False(store.Exists(Owner, "tripit", "a"));
+        Assert.Empty(Directory.GetFiles(Path.Combine(_dataPath, "users", Owner, "sites", "tripit", "sessions")));
     }
 
     [Fact]
     public async Task Unreadable_session_is_treated_as_missing()
     {
         var store = Store();
-        Directory.CreateDirectory(Path.GetDirectoryName(_paths.SessionFile("tripit", "a"))!);
-        await File.WriteAllTextAsync(_paths.SessionFile("tripit", "a"), "garbage");
+        Directory.CreateDirectory(Path.GetDirectoryName(_paths.SessionFile(Owner, "tripit", "a"))!);
+        await File.WriteAllTextAsync(_paths.SessionFile(Owner, "tripit", "a"), "garbage");
 
-        Assert.Null(await store.GetAsync("tripit", "a", CancellationToken.None));
+        Assert.Null(await store.GetAsync(Owner, "tripit", "a", CancellationToken.None));
     }
 
     [Fact]
     public async Task Account_index_keeps_one_entry_per_account_encrypted()
     {
         var index = new SiteAccountIndex(_protection, _paths);
-        await index.UpsertAsync(new SiteAccount("tripit", "r1", ["one@example.test"], "One"), CancellationToken.None);
-        await index.UpsertAsync(new SiteAccount("tripit", "r2", ["two@example.test"], "Two"), CancellationToken.None);
-        await index.UpsertAsync(new SiteAccount("tripit", "r1", ["one@example.test", "uno@example.test"], "One again"), CancellationToken.None);
+        await index.UpsertAsync(Owner, new SiteAccount("tripit", "r1", ["one@example.test"], "One"), CancellationToken.None);
+        await index.UpsertAsync(Owner, new SiteAccount("tripit", "r2", ["two@example.test"], "Two"), CancellationToken.None);
+        await index.UpsertAsync(Owner, new SiteAccount("tripit", "r1", ["one@example.test", "uno@example.test"], "One again"), CancellationToken.None);
 
-        var accounts = await index.ListAsync("tripit", CancellationToken.None);
+        var accounts = await index.ListAsync(Owner, "tripit", CancellationToken.None);
 
         Assert.Equal(["r2", "r1"], accounts.Select(a => a.AccountId));
         Assert.Equal(["one@example.test", "uno@example.test"], accounts[1].Emails);
-        Assert.DoesNotContain("one@example.test", Encoding.UTF8.GetString(await File.ReadAllBytesAsync(_paths.AccountIndexFile("tripit"))));
+        Assert.DoesNotContain("one@example.test", Encoding.UTF8.GetString(await File.ReadAllBytesAsync(_paths.AccountIndexFile(Owner, "tripit"))));
 
-        await index.RemoveAsync("tripit", "r2", CancellationToken.None);
-        Assert.Equal(["r1"], (await index.ListAsync("tripit", CancellationToken.None)).Select(a => a.AccountId));
+        await index.RemoveAsync(Owner, "tripit", "r2", CancellationToken.None);
+        Assert.Equal(["r1"], (await index.ListAsync(Owner, "tripit", CancellationToken.None)).Select(a => a.AccountId));
     }
 
     /// <summary>
@@ -96,7 +99,7 @@ public sealed class StorageTests : IDisposable
     public async Task Unreadable_account_index_is_moved_aside_before_a_new_one_is_written(bool decryptable)
     {
         var index = new SiteAccountIndex(_protection, _paths);
-        var file = _paths.AccountIndexFile("tripit");
+        var file = _paths.AccountIndexFile(Owner, "tripit");
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         var unreadable = decryptable
             ? _protection.CreateProtector("Multiplex.SignIn.AccountIndex.v1").Protect("not json"u8.ToArray())
@@ -104,29 +107,29 @@ public sealed class StorageTests : IDisposable
         await File.WriteAllBytesAsync(file, unreadable);
 
         // Reading changes nothing.
-        Assert.Empty(await index.ListAsync("tripit", CancellationToken.None));
+        Assert.Empty(await index.ListAsync(Owner, "tripit", CancellationToken.None));
         Assert.Equal(unreadable, await File.ReadAllBytesAsync(file));
 
-        await index.UpsertAsync(new SiteAccount("tripit", "r1", ["one@example.test"], "One"), CancellationToken.None);
+        await index.UpsertAsync(Owner, new SiteAccount("tripit", "r1", ["one@example.test"], "One"), CancellationToken.None);
 
         var aside = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file)!, "accounts.bin.unreadable-*"));
         Assert.Equal(unreadable, await File.ReadAllBytesAsync(aside));
-        Assert.Equal(["r1"], (await index.ListAsync("tripit", CancellationToken.None)).Select(a => a.AccountId));
+        Assert.Equal(["r1"], (await index.ListAsync(Owner, "tripit", CancellationToken.None)).Select(a => a.AccountId));
     }
 
     [Fact]
     public async Task Removing_from_an_unreadable_account_index_also_keeps_the_old_file()
     {
         var index = new SiteAccountIndex(_protection, _paths);
-        var file = _paths.AccountIndexFile("tripit");
+        var file = _paths.AccountIndexFile(Owner, "tripit");
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         await File.WriteAllTextAsync(file, "garbage");
 
-        await index.RemoveAsync("tripit", "r1", CancellationToken.None);
+        await index.RemoveAsync(Owner, "tripit", "r1", CancellationToken.None);
 
         var aside = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(file)!, "accounts.bin.unreadable-*"));
         Assert.Equal("garbage", await File.ReadAllTextAsync(aside));
-        Assert.Empty(await index.ListAsync("tripit", CancellationToken.None));
+        Assert.Empty(await index.ListAsync(Owner, "tripit", CancellationToken.None));
     }
 
     [Theory]
@@ -135,7 +138,7 @@ public sealed class StorageTests : IDisposable
     [InlineData("")]
     public void Bad_slugs_are_refused(string slug)
     {
-        Assert.Throws<ArgumentException>(() => _paths.SiteDirectory(slug));
+        Assert.Throws<ArgumentException>(() => _paths.SiteDirectory(Owner, slug));
     }
 
     [Theory]
@@ -161,7 +164,7 @@ public sealed class StorageTests : IDisposable
 
         Assert.StartsWith("h-", name);
         Assert.Equal(34, name.Length);
-        Assert.StartsWith(Path.Combine(_dataPath, "sites", "tripit", "profiles"), _paths.AccountProfile("tripit", accountId));
+        Assert.StartsWith(Path.Combine(_dataPath, "users", Owner, "sites", "tripit", "profiles"), _paths.AccountProfile(Owner, "tripit", accountId));
     }
 
     [Fact]
@@ -173,7 +176,7 @@ public sealed class StorageTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => _paths.EnsureInsideDataPath(_dataPath + "-sibling"));
         Assert.Throws<InvalidOperationException>(() => _paths.EnsureInsideDataPath(Path.Combine(_dataPath, "..", "elsewhere")));
         Assert.Throws<InvalidOperationException>(() => _paths.EnsureInsideDataPath(Path.Combine(_dataPath, "x", "har-capture", "p")));
-        Assert.EndsWith("temp-1", _paths.EnsureInsideDataPath(Path.Combine(_dataPath, "sites", "tripit", "profiles", "temp-1")));
+        Assert.EndsWith("temp-1", _paths.EnsureInsideDataPath(Path.Combine(_dataPath, "users", Owner, "sites", "tripit", "profiles", "temp-1")));
     }
 
     [Fact]
