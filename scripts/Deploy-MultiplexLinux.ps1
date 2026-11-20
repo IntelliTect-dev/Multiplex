@@ -23,6 +23,7 @@ device to your tailnet. The tailnet must issue HTTPS certificates (Tailscale adm
 
 .PARAMETER Target
 The server's SSH destination: user@host (for example me@192.168.1.20) or an alias from your SSH config.
+For an IPv6 address, or a port other than 22, use an alias.
 
 .EXAMPLE
 ./scripts/Deploy-MultiplexLinux.ps1 -Target me@192.168.1.20
@@ -70,6 +71,8 @@ the key fingerprint it shows, and answer yes; then run this again:
 if ($LASTEXITCODE) {
     throw @"
 Could not sign in to $Target with this PC's SSH key: $($probe -join ' ')
+This uses Windows' own ssh, which reads keys from ~\.ssh and the Windows ssh-agent service (not Git's).
+If your key has a passphrase, load it once: Start-Service ssh-agent; ssh-add
 If the server asks for a password, add this PC's key once (it asks for the server's password):
   Get-Content `$HOME\.ssh\id_ed25519.pub | ssh $Target "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 "@

@@ -30,6 +30,7 @@ RUN mkdir -p /data /home/app /tmp/.X11-unix && chown app:app /data /home/app && 
  && chmod 1777 /tmp/.X11-unix
 COPY app/ /app/
 COPY entrypoint.sh /entrypoint.sh
+COPY check-chrome.sh /check-chrome.sh
 
 USER app
 WORKDIR /app

@@ -98,9 +98,9 @@ function Test-MultiplexSshTarget {
     #>
     [CmdletBinding()] [OutputType([bool])]
     param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Target)
-    # \A and \z, not ^ and $: $ would also match before a trailing line break. A colon only inside
-    # brackets (an IPv6 address): scp reads host:22 as a host and a path.
-    return $Target -match '\A(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?(?:\[[0-9A-Fa-f:.%]+\]|[A-Za-z0-9_][A-Za-z0-9._-]*)\z'
+    # \A and \z, not ^ and $: $ would also match before a trailing line break. No colon: scp reads
+    # host:22 as a host and a path, and ssh takes no bracketed IPv6 address (use an SSH config alias).
+    return $Target -match '\A(?:[A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9_][A-Za-z0-9._-]*\z'
 }
 
 function Get-MultiplexRemoteInvocation {
@@ -276,10 +276,13 @@ fi
 
     Write-Host "Starting the server at $baseUrl..."
     $settings = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl $baseUrl -PasscodeHash $PasscodeHash
+    # The pull comes first and may fail (no registry): the device then keeps the image it has, and the
+    # settings are rewritten only when the server is about to start with them.
     Invoke-MultiplexLinuxStep $Remote 'start' -Failure 'The server did not start.' -Body @"
+(cd '$root' && docker compose pull --quiet tailscale 2>&1) || echo 'Could not pull the Tailscale image; keeping the one this server has.'
 $(New-MultiplexRemoteFileScript -Path "$root/multiplex.env" -Content (ConvertTo-MultiplexEnvFile $settings))
 $(New-MultiplexRemoteFileScript -Path "$root/.env" -Content (ConvertTo-MultiplexEnvFile ([ordered]@{ MULTIPLEX_IMAGE = $image })))
-cd '$root' && docker compose pull --quiet tailscale && docker compose up -d 2>&1
+cd '$root' && docker compose up -d 2>&1
 "@ | Out-Null
 
     $deadline = [DateTime]::UtcNow + $HealthTimeout
@@ -296,16 +299,19 @@ cd '$root' && docker compose pull --quiet tailscale && docker compose up -d 2>&1
 
     Invoke-MultiplexLinuxStep $Remote 'cleanup' $cleanup 'Could not remove the upload.' -AllowFailure | Out-Null
 
-    # The sign-in browsers run Chrome with its sandbox on, as the server's own user. Docker's default
-    # seccomp profile can refuse the namespaces that sandbox needs; then every site sign-in would fail,
-    # so try it now (headless: the sandbox is the same) rather than at the first sign-in.
+    # The sign-in browsers run Chrome with its sandbox on, as the server's own user, and TripIt's with a
+    # window on the virtual display. Docker's default seccomp profile can refuse the namespaces the
+    # sandbox needs, and a missing display stops a windowed Chrome; either way every site sign-in would
+    # fail, so try it now, the way TripIt's starts (deploy/linux/check-chrome.sh, at most 60 s).
     Write-Host 'Checking that Chrome starts in the server''s container...'
-    $browser = Invoke-MultiplexLinuxStep $Remote 'browser-check' -AllowFailure -Body (@'
-cd '{0}' && docker compose exec -T multiplex sh -c 'd=$(mktemp -d) && google-chrome-stable --headless=new --user-data-dir="$d" --dump-dom about:blank; s=$?; rm -rf "$d"; exit $s' 2>&1
-'@ -f $root)
-    if ($browser.ExitCode -ne 0 -or "$($browser.Output)" -notmatch '<body') {
-        $tail = (@("$($browser.Output)" -split "`r?`n") | Select-Object -Last 15) -join "`n"
-        throw "The server runs at $baseUrl, but Chrome cannot start in its container, so every site sign-in would fail. Chrome said:`n$tail"
+    $browser = Invoke-MultiplexLinuxStep $Remote 'browser-check' "cd '$root' && docker compose exec -T multiplex sh /check-chrome.sh 2>&1" -AllowFailure
+    if ($browser.ExitCode -ne 0) {
+        $tail = (@("$($browser.Output)" -split "`r?`n") | Select-Object -Last 20) -join "`n"
+        throw @"
+The server runs at $baseUrl, but Chrome cannot start in its container, so every site sign-in would fail. The check said:
+$tail
+To go back to an earlier image: on the server, set MULTIPLEX_IMAGE in ~/multiplex/.env to one listed by 'docker image ls multiplex-server', then run 'docker compose up -d' in ~/multiplex.
+"@
     }
     return [pscustomobject]@{ BaseUrl = $baseUrl; Image = $image }
 }
