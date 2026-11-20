@@ -31,6 +31,8 @@ relied on.
 | **L1** | `2026-11-20-130758-live` | The C# client's first live request, a one-way search: answered. Reference `direct-client-search`. |
 | **L2** | `2026-11-20-131931-live` | The C# client's one-way price graph (no trip length): refused, bare gRPC 13. Reference `direct-one-way-graph-refused`. |
 | **L3** | `2026-11-20-133637-live` | L1's search again, after the client's 15-minute cool-down: refused, bare gRPC 13. Reference `direct-client-search-refused`. |
+| **G1, G2** | another machine, on in-flight wifi (not kept) | The C# client's live script: the one-way search answered (14:08:30 local), then the same search 6 s later refused, bare gRPC 13. |
+| **AB** | `2026-11-20-142549-ab` | From L1-L3's network, the same search three ways (Node `fetch` as the morning; Node with the C# client's headers; the morning's exact User-Agent): all refused. Reference `direct-network-refusal-ab`. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -112,12 +114,19 @@ No `at=` token is sent: the page is signed out.
 | 11-20 13:19 (L2) | the C# client | a one-way `GetCalendarGraph` with no trip length | bare `[13]` (section 9) |
 | 11-20 13:36 (L3) | the C# client | L1's search, unchanged, 17 minutes after L2 | bare `[13]`: **refused** |
 
-**The honest-bot form is necessary, not sufficient.** L3 is a request Google
-answered 29 minutes earlier (L1), refused after about 16 direct requests from
-this network that day, most of them hours before. Google evidently allows a
-self-identified client far fewer requests than the roughly 230 in 35 minutes
-that blocked the earlier project's browser-like client. The allowance and how
-long a refusal lasts are not established (section 8).
+| 11-20 14:08 (G1, G2) | the C# client, another network (in-flight wifi) | the same search twice, 6 s apart | first **answered**, second bare `[13]` |
+| 11-20 14:16-14:25 (AB) | Node `fetch` as the morning; Node with the C# client's headers; Node `fetch` with the morning's User-Agent | the same search, from L1-L3's network | all bare `[13]` |
+
+**The refusal follows the network, not the client.** On L1-L3's network the
+same search was refused from three client stacks and with both User-Agent
+strings (AB), including exactly the requests answered there that morning,
+while the C# client's identical search was answered from another network
+inside the same window (G1). That network then refused the next request too
+(G2). So Google refuses honest-bot traffic per network once some allowance is
+spent: about 8 answered requests from L1-L3's network that day, one from the
+in-flight network. The `Mozilla/5.0 (compatible; ...)` form is necessary, not
+sufficient. The allowance, its window and how long a refusal lasts are not
+established (section 8, #101).
 
 **The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
 request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
@@ -545,7 +554,7 @@ lasted more than 6 hours.
 | Shape | Seen on | Reading |
 |---|---|---|
 | `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | the page's own requests: B (search, date picker), E, G (searches with selection `[]`) | the request reached the flights service, which refused it |
-| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1); and, from the right User-Agent, a one-way `GetCalendarGraph` (L2) and then a search Google had answered before (L3) | refused without detail: the User-Agent, or this network's allowance spent; it does not say which |
+| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1); and, from the right User-Agent, every request from a network whose allowance is spent, whatever the client (L2, L3, G2, AB) | refused without detail: the User-Agent, or this network's allowance spent; it does not say which |
 
 The client classifies both as refusals and never retries one straight away.
 On 2026-11-19 neither shape meant "the network is blocked": the page's search

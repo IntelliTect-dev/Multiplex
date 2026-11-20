@@ -472,6 +472,29 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T21:36:37.000Z"
+    "CapturedUtc": "2026-11-20T21:36:37Z"
+  },
+  {
+    "Action": "direct-network-refusal-ab",
+    "Description": "The same one-way search from the network whose earlier requests were answered, sent three ways about a minute apart, 40-50 minutes after its first refusal: 1. Node fetch exactly as the morning's answered probes; 2. Node with exactly the C# client's headers (no accept-language, no sec-fetch-mode); 3. Node fetch with the morning's exact User-Agent (0.1, issue link). All three refused with a bare gRPC 13, while the C# client's identical search was answered from another network (in-flight wifi) inside the same window. The refusal follows the network, not the client stack or the User-Agent string.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-network-refusal-ab-2026-11-20.har",
+    "RequestBodies": 3,
+    "RequestBytes": 1143,
+    "ResponseBytes": 398,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      101
+    ],
+    "CapturedUtc": "2026-11-20T22:16:28.000Z"
   }
 ]

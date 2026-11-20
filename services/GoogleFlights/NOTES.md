@@ -62,10 +62,21 @@ C# client, with the right User-Agent, got it twice: for a one-way price graph
 had answered at 13:07. About 16 direct requests had left this network that
 day, most of them hours earlier (`docs/protocol.md` sections 2 and 9, L1-L3).
 
+**It is the network, not the client** (`docs/protocol.md` section 2, AB and
+G1/G2). From that network the same search was then refused from three client
+stacks (Node `fetch` exactly as the morning's answered probes, Node with the C#
+client's headers, the C# client) and with both User-Agent strings, while the C#
+client's identical search was answered from a different network (in-flight
+wifi) in the same window, which in turn refused the next request. Do not
+"fix" this by changing headers, the TLS stack or the User-Agent string: none
+of them matters, and rotating User-Agents to dodge a limit would be evasion.
+
 So the `Mozilla/5.0 (compatible; ...)` form is necessary, not sufficient:
-Google lets a self-identified client make far fewer requests than the ~230 in
-35 minutes that blocked the earlier, browser-like project. How many, over what
-window, and for how long it then refuses, are not known yet. Until they are:
+Google lets a self-identified client make far fewer requests per network than
+the ~230 in 35 minutes that blocked the earlier, browser-like project (about 8
+answered from one network that day, 1 from another). How many, over what
+window, and for how long it then refuses, are not known yet (#101). Until they
+are:
 
 - A bare 13 is read as "this network's allowance is spent", and the client
   stops (the cool-down). It may also mean a request the service will not take;
