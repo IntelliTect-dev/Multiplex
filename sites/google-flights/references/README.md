@@ -76,3 +76,25 @@ Three things were taken out on purpose:
 Captures are made at a human pace on a strict request budget: Google
 soft-blocks a client that sends too many requests. Read `../NOTES.md` before
 recording.
+
+Start every search with a **page load of a search URL**: searches started from
+the page's form or menus were refused (`../NOTES.md`). Build the `tfs` from
+`../docs/protocol.md` section 7, and leave at least 30 seconds between
+searches. Use dates a few weeks out; a capture older than the dates in it can
+no longer be re-recorded as is.
+
+| Reference | Load | Then |
+|---|---|---|
+| `round-trip-search` | round trip SEA-DEN | nothing |
+| `round-trip-to-booking` | round trip SEA-DEN | choose an outbound, then a return on the same airline |
+| `one-way-search-from-url` | one way SEA-DEN | nothing |
+| `multi-city-to-booking` | multi-city SEA-DEN, DEN-LAX | choose a flight on each leg, same airline |
+| `calendar-grid-and-graph` | round trip SEA-DEN | Date grid; close it; Price graph |
+| `filter-requests-held` | one way SEA-DEN, nonstop | with the page's requests held: each filter once |
+| `sort-and-multi-city-held` | one way SEA-DEN, filters stacked | with the page's requests held and answered locally: each sort order; then Multi-city, Add flight, destination LAX |
+| `one-way-switch-refused`, `filter-change-refused`, `round-trip-search-refused`, `date-picker-prices` | | refusals: recorded when they happened, never provoked |
+| `airport-autocomplete` | the home page | type an origin and a destination; extract **without** the first autocomplete call (the pre-filled origin) |
+| `direct-search-refused` | | one direct request, not a browser |
+
+Holding the page's requests makes it report errors to Google (`../NOTES.md`);
+answer them locally instead of failing them where the page allows it.
