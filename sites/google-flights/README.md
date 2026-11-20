@@ -9,9 +9,12 @@ flight API or scraping service is involved.
 
 ## Status
 
-**Phase 1, discovery.** The endpoints and payload field maps are being
-captured and decoded with the web-api-discovery skill. The client library, MCP
-server and PowerShell module follow once the findings are reviewed.
+**Phase 1, discovery: captured and decoded, awaiting review.** Every flow in
+the spec is recorded and its field maps are in `docs/protocol.md`. Direct HTTP
+is refused from the owner's network; Google's own page is answered, so the
+client will read data through a read-only browser (`NOTES.md`). The client
+library, MCP server and PowerShell module follow once the findings are
+reviewed.
 
 ## What is here
 
@@ -19,8 +22,7 @@ server and PowerShell module follow once the findings are reviewed.
 |---|---|
 | `NOTES.md` | Decisions and traps: read before changing anything |
 | `docs/` | The decoded protocol: endpoints, framing and the field maps |
-| `references/` | Trimmed, scrubbed HAR extracts and their catalogue (evidence, not the spec) |
-| `scripts/` | The re-capture recipe: the flows driven to produce the references |
+| `references/` | Trimmed, scrubbed HAR extracts, their catalogue, and the re-capture recipe (evidence, not the spec) |
 
 ## Not affiliated with Google
 

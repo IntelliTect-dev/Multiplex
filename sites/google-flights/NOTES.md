@@ -30,14 +30,44 @@ Rules for anything in this folder that talks to Google:
 - **The client** paces itself and caches; see the client's own docs when it
   exists.
 
+## Direct HTTP is refused; searches go through the page
+
+On 2026-11-19, from the owner's network, Google refused every plain HTTP
+request (two probes, two hours apart), and every search the page started
+without a **page-load session id**: the home-page form, the trip-type menu, a
+filter change. Loading a **search URL** (`/travel/flights/search?tfs=...`)
+was answered every time, including five minutes after a refusal with the
+identical filter. The earlier project saw the same split. So:
+
+- The client gets data by **loading search URLs in a read-only browser** and
+  reading the answers, as the spec allows when direct HTTP is blocked. It
+  builds `tfs` itself (`docs/protocol.md` section 7) and never drives the
+  page's form or menus to search.
+- A search that changes anything (filter, sort, trip type) is a **new page
+  load** with a new `tfs`, not a click.
+- Choosing a flight (the next leg, booking options) is a click on the page;
+  those requests carry a selection token and were answered.
+- It forges nothing: no token, no cookie, no header is made up or replayed.
+
+Whether this is a standing state of this network (flagged by the earlier
+project's volume) or how Google treats every network is **not known**. One
+search in an ordinary browser on another network would tell.
+
 ## Gotcha: gRPC code 13 is ambiguous
 
-Google answers a soft-blocked client with HTTP 200 and a `wrb.fr` error item
-carrying gRPC code 13 (`INTERNAL`). It also answered code 13, in a capture on
-2026-11-19, to the page's own date-picker and search requests after only about
-four data requests (see the `date-picker-prices` and
-`round-trip-search-refused` references). Code 13 alone does not say why.
-Treat it as "stop and back off", never as "retry now".
+Google answers a refused request with HTTP 200 and a `wrb.fr` error item
+carrying gRPC code 13 (`INTERNAL`). Every refused search on 2026-11-19 sent
+selection `[]` (no session id); but the same code also answered two date-picker
+calls in B, and the earlier project's long block. Code 13 alone does not say
+why. Treat it as "stop and back off", never as "retry now".
+
+## Gotcha: holding the page's requests is not silent
+
+Holding a request inside the browser (to record what a filter sends without
+sending it) makes the page report a `TransportError` to Google through
+`POST /_/FlightsFrontendUi/jserror`, once per held request. Answering the held
+request locally with an earlier response avoids the report. Anything that
+interferes with the page's own requests must assume Google sees it.
 
 ## Captures leak the operator's location unless you watch for it
 
