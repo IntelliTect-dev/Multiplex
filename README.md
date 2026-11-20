@@ -55,6 +55,38 @@ Services that read a website's pages share one Chromium. Set these in
 | `Browser:Headless` | `true` | `false` shows the browser window |
 | `Browser:StepDelayMs` | `0` | Pause between tool steps, so a headed run can be followed by eye |
 
+### Signing in to Multiplex
+
+Every page and every service needs sign-in, except `/healthz`, the OAuth
+discovery and protocol endpoints, and requests made on the host itself
+(pages, and services that act for no one, such as Time). People sign in with
+Microsoft, personal or work account; only an email on the allowlist, verified
+by Microsoft, gets in. Its first sign-in binds the address to that Microsoft
+account. Claude and ChatGPT still connect through Multiplex's own OAuth
+server; each connector belongs to the person who added it.
+
+| Key | Description |
+|---|---|
+| `Multiplex:Identity:Microsoft:ClientId` | The Microsoft Entra app registration's Application (client) ID |
+| `Multiplex:Identity:Microsoft:ClientSecret` | Its client secret. Set it on the host only; never commit it |
+| `Multiplex:Identity:AllowedEmails` | Who may sign in, separated by `;` (or a JSON array). Empty lets no one in |
+
+Set them on the host, never in the repository: on Windows as User
+environment variables (`Multiplex__Identity__Microsoft__ClientId` and so on;
+the installer shows the lines), then run the installer again.
+
+The app registration, once, in the Microsoft Entra admin center:
+
+1. **Supported account types:** accounts in any organizational directory and
+   personal Microsoft accounts.
+2. **Authentication > Web:** a redirect URI `<public address>/signin-microsoft`
+   for each address the host uses (the installer prints it), and
+   `http://localhost:5190/signin-microsoft` for testing on the host.
+3. **Token configuration > Add optional claim > ID:** `email` and `xms_edov`.
+   Without `xms_edov` Microsoft does not say the email is verified, and
+   Multiplex refuses the sign-in.
+4. **Certificates & secrets:** a client secret. Note when it expires.
+
 ## Running it on a Linux server
 
 `scripts/Deploy-MultiplexLinux.ps1` deploys Multiplex from this PC to a Linux
@@ -106,9 +138,11 @@ a Tailscale device named `multiplex` that serves it over HTTPS at
 2. Give the service its own folder, `src/Multiplex.Web/Services/<Name>/`, with
    its tests in `tests/Multiplex.Tests/Services/<Name>/`.
 3. Mark its tool class with `[McpServerToolType]` and `[McpEndpoint("<name>")]`.
-   The host then serves that class's tools, and only those, at `/<name>/mcp`,
-   with no other registration. A tool class without `[McpEndpoint]` is not
-   served at all.
+   The host then serves that class's tools, and only those, at `/<name>/mcp`.
+   A tool class without `[McpEndpoint]` is not served at all. Register the
+   address for sign-in in `Program.cs` with `RequireAuthFor("<name>", ...)`
+   (pass `needsSiteAccount: false` when its tools act for no one); the server
+   refuses to start while an address is not registered.
 4. Write a README in its folder covering its tools, their inputs and outputs,
    how it reaches the site (its API, or the browser and why), its quirks, its
    risks and its tests.
