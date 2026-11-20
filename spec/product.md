@@ -45,6 +45,8 @@ Each service lives in its own folder, with its code, its tests and a README. The
 
 On the owner's PC for now, reachable from the internet over HTTPS through a tunnel, and on a real host later. It has to be reachable from the internet because Claude and ChatGPT call it from their own clouds, even when the person is at the same PC. (Decided with the TripIt work, issue #6.)
 
+It can also run on a Linux server, deployed from a PC over SSH, as its own device on the owner's tailnet. That host serves the tailnet only, so it reaches clients on tailnet devices (Claude Code, for one) but not Claude's or ChatGPT's own connectors. (Issue #97.)
+
 ## Constraints and risks
 
 - **No authentication yet.** Anyone who can reach the host can call every service's tools. The TripIt work adds it: MCP clients sign in through OAuth. The owner passcode only gates reaching the sign-in: every connection proves its site account by signing in to the site live, and uses only that account. No account is offered from what the host already holds (#52).
