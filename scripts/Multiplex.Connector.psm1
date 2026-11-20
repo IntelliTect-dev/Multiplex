@@ -10,6 +10,7 @@ $script:ChatGptAddPage = 'https://chatgpt.com/plugins'
 # What tab completion learned from each server, and for how long it is trusted.
 $script:ServiceCompletionCache = @{}
 $script:ServiceCompletionLifetime = [TimeSpan]::FromMinutes(5)
+$script:ServiceCompletionRetry = [TimeSpan]::FromSeconds(20)   # after no answer, or no services
 
 function Resolve-MultiplexConnectorBaseUrl {
     <#
@@ -52,14 +53,25 @@ function Get-MultiplexAccountService {
     sign-in, as the server lists them in its own sign-in settings, each with its name and
     address. Open services are left out, because Multiplex refuses them to the internet unless
     told otherwise. Stops when the server's own public address is not -BaseUrl, since sign-in
-    from a connector added at -BaseUrl would then fail.
+    from a connector added at -BaseUrl would then fail. Each request waits at most -TimeoutSec,
+    and all of them together about -Budget.
     #>
-    [CmdletBinding()] param([Parameter(Mandatory)] [string] $BaseUrl, [int] $TimeoutSec = 15)
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $BaseUrl, [int] $TimeoutSec = 15, [TimeSpan] $Budget = [TimeSpan]::MaxValue)
+    $perRequest = [double]$TimeoutSec
+    $allowed = $Budget.TotalSeconds
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $nextTimeout = {   # seconds the next request may take
+        $left = $allowed - $clock.Elapsed.TotalSeconds
+        if ($left -le 0) { throw "The Multiplex at $BaseUrl did not answer within $([int]$allowed) s." }
+        [int][Math]::Max(1, [Math]::Ceiling([Math]::Min($perRequest, $left)))
+    }
     # One session for every request: its connection is reused, so a slow link pays for setting
     # one up (a round trip each for TCP and TLS) only once.
     $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
     $settings = "$BaseUrl/.well-known/oauth-authorization-server"
-    try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec $TimeoutSec -WebSession $session -ErrorAction Stop }
+    $wait = & $nextTimeout
+    try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec $wait -WebSession $session -ErrorAction Stop }
     catch { throw "Could not read Multiplex's sign-in settings at ${settings}: $($_.Exception.Message) Is Multiplex running and reachable at ${BaseUrl}?" }
     $issuer = "$(Get-JsonProperty $server 'issuer')".TrimEnd('/')
     if (-not $issuer) { throw "The server at $BaseUrl did not give its public address in $settings. Is it Multiplex?" }
@@ -74,50 +86,94 @@ function Get-MultiplexAccountService {
         }
         $address = "$BaseUrl/$slug/mcp"
         $metadata = "$BaseUrl/.well-known/oauth-protected-resource/$slug/mcp"
-        try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec $TimeoutSec -WebSession $session -ErrorAction Stop }
+        $wait = & $nextTimeout
+        try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec $wait -WebSession $session -ErrorAction Stop }
         catch { throw "Could not read the settings of the $slug service at ${metadata}: $($_.Exception.Message)" }
         $reported = "$(Get-JsonProperty $resource 'resource')"
         if ($reported -and $reported -ne $address) {
             throw "The Multiplex at $BaseUrl gives the address of its $slug service as $reported, not $address, so a connector added at either would fail to sign in."
         }
-        $name = "$(Get-JsonProperty $resource 'resource_name')"
+        # Printed and shown as a hint, so no control characters (escape sequences, line breaks).
+        $name = ("$(Get-JsonProperty $resource 'resource_name')" -replace '\p{Cc}', '').Trim()
         [pscustomobject]@{ Slug = "$slug"; Name = $name ? $name : "$slug"; Address = $address }
     }
 }
 
 function Get-MultiplexServiceCompletion {
     <#
-    What Tab offers for -Service: the services the Multiplex at -BaseUrl (by default, the one the
-    command itself would use) can add to an account, whose short or full name starts with
-    -Word, each with its full name and address as the hint. The server is asked briefly, so Tab
-    never hangs for long, and its answer is remembered for a few minutes, so only the first Tab
-    waits for it. With nothing to offer (no match, no address, no answer), it offers what was
-    typed, unchanged, with the reason as the hint: offering nothing would make PowerShell offer
-    file names instead.
+    What Tab offers for -Service: the services the Multiplex at the typed -BaseUrl (by default,
+    the address the command itself would use) can add to an account, whose short or full name
+    starts with -Word, leaving out those already listed, each with its full name and address
+    as the hint. -CommandAst and -Bound are what PowerShell gives a completer: the command typed
+    so far and the parameters it could work out.
+
+    The server gets about -TimeoutSec in all, so Tab never hangs for long. Its answer is
+    remembered for a few minutes, so only the first Tab waits; no answer, or no services (a
+    server still starting), only for a few seconds, so repeated Tabs answer at once.
+
+    With nothing to offer it offers the word as typed (a lone space when nothing was typed),
+    so the line stays as it was, with the reason as its hint wherever hints are shown (a
+    completion menu, an editor). Offering nothing would make PowerShell offer file names.
     #>
     [CmdletBinding()] [OutputType([System.Management.Automation.CompletionResult])]
-    param([string] $BaseUrl, [string] $Word, [int] $TimeoutSec = 5)
+    param(
+        [string] $Word,
+        [System.Management.Automation.Language.CommandAst] $CommandAst,
+        [System.Collections.IDictionary] $Bound = @{},
+        [int] $TimeoutSec = 5)
     $typed = "$Word".Trim("'", '"')
+    $listed = @(Get-ListedService -CommandAst $CommandAst -Bound $Bound | Where-Object { $_ -ne $typed })
     $offered = 0
     try {
-        $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl
+        if ($Bound.Contains('BaseUrl') -and -not $Bound['BaseUrl']) {
+            throw 'Tab can ask the server only when the address after -BaseUrl is typed out, not taken from a variable or an expression.'
+        }
+        $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $Bound['BaseUrl']
         $known = $script:ServiceCompletionCache[$BaseUrl]
-        if (-not $known -or ([datetime]::UtcNow - $known.At) -gt $script:ServiceCompletionLifetime) {
-            $known = [pscustomobject]@{ At = [datetime]::UtcNow; Services = @(Get-MultiplexAccountService -BaseUrl $BaseUrl -TimeoutSec $TimeoutSec) }
+        if (-not $known -or [datetime]::UtcNow -ge $known.Until) {
+            try {
+                $services = @(Get-MultiplexAccountService -BaseUrl $BaseUrl -TimeoutSec $TimeoutSec -Budget ([TimeSpan]::FromSeconds($TimeoutSec)))
+                $lifetime = $services ? $script:ServiceCompletionLifetime : $script:ServiceCompletionRetry
+                $known = [pscustomobject]@{ Services = $services; Problem = $null; Until = [datetime]::UtcNow + $lifetime }
+            }
+            catch { $known = [pscustomobject]@{ Services = @(); Problem = $_.Exception.Message; Until = [datetime]::UtcNow + $script:ServiceCompletionRetry } }
             $script:ServiceCompletionCache[$BaseUrl] = $known
         }
-        foreach ($s in $known.Services) {
+        if ($known.Problem) { throw $known.Problem }
+        $left = @($known.Services | Where-Object { $_.Slug -notin $listed })
+        foreach ($s in $left) {
             if ($s.Slug.StartsWith($typed, [StringComparison]::OrdinalIgnoreCase) -or $s.Name.StartsWith($typed, [StringComparison]::OrdinalIgnoreCase)) {
                 [System.Management.Automation.CompletionResult]::new($s.Slug, $s.Slug, 'ParameterValue', "$($s.Name)  $($s.Address)")
                 $offered++
             }
         }
-        $why = "The Multiplex at $BaseUrl has no service that can be added to an account$($typed ? " starting with '$typed'" : '')."
+        $why = if ($known.Services.Count -and -not $left.Count) { "Every service of the Multiplex at $BaseUrl is already listed." }
+        else { "The Multiplex at $BaseUrl has no service that can be added to an account$($typed ? " starting with '$typed'" : '')." }
     }
     catch { $why = $_.Exception.Message }
     if (-not $offered) {
         # A completion must have text; a lone space leaves the line as it was.
         [System.Management.Automation.CompletionResult]::new(($Word ? $Word : ' '), '(no service)', 'ParameterValue', $why)
+    }
+}
+
+function Get-ListedService {
+    <#
+    The services already typed after -Service: those PowerShell could work out, and the plain
+    names in the list, which it cannot while the list still ends in a comma.
+    #>
+    param($CommandAst, [System.Collections.IDictionary] $Bound = @{})
+    @($Bound['Service']) | Where-Object { $_ } | ForEach-Object { "$_" }
+    if (-not $CommandAst) { return }
+    $elements = $CommandAst.CommandElements
+    for ($i = 0; $i -lt $elements.Count; $i++) {
+        $element = $elements[$i]
+        if ($element -isnot [System.Management.Automation.Language.CommandParameterAst] -or -not $element.ParameterName -or
+            -not 'Service'.StartsWith($element.ParameterName, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $argument = $element.Argument ?? ($i + 1 -lt $elements.Count ? $elements[$i + 1] : $null)
+        if ($argument) {
+            $argument.FindAll({ $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object Value
+        }
     }
 }
 
@@ -164,7 +220,7 @@ function Add-MultiplexConnector {
     param(
         [string] $BaseUrl,
         # $args: the command, the parameter, the word typed, the syntax tree, the parameters typed so far.
-        [ArgumentCompleter({ Get-MultiplexServiceCompletion -BaseUrl $args[4]['BaseUrl'] -Word $args[2] })]
+        [ArgumentCompleter({ Get-MultiplexServiceCompletion -Word $args[2] -CommandAst $args[3] -Bound $args[4] })]
         [string[]] $Service,
         [ValidateSet('Claude', 'ChatGPT')] [string[]] $Agent = @('Claude', 'ChatGPT'))
     $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl
