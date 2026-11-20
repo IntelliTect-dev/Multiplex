@@ -16,9 +16,13 @@ BeforeAll {
             [string] $Compose = 'compose=2.29.7',
             [bool] $BuildFails = $false,
             [object[]] $Status = @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":["multiplex.tail1234.ts.net"]}'),
-            [bool] $Healthy = $true)
+            [bool] $Healthy = $true,
+            # A redeploy: the Tailscale device already runs (and the server with it).
+            [bool] $TailscaleRunning = $false,
+            [bool] $BrowserWorks = $true)
         $server = [pscustomobject]@{
             Steps = [System.Collections.Generic.List[string]]::new()
+            Scripts = [System.Collections.Generic.List[string]]::new()
             Files = [ordered]@{}
             Uploads = [System.Collections.Generic.List[string]]::new()
             StatusCalls = 0
@@ -27,6 +31,7 @@ BeforeAll {
             param([string] $Script)
             $step = if ($Script -match '(?m)^# step: (\S+)') { $Matches[1] }
             $server.Steps.Add($step)
+            $server.Scripts.Add($Script)
             foreach ($m in [regex]::Matches($Script, "(?m)^# file: (\S+)\s*\r?\n(?:.*\r?\n)*?printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d")) {
                 $server.Files[$m.Groups[1].Value] = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($m.Groups[2].Value))
             }
@@ -40,6 +45,11 @@ BeforeAll {
                 }
                 'health' { return [pscustomobject]@{ ExitCode = ($Healthy ? 0 : 1); Output = ($Healthy ? 'Healthy' : 'wget: can''t connect to remote host') } }
                 'logs' { return [pscustomobject]@{ ExitCode = 0; Output = 'multiplex-1  | Unhandled exception. System.InvalidOperationException: boom' } }
+                'tailscale-running' { return [pscustomobject]@{ ExitCode = 0; Output = ($TailscaleRunning ? '4f2a9c1e7b3d' : '') } }
+                'browser-check' {
+                    if ($BrowserWorks) { return [pscustomobject]@{ ExitCode = 0; Output = '<html><head></head><body></body></html>' } }
+                    return [pscustomobject]@{ ExitCode = 1; Output = '[0101/000000.000:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox!' }
+                }
                 default { return [pscustomobject]@{ ExitCode = 0; Output = '' } }
             }
         }.GetNewClosure()
@@ -50,6 +60,12 @@ BeforeAll {
     }
 
     $script:GoodPublish = { param([string] $Folder) New-Item -ItemType Directory -Force -Path $Folder | Out-Null; Set-Content (Join-Path $Folder 'Multiplex.Web.dll') 'x' }
+
+    # A bash that runs here, to syntax-check the scripts sent to the server: Git for Windows' bash on
+    # Windows (System32's bash.exe is WSL, which may have no distribution), else the bash on PATH.
+    $script:Bash = @(
+        if ($IsWindows) { Join-Path $env:ProgramFiles 'Git' 'bin' 'bash.exe' } else { (Get-Command bash -ErrorAction SilentlyContinue)?.Source }
+    ) | Where-Object { $_ -and (Test-Path $_) -and ((& $_ -c 'echo ok' 2>$null) -eq 'ok') } | Select-Object -First 1
 
     function Invoke-Deploy($Server, [scriptblock] $Publish = $script:GoodPublish) {
         Invoke-MultiplexLinuxDeploy -Remote $Server.Remote -Upload $Server.Upload -Publish $Publish `
@@ -195,10 +211,76 @@ Describe 'deploying' {
         { Invoke-Deploy $server } | Should -Throw '*InvalidOperationException: boom*'
     }
 
-    It 'removes the upload and old images after a good deploy' {
+    It 'removes the upload and old images once the server answers' {
         $server = New-FakeServer
         Invoke-Deploy $server | Out-Null
-        $server.Steps[-1] | Should -Be 'cleanup'
+        $server.Steps | Should -Contain 'cleanup'
+        $server.Steps.IndexOf('health') | Should -BeLessThan $server.Steps.IndexOf('cleanup')
+    }
+
+    It 'on a first deploy, starts the Tailscale device before asking for its status' {
+        $server = New-FakeServer
+        Invoke-Deploy $server | Out-Null
+        $server.Steps.IndexOf('start-tailscale') | Should -BeGreaterThan $server.Steps.IndexOf('build')
+        $server.Steps.IndexOf('start-tailscale') | Should -BeLessThan $server.Steps.IndexOf('tailscale-status')
+    }
+
+    It 'on a redeploy, leaves the running Tailscale device, and so the running server, alone until the start step' {
+        # Recreating the device would cut the running server off: it lives in the device's network.
+        $server = New-FakeServer -TailscaleRunning $true
+        Invoke-Deploy $server | Out-Null
+        $server.Steps | Should -Not -Contain 'start-tailscale'
+        $start = $server.Scripts[$server.Steps.IndexOf('start')]
+        $start | Should -Match '(?s)docker compose pull.*docker compose up -d'
+    }
+
+    It 'a redeploy that stops before the start step never touches the running device or server' {
+        $server = New-FakeServer -TailscaleRunning $true -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}')
+        { Invoke-Deploy $server } | Should -Throw '*HTTPS*'
+        foreach ($script in $server.Scripts) {
+            $script | Should -Not -Match 'docker compose (up|pull|restart|stop|down)' -Because ($script -split "`n")[0]
+        }
+    }
+
+    It 'says so when Chrome cannot start in the server''s container, since every site sign-in would fail' {
+        $server = New-FakeServer -BrowserWorks $false
+        { Invoke-Deploy $server } | Should -Throw '*No usable sandbox*'
+        $server.Steps | Should -Contain 'cleanup'
+    }
+
+    It 'checks Chrome with its sandbox on, as the server''s own user' {
+        $server = New-FakeServer
+        Invoke-Deploy $server | Out-Null
+        $check = $server.Scripts[$server.Steps.IndexOf('browser-check')]
+        $check | Should -Match 'docker compose exec -T multiplex'
+        $check | Should -Match 'google-chrome-stable'
+        $check | Should -Not -Match 'no-sandbox'
+        $check | Should -Not -Match '(?m)exec\s+(-\S+\s+)*(-u|--user)\b'
+    }
+
+    It 'writes every file only its owner can read: umask 077 before the write' {
+        $script = New-MultiplexRemoteFileScript -Path 'multiplex/multiplex.env' -Content "A='1'`n"
+        $lines = $script -split "`n"
+        $umask = [array]::FindIndex($lines, [Predicate[string]] { $args[0] -match '^umask 077$' })
+        $write = [array]::FindIndex($lines, [Predicate[string]] { $args[0] -match 'base64 -d >' })
+        $umask | Should -BeGreaterOrEqual 0
+        $umask | Should -BeLessThan $write
+    }
+
+    It 'sends only scripts that bash can parse' {
+        if (-not $script:Bash) { Set-ItResult -Skipped -Because 'no bash to check with on this PC'; return }
+        # A first deploy, a redeploy, and a failed build between them send every kind of script.
+        $scripts = foreach ($fake in (New-FakeServer), (New-FakeServer -TailscaleRunning $true), (New-FakeServer -BuildFails $true)) {
+            try { Invoke-Deploy $fake | Out-Null } catch { $null = $_ }
+            $fake.Scripts
+        }
+        $scripts.Count | Should -BeGreaterThan 10
+        foreach ($script in $scripts) {
+            $file = Join-Path $TestDrive 'remote.sh'
+            [IO.File]::WriteAllText($file, $script)
+            $out = & $script:Bash -n $file 2>&1
+            $LASTEXITCODE | Should -Be 0 -Because "$(($script -split "`n")[0]): $out"
+        }
     }
 }
 
@@ -214,14 +296,35 @@ Describe 'the SSH target' {
         Test-MultiplexSshTarget 'me@host; rm -rf ~' | Should -BeFalse
         Test-MultiplexSshTarget 'me@-host' | Should -BeFalse
     }
+
+    It 'refuses a trailing line break, which a $-anchored pattern would let through' {
+        Test-MultiplexSshTarget "me@host`n" | Should -BeFalse
+    }
+
+    It 'refuses a port written after the host, which scp would read as host:path; an IPv6 address goes in brackets' {
+        Test-MultiplexSshTarget 'me@host:22' | Should -BeFalse
+        Test-MultiplexSshTarget 'me@[fe80::1]' | Should -BeTrue
+    }
 }
 
 Describe 'remote scripts' {
-    It 'are sent as base64, so no quoting on this PC or the server can change them' {
-        $command = Get-MultiplexRemoteCommand -Script "# step: x`necho 'a `"b`" `$c'`r`n"
-        $command | Should -Match '^echo [A-Za-z0-9+/=]+ \| base64 -d \| bash$'
-        $b64 = ($command -split ' ')[1]
-        [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | Should -Be "# step: x`necho 'a `"b`" `$c'`n"
+    It 'travel as base64 on standard input, so they never appear on a command line, and no quoting can change them' {
+        $call = Get-MultiplexRemoteInvocation -Script "# step: x`necho 'a `"b`" `$c'`r`n"
+        $call.Command | Should -Be 'bash -c "$(base64 -di)"'
+        $call.Input | Should -Match '^[A-Za-z0-9+/=]+$'
+        [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($call.Input)) | Should -Be "# step: x`necho 'a `"b`" `$c'`n"
+    }
+}
+
+Describe 'the tools this PC runs' {
+    It 'uses Windows'' own tar, ssh and scp, which read C:\ paths as paths (Git''s GNU tar reads C: as a host)' -Skip:(-not $IsWindows) {
+        Get-MultiplexTool tar | Should -Be (Join-Path $env:SystemRoot 'System32' 'tar.exe')
+        Get-MultiplexTool ssh | Should -Be (Join-Path $env:SystemRoot 'System32' 'OpenSSH' 'ssh.exe')
+        Get-MultiplexTool scp | Should -Be (Join-Path $env:SystemRoot 'System32' 'OpenSSH' 'scp.exe')
+    }
+
+    It 'falls back to the command on PATH elsewhere' -Skip:($IsWindows) {
+        Get-MultiplexTool tar | Should -Be 'tar'
     }
 }
 

@@ -82,8 +82,12 @@ a Tailscale device named `multiplex` that serves it over HTTPS at
   -ShowPasscode`), or a new one kept the same way. Only its hash is sent.
 - **Updating** is running the script again. Until the new image has built and the
   Tailscale device is up, the running server is left as it was. The server keeps
-  the last three images; to go back to one, set `MULTIPLEX_IMAGE` in
-  `~/multiplex/.env` on the server and run `docker compose up -d` in `~/multiplex`.
+  the last three images (`docker image ls multiplex-server`); to go back to one of
+  them, set `MULTIPLEX_IMAGE` in `~/multiplex/.env` on the server and run
+  `docker compose up -d` in `~/multiplex`.
+- **Chrome** is checked at the end of every deploy, with its sandbox on, as the
+  server's own user. If it cannot start, the deploy says so: every site sign-in
+  would fail.
 - **Tailnet only.** Claude Code on a tailnet device can use it
   (`claude mcp add --transport http tripit https://multiplex.<your-tailnet>.ts.net/tripit/mcp`).
   Claude's web, phone and Desktop connectors and ChatGPT call from their own

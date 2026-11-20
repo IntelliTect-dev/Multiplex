@@ -25,7 +25,9 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     DISPLAY=:99 \
     HOME=/home/app
 
-RUN mkdir -p /data /home/app && chown app:app /data /home/app && chmod 700 /data /home/app
+# Xvfb runs as the app user and cannot make its socket folder itself the way it wants it (root's, 1777).
+RUN mkdir -p /data /home/app /tmp/.X11-unix && chown app:app /data /home/app && chmod 700 /data /home/app \
+ && chmod 1777 /tmp/.X11-unix
 COPY app/ /app/
 COPY entrypoint.sh /entrypoint.sh
 
