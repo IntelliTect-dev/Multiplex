@@ -171,6 +171,37 @@ public class ResponseParserTests
     }
 
     [Fact]
+    public void An_answer_with_its_header_and_no_flights_is_an_empty_result()
+    {
+        var header = JsonDocument.Parse("""[[null,[[1]],1,"event","session-id"]]""").RootElement;
+
+        var parsed = ResponseParser.Flights(new RpcFrames([header], []), SeaDenRoundTrip, null);
+
+        Assert.Empty(parsed.Best);
+        Assert.Empty(parsed.Other);
+    }
+
+    [Fact]
+    public void An_answer_with_neither_flights_nor_its_header_is_a_format_error()
+    {
+        // Review finding I4: a format change must not read as "no flights".
+        var unknown = JsonDocument.Parse("""[null,null,null,null,[1,2,3]]""").RootElement;
+
+        Assert.Throws<GoogleFlightsFormatException>(() => ResponseParser.Flights(new RpcFrames([unknown], []), SeaDenRoundTrip, null));
+    }
+
+    [Fact]
+    public void An_impossible_date_or_time_is_unreadable_not_an_argument_error()
+    {
+        // [2026, 13, 40] and [25, 70] from Google are a format problem, never the caller's.
+        var segment = JsonDocument.Parse("""[null,null,null,"SEA","",null,"DEN",null,[25,70],null,[11],60,null,null,null,null,null,null,null,null,[2026,13,40],[2026,12,15],["DL","1"]]""").RootElement;
+
+        Assert.Null(segment.Date(20));
+        Assert.Null(segment.Time(8));
+        Assert.Equal(new DateOnly(2026, 12, 15), segment.Date(21));
+    }
+
+    [Fact]
     public void Itineraries_in_an_unknown_shape_are_a_format_error_not_an_empty_list()
     {
         // Every itinerary present, but its summary moved: what a Google payload change looks like.

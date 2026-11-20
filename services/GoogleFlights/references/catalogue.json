@@ -131,7 +131,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T00:39:32.000Z"
+    "CapturedUtc": "2026-11-20T00:39:32Z"
   },
   {
     "Action": "round-trip-to-booking",
@@ -154,7 +154,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T00:42:38.000Z"
+    "CapturedUtc": "2026-11-20T00:42:38Z"
   },
   {
     "Action": "one-way-switch-refused",
@@ -176,7 +176,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T00:47:18.000Z"
+    "CapturedUtc": "2026-11-20T00:47:18Z"
   },
   {
     "Action": "one-way-search-from-url",
@@ -198,7 +198,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T00:53:19.000Z"
+    "CapturedUtc": "2026-11-20T00:53:19Z"
   },
   {
     "Action": "filter-change-refused",
@@ -220,7 +220,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T00:55:41.000Z"
+    "CapturedUtc": "2026-11-20T00:55:41Z"
   },
   {
     "Action": "filter-requests-held",
@@ -242,7 +242,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T01:01:49.000Z"
+    "CapturedUtc": "2026-11-20T01:01:49Z"
   },
   {
     "Action": "sort-and-multi-city-held",
@@ -264,7 +264,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T01:10:02.000Z"
+    "CapturedUtc": "2026-11-20T01:10:02Z"
   },
   {
     "Action": "multi-city-to-booking",
@@ -287,7 +287,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T01:15:05.000Z"
+    "CapturedUtc": "2026-11-20T01:15:05Z"
   },
   {
     "Action": "calendar-grid-and-graph",
@@ -310,7 +310,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T01:17:57.000Z"
+    "CapturedUtc": "2026-11-20T01:17:57Z"
   },
   {
     "Action": "direct-http-probes",
@@ -336,7 +336,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T17:07:00.000Z"
+    "CapturedUtc": "2026-11-20T17:07:00Z"
   },
   {
     "Action": "direct-honest-bot-user-agent",
@@ -360,7 +360,7 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T17:52:37.000Z"
+    "CapturedUtc": "2026-11-20T17:52:37Z"
   },
   {
     "Action": "direct-http-flow",
@@ -384,6 +384,72 @@
     "Related": [
       89
     ],
-    "CapturedUtc": "2026-11-20T17:56:14.000Z"
+    "CapturedUtc": "2026-11-20T17:56:14Z"
+  },
+  {
+    "Action": "direct-airport-autocomplete",
+    "Description": "One direct HTTP airport autocomplete request (batchexecute H028ib, typed \"Denv\") with the honest-bot User-Agent and no page session (f.sid), build label (bl), request counter, anti-bot token, browser header or cookie. Answered: five places with their airports (Denver, Colorado -> DEN first). The batchexecute transport needs no page session either.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/batchexecute"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-airport-autocomplete-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 134,
+    "ResponseBytes": 1834,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T20:49:01.000Z"
+  },
+  {
+    "Action": "direct-client-search",
+    "Description": "The C# client's first live request (the client's live one-way search test): SEA-DEN six weeks out, sent by .NET with only the User-Agent, Accept: */*, x-same-domain, the language/region/currency header and the content type. Answered with flights.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-client-search-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 58455,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:07:58.000Z"
+  },
+  {
+    "Action": "direct-one-way-graph-refused",
+    "Description": "A one-way price graph from the C# client (GetCalendarGraph with no trip length: [null, filter, [from, to], null, null]), 12 minutes after the client's search was answered: refused with a bare gRPC 13. The page was never recorded asking for a one-way calendar; the client no longer offers one. A bare 13 is therefore not only the User-Agent's refusal.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGraph"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-one-way-graph-refused-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 433,
+    "ResponseBytes": 132,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:19:31.000Z"
   }
 ]

@@ -32,6 +32,25 @@ public class SelectionHandleTests
         Assert.Matches("^[A-Za-z0-9_-]+$", handle);
     }
 
+    [Fact]
+    public void A_handle_that_expands_beyond_64_KB_is_refused_without_reading_it_all()
+    {
+        var request = FlightSearchRequest.OneWay("SEA", "DEN", Dec15).Normalize("USD", "US");
+        var huge = new FlightSelection(request, [[new ChosenSegment("SEA", Dec15, "DEN", "DL", "1")]], new string('A', 200_000)).ToHandle();
+
+        Assert.True(huge.Length < 2_000, "Brotli makes it small on the wire; only expanding it shows its size.");
+        Assert.Throws<ArgumentException>(() => FlightSelection.FromHandle(huge));
+    }
+
+    [Fact]
+    public void A_handle_holding_a_flight_not_in_Googles_form_is_refused()
+    {
+        var request = FlightSearchRequest.OneWay("SEA", "DEN", Dec15).Normalize("USD", "US");
+        var forged = new FlightSelection(request, [[new ChosenSegment("SEA", Dec15, "DEN", "DL", "1; DROP")]], "token").ToHandle();
+
+        Assert.Contains("not in Google's form", Assert.Throws<ArgumentException>(() => FlightSelection.FromHandle(forged)).Message);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("not-a-handle")]

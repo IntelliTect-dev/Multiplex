@@ -74,8 +74,15 @@ internal static class ResponseFrames
                     continue;
                 if (item.Str(2) is { } payload)
                 {
-                    using var inner = JsonDocument.Parse(payload);
-                    payloads.Add(inner.RootElement.Clone());
+                    try
+                    {
+                        using var inner = JsonDocument.Parse(payload);
+                        payloads.Add(inner.RootElement.Clone());
+                    }
+                    catch (JsonException e)
+                    {
+                        throw new GoogleFlightsFormatException($"A data item in Google's answer was not valid JSON: {e.Message}");
+                    }
                 }
                 else if (item.At(5) is { ValueKind: JsonValueKind.Array } status && status.Int(0) is { } code)
                 {

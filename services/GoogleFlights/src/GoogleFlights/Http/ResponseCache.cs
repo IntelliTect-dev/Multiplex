@@ -34,18 +34,27 @@ internal sealed class ResponseCache(TimeSpan duration, int capacity, TimeProvide
             Trim();
     }
 
-    /// <summary>Runs <paramref name="fetch"/> once for every concurrent caller with the same key.</summary>
-    public async Task<T> SingleFlightAsync<T>(string key, Func<Task<T>> fetch) where T : class
+    /// <summary>
+    /// Runs <paramref name="fetch"/> once for every concurrent caller with the same key. The fetch belongs to no
+    /// caller: it must not take any caller's cancellation (the client's own timeouts bound it). Each caller waits
+    /// with its own <paramref name="ct"/>, so one caller giving up fails nobody else.
+    /// </summary>
+    public async Task<T> SingleFlightAsync<T>(string key, Func<Task<T>> fetch, CancellationToken ct) where T : class
     {
-        var lazy = _inFlight.GetOrAdd(key, _ => new Lazy<Task<object>>(async () => await fetch().ConfigureAwait(false)));
-        try
+        Lazy<Task<object>>? created = null;
+        created = new Lazy<Task<object>>(async () =>
         {
-            return (T)await lazy.Value.ConfigureAwait(false);
-        }
-        finally
-        {
-            _inFlight.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, lazy));
-        }
+            try
+            {
+                return await fetch().ConfigureAwait(false);
+            }
+            finally
+            {
+                _inFlight.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, created!));
+            }
+        });
+        var flight = _inFlight.GetOrAdd(key, created);
+        return (T)await flight.Value.WaitAsync(ct).ConfigureAwait(false);
     }
 
     private void Trim()

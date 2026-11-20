@@ -58,12 +58,14 @@ public sealed class GoogleFlightsClient : IDisposable
     {
         ArgumentNullException.ThrowIfNull(selection);
         var request = Normalize(selection.Request);
-        if (selection.ChosenLegs.Count == 0 || selection.ChosenLegs.Count >= request.Legs.Count)
+        if (selection.ChosenLegs.Count >= request.Legs.Count)
         {
             throw new ArgumentException(
                 "Every leg of this trip is already chosen; ask for its booking options instead.", nameof(selection));
         }
-        return FlightsAsync(request, selection with { Request = request }, verify, ct);
+        selection = selection with { Request = request };
+        selection.Validate();
+        return FlightsAsync(request, selection, verify, ct);
     }
 
     /// <summary>
@@ -81,6 +83,7 @@ public sealed class GoogleFlightsClient : IDisposable
                 $"Only {selection.ChosenLegs.Count} of {request.Legs.Count} legs are chosen; choose the next flight first.", nameof(selection));
         }
         selection = selection with { Request = request };
+        selection.Validate();
 
         var frames = await _transport.ServiceAsync("GetBookingResults", RequestEncoder.BookingResults(selection), Jspb(request), ct)
             .ConfigureAwait(false);
@@ -108,16 +111,15 @@ public sealed class GoogleFlightsClient : IDisposable
             throw new ArgumentException(
                 "The price calendar is available for round trips only: give a trip length or a return date range.", nameof(request));
         }
-        if (request.DepartureTo < request.DepartureFrom)
-            throw new ArgumentException("The departure range ends before it starts.", nameof(request));
-
         string rpc, inner;
         if (request.ReturnFrom is { } returnFrom && request.ReturnTo is { } returnTo)
         {
             if (search.TripType != TripType.RoundTrip)
                 throw new ArgumentException("Return dates apply only to a round trip.", nameof(request));
-            if (returnTo < returnFrom)
-                throw new ArgumentException("The return range ends before it starts.", nameof(request));
+            CheckCalendarRange(request.DepartureFrom, request.DepartureTo, MaxGridDays, "departure");
+            CheckCalendarRange(returnFrom, returnTo, MaxGridDays, "return");
+            if (returnTo < request.DepartureFrom)
+                throw new ArgumentException("Every return date is before the first departure.", nameof(request));
             rpc = "GetCalendarGrid";
             inner = RequestEncoder.CalendarGrid(search, request.DepartureFrom, request.DepartureTo, returnFrom, returnTo);
         }
@@ -127,6 +129,7 @@ public sealed class GoogleFlightsClient : IDisposable
         }
         else
         {
+            CheckCalendarRange(request.DepartureFrom, request.DepartureTo, MaxGraphDays, "departure");
             rpc = "GetCalendarGraph";
             inner = RequestEncoder.CalendarGraph(search, request.DepartureFrom, request.DepartureTo,
                 search.Legs[1].Date.DayNumber - search.Legs[0].Date.DayNumber);
@@ -173,18 +176,55 @@ public sealed class GoogleFlightsClient : IDisposable
         if (!verify && _cache.TryGet<T>(key, out var cached))
             return markCached(cached);
 
+        ct.ThrowIfCancellationRequested();
+        // The shared request takes no caller's token: the pipeline's total timeout bounds it.
         return await _cache.SingleFlightAsync(key, async () =>
         {
             var frames = batch
-                ? await _transport.BatchAsync(rpc, inner, jspb, ct).ConfigureAwait(false)
-                : await _transport.ServiceAsync(rpc, inner, jspb, ct).ConfigureAwait(false);
+                ? await _transport.BatchAsync(rpc, inner, jspb, CancellationToken.None).ConfigureAwait(false)
+                : await _transport.ServiceAsync(rpc, inner, jspb, CancellationToken.None).ConfigureAwait(false);
             var result = parse(frames);
             _cache.Set(key, result);
             return result;
-        }).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
     }
 
-    private FlightSearchRequest Normalize(FlightSearchRequest request) => request.Normalize(_options.Currency, _options.Region);
+    /// <summary>The longest departure range a price graph asks for: about the two months the page's own graph showed (55 days).</summary>
+    public const int MaxGraphDays = 61;
+
+    /// <summary>The widest departure or return range a date grid asks for: the page's own grid is 7 by 7.</summary>
+    public const int MaxGridDays = 7;
+
+    private FlightSearchRequest Normalize(FlightSearchRequest request)
+    {
+        var normalized = request.Normalize(_options.Currency, _options.Region);
+        foreach (var (leg, i) in normalized.Legs.Select((l, i) => (l, i)))
+            CheckDate(leg.Date, $"Leg {i + 1}'s date");
+        return normalized;
+    }
+
+    /// <summary>
+    /// A date Google sells: not before today anywhere on Earth, and within a year. A date it will not search can
+    /// earn a refusal that stops the client for everyone, so it is caught here.
+    /// </summary>
+    private void CheckDate(DateOnly date, string what)
+    {
+        var today = DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime);
+        if (date < today.AddDays(-1))
+            throw new ArgumentException($"{what} {date:yyyy-MM-dd} is in the past.");
+        if (date > today.AddDays(366))
+            throw new ArgumentException($"{what} {date:yyyy-MM-dd} is more than a year away; airlines do not sell that far ahead.");
+    }
+
+    private void CheckCalendarRange(DateOnly from, DateOnly to, int maxDays, string what)
+    {
+        if (to < from)
+            throw new ArgumentException($"The {what} range ends before it starts.");
+        if (to.DayNumber - from.DayNumber + 1 > maxDays)
+            throw new ArgumentException($"The {what} range covers {to.DayNumber - from.DayNumber + 1} days; ask for at most {maxDays} at a time.");
+        CheckDate(from, $"The {what} range's first date");
+        CheckDate(to, $"The {what} range's last date");
+    }
 
     private static string Jspb(FlightSearchRequest normalized) => RequestEncoder.JspbHeader(normalized.Currency!, normalized.Region!);
 
