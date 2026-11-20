@@ -55,6 +55,44 @@ Services that read a website's pages share one Chromium. Set these in
 | `Browser:Headless` | `true` | `false` shows the browser window |
 | `Browser:StepDelayMs` | `0` | Pause between tool steps, so a headed run can be followed by eye |
 
+## Running it on a Linux server
+
+`scripts/Deploy-MultiplexLinux.ps1` deploys Multiplex from this PC to a Linux
+server over SSH, where it runs as two Docker containers (`deploy/linux`): the
+server, with Google Chrome and a virtual display for the sign-in browsers, and
+a Tailscale device named `multiplex` that serves it over HTTPS at
+`https://multiplex.<your-tailnet>.ts.net`, to your tailnet only.
+
+```powershell
+./scripts/Deploy-MultiplexLinux.ps1 -Target me@192.168.1.20
+```
+
+- **The server** needs an x64 processor (Google Chrome is built for x64 only on
+  Linux), Docker with the Compose plugin, and an SSH user that may run `docker`.
+  It must accept this PC's SSH key; if it asks for a password, add the key once:
+
+  ```powershell
+  Get-Content $HOME\.ssh\id_ed25519.pub | ssh me@192.168.1.20 "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+  ```
+
+- **The first deploy** prints a Tailscale link: open it and sign in to add the
+  `multiplex` device to your tailnet. The tailnet must issue HTTPS certificates
+  (Tailscale admin console, DNS page).
+- **The passcode** is the one this PC already keeps (`./scripts/Install-Multiplex.ps1
+  -ShowPasscode`), or a new one kept the same way. Only its hash is sent.
+- **Updating** is running the script again. Until the new image has built and the
+  Tailscale device is up, the running server is left as it was. The server keeps
+  the last three images; to go back to one, set `MULTIPLEX_IMAGE` in
+  `~/multiplex/.env` on the server and run `docker compose up -d` in `~/multiplex`.
+- **Tailnet only.** Claude Code on a tailnet device can use it
+  (`claude mcp add --transport http tripit https://multiplex.<your-tailnet>.ts.net/tripit/mcp`).
+  Claude's web, phone and Desktop connectors and ChatGPT call from their own
+  clouds and cannot reach it.
+- **Data** lives in the `multiplex_multiplex-data` Docker volume, readable by the
+  container's own user only. Nothing moves over from a Windows install: its keys
+  and browser sign-ins are encrypted to that Windows account, so connectors are
+  added and sites signed in to again.
+
 ## Adding a service
 
 1. Find the website's API first, with the
