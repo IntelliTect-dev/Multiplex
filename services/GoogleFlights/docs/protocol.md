@@ -569,6 +569,7 @@ full.
 |---|---|---|
 | `wrb.fr` error, code 3 | X notes: an unknown airport or an invalid date | `INVALID_ARGUMENT`; do not retry |
 | `wrb.fr` error, code 14 | X notes only | `UNAVAILABLE`; transient |
+| `wrb.fr` error, code 9 | once, 2026-11-20 15:30 local: the C# client's one-way search from a network already refusing it; the body was not recorded, and the same search 15 and 40 s later (recorded) got the bare 13 | `FAILED_PRECONDITION`; meaning **pending**. The client treats any code it does not know as a refusal |
 | HTTP 429 | **not yet seen** | throttled; honour `Retry-After` |
 | HTTP 302 to `/sorry/index` | **not yet seen**; Google's usual "unusual traffic" page elsewhere | blocked: a person must clear a check; never automated |
 | HTML body containing "unusual traffic" | **not yet seen** | blocked, as above |

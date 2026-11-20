@@ -196,7 +196,12 @@ internal sealed class GoogleFlightsTransport : IDisposable
                 case 14:
                     throw new GoogleFlightsTransientException("Google Flights is unavailable just now (gRPC 14).");
                 default:
-                    throw new GoogleFlightsException($"Google Flights answered with an error (gRPC {code}).");
+                    // A code the client does not know (gRPC 9 was seen once from a refused network): stop and back
+                    // off, as for 13. Asking again at once could only deepen a block.
+                    var stopUntil = _gate.Refused();
+                    throw new GoogleFlightsThrottledException(
+                        $"Google Flights refused the request with an error the client does not know (gRPC {code}); it will not ask again until {stopUntil:u}.",
+                        ThrottleReason.Refused, stopUntil);
             }
         }
 
