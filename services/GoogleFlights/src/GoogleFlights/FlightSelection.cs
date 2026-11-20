@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -27,9 +28,13 @@ public sealed record FlightSelection(FlightSearchRequest Request, IReadOnlyList<
     /// A compact text form of this selection (URL-safe base64 of JSON), for callers that cannot hold the object
     /// between calls, such as an MCP tool. It holds no secret: the search, the chosen flights and Google's token.
     /// </summary>
-    public string ToHandle() =>
-        Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(this, HandleJson.Options))
-            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    public string ToHandle()
+    {
+        using var compressed = new MemoryStream();
+        using (var brotli = new BrotliStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+            JsonSerializer.Serialize(brotli, this, HandleJson.Options);
+        return Convert.ToBase64String(compressed.ToArray()).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
 
     /// <summary>Reads a handle made by <see cref="ToHandle"/>. The search inside is validated again.</summary>
     /// <exception cref="ArgumentException">The handle is not one this client made.</exception>
@@ -40,9 +45,22 @@ public sealed record FlightSelection(FlightSearchRequest Request, IReadOnlyList<
         {
             var base64 = (handle ?? "").Trim().Replace('-', '+').Replace('_', '/');
             base64 = base64.PadRight(base64.Length + (4 - base64.Length % 4) % 4, '=');
-            selection = JsonSerializer.Deserialize<FlightSelection>(Convert.FromBase64String(base64), HandleJson.Options);
+            using var brotli = new BrotliStream(new MemoryStream(Convert.FromBase64String(base64)), CompressionMode.Decompress);
+            // A handle is a few hundred bytes; stop reading long before a hostile one could exhaust memory.
+            var json = new byte[64 * 1024];
+            var length = 0;
+            int read;
+            while ((read = brotli.Read(json, length, json.Length - length)) > 0)
+            {
+                length += read;
+                if (length == json.Length)
+                    throw new FormatException("The handle is too large.");
+            }
+            selection = JsonSerializer.Deserialize<FlightSelection>(json.AsSpan(0, length), HandleJson.Options);
         }
-        catch (Exception e) when (e is FormatException or JsonException or NotSupportedException)
+        // BrotliStream reports corrupt input as InvalidOperationException ("Decoder ran into invalid data").
+        catch (Exception e) when (e is FormatException or JsonException or NotSupportedException or InvalidDataException
+                                      or IOException or InvalidOperationException)
         {
             throw new ArgumentException("That is not a flight selection from this client. Search again and pass a selection it returned.", nameof(handle), e);
         }
@@ -60,7 +78,7 @@ internal static class HandleJson
 {
     public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
         Converters = { new JsonStringEnumConverter() },
     };
 }

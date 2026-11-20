@@ -1,5 +1,6 @@
 using Multiplex.Web.Auth;
 using Multiplex.Web.Mcp;
+using Multiplex.Web.Services.GoogleFlights;
 using Multiplex.Web.Services.LinkedIn;
 using Multiplex.Web.Services.LinkedIn.SignIn;
 using Multiplex.Web.Services.TripIt;
@@ -24,6 +25,7 @@ builder.Services.AddMultiplexAuth(builder.Configuration)
     .RequireAuthFor("linkedin", "LinkedIn");
 builder.Services.AddTripItService(builder.Configuration);
 builder.Services.AddLinkedInService(builder.Configuration);
+builder.Services.AddGoogleFlightsService(builder.Configuration);
 builder.Services.AddSiteSignIn(builder.Configuration)
     .AddSite<TripItSignInDefinition>()
     .AddSite<LinkedInSignInDefinition>();
