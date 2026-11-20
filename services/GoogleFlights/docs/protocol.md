@@ -30,6 +30,7 @@ relied on.
 | **P10** | `2026-11-20-124901-direct` | Direct HTTP airport autocomplete (batchexecute `H028ib`) with the honest-bot User-Agent and no `f.sid`/`bl`: answered. Reference `direct-airport-autocomplete`. |
 | **L1** | `2026-11-20-130758-live` | The C# client's first live request, a one-way search: answered. Reference `direct-client-search`. |
 | **L2** | `2026-11-20-131931-live` | The C# client's one-way price graph (no trip length): refused, bare gRPC 13. Reference `direct-one-way-graph-refused`. |
+| **L3** | `2026-11-20-133637-live` | L1's search again, after the client's 15-minute cool-down: refused, bare gRPC 13. Reference `direct-client-search-refused`. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -109,6 +110,14 @@ No `at=` token is sent: the page is signed out.
 | 11-20 12:49 (P10) | direct HTTP | airport autocomplete (batchexecute `H028ib`), P8's User-Agent, no `f.sid`, `bl` or `_reqid` | **places and airports** |
 | 11-20 13:07 (L1) | the C# client | a one-way search; .NET sends only the four headers above and `Accept: */*` | **flights** |
 | 11-20 13:19 (L2) | the C# client | a one-way `GetCalendarGraph` with no trip length | bare `[13]` (section 9) |
+| 11-20 13:36 (L3) | the C# client | L1's search, unchanged, 17 minutes after L2 | bare `[13]`: **refused** |
+
+**The honest-bot form is necessary, not sufficient.** L3 is a request Google
+answered 29 minutes earlier (L1), refused after about 16 direct requests from
+this network that day, most of them hours before. Google evidently allows a
+self-identified client far fewer requests than the roughly 230 in 35 minutes
+that blocked the earlier project's browser-like client. The allowance and how
+long a refusal lasts are not established (section 8).
 
 **The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
 request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
@@ -467,7 +476,10 @@ and **pending**.
   calendar calls without one were answered.
 - The Best / Cheapest tabs, which did not appear on a filtered one-way page.
 - The page's price-calendar request for a one-way trip (the one form tried was
-  refused, L2).
+  refused, L2; with L3 refused too, L2 may have been the allowance running out
+  rather than the form).
+- How many requests Google allows the honest-bot client per network, over what
+  window, and how long a refusal lasts (L3).
 - Every response position marked **pending** above.
 
 ## 9. Errors and throttling
@@ -533,7 +545,7 @@ lasted more than 6 hours.
 | Shape | Seen on | Reading |
 |---|---|---|
 | `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | the page's own requests: B (search, date picker), E, G (searches with selection `[]`) | the request reached the flights service, which refused it |
-| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1); and a one-way `GetCalendarGraph` with no trip length from the right User-Agent (L2), 12 minutes after an answered search | refused without detail: the User-Agent, or a request the service will not take |
+| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1); and, from the right User-Agent, a one-way `GetCalendarGraph` (L2) and then a search Google had answered before (L3) | refused without detail: the User-Agent, or this network's allowance spent; it does not say which |
 
 The client classifies both as refusals and never retries one straight away.
 On 2026-11-19 neither shape meant "the network is blocked": the page's search

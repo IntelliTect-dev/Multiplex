@@ -53,16 +53,28 @@ All in `src/GoogleFlights/Http/` and `GoogleFlightsClientOptions`.
   from the server. The MCP tools pass it as a compact handle (Brotli-compressed
   JSON, base64url); it holds no secret.
 
-## Gotcha: a bare gRPC 13 is not only the User-Agent
+## Gotcha: the honest-bot client has a small allowance
 
 The bare `[13]` (no `ErrorResponse` detail) was first seen only for a
 User-Agent not in the `Mozilla/5.0 (compatible; ...)` form. On 2026-11-20 the
-C# client, with the right User-Agent, got the same bare `[13]` for a one-way
-price graph (`GetCalendarGraph` with no trip length,
-`[null, filter, [from, to], null, null]`), 12 minutes after a search it sent
-was answered. So a bare 13 can also mean "a request the service will not
-take". The client treats it as a refusal either way, and offers no one-way
-calendar until a capture shows the page's own request.
+C# client, with the right User-Agent, got it twice: for a one-way price graph
+(13:19 local), then, after its 15-minute cool-down, for the very search Google
+had answered at 13:07. About 16 direct requests had left this network that
+day, most of them hours earlier (`docs/protocol.md` sections 2 and 9, L1-L3).
+
+So the `Mozilla/5.0 (compatible; ...)` form is necessary, not sufficient:
+Google lets a self-identified client make far fewer requests than the ~230 in
+35 minutes that blocked the earlier, browser-like project. How many, over what
+window, and for how long it then refuses, are not known yet. Until they are:
+
+- A bare 13 is read as "this network's allowance is spent", and the client
+  stops (the cool-down). It may also mean a request the service will not take;
+  the answer does not say which.
+- The live suite is run rarely and stopped at the first refusal. The client's
+  default pacing (4 back to back, then one per 20 s) bounds bursts, not a daily
+  allowance; it will need lowering once the allowance is measured.
+- No one-way calendar: the one form tried was refused, and the page's own
+  request is not recorded.
 
 ## No browser: the client is direct HTTP, with an honest-bot User-Agent
 
