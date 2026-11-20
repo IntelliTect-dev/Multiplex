@@ -37,15 +37,18 @@ Import-Module (Join-Path $PSScriptRoot 'Multiplex.Linux.psm1') -Force
 
 if (-not (Test-MultiplexSshTarget $Target)) { throw "'$Target' is not an SSH destination: give user@host or an SSH config alias." }
 $sshOptions = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=30')
+$ssh = Get-MultiplexTool ssh
+$scp = Get-MultiplexTool scp
 
 $remote = {
     param([string] $Script)
-    $output = & ssh @sshOptions $Target (Get-MultiplexRemoteCommand -Script $Script) 2>&1
+    $call = Get-MultiplexRemoteInvocation -Script $Script
+    $output = $call.Input | & $ssh @sshOptions $Target $call.Command 2>&1
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | ForEach-Object { "$_" }) -join "`n" }
 }
 $upload = {
     param([string] $LocalFile, [string] $RemotePath)
-    & scp @sshOptions -q $LocalFile "${Target}:$RemotePath"
+    & $scp @sshOptions -q $LocalFile "${Target}:$RemotePath"
     if ($LASTEXITCODE) { throw "scp could not upload to $Target (exit $LASTEXITCODE)." }
 }
 $repoRoot = Split-Path $PSScriptRoot
@@ -56,7 +59,14 @@ $publish = {
 }
 
 # The server can be reached with this PC's key: ssh asks for nothing (BatchMode), so a missing key fails here.
-$probe = & ssh @sshOptions $Target 'true' 2>&1
+$probe = & $ssh @sshOptions $Target 'true' 2>&1
+if ($LASTEXITCODE -and "$probe" -match 'Host key verification failed') {
+    throw @"
+This PC does not know $Target's host key yet, so ssh will not trust it. Connect once yourself, check
+the key fingerprint it shows, and answer yes; then run this again:
+  ssh $Target
+"@
+}
 if ($LASTEXITCODE) {
     throw @"
 Could not sign in to $Target with this PC's SSH key: $($probe -join ' ')
@@ -78,7 +88,7 @@ else {
 }
 $hash = ConvertTo-MultiplexPasscodeHash -Passcode $passcode
 
-$commit = (& git -C $repoRoot rev-parse --short HEAD 2>$null) ?? 'local'
+$commit = if (Get-Command git -ErrorAction SilentlyContinue) { (& git -C $repoRoot rev-parse --short HEAD 2>$null) ?? 'local' } else { 'local' }
 $tag = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), $commit
 $result = Invoke-MultiplexLinuxDeploy -Remote $remote -Upload $upload -Publish $publish -PasscodeHash $hash -Tag $tag
 
