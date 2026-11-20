@@ -22,8 +22,8 @@ for when you want a client.
 ### Stage 1: capture → API reference (always runs)
 
 You provide the site's URL and one sentence saying what the recording is for
-(for example, "sign in, create a post, then delete it"). Nothing else is asked
-before recording.
+(for example, "sign in, create a post, then delete it"). That is all the skill
+needs to start recording: no project name, namespace or tracking issue.
 
 1. **Discover.** The skill checks that the site responds and looks for its
    sign-in provider (Google, Microsoft or Facebook, for example).
@@ -34,10 +34,11 @@ before recording.
 3. **Scrub and verify.** Tokens, cookies and personal data are replaced with
    placeholders. A separate verification pass then checks the result, and the
    capture goes no further unless it passes.
-4. **Catalogue.** An AI writes down what was done to produce each capture (the
-   one thing a recording cannot say about itself). The tooling, not the AI,
-   counts the methods, endpoints and request bodies in the recording and checks
-   each row against them.
+4. **Catalogue.** An AI splits the session into the actions a person took,
+   names each one and says what it shows (the part a recording cannot say about
+   itself). It also fills in each action's methods, endpoints and request
+   bodies, and the tooling recounts those from the recording and rejects any
+   row that disagrees.
 
 The result is a scrubbed API reference you can review and commit. The raw
 recording, however, carries live session cookies, so it stays in a private
@@ -63,14 +64,15 @@ Then it:
 
 Finally, it initializes the project as its own git repository.
 
-**Throughout**, the skill records only as a test account. The reason is that
-the scrub is a safeguard, not a guarantee (at worst, a test account's capture
-discloses fake data). It uses no stealth measures and solves no CAPTCHAs; when
-a site blocks or challenges, it hands the browser to you. It honours the site's
-throttling and never invents an endpoint the recording didn't show. To keep
-secrets out of commits, raw captures are git-ignored, and the generated project
-scans every commit with gitleaks. See
-[Pacing and throttling](#pacing-and-throttling) for the details.
+**Throughout**, the skill requires you to record as a dedicated test account.
+The scrub is a safeguard, not a guarantee, so a test account limits the worst
+case to disclosing fake data. The skill uses no stealth measures and solves no
+CAPTCHAs; when a site blocks or challenges, it hands the browser to you. It
+honours the site's throttling (see
+[Pacing and throttling](#pacing-and-throttling)) and never invents an endpoint
+the recording didn't show. To keep secrets out of commits, raw captures are
+git-ignored, and the generated project runs gitleaks before each commit (once
+you switch its hook on) and in CI.
 
 The diagram is also available as an editable PowerPoint slide:
 [`docs/web-api-discovery-overview.pptx`](docs/web-api-discovery-overview.pptx).
