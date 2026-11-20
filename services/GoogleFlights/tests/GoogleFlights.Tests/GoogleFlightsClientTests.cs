@@ -387,6 +387,29 @@ public class GoogleFlightsClientTests
     }
 
     [Fact]
+    public async Task A_throttle_status_wins_over_a_body_that_does_not_parse()
+    {
+        // Re-review suggestion: a 429 whose body looks framed but is garbled is still a throttle, with a cool-down.
+        _google.Answer(HttpStatusCode.TooManyRequests, ")]}'\n\n30\n[[\"wrb.fr\",null,\"[1,2,\",null]]\n");
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+
+        Assert.Equal(ThrottleReason.TooManyRequests, e.Reason);
+    }
+
+    [Fact]
+    public async Task An_unusual_traffic_page_is_a_challenge()
+    {
+        _google.Answer(HttpStatusCode.OK, "<html><body>Our systems have detected unusual traffic from your computer network.</body></html>");
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+
+        Assert.Equal(ThrottleReason.Challenge, e.Reason);
+    }
+
+    [Fact]
     public async Task A_garbled_data_item_is_a_format_error()
     {
         _google.Answer(HttpStatusCode.OK, ")]}'\n\n30\n[[\"wrb.fr\",null,\"[1,2,\",null]]\n");
