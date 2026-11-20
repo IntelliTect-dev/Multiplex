@@ -86,6 +86,11 @@ var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Select
 | PowerShell module, including the help-drift check | `Invoke-Pester services/GoogleFlights/tests/GoogleFlights.PowerShell.Tests` | A build first |
 | Live: the client, every MCP tool, the module | the same commands with `MULTIPLEX_LIVE_TESTS=1` | Internet access. About 20 paced requests in all; never run them in a loop |
 
+`tests/Invoke-LiveTests.ps1` runs all of the live tests in one go on the
+machine's own connection: build, offline tests, one search first, then the
+rest, stopping at the first failure or refusal. Run it on a connection whose
+Google Flights allowance you can spare.
+
 Live tests assert structure and meaning, never prices. Every live exchange is
 saved in full to the repository's gitignored capture store
 (`.har-captures/www.google.com/<stamp>-live/`), so a refusal is kept as
