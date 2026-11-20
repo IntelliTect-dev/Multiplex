@@ -382,6 +382,33 @@ Describe 'what the Linux host publishes' {
         Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw | Should -Match '(?m)^\s+TS_AUTH_ONCE:\s*"true"\s*$'
     }
 
+    It 'lets Chrome''s sandbox make its namespaces, through a system-call filter on the server''s container only' {
+        # Docker's default filter allows clone/unshare/setns with namespace flags only with CAP_SYS_ADMIN,
+        # so Chrome's sandbox failed: "setuid sandbox: failed to move to new namespaces" (first real deploy).
+        $compose = Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw
+        $compose | Should -Match '(?m)^\s+security_opt:\s*\r?\n\s+-\s*seccomp=chrome-seccomp\.json\s*$'
+        $compose | Should -Not -Match 'seccomp[=:]unconfined'
+        $compose | Should -Not -Match 'SYS_ADMIN'
+    }
+
+    It 'keeps Docker''s default filter and adds only the namespace calls: everything unlisted is still refused' {
+        $profile = Get-Content (Join-Path $script:DeployFolder 'chrome-seccomp.json') -Raw | ConvertFrom-Json -AsHashtable
+        $profile.defaultAction | Should -Be 'SCMP_ACT_ERRNO'
+        $unconditional = @($profile.syscalls | Where-Object { $_.action -eq 'SCMP_ACT_ALLOW' -and -not $_.includes -and -not $_.args -and -not $_.excludes })
+        $added = @($unconditional | Where-Object { @($_.names) -contains 'unshare' })
+        $added.Count | Should -Be 1
+        @($added[0].names | Sort-Object) | Should -Be @('clone', 'setns', 'unshare')
+        foreach ($gated in 'mount', 'bpf', 'kexec_load', 'init_module', 'ptrace', 'clone3', 'umount2', 'pivot_root') {
+            @($unconditional | Where-Object { @($_.names) -contains $gated }).Count | Should -Be 0 -Because "$gated stays gated as in Docker's default"
+        }
+    }
+
+    It 'copies the filter beside compose.yaml on the server, where Compose reads it from' {
+        $server = New-FakeServer
+        Invoke-Deploy $server | Out-Null
+        $server.Scripts[$server.Steps.IndexOf('install-files')] | Should -Match 'chrome-seccomp\.json'
+    }
+
     It 'reads the owner''s own identity.env when there is one, and starts without it (#80)' {
         Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw |
             Should -Match '(?m)^\s+-\s*path:\s*identity\.env\s*\r?\n\s+required:\s*false\s*$'

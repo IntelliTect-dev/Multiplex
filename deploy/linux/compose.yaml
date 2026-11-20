@@ -40,6 +40,10 @@ services:
         required: false
     volumes:
       - multiplex-data:/data
+    # Docker's default system-call filter plus the namespace calls Chrome's sandbox needs; without them
+    # Chrome cannot start sandboxed. Compose reads the file from ~/multiplex, where the deploy puts it.
+    security_opt:
+      - seccomp=chrome-seccomp.json
     # Reaps the browsers' child processes; Chrome needs more shared memory than Docker's 64 MB default.
     init: true
     shm_size: 1gb
