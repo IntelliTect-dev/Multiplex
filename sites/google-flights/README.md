@@ -9,13 +9,13 @@ flight API or scraping service is involved.
 
 ## Status
 
-**Phase 1, discovery: captured and decoded; the client is blocked.** Every
-flow in the spec is recorded and its field maps are in `docs/protocol.md`. The
-client must fetch over direct HTTP (no browser without the owner's approval
-for this provider and use case), and from the owner's network Google refuses
-direct HTTP: the data endpoint answers gRPC 13, and the search page redirects
-an honestly named client to "unsupported" (`NOTES.md`). The client library,
-MCP server and PowerShell module wait on how the client may identify itself.
+**Phase 1, discovery: complete.** Every flow in the spec is recorded and its
+field maps are in `docs/protocol.md`. The client fetches over direct HTTP, with
+no browser, identifying itself as
+`Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`; the
+whole flow (search, return flights, booking options, calendar) has been
+answered that way (`NOTES.md`). The client library, MCP server and PowerShell
+module come next.
 
 ## What is here
 

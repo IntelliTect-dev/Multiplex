@@ -24,6 +24,9 @@ relied on.
 | **J** | `2026-11-19-171505` | Encoder-built multi-city URL SEA-DEN / DEN-LAX: leg 1, leg 2, booking. All answered. Reference `multi-city-to-booking`. |
 | **K** | `2026-11-19-171757` | Round-trip results, then Date grid and Price graph. Both answered. Reference `calendar-grid-and-graph`. |
 | **P1, P2** | `2026-11-19-143242-direct`, `2026-11-19-163416-direct` | One direct HTTP `GetShoppingResults` each (not a browser), two hours apart. Both refused. |
+| **P3-P7** | `2026-11-20-090700-direct` | Direct HTTP, a day later: the search again (refused), `flights.google.com` (301; 405), a search page `GET` ("unsupported"). Reference `direct-http-probes`. |
+| **P8, P9** | `2026-11-20-095237-direct` | Direct HTTP with the honest-bot User-Agent: the search **answered**; the page `GET` still "unsupported". Reference `direct-honest-bot-user-agent`. |
+| **F1-F4, C1** | `2026-11-20-095614-direct` | Direct HTTP with the honest-bot User-Agent: round-trip search, return-flight step, booking options, price graph, all answered; then a control with the old User-Agent, refused. Reference `direct-http-flow`. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -70,18 +73,20 @@ POST /_/FlightsFrontendUi/data/batchexecute
 
 ### Headers and cookies
 
-| Item | Meaning |
-|---|---|
-| `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. |
-| `x-same-domain: 1` | Google's CSRF guard for these endpoints |
-| `x-goog-batchexecute-bgr` | Computed by the page's own script on every request (B: present on the calls that were answered and on the ones refused alike). Never forged or replayed. |
-| Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) |
-| `f.sid`, `bl`, `_reqid` | Page session, build label, request counter |
-| `x-browser-validation`, `x-client-data`, `sec-ch-ua-*` | Chrome's own client headers (C) |
+| Item | Meaning | Direct client |
+|---|---|---|
+| `User-Agent` | | **Required in the honest-bot form** `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)` (owner's decision, 2026-11-20). A User-Agent without the `Mozilla/5.0 (compatible; ...)` form is refused (below) |
+| `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. | sent |
+| `x-same-domain: 1` | Google's CSRF guard for these endpoints | sent |
+| `content-type: application/x-www-form-urlencoded;charset=UTF-8` | | sent |
+| `x-goog-batchexecute-bgr` | Computed by the page's own script on every request. Never forged or replayed. | **not sent, not needed** |
+| Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) | none needed; `NID`, which Google sets on the first answer, is sent back like any HTTP client would |
+| `f.sid`, `bl`, `_reqid` | Page session, build label, request counter | not sent, not needed |
+| `x-browser-validation`, `x-client-data`, `sec-ch-ua-*` | Chrome's own client headers (C) | not sent |
 
 No `at=` token is sent: the page is signed out.
 
-### Direct HTTP is refused; the page is not
+### Direct HTTP: the User-Agent's form is the gate
 
 | When (local) | Client | Sent | Answer |
 |---|---|---|---|
@@ -93,23 +98,26 @@ No `at=` token is sent: the page is signed out.
 | 11-20 09:08 (P4) | direct HTTP | `GET https://flights.google.com/` | **301** to `https://www.google.com/travel/flights` |
 | 11-20 09:09 (P5) | direct HTTP | `GET /travel/flights/search?tfs=...` (C's round trip), honest User-Agent | **302** to `/travel/flights/unsupported?...&ucpp=<the original URL, base64>`, empty body; sets `NID` |
 | 11-20 09:12 (P7) | direct HTTP | P1's search, sent to `flights.google.com` | **405**: no data endpoint on that host |
+| 11-20 09:52 (P8) | direct HTTP | P1's search, User-Agent `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/0.1; +<issue url>)` | **flights** (3 best, 11 other) |
+| 11-20 09:53 (P9) | direct HTTP | P5's page `GET`, the same User-Agent | still **302** to `/travel/flights/unsupported` |
+| 11-20 09:56-10:01 (F1-F4) | direct HTTP | P8's User-Agent: round-trip search, return-flight step, booking options, price graph | all answered: 13 flights, 17 returns, 7 fare brands, 11 graph cells |
+| 11-20 10:01 (C1) | direct HTTP | F1 again with P1's User-Agent | bare `[13]` |
 
-Five minutes after P2 was refused, the page itself searched normally on the
-same network. So the network is not blocked; plain requests are. The earlier
-project recorded the same split (its `LIMITATIONS.md`): during its block, Google
-Flights kept working in a browser while plain requests and even an in-page
-`fetch` from automated Chrome were refused.
+**The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
+request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
+refusal minutes later. Both User-Agents name this project; only the form
+differs. No cookie, browser header, page token or session id is needed. The
+search **page** is still "unsupported" for that User-Agent (P9); the client
+does not need it.
 
-The requests differ in the page's anti-bot token, Google's cookies, Chrome's
-client headers, the User-Agent, and (for searches) the session id. A direct
-client cannot use the page's token or pose as Chrome. The one browser-free
-route left is the page itself: its HTML carries the first answer and the
-session id (section 5). P5 shows Google redirecting an honestly named client
-away from that page as "unsupported". Whether some other honest client gets
-the page is **not established**, and how the client may identify itself is
-the owner's decision. A browser is not an option without the owner's approval
-for this provider and use case (`../NOTES.md`). Encoding and parsing are the
-same whichever transport ends up carrying them.
+So the client is **direct HTTP** with the honest-bot User-Agent, and no
+browser is involved (`../NOTES.md`). Everything a browser sent beyond the
+headers marked "sent" above is unnecessary.
+
+Earlier readings that this replaces: on 11-19 the plain requests looked
+blocked and the page looked necessary. The refusals then were the User-Agent
+(P1, P2) and, in the automated capture browser, something about that browser
+(section 5).
 
 ## 3. Response framing
 
@@ -202,29 +210,29 @@ The date picker's own requests send a short leg, `[origins, destinations, null, 
 
 `selection` in `GetShoppingResults`:
 
-| Value | When | Evidence | Answered on 2026-11-19? |
-|---|---|---|---|
-| `[]` | a search the page starts itself: the home-page form, the trip-type menu | B, E, X | **refused, 4 of 4** (B, E, P1, P2) |
-| `[null, null, null, "<search session id>"]` | the first request after a search page loads | A, C, D, E, F | answered, 5 of 5 |
-| `[null, "<selection token>"]` | choosing the next leg after one is chosen | D, X | answered (D) |
+| Value | When | Evidence |
+|---|---|---|
+| `[]` | a fresh search: the **direct client's** every first search; in the page, the home-page form, the trip-type menu, a filter change | B, E, G, P8, F1, X |
+| `[null, null, null, "<search session id>"]` | the page's first request after a search page loads | A, C, D, E, F |
+| `[null, "<selection token>"]` | choosing the next leg after one is chosen | D, J, F2, X |
+
+**The direct client sends `[]`** for a new search and a selection token for
+each later step, and both were answered (P8, F1-F3).
 
 **Where the session id comes from.** It is first seen in the HTML of the page
 load itself (`GET /travel/flights/search?tfs=...`; in A, `GET /travel/flights`
-with a search). That HTML is about 2.4 MB and already carries the results in 8
-`AF_initDataCallback` blocks: airport names and flight numbers appear in it
-(C, E). So loading a search URL makes Google run the search on the server,
-and the request that follows only streams the answer for that session.
+with a search). That HTML is about 2.4 MB and already carries the first answer
+in block `ds:1` (same layout as `GetShoppingResults`, session id at `0.4`).
+So loading a search URL makes Google run the search on the server, and the
+page's following request only streams the answer for that session.
 
-**Every refused search sent `[]`, and every answered one sent a session id or
-a selection token.** The closest comparison is E and F: the same one-way
-SEA-DEN 2026-12-15 filter, byte for byte, five minutes apart. E sent `[]` and
-was refused at 16:48:40. F sent a page-load session id and was answered at
-16:53:30. So the network was not blocked in between. Ten observations, one
-network, one day: a strong pattern, not yet a proven rule. B's refused date-picker calls carry no
-selection at all, so this pattern does not explain them. Until more evidence
-comes in, the client's transport starts every search by loading its URL
-(`tfs`, section 7), which is how the answered searches started, and never
-through the page's own form or menus.
+**What the capture browser showed (11-19).** In the automated Chrome used for
+the captures, every search the page started with `[]` was refused (B, E, G)
+and every page load was answered. E and F are the same filter five minutes
+apart: refused as a menu change, answered as a page load. Over direct HTTP
+with the honest-bot User-Agent, `[]` is answered (P8, F1), so that refusal was
+about the automated browser, not about `[]`. B's refused date-picker calls
+remain unexplained.
 
 `sort` (request index 2), from the page's sort menu (I):
 
@@ -516,7 +524,7 @@ lasted more than 6 hours.
 | Shape | Seen on | Reading |
 |---|---|---|
 | `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | the page's own requests: B (search, date picker), E, G (searches with selection `[]`) | the request reached the flights service, which refused it |
-| `[13]` | direct requests (P1, P2) | refused before the flights service |
+| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1) | refused before the flights service |
 
 The client classifies both as refusals and never retries one straight away.
 On 2026-11-19 neither shape meant "the network is blocked": the page's search

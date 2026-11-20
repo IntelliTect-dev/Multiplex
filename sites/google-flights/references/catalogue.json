@@ -337,5 +337,53 @@
       89
     ],
     "CapturedUtc": "2026-11-20T17:07:00.000Z"
+  },
+  {
+    "Action": "direct-honest-bot-user-agent",
+    "Description": "Two direct HTTP requests (not a browser), 75 s apart, with the honest-bot User-Agent the owner approved -- Mozilla/5.0 (compatible; Multiplex-GoogleFlights/0.1; +<issue link>) -- and no cookies, browser headers or anti-bot token. 1: the one-way search P1-P3 sent (selection []) -- ANSWERED, 3 best and 11 other flights, 45 minutes after the identical request with the old User-Agent was refused. 2: GET of a search page -- still 302 to /travel/flights/unsupported.",
+    "Provider": "google-flights",
+    "Methods": [
+      "GET",
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/travel/flights/search"
+    ],
+    "EntryCount": 2,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-honest-bot-user-agent-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 75465,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:52:37.000Z"
+  },
+  {
+    "Action": "direct-http-flow",
+    "Description": "The whole flow over direct HTTP with the honest-bot User-Agent, 75 s apart, sending back only the NID cookie Google set during the run: round-trip search SEA-DEN 2026-12-15/22 (selection [], 13 flights); the return-flight step with DL1358's selection token (17 flights); booking options with DL1731 (7 Delta fare brands); price graph 2026-12-10..20 (11 cells). Then a control: the first search again with the old non-Mozilla User-Agent -- refused with gRPC 13. The User-Agent's form is the gate.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetBookingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGraph",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 5,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-http-flow-2026-11-20.har",
+    "RequestBodies": 5,
+    "RequestBytes": 3491,
+    "ResponseBytes": 205624,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:56:14.000Z"
   }
 ]
