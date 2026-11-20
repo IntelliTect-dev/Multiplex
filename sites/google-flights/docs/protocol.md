@@ -14,6 +14,11 @@ relied on.
 |---|---|---|
 | **A** | `2026-11-18-124419` | Signed out, browsed by hand: one one-way search SEA-SFO 2026-12-15. One successful `GetShoppingResults`. |
 | **B** | `2026-11-19-133031` | Issue #89, signed out, dedicated profile: airport autocomplete, airport details, route flags, the date picker (1 answered, 2 answered code 13), one round-trip search SEA-DEN 2027-01-12/19 (answered code 13). |
+| **C** | `2026-11-19-163932` | Diagnostic: ONE browser page load of a round-trip search URL (SEA-DEN 2026-12-15/22), 5 minutes after direct probe P2 was refused. One `GetShoppingResults`, answered with flights. |
+| **D** | `2026-11-19-164238` | Round trip SEA-DEN 2026-12-15/22 from a search URL, then the Delta outbound (return-flight step), then the Delta return (booking options). Three data requests, all answered. |
+| **E** | `2026-11-19-164718` | The same round-trip search URL (answered), then the trip-type menu switched to one way: the page's own search request, with selection `[]`, was refused with code 13. Recording stopped there. |
+| **F** | `2026-11-19-165319` | Diagnostic: ONE browser page load of the one-way URL the page produced in E, five minutes after E's refusal. Answered with flights. |
+| **P1, P2** | `2026-11-19-143242-direct`, `2026-11-19-163416-direct` | One direct HTTP `GetShoppingResults` each (not a browser), two hours apart. Both refused. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -22,8 +27,8 @@ All on `https://www.google.com`. No sign-in is involved anywhere.
 
 | RPC | Transport | What the page uses it for | Evidence |
 |---|---|---|---|
-| `GetShoppingResults` | service | Flight options for one leg, given any earlier legs already chosen | A, B, X |
-| `GetBookingResults` | service | Sellers, fare brands and booking links for a fully chosen trip | X |
+| `GetShoppingResults` | service | Flight options for one leg, given any earlier legs already chosen | A, B, C, D, X |
+| `GetBookingResults` | service | Sellers, fare brands and booking links for a fully chosen trip | D, X |
 | `GetCalendarPicker` | service | Prices shown in the date picker | B, X |
 | `GetCalendarGraph` | service | Price per departure date (fixed trip length for a round trip) | X |
 | `GetCalendarGrid` | service | Departure x return price matrix | X |
@@ -60,15 +65,38 @@ POST /_/FlightsFrontendUi/data/batchexecute
 
 ### Headers and cookies
 
-| Item | Meaning | Required for direct HTTP? |
-|---|---|---|
-| `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. | **pending** (direct-HTTP probe) |
-| `x-same-domain: 1` | Google's CSRF guard for these endpoints | **pending** |
-| `x-goog-batchexecute-bgr` | Computed by the page's own script on every request (B: present on the calls that were answered and on the ones refused alike) | **pending**. A direct client must not forge or replay it. |
-| Cookies `NID`, `OTZ` | Set by Google on the first page load (B) | **pending** |
-| `f.sid`, `bl`, `_reqid` | Page session, build label, request counter | **pending** |
+| Item | Meaning |
+|---|---|
+| `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. |
+| `x-same-domain: 1` | Google's CSRF guard for these endpoints |
+| `x-goog-batchexecute-bgr` | Computed by the page's own script on every request (B: present on the calls that were answered and on the ones refused alike). Never forged or replayed. |
+| Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) |
+| `f.sid`, `bl`, `_reqid` | Page session, build label, request counter |
+| `x-browser-validation`, `x-client-data`, `sec-ch-ua-*` | Chrome's own client headers (C) |
 
 No `at=` token is sent: the page is signed out.
+
+### Direct HTTP is refused; the page is not
+
+| When (2026-11-19, local) | Client | Sent | Answer |
+|---|---|---|---|
+| 14:32 (P1) | direct HTTP | honest non-browser User-Agent, `x-same-domain`, the jspb header; no cookies, no token, no `f.sid`/`bl` | bare `[13]` |
+| 16:34 (P2) | direct HTTP | the same | bare `[13]` |
+| 16:39 (C) | the page, in Chrome | everything in the table above | **flights** (3 best, 10 other) |
+| 16:42-16:44 (D) | the page, in Chrome | the same | flights, return flights, booking options |
+
+Five minutes after P2 was refused, the page itself searched normally on the
+same network. So the network is not blocked; plain requests are. The earlier
+project recorded the same split (its `LIMITATIONS.md`): during its block, Google
+Flights kept working in a browser while plain requests and even an in-page
+`fetch` from automated Chrome were refused.
+
+The requests differ in the page's anti-bot token, Google's cookies, Chrome's
+client headers and the User-Agent. Finding out which one matters would mean
+forging the token or posing as Chrome, and neither is done here. The
+conclusion that stands: **a client gets data by letting Google's own page make
+the request** (the read-only browser path the spec allows when direct HTTP is
+blocked). Encoding and parsing are unchanged by this; only the transport is.
 
 ## 3. Response framing
 
@@ -145,8 +173,8 @@ The date picker's own requests send a short leg, `[origins, destinations, null, 
 
 | RPC | Inner request | Evidence |
 |---|---|---|
-| `GetShoppingResults` | `[selection, filter, sort, 0, 0, 1]` | A, B, X |
-| `GetBookingResults` | `[[null, selectionToken], filter, null, 0 or 1]`; every leg carries index 8. The last value's meaning is **pending** | X |
+| `GetShoppingResults` | `[selection, filter, sort, 0, 0, 1]` | A, B, C, D, E, X |
+| `GetBookingResults` | `[[null, selectionToken], filter, null, 0 or 1]`; every leg carries index 8. The last value's meaning is **pending** | D, X |
 | `GetCalendarPicker` | `[null, filter, [from, to], null, [tripDays, tripDays]]` before a departure is chosen; `[null, filter, [dep, dep], [from, to]]` after | B |
 | `GetCalendarGraph` | `[null, filter, [from, to], null, [minTripDays, maxTripDays]]` | X |
 | `GetCalendarGrid` | `[null, filter, [depFrom, depTo], [retFrom, retTo]]` | X |
@@ -156,11 +184,29 @@ The date picker's own requests send a short leg, `[origins, destinations, null, 
 
 `selection` in `GetShoppingResults`:
 
-| Value | When | Evidence |
-|---|---|---|
-| `[]` | a fresh search | B, X |
-| `[null, null, null, "<search session id>"]` | a fresh search the page had a session id for | A |
-| `[null, "<selection token>"]` | choosing the next leg after one is chosen | X |
+| Value | When | Evidence | Answered on 2026-11-19? |
+|---|---|---|---|
+| `[]` | a search the page starts itself: the home-page form, the trip-type menu | B, E, X | **refused, 4 of 4** (B, E, P1, P2) |
+| `[null, null, null, "<search session id>"]` | the first request after a search page loads | A, C, D, E, F | answered, 5 of 5 |
+| `[null, "<selection token>"]` | choosing the next leg after one is chosen | D, X | answered (D) |
+
+**Where the session id comes from.** It is first seen in the HTML of the page
+load itself (`GET /travel/flights/search?tfs=...`; in A, `GET /travel/flights`
+with a search). That HTML is about 2.4 MB and already carries the results in 8
+`AF_initDataCallback` blocks: airport names and flight numbers appear in it
+(C, E). So loading a search URL makes Google run the search on the server,
+and the request that follows only streams the answer for that session.
+
+**Every refused search sent `[]`, and every answered one sent a session id or
+a selection token.** The closest comparison is E and F: the same one-way
+SEA-DEN 2026-12-15 filter, byte for byte, five minutes apart. E sent `[]` and
+was refused at 16:48:40. F sent a page-load session id and was answered at
+16:53:30. So the network was not blocked in between. Ten observations, one
+network, one day: a strong pattern, not yet a proven rule. B's refused date-picker calls carry no
+selection at all, so this pattern does not explain them. Until more evidence
+comes in, the client's transport starts every search by loading its URL
+(`tfs`, section 7), which is how the answered searches started, and never
+through the page's own form or menus.
 
 `sort`: 0 = Google's "top flights" order (A, B); 2 seen with nonstop (X). Other values **pending**.
 
@@ -300,12 +346,12 @@ The search page keeps its state in `?tfs=` (base64url protobuf) and
 |---|---|---|
 | 1 | 28 (constant) | B |
 | 2 | 1 on the home page, 2 on the search page | B |
-| 3 (repeated) | A leg: 2 = date `"yyyy-MM-dd"`, 13 = origin `{1: kind (1 = airport), 2: code}`, 14 = destination | B |
+| 3 (repeated) | A leg: 2 = date `"yyyy-MM-dd"`, 5 = most stops allowed (0 with "Nonstop only"; absent for any number), 13 = origin `{1: kind (1 = airport), 2: code}`, 14 = destination | B, G |
 | 8 (repeated) | Passengers, one entry per traveler (1 = adult); other values **pending** | B |
 | 9 | Cabin, 1 = economy; others **pending** | B |
 | 14 | 1 | B |
 | 16 | `{1: -1}`; **pending** (max price candidate: -1 = none) | B |
-| 19 | Trip type, 1 = round trip; others **pending** | B |
+| 19 | Trip type: 1 = round trip (B, C, D), 2 = one way (E); multi-city **pending** | B, E |
 
 `tfu` was `{5: {1: 3}}` throughout B.
 
@@ -313,8 +359,9 @@ The client does not need `tfs` to search. It needs it to produce a link a
 person can open to see the same search on Google Flights.
 
 **Proven both ways:** an encoder built from this table reproduces all three
-`tfs` values the page produced in B, byte for byte (airports, dates, trip type
-1, page type 1 and 2).
+`tfs` values the page produced in B, and the one-way value it produced in E,
+byte for byte (airports, dates, trip types 1 and 2, page types 1 and 2). A
+search URL built by that encoder was answered with flights (C).
 
 ## 8. Not yet established
 
@@ -357,8 +404,11 @@ treats several in a row (the earlier project used 3) as a block.
 
 ### The bare refusal: a direct request, gRPC 13 with no detail
 
-Captured once (reference `direct-search-refused`): a direct HTTP request,
-not a browser, 60 minutes after B's refusals.
+Captured once as a reference (`direct-search-refused`, probe P1): a direct
+HTTP request, not a browser, 60 minutes after B's refusals. A second identical
+probe (P2) two hours later, at 16:34 local, got the same answer byte for byte
+apart from timings (about 211 ms round trip). Both probes sent an honest
+non-browser User-Agent, no cookies and no anti-bot token.
 
 ```
 HTTP/1.1 200
