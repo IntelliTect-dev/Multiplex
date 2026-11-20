@@ -1,27 +1,29 @@
 #Requires -Version 7.2
+
 <#
 .SYNOPSIS
-    Connects to a running Multiplex endpoint exactly as Claude or ChatGPT would, end to end,
-    and calls a tool: discovery from the 401, client registration, PKCE authorization through
-    the connect pages, token exchange, MCP initialize, tools/list, a tool call, refresh.
+    Connects to a running Multiplex endpoint as Claude or ChatGPT would, as far as a script can:
+    discovery from the 401, client registration, and the PKCE authorization request, which must
+    send the person to Microsoft sign-in.
 .DESCRIPTION
-    For checks of an install. This script never signs in to the site itself, and since #52
-    every connection must: the passcode leads straight to the live sign-in, and no account the
-    server holds is offered. So the authorize step now stops there with a message saying so;
-    the steps before it still check discovery, registration and the passcode. Exit code 0 when
-    every step passes.
-    The passcode comes from $env:MULTIPLEX_PASSCODE unless -Passcode is given; prefer the
-    variable, which keeps it out of process lists and shell history.
+    For checks of an install. Since #80 every connection starts with the person signing in with
+    Microsoft, with an email the owner allows, and a script cannot do that for a person. So the
+    check confirms that /oauth/authorize sends a browser that is not signed in to Microsoft
+    sign-in, with this server's redirect URI (<public address>/signin-microsoft) and a client id,
+    and ends there, saying so. The later steps (token exchange with PKCE, MCP initialize,
+    tools/list, the -ToolName call and -ExpectEmail, -WriteCheck, refresh and -SaveGrantTo) need
+    the code that sign-in ends with, so they are not reached. A server where Microsoft sign-in
+    is not set up answers HTTP 503, which fails the check. Exit code 0 when every step it can
+    run passes.
+.NOTES
+    -Passcode and $env:MULTIPLEX_PASSCODE were removed in #80: there is no owner passcode any more.
 .EXAMPLE
-    $env:MULTIPLEX_PASSCODE = (./scripts/Install-Multiplex.ps1 -ShowPasscode)
-    ./scripts/Test-MultiplexConnect.ps1 -BaseUrl http://localhost:5190 -ExpectEmail test@example.com
+    ./scripts/Test-MultiplexConnect.ps1 -BaseUrl http://localhost:5190
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $BaseUrl,
     [string] $Slug = 'tripit',
-    # Defaults to $env:MULTIPLEX_PASSCODE.
-    [string] $Passcode,
     [string] $ExpectEmail,
     [string] $ToolName = 'tripit_get_profile',
     [hashtable] $ToolArguments = @{},
@@ -33,8 +35,6 @@ param(
     [string] $SaveGrantTo)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'Multiplex.Install.psm1') -Force
-$Passcode = Resolve-MultiplexPasscode -Passcode $Passcode
 $BaseUrl = $BaseUrl.TrimEnd('/')
 $mcpUrl = "$BaseUrl/$Slug/mcp"
 $failures = 0
@@ -43,20 +43,6 @@ function Step([string] $name, [scriptblock] $body) {
     catch { $script:failures++; Write-Host "FAIL  $name -- $($_.Exception.Message)"; throw }
 }
 function Base64Url([byte[]] $bytes) { [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
-function Get-Forms([string] $html) {
-    foreach ($m in [regex]::Matches($html, '(?is)<form\b(?<attrs>[^>]*)>(?<body>.*?)</form>')) {
-        $action = [regex]::Match($m.Groups['attrs'].Value, '(?i)action\s*=\s*"(?<a>[^"]*)"').Groups['a'].Value
-        $fields = [ordered]@{}
-        foreach ($i in [regex]::Matches($m.Groups['body'].Value, '(?is)<(input|button)\b[^>]*>')) {
-            $tag = $i.Value
-            $name = [regex]::Match($tag, '(?i)\bname\s*=\s*"(?<n>[^"]*)"').Groups['n'].Value
-            if (-not $name) { continue }
-            $value = [System.Net.WebUtility]::HtmlDecode([regex]::Match($tag, '(?i)\bvalue\s*=\s*"(?<v>[^"]*)"').Groups['v'].Value)
-            if ($tag -match '(?i)type\s*=\s*"(hidden|text|password)"' -or $tag -notmatch '(?i)^<button') { $fields[$name] = $value }
-        }
-        [pscustomobject]@{ Action = [System.Net.WebUtility]::HtmlDecode($action); Fields = $fields; Html = $m.Value }
-    }
-}
 function Resolve-Url([string] $from, [string] $to) { if (-not $to) { return $from }; return [Uri]::new([Uri]$from, $to).AbsoluteUri }
 
 # A loopback "client" that never actually listens: we read the code from the redirect.
@@ -100,55 +86,49 @@ $query = @(@{
 }.GetEnumerator() | ForEach-Object { "$($_.Key)=$([Uri]::EscapeDataString($_.Value))" }) -join '&'
 $authorizeUrl = "$($as.authorization_endpoint)?$query"
 
-$code = Step 'authorize through the connect pages (passcode, then the live sign-in)' {
-    # A browser-like client that does not follow redirects, so each hop can be inspected.
+$signIn = Step 'authorize sends the person to Microsoft sign-in' {
+    # A browser that is not signed in and does not follow redirects, so each hop can be inspected.
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $handler.AllowAutoRedirect = $false
     $handler.CookieContainer = [System.Net.CookieContainer]::new()
     $browser = [System.Net.Http.HttpClient]::new($handler)
-    $browser.Timeout = [TimeSpan]::FromSeconds(90)
+    $browser.Timeout = [TimeSpan]::FromSeconds(30)
+    $expectedRedirect = "$("$($as.issuer)".TrimEnd('/'))/signin-microsoft"
     $url = $authorizeUrl
-    $form = $null
-    for ($hop = 0; $hop -lt 12; $hop++) {
-        $request = [System.Net.Http.HttpRequestMessage]::new(($form ? [System.Net.Http.HttpMethod]::Post : [System.Net.Http.HttpMethod]::Get), $url)
-        if ($form) {
-            $pairs = [System.Collections.Generic.List[System.Collections.Generic.KeyValuePair[string, string]]]::new()
-            foreach ($k in $form.Keys) { $pairs.Add([System.Collections.Generic.KeyValuePair[string, string]]::new($k, [string]$form[$k])) }
-            $request.Content = [System.Net.Http.FormUrlEncodedContent]::new($pairs)
-        }
-        $response = $browser.SendAsync($request).GetAwaiter().GetResult()
-        $r = [pscustomobject]@{
-            StatusCode = [int]$response.StatusCode
-            Location   = $response.Headers.Location
-            Content    = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        }
-        $form = $null
-        if ($r.StatusCode -in 301, 302, 303, 307) {
-            $next = Resolve-Url $url "$($r.Location)"
-            if ($next.StartsWith($redirectUri)) {
-                $q = [System.Web.HttpUtility]::ParseQueryString(([Uri]$next).Query)
-                if ($q['error']) { throw "authorization error: $($q['error']) $($q['error_description'])" }
-                if ($q['state'] -ne $state) { throw 'state mismatch' }
-                if ($as.PSObject.Properties['authorization_response_iss_parameter_supported'] -and $as.authorization_response_iss_parameter_supported -and $q['iss'] -ne $as.issuer) { throw "iss '$($q['iss'])' != '$($as.issuer)'" }
-                return $q['code']
+    try {
+        for ($hop = 0; $hop -lt 5; $hop++) {
+            $response = $browser.GetAsync($url).GetAwaiter().GetResult()
+            $status = [int]$response.StatusCode
+            if ($status -eq 503) {
+                throw ("HTTP 503 at ${url}: the server says Microsoft sign-in is not set up. Set Multiplex__Identity__Microsoft__ClientId, " +
+                    'Multiplex__Identity__Microsoft__ClientSecret and Multiplex__Identity__AllowedEmails for the Windows account that runs ' +
+                    'Multiplex (the installer shows how), then run the installer again')
             }
-            $url = $next; continue
+            if ($status -notin 301, 302, 303, 307, 308) { throw "HTTP $status at $url, not a redirect to Microsoft sign-in" }
+            $next = Resolve-Url $url "$($response.Headers.Location)"
+            if (([Uri]$next).Authority -eq ([Uri]$url).Authority) { $url = $next; continue }   # a hop on this server
+            if (-not $next.StartsWith('https://login.microsoftonline.com/', [StringComparison]::OrdinalIgnoreCase)) {
+                throw "redirected to $next, not to Microsoft sign-in"
+            }
+            $q = [System.Web.HttpUtility]::ParseQueryString(([Uri]$next).Query)
+            if ($q['redirect_uri'] -ne $expectedRedirect) {
+                throw "Microsoft sign-in is asked to send the person back to '$($q['redirect_uri'])', not to '$expectedRedirect'"
+            }
+            if (-not $q['client_id']) { throw 'the redirect to Microsoft sign-in names no client_id' }
+            return [pscustomobject]@{ ClientId = $q['client_id']; RedirectUri = $q['redirect_uri'] }
         }
-        $html = "$($r.Content)"
-        # A page that hands the browser back via script (e.g. after the live page completes).
-        if ($html -match [regex]::Escape($redirectUri) + '[^"''<\s]*') { $url = [System.Net.WebUtility]::HtmlDecode($Matches[0]); continue }
-        if (([Uri]$url).AbsolutePath -match '/live$') {
-            throw "the passcode was accepted and the live sign-in started; every connection signs in to the site itself (#52), which this script cannot do"
-        }
-        $gate = @(Get-Forms $html) | Where-Object { $_.Fields.Keys -match '(?i)passcode' } | Select-Object -First 1
-        if (-not $gate) { throw "HTTP $($r.StatusCode) at $url with no passcode form" }
-        $key = @($gate.Fields.Keys | Where-Object { $_ -match '(?i)passcode' })[0]
-        $gate.Fields[$key] = $Passcode
-        $url = Resolve-Url $url $gate.Action
-        $form = $gate.Fields
+        throw 'too many hops'
     }
-    throw 'too many hops'
+    finally { $browser.Dispose() }
 }
+Write-Host "      Microsoft client_id $($signIn.ClientId); redirect_uri $($signIn.RedirectUri)"
+Write-Host ('STOP  the remaining steps need a person: signing in with Microsoft, with an allowed email, ends with the code ' +
+    'that the token exchange, initialize, tools/list, the tool call and refresh need. This script cannot sign in for a ' +
+    'person, so the check ends here.')
+exit 0
+
+# Not reached since #80 (above): they need the code a person's Microsoft sign-in ends with.
+$code = $null
 $tokens = Step 'token exchange with PKCE' {
     Invoke-RestMethod $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
         grant_type = 'authorization_code'; code = $code; redirect_uri = $redirectUri; client_id = $clientId
