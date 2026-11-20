@@ -109,6 +109,7 @@ Describe 'finding the services that can go on an account' {
         @{ slug = 'x; calc' }
         @{ slug = 'x y' }
         @{ slug = '-x' }
+        @{ slug = "tripit`n" }
     ) {
         Use-FakeMultiplex -Slugs $slug
         { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*'$slug'*not a valid service name*"
