@@ -53,24 +53,29 @@ function Get-MultiplexAccountService {
     sign-in, as the server lists them in its own sign-in settings, each with its name and
     address. Open services are left out, because Multiplex refuses them to the internet unless
     told otherwise. Stops when the server's own public address is not -BaseUrl, since sign-in
-    from a connector added at -BaseUrl would then fail. Each request waits at most -TimeoutSec,
-    and all of them together about -Budget.
+    from a connector added at -BaseUrl would then fail. Each request waits at most -TimeoutSec.
+
+    -Budget is for Tab, which must answer quickly: the server's list must still come in, but
+    each service's own settings are read only while time is left, and only as far as they can
+    be. A service whose settings were not read is given its short name as its name, and Named
+    is false. Without -Budget every service's settings must be read, or this stops.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $BaseUrl, [int] $TimeoutSec = 15, [TimeSpan] $Budget = [TimeSpan]::MaxValue)
+    $bounded = $Budget -ne [TimeSpan]::MaxValue
     $perRequest = [double]$TimeoutSec
     $allowed = $Budget.TotalSeconds
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    $nextTimeout = {   # seconds the next request may take
+    $nextTimeout = {   # seconds the next request may take; 0 once the budget is spent
         $left = $allowed - $clock.Elapsed.TotalSeconds
-        if ($left -le 0) { throw "The Multiplex at $BaseUrl did not answer within $([int]$allowed) s." }
+        if ($left -le 0) { return 0 }
         [int][Math]::Max(1, [Math]::Ceiling([Math]::Min($perRequest, $left)))
     }
     # One session for every request: its connection is reused, so a slow link pays for setting
     # one up (a round trip each for TCP and TLS) only once.
     $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
     $settings = "$BaseUrl/.well-known/oauth-authorization-server"
-    $wait = & $nextTimeout
+    $wait = [Math]::Max(1, (& $nextTimeout))
     try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec $wait -WebSession $session -ErrorAction Stop }
     catch { throw "Could not read Multiplex's sign-in settings at ${settings}: $($_.Exception.Message) Is Multiplex running and reachable at ${BaseUrl}?" }
     $issuer = "$(Get-JsonProperty $server 'issuer')".TrimEnd('/')
@@ -86,16 +91,23 @@ function Get-MultiplexAccountService {
         }
         $address = "$BaseUrl/$slug/mcp"
         $metadata = "$BaseUrl/.well-known/oauth-protected-resource/$slug/mcp"
+        $resource = $null
+        $name = ''
         $wait = & $nextTimeout
-        try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec $wait -WebSession $session -ErrorAction Stop }
-        catch { throw "Could not read the settings of the $slug service at ${metadata}: $($_.Exception.Message)" }
-        $reported = "$(Get-JsonProperty $resource 'resource')"
-        if ($reported -and $reported -ne $address) {
-            throw "The Multiplex at $BaseUrl gives the address of its $slug service as $reported, not $address, so a connector added at either would fail to sign in."
+        if ($wait) {
+            try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec $wait -WebSession $session -ErrorAction Stop }
+            catch { if (-not $bounded) { throw "Could not read the settings of the $slug service at ${metadata}: $($_.Exception.Message)" } }
         }
-        # Printed and shown as a hint, so no control characters (escape sequences, line breaks).
-        $name = ("$(Get-JsonProperty $resource 'resource_name')" -replace '\p{Cc}', '').Trim()
-        [pscustomobject]@{ Slug = "$slug"; Name = $name ? $name : "$slug"; Address = $address }
+        if ($resource) {
+            $reported = "$(Get-JsonProperty $resource 'resource')"
+            if ($reported -and $reported -ne $address) {
+                throw "The Multiplex at $BaseUrl gives the address of its $slug service as $reported, not $address, so a connector added at either would fail to sign in."
+            }
+            # Printed and shown as a hint, so no control or formatting characters (escape
+            # sequences, line breaks, right-to-left overrides that could disguise it).
+            $name = ("$(Get-JsonProperty $resource 'resource_name')" -replace '[\p{Cc}\p{Cf}]', '').Trim()
+        }
+        [pscustomobject]@{ Slug = "$slug"; Name = $name ? $name : "$slug"; Address = $address; Named = [bool]$resource }
     }
 }
 
@@ -133,7 +145,9 @@ function Get-MultiplexServiceCompletion {
         if (-not $known -or [datetime]::UtcNow -ge $known.Until) {
             try {
                 $services = @(Get-MultiplexAccountService -BaseUrl $BaseUrl -TimeoutSec $TimeoutSec -Budget ([TimeSpan]::FromSeconds($TimeoutSec)))
-                $lifetime = $services ? $script:ServiceCompletionLifetime : $script:ServiceCompletionRetry
+                # No services (a server still starting) or names not yet read: ask again soon.
+                $complete = $services -and -not ($services | Where-Object { -not $_.Named })
+                $lifetime = $complete ? $script:ServiceCompletionLifetime : $script:ServiceCompletionRetry
                 $known = [pscustomobject]@{ Services = $services; Problem = $null; Until = [datetime]::UtcNow + $lifetime }
             }
             catch { $known = [pscustomobject]@{ Services = @(); Problem = $_.Exception.Message; Until = [datetime]::UtcNow + $script:ServiceCompletionRetry } }
