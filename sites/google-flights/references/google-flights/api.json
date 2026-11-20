@@ -15,6 +15,10 @@
       "entryCount": 3
     },
     {
+      "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+      "entryCount": 4
+    },
+    {
       "harFile": "google-flights-direct-search-refused-2026-11-19.har",
       "entryCount": 1
     },
@@ -61,13 +65,192 @@
   ],
   "capturesNeeded": [
     {
+      "capture": "capture a successful call to this endpoint",
+      "endpoints": [
+        "GET flights.google.com/",
+        "GET www.google.com/travel/flights/search",
+        "POST flights.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+      ]
+    },
+    {
       "capture": "capture the same operation again and compare -- one corpus cannot tell the two apart",
       "endpoints": [
         "POST www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
       ]
+    },
+    {
+      "capture": "capture this operation again -- a second empty-bodied reference establishes that the response genuinely has none",
+      "endpoints": [
+        "GET www.google.com/travel/flights/search"
+      ]
     }
   ],
   "endpoints": [
+    {
+      "host": "flights.google.com",
+      "method": "GET",
+      "pathTemplate": "/",
+      "observedEntries": 1,
+      "statuses": [
+        301
+      ],
+      "requestContentTypes": [],
+      "responseContentTypes": [
+        "text/html; charset=UTF-8"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 1
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [],
+      "responseFields": [],
+      "unproven": [
+        {
+          "kind": "no-success-observed",
+          "subjects": [],
+          "detail": "every observed status is 301; no successful response has been captured, so the success shape is unknown",
+          "closedBy": "capture a successful call to this endpoint",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 1
+            }
+          ]
+        }
+      ],
+      "witnesses": [
+        {
+          "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+          "entry": 1
+        }
+      ]
+    },
+    {
+      "host": "flights.google.com",
+      "method": "POST",
+      "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "observedEntries": 1,
+      "statuses": [
+        405
+      ],
+      "requestContentTypes": [
+        "application/x-www-form-urlencoded;charset=UTF-8"
+      ],
+      "responseContentTypes": [
+        "text/html; charset=UTF-8"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [
+        {
+          "name": "f.req",
+          "in": "param",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        },
+        {
+          "name": "hl",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        },
+        {
+          "name": "rt",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        },
+        {
+          "name": "soc-app",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        },
+        {
+          "name": "soc-device",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        },
+        {
+          "name": "soc-platform",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        }
+      ],
+      "responseFields": [],
+      "unproven": [
+        {
+          "kind": "no-success-observed",
+          "subjects": [],
+          "detail": "every observed status is 405; no successful response has been captured, so the success shape is unknown",
+          "closedBy": "capture a successful call to this endpoint",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 3
+            }
+          ]
+        }
+      ],
+      "witnesses": [
+        {
+          "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+          "entry": 3
+        }
+      ]
+    },
     {
       "host": "www.google.com",
       "method": "POST",
@@ -860,7 +1043,7 @@
       "host": "www.google.com",
       "method": "POST",
       "pathTemplate": "/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
-      "observedEntries": 44,
+      "observedEntries": 45,
       "statuses": [
         200
       ],
@@ -920,8 +1103,12 @@
         {
           "name": "f.req",
           "in": "param",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1151,8 +1338,12 @@
         {
           "name": "hl",
           "in": "query",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1202,8 +1393,12 @@
         {
           "name": "rt",
           "in": "query",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1253,8 +1448,12 @@
         {
           "name": "soc-app",
           "in": "query",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1304,8 +1503,12 @@
         {
           "name": "soc-device",
           "in": "query",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1355,8 +1558,12 @@
         {
           "name": "soc-platform",
           "in": "query",
-          "observedIn": 44,
+          "observedIn": 45,
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1414,9 +1621,13 @@
             "query:f.sid",
             "query:gl"
           ],
-          "detail": "query:_reqid, query:bl, query:f.sid, query:gl appear in some observed calls and not others (of 44 observed); whether that is a per-call difference or a change on the provider side is not established by these captures",
+          "detail": "query:_reqid, query:bl, query:f.sid, query:gl appear in some observed calls and not others (of 45 observed); whether that is a per-call difference or a change on the provider side is not established by these captures",
           "closedBy": "capture the same operation again and compare -- one corpus cannot tell the two apart",
           "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 0
+            },
             {
               "harFile": "google-flights-direct-search-refused-2026-11-19.har",
               "entry": 0
@@ -1466,6 +1677,10 @@
       ],
       "witnesses": [
         {
+          "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+          "entry": 0
+        },
+        {
           "harFile": "google-flights-direct-search-refused-2026-11-19.har",
           "entry": 0
         },
@@ -1508,6 +1723,111 @@
         {
           "harFile": "google-flights-sort-and-multi-city-held-2026-11-19.har",
           "entry": 0
+        }
+      ]
+    },
+    {
+      "host": "www.google.com",
+      "method": "GET",
+      "pathTemplate": "/travel/flights/search",
+      "observedEntries": 1,
+      "statuses": [
+        302
+      ],
+      "requestContentTypes": [],
+      "responseContentTypes": [
+        "application/binary"
+      ],
+      "credentialFields": [
+        {
+          "name": "cookie",
+          "in": "header",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        }
+      ],
+      "operations": [],
+      "requestFields": [
+        {
+          "name": "curr",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        },
+        {
+          "name": "gl",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        },
+        {
+          "name": "hl",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        },
+        {
+          "name": "tfs",
+          "in": "query",
+          "observedIn": 1,
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        }
+      ],
+      "responseFields": [],
+      "unproven": [
+        {
+          "kind": "no-response-body-observed",
+          "subjects": [],
+          "detail": "the only reference witnessing this endpoint retained no response body in any of its 1 call(s)",
+          "closedBy": "capture this operation again -- a second empty-bodied reference establishes that the response genuinely has none",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        },
+        {
+          "kind": "no-success-observed",
+          "subjects": [],
+          "detail": "every observed status is 302; no successful response has been captured, so the success shape is unknown",
+          "closedBy": "capture a successful call to this endpoint",
+          "witnesses": [
+            {
+              "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+              "entry": 2
+            }
+          ]
+        }
+      ],
+      "witnesses": [
+        {
+          "harFile": "google-flights-direct-http-probes-2026-11-20.har",
+          "entry": 2
         }
       ]
     }
