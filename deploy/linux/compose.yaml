@@ -31,7 +31,13 @@ services:
     network_mode: service:tailscale
     depends_on:
       - tailscale
-    env_file: multiplex.env
+    env_file:
+      # Written by the deploy: the server's address (and, until #80, the passcode hash).
+      - multiplex.env
+      # Written by the owner on the server, mode 0600, never by the deploy: the Microsoft sign-in's
+      # client ID and secret and the allowed emails (#80). Optional, so the server starts without it.
+      - path: identity.env
+        required: false
     volumes:
       - multiplex-data:/data
     # Reaps the browsers' child processes; Chrome needs more shared memory than Docker's 64 MB default.

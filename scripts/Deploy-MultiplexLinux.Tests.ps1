@@ -382,6 +382,19 @@ Describe 'what the Linux host publishes' {
         Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw | Should -Match '(?m)^\s+TS_AUTH_ONCE:\s*"true"\s*$'
     }
 
+    It 'reads the owner''s own identity.env when there is one, and starts without it (#80)' {
+        Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw |
+            Should -Match '(?m)^\s+-\s*path:\s*identity\.env\s*\r?\n\s+required:\s*false\s*$'
+    }
+
+    It 'never writes, reads or uploads identity.env: it holds the owner''s secrets, which stay on the server' {
+        $server = New-FakeServer
+        Invoke-Deploy $server | Out-Null
+        foreach ($script in $server.Scripts) { $script | Should -Not -Match 'identity\.env' }
+        $server.Files.Keys | Should -Not -Contain 'multiplex/identity.env'
+        $server.Uploads | Should -Not -Match 'identity'
+    }
+
     It 'runs the server inside the Tailscale device''s network, so Serve reaches it on loopback' {
         Get-Content (Join-Path $script:DeployFolder 'compose.yaml') -Raw | Should -Match '(?m)^\s+network_mode:\s*service:tailscale\s*$'
     }
