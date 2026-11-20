@@ -63,7 +63,7 @@ function Get-MultiplexAccountService {
     foreach ($slug in @(Get-JsonProperty $server 'scopes_supported')) {
         if (-not $slug) { continue }
         # A service's name goes into a request path and into commands printed to paste.
-        if ("$slug" -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+        if ("$slug" -notmatch '\A[A-Za-z0-9][A-Za-z0-9_-]*\z') {   # \z: $ would let a trailing line break through
             throw "The Multiplex at $BaseUrl lists a service named '$slug', which is not a valid service name; nothing was opened."
         }
         $address = "$BaseUrl/$slug/mcp"
