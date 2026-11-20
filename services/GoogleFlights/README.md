@@ -91,6 +91,9 @@ machine's own connection: build, offline tests, one search first, then the
 rest, stopping at the first failure or refusal. Run it on a connection whose
 Google Flights allowance you can spare.
 
+`tests/Measure-Allowance.ps1` measures how a connection is treated over time
+(#101): one search every 10 minutes, 12 at most, logged to the capture store.
+
 Live tests assert structure and meaning, never prices. Every live exchange is
 saved in full to the repository's gitignored capture store
 (`.har-captures/www.google.com/<stamp>-live/`), so a refusal is kept as
