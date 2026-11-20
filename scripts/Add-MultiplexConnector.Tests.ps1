@@ -9,7 +9,9 @@ BeforeAll {
         [hashtable] $Server, [hashtable] $Resources = @{}) {
         $global:MultiplexConnectorFakeServer = $Server ?? @{ issuer = $Issuer; scopes_supported = $Slugs }
         $global:MultiplexConnectorFakeResources = $Resources
+        $global:MultiplexConnectorFakeSessions = [System.Collections.Generic.List[object]]::new()
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
+            $global:MultiplexConnectorFakeSessions.Add($WebSession)
             switch -Regex ($Uri) {
                 '/\.well-known/oauth-authorization-server$' { return [pscustomobject]$global:MultiplexConnectorFakeServer }
                 '/\.well-known/oauth-protected-resource/(?<slug>[^/]+)/mcp$' {
@@ -24,7 +26,7 @@ BeforeAll {
     }
 }
 # Global: the fake answers calls made from inside the command's own script scope too.
-AfterAll { Remove-Variable MultiplexConnectorFakeServer, MultiplexConnectorFakeResources -Scope Global -ErrorAction SilentlyContinue }
+AfterAll { Remove-Variable MultiplexConnectorFakeServer, MultiplexConnectorFakeResources, MultiplexConnectorFakeSessions -Scope Global -ErrorAction SilentlyContinue }
 
 Describe 'the public address to give Claude and ChatGPT' {
     It 'uses the address given, without a trailing slash' {
@@ -85,6 +87,14 @@ Describe 'finding the services that can go on an account' {
     It 'stops when the server''s own public address differs, because sign-in would fail' {
         Use-FakeMultiplex -Issuer 'https://other.example.ts.net'
         { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw '*https://other.example.ts.net*-BaseUrl https://other.example.ts.net*'
+    }
+
+    It 'asks over one connection, so a slow link pays for setting it up once' {
+        Use-FakeMultiplex
+        Get-MultiplexAccountService -BaseUrl $Base | Out-Null
+        $global:MultiplexConnectorFakeSessions.Count | Should -Be 3
+        $global:MultiplexConnectorFakeSessions[0] | Should -Not -BeNullOrEmpty
+        @($global:MultiplexConnectorFakeSessions | Where-Object { -not [object]::ReferenceEquals($_, $global:MultiplexConnectorFakeSessions[0]) }).Count | Should -Be 0
     }
 
     It 'says the server could not be reached, and where' {
@@ -246,5 +256,95 @@ Describe 'the command' {
     It 'passes what it is given through, so a local address is refused before anything opens' {
         { & (Join-Path $PSScriptRoot 'Add-MultiplexConnector.ps1') -BaseUrl 'http://localhost:5190' -WhatIf 6>$null } |
             Should -Throw '*public https address*'
+    }
+}
+
+Describe 'tab completion for -Service' {
+    BeforeAll {
+        # What Tab offers at the end of -Line, as PowerShell's own completion works it out.
+        function Get-Completion([string] $Line) { (TabExpansion2 -inputScript $Line -cursorColumn $Line.Length).CompletionMatches }
+        $script:Command = Join-Path $PSScriptRoot 'Add-MultiplexConnector.ps1'
+    }
+    BeforeEach {
+        Use-FakeMultiplex
+        InModuleScope Multiplex.Connector { $script:ServiceCompletionCache.Clear() }
+    }
+
+    It 'offers the services the server has, each with its full name and address as the hint' {
+        $offered = Get-Completion "& '$Command' -BaseUrl $Base -Service "
+        $offered.CompletionText | Should -Be 'tripit', 'linkedin'
+        $offered[0].ToolTip | Should -BeLike "*TripIt*$Base/tripit/mcp*"
+        $offered[1].ToolTip | Should -BeLike "*LinkedIn*$Base/linkedin/mcp*"
+    }
+
+    It 'offers only the services that start with what has been typed, by short or full name, in any case' {
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service li").CompletionText | Should -Be 'linkedin'
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service TRIP").CompletionText | Should -Be 'tripit'
+    }
+
+    It 'with no match, leaves what was typed and says why, instead of offering file names' {
+        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service zz")
+        $offered.CompletionText | Should -Be 'zz'
+        $offered[0].ToolTip | Should -BeLike "*$Base*no service*'zz'*"
+    }
+
+    It 'treats wildcard characters typed as plain text' {
+        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service *")
+        $offered.CompletionText | Should -Be '*'
+        $offered[0].ToolTip | Should -BeLike "*no service*'[*]'*"
+    }
+
+    It 'asks the address that the command will use when -BaseUrl is not typed' {
+        Mock -ModuleName Multiplex.Connector Resolve-MultiplexConnectorBaseUrl { 'https://box.example.ts.net' } -ParameterFilter { -not $BaseUrl }
+        (Get-Completion "& '$Command' -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+    }
+
+    It 'when the server cannot be reached, changes nothing and gives the reason as the hint' {
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
+        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service ")
+        $offered.CompletionText | Should -Be ' '
+        $offered[0].ToolTip | Should -BeLike "*$Base*No such host is known.*"
+    }
+
+    It 'when there is no address to ask, says to type -BaseUrl' {
+        $offered = @(Get-Completion "& '$Command' -BaseUrl http://localhost:5190 -Service tr")
+        $offered.CompletionText | Should -Be 'tr'
+        $offered[0].ToolTip | Should -BeLike '*public https address*'
+    }
+
+    It 'asks the server only briefly, so Tab never hangs for long' {
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -ParameterFilter { $TimeoutSec -gt 5 } -Times 0 -Exactly
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -ParameterFilter { $TimeoutSec -le 5 } -Times 3 -Exactly
+    }
+
+    It 'remembers the services for a few minutes, so the next Tab answers at once' {
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service li").CompletionText | Should -Be 'linkedin'
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 3 -Exactly
+    }
+
+    It 'asks the server again once what it remembers is a few minutes old' {
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        InModuleScope Multiplex.Connector { foreach ($entry in $script:ServiceCompletionCache.Values) { $entry.At = $entry.At.AddMinutes(-10) } }
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 6 -Exactly
+    }
+
+    It 'does not remember a server that could not be reached' {
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        Use-FakeMultiplex
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+    }
+
+    It 'leaves the command itself asking the server afresh' {
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        Add-MultiplexConnector -BaseUrl $Base -Service tripit -WhatIf 6>$null
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 6 -Exactly
+    }
+
+    It 'completes the same way when the module''s own command is used' {
+        (Get-Completion "Add-MultiplexConnector -BaseUrl $Base -Service link").CompletionText | Should -Be 'linkedin'
     }
 }
