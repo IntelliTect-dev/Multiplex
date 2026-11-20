@@ -47,7 +47,7 @@ BeforeAll {
                 'logs' { return [pscustomobject]@{ ExitCode = 0; Output = 'multiplex-1  | Unhandled exception. System.InvalidOperationException: boom' } }
                 'tailscale-running' { return [pscustomobject]@{ ExitCode = 0; Output = ($TailscaleRunning ? '4f2a9c1e7b3d' : '') } }
                 'browser-check' {
-                    if ($BrowserWorks) { return [pscustomobject]@{ ExitCode = 0; Output = '<html><head></head><body></body></html>' } }
+                    if ($BrowserWorks) { return [pscustomobject]@{ ExitCode = 0; Output = 'Chrome started with a window on :99, sandboxed.' } }
                     return [pscustomobject]@{ ExitCode = 1; Output = '[0101/000000.000:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox!' }
                 }
                 default { return [pscustomobject]@{ ExitCode = 0; Output = '' } }
@@ -234,6 +234,14 @@ Describe 'deploying' {
         $start | Should -Match '(?s)docker compose pull.*docker compose up -d'
     }
 
+    It 'pulls the Tailscale image before rewriting the server''s settings, and goes on with the image it has when the pull fails' {
+        $server = New-FakeServer -TailscaleRunning $true
+        Invoke-Deploy $server | Out-Null
+        $start = $server.Scripts[$server.Steps.IndexOf('start')]
+        $start.IndexOf('docker compose pull') | Should -BeLessThan $start.IndexOf('# file:')
+        $start | Should -Match 'docker compose pull[^\n]*\|\|'
+    }
+
     It 'a redeploy that stops before the start step never touches the running device or server' {
         $server = New-FakeServer -TailscaleRunning $true -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}')
         { Invoke-Deploy $server } | Should -Throw '*HTTPS*'
@@ -242,20 +250,30 @@ Describe 'deploying' {
         }
     }
 
-    It 'says so when Chrome cannot start in the server''s container, since every site sign-in would fail' {
+    It 'says so when Chrome cannot start in the server''s container, since every site sign-in would fail, and how to go back' {
         $server = New-FakeServer -BrowserWorks $false
-        { Invoke-Deploy $server } | Should -Throw '*No usable sandbox*'
+        $message = try { Invoke-Deploy $server | Out-Null; $null } catch { $_.Exception.Message }
+        $message | Should -Match 'No usable sandbox'
+        $message | Should -Match 'MULTIPLEX_IMAGE'
         $server.Steps | Should -Contain 'cleanup'
     }
 
-    It 'checks Chrome with its sandbox on, as the server''s own user' {
+    It 'checks Chrome in the server''s container, as the server''s own user, with the image''s own check' {
         $server = New-FakeServer
         Invoke-Deploy $server | Out-Null
         $check = $server.Scripts[$server.Steps.IndexOf('browser-check')]
-        $check | Should -Match 'docker compose exec -T multiplex'
-        $check | Should -Match 'google-chrome-stable'
-        $check | Should -Not -Match 'no-sandbox'
+        $check | Should -Match 'docker compose exec -T multiplex sh /check-chrome\.sh'
         $check | Should -Not -Match '(?m)exec\s+(-\S+\s+)*(-u|--user)\b'
+        Get-Content (Join-Path $script:DeployFolder 'Dockerfile') -Raw | Should -Match '(?m)^COPY check-chrome\.sh /check-chrome\.sh\s*$'
+    }
+
+    It 'starts Chrome as the TripIt sign-in does: with a window on the virtual display, a DevTools port, and a time limit' {
+        $check = Get-Content (Join-Path $script:DeployFolder 'check-chrome.sh') -Raw
+        $check | Should -Match 'google-chrome-stable'
+        $check | Should -Not -Match '--headless'
+        $check | Should -Match '--remote-debugging-port='
+        $check | Should -Match '/tmp/\.X11-unix/X'
+        $check | Should -Match '-lt 60'
     }
 
     It 'writes every file only its owner can read: umask 077 before the write' {
@@ -301,9 +319,9 @@ Describe 'the SSH target' {
         Test-MultiplexSshTarget "me@host`n" | Should -BeFalse
     }
 
-    It 'refuses a port written after the host, which scp would read as host:path; an IPv6 address goes in brackets' {
+    It 'refuses a port written after the host, which scp would read as host:path, and a bracketed address, which ssh does not take' {
         Test-MultiplexSshTarget 'me@host:22' | Should -BeFalse
-        Test-MultiplexSshTarget 'me@[fe80::1]' | Should -BeTrue
+        Test-MultiplexSshTarget 'me@[fe80::1]' | Should -BeFalse
     }
 }
 
@@ -362,6 +380,14 @@ Describe 'what the Linux host publishes' {
     It 'keeps the sign-in browser''s sandbox: nothing turns it off' {
         foreach ($file in Get-ChildItem $script:DeployFolder -File) {
             Get-Content $file.FullName -Raw | Should -Not -Match 'NoSandbox|no-sandbox' -Because $file.Name
+        }
+    }
+
+    It 'ships shell scripts that parse' {
+        if (-not $script:Bash) { Set-ItResult -Skipped -Because 'no bash to check with on this PC'; return }
+        foreach ($file in Get-ChildItem $script:DeployFolder -Filter '*.sh') {
+            $out = & $script:Bash -n $file.FullName 2>&1
+            $LASTEXITCODE | Should -Be 0 -Because "$($file.Name): $out"
         }
     }
 
