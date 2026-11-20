@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.DependencyInjection;
 using Multiplex.Tests.Auth;
 
 namespace Multiplex.Tests.Identity;
@@ -156,6 +157,111 @@ public sealed class MicrosoftSignInTests : IDisposable
             objectId: "00000000-0000-0000-0000-00000000beef");
 
         Assert.Equal(HttpStatusCode.Forbidden, (await ReturnFromMicrosoftAsync(other, otherSignIn)).StatusCode);
+    }
+
+    /// <summary>Signs <paramref name="email"/> in through Microsoft in <paramref name="browser"/>; returns the callback's response.</summary>
+    private async Task<HttpResponseMessage> SignInAsync(HttpClient browser, string email = TestPeople.Owner)
+    {
+        var (_, signIn) = await ChallengeAsync(browser, await AuthorizeUrlAsync());
+        _app.Microsoft.NextIdToken = _app.Microsoft.IdToken(signIn["nonce"], email, verified: true);
+        var back = await ReturnFromMicrosoftAsync(browser, signIn);
+        Assert.Equal(HttpStatusCode.Redirect, back.StatusCode);
+        return back;
+    }
+
+    /// <summary>The home page as an internet request (through a tunnel), so only a sign-in lets it through.</summary>
+    private static async Task<HttpResponseMessage> HomeThroughTunnelAsync(HttpClient browser)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Add("X-Forwarded-For", "203.0.113.7");
+        return await browser.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task The_sign_in_cookie_is_httponly_lax_secure_and_lasts_twelve_hours()
+    {
+        var back = await SignInAsync(_app.Browser());
+
+        var cookie = Assert.Single(back.Headers.GetValues("Set-Cookie"), c => c.StartsWith("multiplex_session=", StringComparison.Ordinal));
+        var attributes = cookie.Split(';', StringSplitOptions.TrimEntries).Skip(1).ToList();
+        Assert.Contains("httponly", attributes, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("secure", attributes, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("samesite=lax", attributes, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("path=/", attributes, StringComparer.OrdinalIgnoreCase);
+        var expires = DateTimeOffset.Parse(attributes.Single(a => a.StartsWith("expires=", StringComparison.OrdinalIgnoreCase))["expires=".Length..]);
+        Assert.InRange(expires - _app.Clock.GetUtcNow(), TimeSpan.FromHours(12) - TimeSpan.FromMinutes(1), TimeSpan.FromHours(12) + TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task A_sign_in_lasts_twelve_hours_however_much_it_is_used()
+    {
+        var browser = _app.Browser();
+        await SignInAsync(browser);
+        Assert.Equal(HttpStatusCode.OK, (await HomeThroughTunnelAsync(browser)).StatusCode);
+
+        _app.Clock.Advance(TimeSpan.FromHours(6));
+        Assert.Equal(HttpStatusCode.OK, (await HomeThroughTunnelAsync(browser)).StatusCode);
+        _app.Clock.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+
+        var expired = await HomeThroughTunnelAsync(browser);
+        Assert.Equal(HttpStatusCode.Redirect, expired.StatusCode);
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, expired.Headers.Location!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task A_signed_in_browser_is_shut_out_as_soon_as_its_person_leaves_the_list()
+    {
+        var browser = _app.Browser();
+        await SignInAsync(browser);
+        Assert.Equal(HttpStatusCode.OK, (await HomeThroughTunnelAsync(browser)).StatusCode);
+        var config = _app.Services.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+
+        config[Multiplex.Web.Identity.AllowedPeople.Key] = TestPeople.Friend;
+        var after = await HomeThroughTunnelAsync(browser);
+
+        Assert.Equal(HttpStatusCode.Redirect, after.StatusCode);
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, after.Headers.Location!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task Signing_out_forgets_the_sign_in_on_this_browser()
+    {
+        var browser = _app.Browser();
+        await SignInAsync(browser);
+
+        var signOut = await browser.PostAsync("/signout", null);
+
+        Assert.Equal(HttpStatusCode.SeeOther, signOut.StatusCode);
+        Assert.Equal("/", signOut.Headers.Location!.OriginalString);
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, (await HomeThroughTunnelAsync(browser)).Headers.Location!.AbsoluteUri);
+    }
+
+    public enum BadToken { OtherAudience, UnknownKey, OtherTenantsKey, WrongNonce }
+
+    [Theory]
+    [InlineData(BadToken.OtherAudience)]
+    [InlineData(BadToken.UnknownKey)]
+    [InlineData(BadToken.OtherTenantsKey)]
+    [InlineData(BadToken.WrongNonce)]
+    public async Task An_ID_token_that_is_not_for_this_app_this_sign_in_or_signed_by_its_tenants_key_is_refused(BadToken bad)
+    {
+        var browser = _app.Browser();
+        var (_, signIn) = await ChallengeAsync(browser, await AuthorizeUrlAsync());
+        var microsoft = _app.Microsoft;
+        microsoft.NextIdToken = bad switch
+        {
+            BadToken.OtherAudience => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, audience: "some-other-app"),
+            BadToken.UnknownKey => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, signWith: microsoft.UnknownKey),
+            BadToken.OtherTenantsKey => microsoft.IdToken(signIn["nonce"], TestPeople.Owner, true, signWith: microsoft.OtherTenantKey),
+            _ => microsoft.IdToken("not-the-nonce-sent", TestPeople.Owner, true),
+        };
+
+        var back = await ReturnFromMicrosoftAsync(browser, signIn);
+
+        Assert.Equal(HttpStatusCode.BadRequest, back.StatusCode);
+        Assert.Empty(await _app.Services.GetRequiredService<Multiplex.Web.Auth.Store.IAuthStore>()
+            .ReadAsync(s => s.People.Keys.ToList(), CancellationToken.None));
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, (await HomeThroughTunnelAsync(browser)).Headers.Location!.AbsoluteUri);
     }
 
     [Fact]

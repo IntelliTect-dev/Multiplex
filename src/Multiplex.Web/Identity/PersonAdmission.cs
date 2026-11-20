@@ -116,8 +116,14 @@ public sealed partial class PersonAdmission(IAuthStore store, AllowedPeople allo
     public static string OwnerFor(string provider, string subject) =>
         "u" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(provider + "\n" + subject)))[..32];
 
+    /// <summary>
+    /// Ends the bindings of addresses no longer on the list. An empty list (missing, mistyped, or read
+    /// half-way through an edit) ends none: it already lets no one in, and dropping every binding on it
+    /// would let the next holder of each address bind afresh.
+    /// </summary>
     private static int DropUnlisted(AuthState state, IReadOnlySet<string> list)
     {
+        if (list.Count == 0) return 0;
         var unlisted = state.People.Keys.Where(email => !list.Contains(email)).ToList();
         foreach (var email in unlisted) state.People.Remove(email);
         return unlisted.Count;

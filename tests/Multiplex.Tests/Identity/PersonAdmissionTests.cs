@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
@@ -96,6 +97,52 @@ public sealed class PersonAdmissionTests
         var newAccount = "72f988bf-86f1-41af-91ab-2d7cd011db47/00000000-0000-0000-0000-00000000beef";
         var again = await Admission().AdmitAsync(Microsoft(TestPeople.Owner, subject: newAccount), CancellationToken.None);
         Assert.Equal(PersonAdmission.OwnerFor(MicrosoftAccounts.Provider, newAccount), Assert.IsType<Admission.Admitted>(again).Person.Owner);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ; ")]
+    [InlineData("not-an-address")]
+    public async Task An_empty_or_unreadable_list_lets_no_one_in_but_unbinds_no_one(string broken)
+    {
+        var first = (Admission.Admitted)await Admission().AdmitAsync(Microsoft(TestPeople.Owner), CancellationToken.None);
+
+        _settings[AllowedPeople.Key] = broken;
+        Assert.IsType<Admission.Refused>(await Admission().AdmitAsync(Microsoft(TestPeople.Friend), CancellationToken.None));
+
+        _settings[AllowedPeople.Key] = TestPeople.AllowList;
+        Assert.True(await Admission().IsAllowedAsync(first.Person.Owner, CancellationToken.None));
+        var otherAccount = "72f988bf-86f1-41af-91ab-2d7cd011db47/00000000-0000-0000-0000-00000000beef";
+        Assert.IsType<Admission.Refused>(await Admission().AdmitAsync(Microsoft(TestPeople.Owner, subject: otherAccount), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Putting_an_address_back_before_anyone_signs_in_lets_its_person_straight_back_in()
+    {
+        var first = (Admission.Admitted)await Admission().AdmitAsync(Microsoft(TestPeople.Owner), CancellationToken.None);
+
+        _settings[AllowedPeople.Key] = TestPeople.Friend;
+        Assert.False(await Admission().IsAllowedAsync(first.Person.Owner, CancellationToken.None));
+        _settings[AllowedPeople.Key] = TestPeople.AllowList;
+
+        Assert.True(await Admission().IsAllowedAsync(first.Person.Owner, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_binding_survives_a_restart_of_the_server()
+    {
+        var dataPath = Path.Combine(Path.GetTempPath(), "multiplex-tests", Guid.NewGuid().ToString("N"));
+        string owner;
+        using (var before = new Auth.FileStoreAuthTestApp(dataPath))
+        {
+            owner = (await TestPeople.SignInAsync(before.Services)).Person.Owner;
+        }
+
+        using var after = new Auth.FileStoreAuthTestApp(dataPath);
+        var admission = after.Services.GetRequiredService<PersonAdmission>();
+        Assert.True(await admission.IsAllowedAsync(owner, CancellationToken.None));
+        var otherAccount = "72f988bf-86f1-41af-91ab-2d7cd011db47/00000000-0000-0000-0000-00000000beef";
+        Assert.IsType<Admission.Refused>(await admission.AdmitAsync(Microsoft(TestPeople.Owner, subject: otherAccount), CancellationToken.None));
     }
 
     [Theory]

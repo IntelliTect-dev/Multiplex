@@ -1041,6 +1041,14 @@ Describe 'connect check' {
         $script.Parameters.Keys | Should -Not -Contain 'Passcode'
         ((Get-Help $script.Source -Full).alertSet.alert.Text -join ' ') | Should -Match ([regex]::Escape('-Passcode and $env:MULTIPLEX_PASSCODE were removed in #80'))
     }
+
+    It 'has no parameters for the steps a person''s sign-in now stands in front of, and its help says so' {
+        $script = Get-Command (Join-Path $PSScriptRoot 'Test-MultiplexConnect.ps1')
+        foreach ($gone in 'ExpectEmail', 'ToolName', 'ToolArguments', 'WriteCheck', 'SaveGrantTo') {
+            $script.Parameters.Keys | Should -Not -Contain $gone
+        }
+        ((Get-Help $script.Source -Full).alertSet.alert.Text -join ' ') | Should -Match ([regex]::Escape('-WriteCheck and -SaveGrantTo were removed in #80'))
+    }
 }
 
 Describe 'quick tunnel address' {

@@ -133,6 +133,20 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     }
 
     [Theory]
+    [InlineData("/signout-oidc")]
+    [InlineData("/signout-callback-oidc")]
+    public async Task The_OpenID_Connect_handlers_own_sign_out_paths_are_not_served(string path)
+    {
+        using var request = Request(HttpMethod.Get, path + "?state=x&sid=y&iss=z", "X-Forwarded-For", "203.0.113.7");
+
+        var response = await _app.Client().SendAsync(request);
+
+        // Only the access gate answers, as for any page: Multiplex never signs out at Microsoft.
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, response.Headers.Location!.AbsoluteUri);
+    }
+
+    [Theory]
     [InlineData("/healthz")]
     [InlineData("/.well-known/oauth-authorization-server")]
     [InlineData("/.well-known/openid-configuration")]
