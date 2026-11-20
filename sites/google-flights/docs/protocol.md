@@ -18,6 +18,11 @@ relied on.
 | **D** | `2026-11-19-164238` | Round trip SEA-DEN 2026-12-15/22 from a search URL, then the Delta outbound (return-flight step), then the Delta return (booking options). Three data requests, all answered. |
 | **E** | `2026-11-19-164718` | The same round-trip search URL (answered), then the trip-type menu switched to one way: the page's own search request, with selection `[]`, was refused with code 13. Recording stopped there. |
 | **F** | `2026-11-19-165319` | Diagnostic: ONE browser page load of the one-way URL the page produced in E, five minutes after E's refusal. Answered with flights. |
+| **G** | `2026-11-19-165541` | One-way search page (answered), then Stops: Nonstop only on the results page: the page's request, selection `[]`, refused. Reference `filter-change-refused`. |
+| **H** | `2026-11-19-170149` | Page load of G's nonstop URL (answered), then every filter applied once with the page's requests **held** in the browser (never sent). Reference `filter-requests-held`. |
+| **I** | `2026-11-19-171002` | Page load of an **encoder-built** URL with every filter stacked (Google's HTML carried the filtered flights), then the sort orders and the switch to multi-city, held. Reference `sort-and-multi-city-held`. |
+| **J** | `2026-11-19-171505` | Encoder-built multi-city URL SEA-DEN / DEN-LAX: leg 1, leg 2, booking. All answered. Reference `multi-city-to-booking`. |
+| **K** | `2026-11-19-171757` | Round-trip results, then Date grid and Price graph. Both answered. Reference `calendar-grid-and-graph`. |
 | **P1, P2** | `2026-11-19-143242-direct`, `2026-11-19-163416-direct` | One direct HTTP `GetShoppingResults` each (not a browser), two hours apart. Both refused. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
@@ -138,34 +143,39 @@ index 1 of `GetShoppingResults`, `GetBookingResults` and the three calendar
 RPCs.
 
 ```
-[null, null, tripType, null, [], cabin, passengers, null, null, null, null, null, null, legs, null, null, null, 1]
+[null, null, tripType, null, [], cabin, passengers, maxPrice, null, null, null, null, null, legs, null, null, null, 1, ..., excludeBasic (28)]
 ```
 
 | Index | Meaning | Values seen | Evidence |
 |---|---|---|---|
-| 2 | Trip type | 1 round trip, 2 one-way, 3 multi-city | A (2), B (1), X (3) |
-| 4 | Always `[]` | | A, B |
-| 5 | Cabin | 1 = economy; other values **pending** | A, B |
-| 6 | Passengers `[adults, children, ?, ?]` | `[1,0,0,0]` (A, B), `[2,0,0,0]` (X); the order of the infant fields **pending** | A, B, X |
-| 7 | **pending** (max price candidate) | absent | |
-| 13 | Legs, one per flight leg | | A, B, X |
-| 17 | Always 1 | | A, B |
+| 2 | Trip type | 1 round trip, 2 one way, 3 multi-city | A, C, E, I, J |
+| 4 | Always `[]` | | A-K |
+| 5 | Cabin | 1 economy, 2 premium economy, 3 business, 4 first | H |
+| 6 | Passengers `[adults, children 2-11, infants on lap, infants in seat]` | `[1,0,0,0]`; `[2,2,1,1]` then `[2,2,0,1]` after removing the lap infant | H |
+| 7 | Maximum price `[null, amount]`, whole units of the request's currency; absent = no limit | `[null, 990]`, `[null, 400]` | H, I |
+| 13 | Legs, one per flight | | A-K |
+| 17 | Always 1 | | A-K |
+| 28 | Economy **excluding Basic** fares: 1; absent otherwise. Stays set when the cabin changes | 1 | H, I |
+
+Filters other than these are **per leg** (below): in multi-city, a leg keeps its
+own stops, airlines, times and duration (I).
 
 ### Leg
 
 ```
-[origins, destinations, times, stops, airlines, null, "yyyy-MM-dd", null, selected, null, null, null, null, null, 3]
+[origins, destinations, times, stops, airlines, null, "yyyy-MM-dd", maxDuration, chosen, null, null, null, null, null, 3]
 ```
 
 | Index | Meaning | Evidence |
 |---|---|---|
-| 0, 1 | Origins and destinations: `[[[id, kind], ...]]` (a list of places, wrapped once more). Kind 0 = IATA airport (A, B); 5 = Google place id for a city such as `/m/0d9jr` (X); 4 = a wider region (X, in `BVAT3`) | A, B, X |
-| 2 | Time window, `null` when unset. Layout **pending** | |
-| 3 | Stops: 0 = any (A, B); 1 = nonstop (X); other values **pending** | A, B, X |
-| 4 | Airlines or alliances, `null` when unset. `["DL"]` seen (X); alliances **pending** | X |
-| 6 | Date, `yyyy-MM-dd` | A, B, X |
-| 8 | Flights already chosen for this leg: `[[from, "yyyy-MM-dd", to, null, carrier, number], ...]`, one per segment | X |
-| 14 | `3`. Present on the first search of a trip, absent on some later steps | A, B, X |
+| 0, 1 | Origins and destinations: `[[[id, kind], ...]]` (a list of places, wrapped once more). Kind 0 = IATA airport (A-K); 5 = Google place id for a city such as `/m/0d9jr` (X); 4 = a wider region (X, in `BVAT3`) | A-K, X |
+| 2 | Time window `[departFrom, departTo, arriveFrom, arriveTo]` in whole hours, `null` when unset. The "to" ends are one less than the slider shows: the full day is `[0, 23]`, a slider set to 20 sends 19 | H |
+| 3 | Stops: 0 any, 1 nonstop only. "1 stop or fewer" and "2 stops or fewer" were not captured (2 and 3 expected, **pending**) | A, G, H |
+| 4 | Airlines and alliances, `null` when unset: IATA codes `["DL","AS"]`, or an alliance name `["SKYTEAM"]` (the answer's filter options list `ONEWORLD`, `SKYTEAM`, `STAR_ALLIANCE`, C) | H, C |
+| 6 | Date, `yyyy-MM-dd` | A-K |
+| 7 | Maximum duration `[minutes]`, `null` when unset | H, I |
+| 8 | Flights already chosen on this leg: `[[from, "yyyy-MM-dd", to, null, carrier, number], ...]`, one per segment | D, J |
+| 14 | 3 on every leg the page built from a URL or the home page; 1 on a leg added with "Add flight" (I). Meaning **pending** | A-K |
 
 The date picker's own requests send a short leg, `[origins, destinations, null, 0]` (B #86).
 
@@ -174,10 +184,10 @@ The date picker's own requests send a short leg, `[origins, destinations, null, 
 | RPC | Inner request | Evidence |
 |---|---|---|
 | `GetShoppingResults` | `[selection, filter, sort, 0, 0, 1]` | A, B, C, D, E, X |
-| `GetBookingResults` | `[[null, selectionToken], filter, null, 0 or 1]`; every leg carries index 8. The last value's meaning is **pending** | D, X |
+| `GetBookingResults` | `[[null, selectionToken], filter, null, 0]`; every leg carries index 8 (the chosen flights). The last value was 0 in D and J and 1 in X; meaning **pending** | D, J, X |
 | `GetCalendarPicker` | `[null, filter, [from, to], null, [tripDays, tripDays]]` before a departure is chosen; `[null, filter, [dep, dep], [from, to]]` after | B |
-| `GetCalendarGraph` | `[null, filter, [from, to], null, [minTripDays, maxTripDays]]` | X |
-| `GetCalendarGrid` | `[null, filter, [depFrom, depTo], [retFrom, retTo]]` | X |
+| `GetCalendarGraph` | `[null, filter, [from, to], null, [minTripDays, maxTripDays]]`; K asked `["2026-12-08","2027-01-31"]` with `[7,7]` | K, X |
+| `GetCalendarGrid` | `[null, filter, [depFrom, depTo], [retFrom, retTo]]`; K asked departures `2026-12-12..18` by returns `2026-12-19..25`, three days either side of the search | K, X |
 | `H028ib` | `["<text typed>", [1,2,3,5], null, [2], 1]` for an origin; `[..., [1,2,3,5,4], null, [1,1,1], 1]` for a destination | B |
 | `tDoGIe` | `[null, [[id, kind]]]` | B |
 | `BVAT3` | `[null, [[[[origin]], [[destination]]], ...]]`, one pair per leg | B, X |
@@ -208,7 +218,23 @@ comes in, the client's transport starts every search by loading its URL
 (`tfs`, section 7), which is how the answered searches started, and never
 through the page's own form or menus.
 
-`sort`: 0 = Google's "top flights" order (A, B); 2 seen with nonstop (X). Other values **pending**.
+`sort` (request index 2), from the page's sort menu (I):
+
+| Value | Sort order |
+|---|---|
+| 0 | the page's default (top flights) before a sort is chosen (A-H) |
+| 1 | Top flights, chosen explicitly |
+| 2 | Price |
+| 3 | Departure time |
+| 4 | Arrival time |
+| 5 | Duration |
+| 6 | Emissions (offered by the page; the client exposes no emissions data) |
+
+The sort is not part of `tfs`; it travels in `tfu` (section 7).
+
+The calendar RPCs carry no selection and no session id, and both were answered
+(K). So the session-id rule above is about searches, and B's refused
+date-picker calls remain unexplained.
 
 ## 6. Responses
 
@@ -248,14 +274,19 @@ Filter options, index 7:
 | 3, 4, 5 | Origin airport, date `[y, m, d]`, time `[h, m]`; **a zero minute is omitted** (`[11]` is 11:00) | A |
 | 6, 7, 8 | Destination airport, date, time | A |
 | 9 | Total minutes | A |
-| 10 | **pending** (arrival day offset candidate; `null` on same-day trips) | A |
-| 13 | Layovers: `[[minutes, arrive airport, depart airport, null, arrive airport name, arrive city, depart airport name, depart city], ...]`. The two airports differ when the connection changes airport. All of A's itineraries were nonstop, so this is **X only** until a connecting capture lands | X |
+| 10 | Arrival day offset: 1 when the trip arrives the day after it departs; `null` on same-day trips | D (F9777+F94203 departs 22:44, arrives the next day) |
+| 13 | Layovers: `[[minutes, arrive airport, depart airport, null, arrive airport name, arrive city, depart airport name, depart city], ...]`. The two airports differ when the connection changes airport | D (`[867, "LAS", "LAS", ...]`: the page's "14 hr 27 min layover at Harry Reid International Airport"), X |
 | 22 | Emissions. **Not read: the client exposes no emissions data** | A |
 
-`itinerary[6]` is **unknown**. Earlier notes read it as "separate tickets",
-but X has it `true` on 19 of 21 itineraries of one SEA-BOS search, which
-cannot all be separate tickets. Do not rely on it until a capture shows it
-changing.
+`itinerary[6]`: **on the list for the last leg** (every earlier leg already
+chosen), it is the page's **"Separate tickets"** label. In D's return list,
+after a Delta outbound, it is `false` on every Delta return and `true` on
+every Alaska, United, Southwest and Frontier return, exactly the returns the
+page labelled "Separate tickets". J's leg-2 list behaves the same. On other
+lists it is not that label: `true` on all 13 itineraries of a round trip's
+outbound list (C), where the page shows no label, and `false` on all 13 of a
+one-way list (F). Read it only on the last leg's list; its meaning elsewhere
+is **pending**.
 
 `itinerary[1]` = `[[null, price], "<selection token>"]`. **The price here is
 rounded to the whole currency unit** (A: 89 where the exact fare is 88.40).
@@ -302,18 +333,24 @@ and pass it back unchanged.
 
 ### `GetBookingResults`
 
-`1.0` lists booking options (X: 6 for one round trip):
+`1.0` lists booking options, one per seller and fare brand (D: 7 for a Delta
+round trip, J: 8 for a Delta multi-city trip; each matched the page's list
+and prices):
 
 | Index | Meaning | Evidence |
 |---|---|---|
-| 1 | Sellers `[[code, name, null, isAirline]]` | X |
-| 3 | Flights `[[carrier, number], ...]` | X |
-| 5 | `[displayUrl, null, ["https://www.google.com/travel/clk/f", [["u", "<opaque>"]]]]`: Google's booking redirect, an HTML form POST | X |
-| 7 | `[[null, price], "<token>"]` | X |
-| 19 | `"[\"<base64 protobuf>\"]"` | X |
-| 21 | Fare: `[[carrier, "DELTA MAIN BASIC"], [[feature, level], ...], true, "Delta Main Basic", ...]` | X |
+| 1 | Sellers `[[code, name, null, isAirline]]`, e.g. `["DL","Delta",null,true]` | D, J, X |
+| 3 | Flights `[[carrier, number], ...]` | D, J, X |
+| 5 | `[displayUrl, null, ["https://www.google.com/travel/clk/f", [["u", "<opaque>"]]]]`: Google's booking redirect, an HTML form POST | D, X |
+| 7 | `[[null, price], "<token>"]`, price rounded to the whole unit | D, J, X |
+| 19 | `"[\"<base64 protobuf>\"]"` | D, X |
+| 21 | Fare: `[[carrier, "DELTA MAIN BASIC"], [[feature, level], ...], true, "Delta Main Basic", ...]` | D, J, X |
 
-Booking options are **pending** in this repository's captures.
+Fare brands seen: Delta Main Basic / Classic / Extra, Comfort Basic / Classic /
+Extra, First Basic / Classic. The fare's `[feature, level]` pairs differ
+between brands in a way that suggests level 1 = included, 2 = for a fee, 4 = not
+allowed (Main Basic `[4,4]`, `[1,2]` where Main Classic has `[4,1]`, `[1,1]`).
+The feature codes are **pending**.
 
 ### Calendar RPCs
 
@@ -325,7 +362,8 @@ index 1 is a list of cells
 ```
 
 A date with no price is **absent** (B: the picker returned 43 cells, one per
-departure day in its range; X: grid 7 x 7 = 49 cells, graph 60).
+departure day in its range; K: the grid 7 x 7 = 49 cells, the graph 55, one
+per departure day from 2026-12-08 to 2027-01-31, each with its 7-day return).
 
 ### `H028ib` (autocomplete)
 
@@ -340,34 +378,72 @@ A list of places, each `[[kind, "Seattle, Washington", "Seattle", "<description>
 ## 7. The `tfs` URL parameter
 
 The search page keeps its state in `?tfs=` (base64url protobuf) and
-`?tfu=`. Decoded from the URLs the page produced in B:
+`?tfu=`. **This is how the client searches**: loading
+`/travel/flights/search?tfs=...` (or `/travel/flights/booking?tfs=...`) makes
+Google run the search for that page (section 5), and searches started any
+other way were refused. It is also the link a person can open to see the same
+search.
 
-| Field | Meaning | Evidence |
-|---|---|---|
-| 1 | 28 (constant) | B |
-| 2 | 1 on the home page, 2 on the search page | B |
-| 3 (repeated) | A leg: 2 = date `"yyyy-MM-dd"`, 5 = most stops allowed (0 with "Nonstop only"; absent for any number), 13 = origin `{1: kind (1 = airport), 2: code}`, 14 = destination | B, G |
-| 8 (repeated) | Passengers, one entry per traveler (1 = adult); other values **pending** | B |
-| 9 | Cabin, 1 = economy; others **pending** | B |
-| 14 | 1 | B |
-| 16 | `{1: -1}`; **pending** (max price candidate: -1 = none) | B |
-| 19 | Trip type: 1 = round trip (B, C, D), 2 = one way (E); multi-city **pending** | B, E |
+Every field is the filter (section 4) re-encoded:
 
-`tfu` was `{5: {1: 3}}` throughout B.
+| Field | Meaning | Filter position | Evidence |
+|---|---|---|---|
+| 1 | 28 (constant) | | B-K |
+| 2 | 1 on the home page, 2 on a search or booking page | | B-K |
+| 3 (repeated) | A leg (below) | `legs` | B-K |
+| 8 (repeated) | One entry per traveler, listed adults, children, infants in seat, infants on lap: 1 adult, 2 child, **4 infant in seat, 3 infant on lap** (note: not the payload's order) | 6 | H |
+| 9 | Cabin, as the filter: 1-4 | 5 | H |
+| 12 | Maximum price, whole currency units | 7.1 | H, I |
+| 14 | 1 (constant) | | B-K |
+| 16 | `{1: -1}` (constant so far; **not** the maximum price). Meaning **pending** | | B-K |
+| 19 | Trip type: 1 round trip, 2 one way, 3 multi-city | 2 | B, E, I, J |
+| 25 | 1 = economy excluding Basic | 28 | H |
 
-The client does not need `tfs` to search. It needs it to produce a link a
-person can open to see the same search on Google Flights.
+A leg (field 3):
 
-**Proven both ways:** an encoder built from this table reproduces all three
-`tfs` values the page produced in B, and the one-way value it produced in E,
-byte for byte (airports, dates, trip types 1 and 2, page types 1 and 2). A
-search URL built by that encoder was answered with flights (C).
+| Field | Meaning | Leg position | Evidence |
+|---|---|---|---|
+| 2 | Date `"yyyy-MM-dd"` | 6 | B-K |
+| 4 (repeated) | A chosen flight `{1: from, 2: date, 3: to, 5: carrier, 6: number}` | 8 | D, J |
+| 5 | Most stops allowed: 0 for "Nonstop only"; absent for any number | 3 (1 -> 0) | G, H |
+| 6 (repeated) | An airline code or alliance name | 4 | H |
+| 8, 9, 10, 11 | Depart from, depart to, arrive from, arrive to (hours) | 2 | H |
+| 12 | Maximum duration, minutes | 7 | H |
+| 13, 14 | Origin, destination `{1: kind (1 = airport), 2: code}` | 0, 1 | B-K |
+
+`tfu` is a second base64url protobuf. Field 2.1 is the **sort** (the values in
+section 5): `EgYIAhAAGAA` = `{2: {1: 2, 2: 0, 3: 0}}` is sort by price (I).
+B's home page had `{5: {1: 3}}`. On a page reached by choosing a flight, `tfu`
+also carries a token; it is not needed to load a search.
+
+**Proven both ways.**
+- *Encoding matches the page:* an encoder built from these tables reproduces,
+  byte for byte, every `tfs` the page produced: the three in B, the one-way
+  value in E, all 22 filter states in H, the sort and multi-city states in I,
+  and the `tfs` behind every recorded search and booking request in C-H and J
+  (the request's referer): 49 values in all.
+- *Google accepts encoder-built URLs:* search URLs built by the encoder were
+  answered for a round trip (C), a multi-city trip (J), and one way with
+  nonstop, two airlines, both time windows, a maximum duration, a maximum
+  price and economy excluding Basic stacked (I).
+
+The stop counts 1 and 2 ("1 stop or fewer", "2 stops or fewer") were not
+captured; the encoder's mapping for them (payload 2 -> 1, 3 -> 2) is a guess
+and **pending**.
 
 ## 8. Not yet established
 
-Pending the filter captures: cabin values, the infant order in passengers,
-time windows, alliances, max price, max duration, sort values, the booking
-request's last field, and every response position marked **pending** above.
+- The stop values for "1 stop or fewer" and "2 stops or fewer" (expected 2
+  and 3).
+- Leg index 14 (3, or 1 on a leg added with "Add flight"), `tfs` field 16,
+  and `GetBookingResults`' last value.
+- How the page forms a multi-city booking token: J's names `DL2148#2` at
+  261.80 USD, which no recorded answer offered verbatim (the leg-2 answer
+  offered `DL2148` at 263.00).
+- Why B's date-picker calls were refused: they carry no selection, and K's
+  calendar calls without one were answered.
+- The Best / Cheapest tabs, which did not appear on a filtered one-way page.
+- Every response position marked **pending** above.
 
 ## 9. Errors and throttling
 
@@ -429,13 +505,17 @@ session id: about 41 ms of server time, against 66-111 ms for the browser
 refusals. The earlier project recorded this bare shape throughout a block that
 lasted more than 6 hours.
 
-| Shape | Seen on | Reading (one sample each: provisional) |
+| Shape | Seen on | Reading |
 |---|---|---|
-| `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | B, the page's own requests | the request reached the flights service, which failed it |
-| `[13]` | a direct request | refused before the flights service; the throttle candidate |
+| `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | the page's own requests: B (search, date picker), E, G (searches with selection `[]`) | the request reached the flights service, which refused it |
+| `[13]` | direct requests (P1, P2) | refused before the flights service |
 
-The client classifies both as refusals. Whether the shape alone separates
-"throttled" from "failed" is **pending** more samples.
+The client classifies both as refusals and never retries one straight away.
+On 2026-11-19 neither shape meant "the network is blocked": the page's search
+URLs were answered minutes after each (C after P2, F after E, H after G). A
+refusal of a **search-URL page load** has not been seen; if one appears, it is
+the first evidence of a block that also stops the page, and is recorded in
+full.
 
 ### Other answers
 
