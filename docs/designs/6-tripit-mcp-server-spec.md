@@ -239,8 +239,10 @@ human (re-sign-in, a challenge), the person is sent to it.
 ### 5.4 Gate and abuse limits
 
 - **Who gets in (#80).** People sign in to Multiplex with Microsoft (personal and work or
-  school accounts). Only an address on `Multiplex:Identity:AllowedEmails` gets in, and only
-  when the ID token's `xms_edov` claim says Microsoft verified it. The first sign-in binds the
+  school accounts). Only an address on `Multiplex:Identity:AllowedEmails` gets in, and only a
+  verified one: for a work or school account, the ID token's `xms_edov` claim must be true;
+  a personal account's address counts as verified, since Microsoft proves it at sign-up and
+  never sends `xms_edov` for personal accounts (owner, #80 N2). The first sign-in binds the
   address to Microsoft's tenant ID plus object ID; after that the address admits only that
   account. Taking an address off the list shuts its person out at once (their sign-in cookie
   and their tokens stop working). The shared owner passcode is retired.

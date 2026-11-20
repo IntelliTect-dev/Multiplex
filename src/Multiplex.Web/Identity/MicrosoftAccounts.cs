@@ -17,11 +17,21 @@ public static class MicrosoftAccounts
 
     private const string IssuerPrefix = "https://login.microsoftonline.com/";
 
+    /// <summary>The fixed tenant of every personal Microsoft account (outlook.com, or any address registered as a Microsoft account).</summary>
+    public static readonly Guid PersonalAccountsTenant = Guid.Parse("9188040d-6c67-4c5b-b112-36a304b66dad");
+
     /// <summary>
     /// The person in provider-neutral terms, or null when the token lacks the tenant or object id.
-    /// The account key is tenant ID plus object ID, the pair Microsoft names as immutable. The email
-    /// counts as verified only when the token's <c>xms_edov</c> claim (email domain owner verified,
-    /// an optional claim the app registration must request) is true; otherwise it is not trusted.
+    /// The account key is tenant ID plus object ID, the pair Microsoft names as immutable. Whether the
+    /// email is verified:
+    /// <list type="bullet">
+    /// <item>A work or school account: only when the token's <c>xms_edov</c> claim (email domain owner
+    /// verified, an optional claim the app registration must request) is true. A tenant admin can set
+    /// any address on an account; this is Microsoft's signal that the tenant owns its domain.</item>
+    /// <item>A personal account (<see cref="PersonalAccountsTenant"/>): always. Microsoft runs those
+    /// accounts itself and makes the owner prove the address at sign-up; there is no tenant admin who
+    /// could set it, and <c>xms_edov</c> is never sent for them (owner decision, #80 N2).</item>
+    /// </list>
     /// </summary>
     public static ExternalIdentity? From(ClaimsPrincipal principal)
     {
@@ -31,8 +41,9 @@ public static class MicrosoftAccounts
             return null;
         }
 
-        var verified = principal.FindFirst("xms_edov")?.Value is { } flag
-            && (flag.Equals("true", StringComparison.OrdinalIgnoreCase) || flag == "1");
+        var verified = tenant == PersonalAccountsTenant
+            || (principal.FindFirst("xms_edov")?.Value is { } flag
+                && (flag.Equals("true", StringComparison.OrdinalIgnoreCase) || flag == "1"));
         return new ExternalIdentity(Provider, $"{tenant:D}/{objectId:D}", principal.FindFirst("email")?.Value, verified);
     }
 

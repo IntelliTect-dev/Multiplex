@@ -190,6 +190,22 @@ public sealed class PersonAdmissionTests
     }
 
     [Theory]
+    [InlineData(FakeMicrosoft.PersonalTenant, null, true)]
+    [InlineData(FakeMicrosoft.PersonalTenant, false, true)]
+    [InlineData(FakeMicrosoft.Tenant, null, false)]
+    [InlineData(FakeMicrosoft.Tenant, false, false)]
+    [InlineData(FakeMicrosoft.Tenant, true, true)]
+    public void A_personal_accounts_email_is_vouched_for_by_Microsoft_a_work_accounts_only_by_xms_edov(string tenant, bool? edov, bool verified)
+    {
+        var claims = new Dictionary<string, object> { ["tid"] = tenant, ["oid"] = "6f1a7f5a-0000-4000-8000-000000000001", ["email"] = "a@b.test" };
+        if (edov is { } e) claims["xms_edov"] = e;
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            new JsonWebToken(new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor { Claims = claims })).Claims));
+
+        Assert.Equal(verified, MicrosoftAccounts.From(principal)!.EmailVerified);
+    }
+
+    [Theory]
     [InlineData(FakeMicrosoft.Tenant, "https://login.microsoftonline.com/" + FakeMicrosoft.Tenant + "/v2.0", true)]
     [InlineData(FakeMicrosoft.PersonalTenant, "https://login.microsoftonline.com/" + FakeMicrosoft.PersonalTenant + "/v2.0", true)]
     [InlineData(FakeMicrosoft.Tenant, "https://login.microsoftonline.com/" + FakeMicrosoft.PersonalTenant + "/v2.0", false)]
