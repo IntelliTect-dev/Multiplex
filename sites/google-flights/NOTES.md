@@ -30,28 +30,35 @@ Rules for anything in this folder that talks to Google:
 - **The client** paces itself and caches; see the client's own docs when it
   exists.
 
-## Direct HTTP is refused; searches go through the page
+## No browser: the client is direct HTTP, and direct HTTP is refused
 
-On 2026-11-19, from the owner's network, Google refused every plain HTTP
-request (two probes, two hours apart), and every search the page started
-without a **page-load session id**: the home-page form, the trip-type menu, a
-filter change. Loading a **search URL** (`/travel/flights/search?tfs=...`)
-was answered every time, including five minutes after a refusal with the
-identical filter. The earlier project saw the same split. So:
+**The rule (owner, 2026-11-20):** any browser use by Multiplex needs the
+owner's approval per provider and per use case. Google Flights has none, so
+its client fetches over **direct HTTP only**. The browser in the discovery
+captures was a recording tool, not part of the client.
 
-- The client gets data by **loading search URLs in a read-only browser** and
-  reading the answers, as the spec allows when direct HTTP is blocked. It
-  builds `tfs` itself (`docs/protocol.md` section 7) and never drives the
-  page's form or menus to search.
-- A search that changes anything (filter, sort, trip type) is a **new page
-  load** with a new `tfs`, not a click.
-- Choosing a flight (the next leg, booking options) is a click on the page;
-  those requests carry a selection token and were answered.
-- It forges nothing: no token, no cookie, no header is made up or replayed.
+**The obstacle, as of 2026-11-20, from the owner's network:**
 
-Whether this is a standing state of this network (flagged by the earlier
-project's volume) or how Google treats every network is **not known**. One
-search in an ordinary browser on another network would tell.
+- Google's data endpoint refuses a plain HTTP search (bare gRPC 13), and did
+  so on 2026-11-19 and again 24 hours later.
+- A plain HTTP `GET` of a search page is redirected to
+  `/travel/flights/unsupported`: Google treats a client that names itself
+  honestly as an unsupported browser.
+- `flights.google.com` only redirects to `www.google.com/travel/flights`; the
+  data endpoints do not exist there (405).
+
+Google's own page in Chrome is answered on the same network, but only for
+searches that start with a **page load** of a search URL: the page load issues
+a search session id, and the search page's HTML already carries the first
+answer (block `ds:1`, the same layout as `GetShoppingResults`). Every search
+the page started without that id (the home-page form, the trip-type menu, a
+filter change) was refused. The earlier project saw the same split.
+
+So a direct client would need to fetch the search page (`tfs`, built by the
+client) and read `ds:1`, or send its session id back. Getting the page needs a
+client Google does not redirect to "unsupported", and how the client may
+identify itself is the owner's decision, not this code's. Until then the
+provider is blocked from this network.
 
 ## Gotcha: gRPC code 13 is ambiguous
 
