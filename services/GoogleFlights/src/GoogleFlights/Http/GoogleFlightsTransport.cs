@@ -69,21 +69,23 @@ internal sealed class GoogleFlightsTransport : IDisposable
             .AddTimeout(options.AttemptTimeout)
             .Build();
 
-        var inner = transport ?? new SocketsHttpHandler
-        {
-            // A redirect is how Google says "unusual traffic": the client must see it, never follow it.
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All,
-            // NID, which Google sets on its first answer, is sent back as any HTTP client would. Nothing else.
-            UseCookies = true,
-            CookieContainer = new CookieContainer(),
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-        };
-        _http = new HttpClient(new ResilienceHandler(pipeline) { InnerHandler = inner })
+        _http = new HttpClient(new ResilienceHandler(pipeline) { InnerHandler = transport ?? CreateNetworkHandler() })
         {
             Timeout = Timeout.InfiniteTimeSpan, // the pipeline's timeouts apply
         };
     }
+
+    /// <summary>The handler that reaches Google over the network.</summary>
+    internal static SocketsHttpHandler CreateNetworkHandler() => new()
+    {
+        // A redirect is how Google says "unusual traffic": the client must see it, never follow it.
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.All,
+        // NID, which Google sets on its first answer, is sent back as any HTTP client would. Nothing else.
+        UseCookies = true,
+        CookieContainer = new CookieContainer(),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+    };
 
     public Task<RpcFrames> ServiceAsync(string rpc, string inner, string jspb, CancellationToken ct) =>
         SendAsync(string.Format(System.Globalization.CultureInfo.InvariantCulture, ServiceUrl, rpc), RequestEncoder.ServiceBody(inner), jspb, ct);
