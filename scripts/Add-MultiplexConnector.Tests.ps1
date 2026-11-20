@@ -97,6 +97,19 @@ Describe 'finding the services that can go on an account' {
         @($global:MultiplexConnectorFakeSessions | Where-Object { -not [object]::ReferenceEquals($_, $global:MultiplexConnectorFakeSessions[0]) }).Count | Should -Be 0
     }
 
+    It 'stops when a service''s own settings cannot be read, since the command must not guess' {
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
+            if ($Uri -like '*oauth-authorization-server') { return [pscustomobject]@{ issuer = 'https://box.example.ts.net'; scopes_supported = @('tripit') } }
+            throw 'The request was canceled due to the configured HttpClient.Timeout of 15 seconds elapsing.'
+        }
+        { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw '*settings of the tripit service*Timeout*'
+    }
+
+    It 'drops bidirectional and other formatting characters from a service''s name, which could disguise it' {
+        Use-FakeMultiplex -Slugs tripit -Resources @{ tripit = @{ resource = "$Base/tripit/mcp"; resource_name = "Trip$([char]0x202E)tI" } }
+        (Get-MultiplexAccountService -BaseUrl $Base).Name | Should -Not -Match '\p{Cf}'
+    }
+
     It 'says the server could not be reached, and where' {
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
         { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*$Base*No such host is known.*"
@@ -354,17 +367,34 @@ Describe 'tab completion for -Service' {
         Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 3 -Exactly
     }
 
-    It 'gives up on a slow server once its time is spent, however many services it has' {
+    It 'on a slow server still offers every service in time, naming those it had no time to ask about by their short names' {
         Use-FakeMultiplex -Slugs 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
             Start-Sleep -Milliseconds 400
             if ($Uri -like '*oauth-authorization-server') { return [pscustomobject]$global:MultiplexConnectorFakeServer }
-            [pscustomobject]@{ resource = $Uri -replace '/\.well-known/oauth-protected-resource', '' }
+            $slug = ($Uri -split '/')[-2]
+            [pscustomobject]@{ resource = "https://box.example.ts.net/$slug/mcp"; resource_name = "Name of $slug" }
         }
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $offered = @(InModuleScope Multiplex.Connector { Get-MultiplexServiceCompletion -Word '' -Bound @{ BaseUrl = 'https://box.example.ts.net' } -TimeoutSec 1 })
         $clock.Elapsed.TotalSeconds | Should -BeLessThan 2
-        $offered[0].ToolTip | Should -BeLike '*did not answer within 1 s*'
+        $offered.CompletionText | Should -Be 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'
+        $offered[0].ToolTip | Should -BeLike 'Name of a1*'
+        $offered[-1].ToolTip | Should -BeLike 'a6*https://box.example.ts.net/a6/mcp*'
+        ((Get-Remembered)[0].Until - [datetime]::UtcNow).TotalSeconds | Should -BeLessOrEqual 30   # so the names are filled in soon
+    }
+
+    It 'still offers every service when asking about one of them fails' {
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
+            if ($Uri -like '*oauth-authorization-server') { return [pscustomobject]$global:MultiplexConnectorFakeServer }
+            throw 'The request was canceled due to the configured HttpClient.Timeout of 5 seconds elapsing.'
+        }
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+    }
+
+    It 'gives up, with the reason, when the server''s list itself does not come in time' {
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'The request was canceled due to the configured HttpClient.Timeout of 5 seconds elapsing.' }
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service ")[0].ToolTip | Should -BeLike '*sign-in settings*Timeout*'
     }
 
     It 'remembers the services for a few minutes, so the next Tab answers at once' {
