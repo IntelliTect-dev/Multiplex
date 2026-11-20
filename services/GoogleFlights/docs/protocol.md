@@ -27,6 +27,9 @@ relied on.
 | **P3-P7** | `2026-11-20-090700-direct` | Direct HTTP, a day later: the search again (refused), `flights.google.com` (301; 405), a search page `GET` ("unsupported"). Reference `direct-http-probes`. |
 | **P8, P9** | `2026-11-20-095237-direct` | Direct HTTP with the honest-bot User-Agent: the search **answered**; the page `GET` still "unsupported". Reference `direct-honest-bot-user-agent`. |
 | **F1-F4, C1** | `2026-11-20-095614-direct` | Direct HTTP with the honest-bot User-Agent: round-trip search, return-flight step, booking options, price graph, all answered; then a control with the old User-Agent, refused. Reference `direct-http-flow`. |
+| **P10** | `2026-11-20-124901-direct` | Direct HTTP airport autocomplete (batchexecute `H028ib`) with the honest-bot User-Agent and no `f.sid`/`bl`: answered. Reference `direct-airport-autocomplete`. |
+| **L1** | `2026-11-20-130758-live` | The C# client's first live request, a one-way search: answered. Reference `direct-client-search`. |
+| **L2** | `2026-11-20-131931-live` | The C# client's one-way price graph (no trip length): refused, bare gRPC 13. Reference `direct-one-way-graph-refused`. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -40,7 +43,7 @@ All on `https://www.google.com`. No sign-in is involved anywhere.
 | `GetCalendarPicker` | service | Prices shown in the date picker | B, X |
 | `GetCalendarGraph` | service | Price per departure date (fixed trip length for a round trip) | X |
 | `GetCalendarGrid` | service | Departure x return price matrix | X |
-| `H028ib` | batchexecute | Airport/city autocomplete, one call per keystroke | B, X |
+| `H028ib` | batchexecute | Airport/city autocomplete, one call per keystroke | B, P10, X |
 | `tDoGIe` | batchexecute | Details of a chosen place: name, city, coordinates, country | B, X |
 | `BVAT3` | batchexecute | Four booleans for a route (meaning **pending**) | B, X |
 | `j0jL5`, `kecaDd`, `Xn8yoc` | batchexecute | Empty requests, empty answers; not needed | X |
@@ -79,6 +82,7 @@ POST /_/FlightsFrontendUi/data/batchexecute
 | `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. | sent |
 | `x-same-domain: 1` | Google's CSRF guard for these endpoints | sent |
 | `content-type: application/x-www-form-urlencoded;charset=UTF-8` | | sent |
+| `accept: */*` | | sent by the C# client (L1). The discovery probes ran on Node's `fetch`, which also adds `accept-language: *` and `sec-fetch-mode: cors` on its own; the C# client sends neither and is answered |
 | `x-goog-batchexecute-bgr` | Computed by the page's own script on every request. Never forged or replayed. | **not sent, not needed** |
 | Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) | none needed; `NID`, which Google sets on the first answer, is sent back like any HTTP client would |
 | `f.sid`, `bl`, `_reqid` | Page session, build label, request counter | not sent, not needed |
@@ -102,6 +106,9 @@ No `at=` token is sent: the page is signed out.
 | 11-20 09:53 (P9) | direct HTTP | P5's page `GET`, the same User-Agent | still **302** to `/travel/flights/unsupported` |
 | 11-20 09:56-10:01 (F1-F4) | direct HTTP | P8's User-Agent: round-trip search, return-flight step, booking options, price graph | all answered: 13 flights, 17 returns, 7 fare brands, 11 graph cells |
 | 11-20 10:01 (C1) | direct HTTP | F1 again with P1's User-Agent | bare `[13]` |
+| 11-20 12:49 (P10) | direct HTTP | airport autocomplete (batchexecute `H028ib`), P8's User-Agent, no `f.sid`, `bl` or `_reqid` | **places and airports** |
+| 11-20 13:07 (L1) | the C# client | a one-way search; .NET sends only the four headers above and `Accept: */*` | **flights** |
+| 11-20 13:19 (L2) | the C# client | a one-way `GetCalendarGraph` with no trip length | bare `[13]` (section 9) |
 
 **The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
 request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
@@ -202,7 +209,7 @@ The date picker's own requests send a short leg, `[origins, destinations, null, 
 | `GetShoppingResults` | `[selection, filter, sort, 0, 0, 1]` | A, B, C, D, E, X |
 | `GetBookingResults` | `[[null, selectionToken], filter, null, 0]`; every leg carries index 8 (the chosen flights). The last value was 0 in D and J and 1 in X; meaning **pending** | D, J, X |
 | `GetCalendarPicker` | `[null, filter, [from, to], null, [tripDays, tripDays]]` before a departure is chosen; `[null, filter, [dep, dep], [from, to]]` after | B |
-| `GetCalendarGraph` | `[null, filter, [from, to], null, [minTripDays, maxTripDays]]`; K asked `["2026-12-08","2027-01-31"]` with `[7,7]` | K, X |
+| `GetCalendarGraph` | `[null, filter, [from, to], null, [minTripDays, maxTripDays]]`; K asked `["2026-12-08","2027-01-31"]` with `[7,7]`. For a one-way filter, `[null, filter, [from, to], null, null]` was refused (L2); the page's own one-way request is **not recorded** | K, F4, L2, X |
 | `GetCalendarGrid` | `[null, filter, [depFrom, depTo], [retFrom, retTo]]`; K asked departures `2026-12-12..18` by returns `2026-12-19..25`, three days either side of the search | K, X |
 | `H028ib` | `["<text typed>", [1,2,3,5], null, [2], 1]` for an origin; `[..., [1,2,3,5,4], null, [1,1,1], 1]` for a destination | B |
 | `tDoGIe` | `[null, [[id, kind]]]` | B |
@@ -459,6 +466,8 @@ and **pending**.
 - Why B's date-picker calls were refused: they carry no selection, and K's
   calendar calls without one were answered.
 - The Best / Cheapest tabs, which did not appear on a filtered one-way page.
+- The page's price-calendar request for a one-way trip (the one form tried was
+  refused, L2).
 - Every response position marked **pending** above.
 
 ## 9. Errors and throttling
@@ -524,7 +533,7 @@ lasted more than 6 hours.
 | Shape | Seen on | Reading |
 |---|---|---|
 | `[13, null, [["...ErrorResponse", [[<header>], 0]]]]` | the page's own requests: B (search, date picker), E, G (searches with selection `[]`) | the request reached the flights service, which refused it |
-| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1) | refused before the flights service |
+| `[13]` | direct requests whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form (P1, P2, P3, C1); and a one-way `GetCalendarGraph` with no trip length from the right User-Agent (L2), 12 minutes after an answered search | refused without detail: the User-Agent, or a request the service will not take |
 
 The client classifies both as refusals and never retries one straight away.
 On 2026-11-19 neither shape meant "the network is blocked": the page's search

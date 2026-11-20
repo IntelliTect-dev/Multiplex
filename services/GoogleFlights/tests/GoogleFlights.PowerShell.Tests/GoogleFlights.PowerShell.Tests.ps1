@@ -57,8 +57,9 @@ Describe 'Commands without a request to Google' {
     }
 
     It 'Get-FlightReturn takes a selection from the pipeline by property name' {
-        $request = [Multiplex.Sites.GoogleFlights.FlightSearchRequest]::OneWay('SEA', 'DEN', [DateOnly]::new(2026, 12, 15), $null).Normalize('USD', 'US')
-        $chosen = [Multiplex.Sites.GoogleFlights.ChosenSegment]::new('SEA', [DateOnly]::new(2026, 12, 15), 'DEN', 'DL', '1')
+        $day = [DateOnly]::FromDateTime((Get-Date).AddDays(30))
+        $request = [Multiplex.Sites.GoogleFlights.FlightSearchRequest]::OneWay('SEA', 'DEN', $day, $null).Normalize('USD', 'US')
+        $chosen = [Multiplex.Sites.GoogleFlights.ChosenSegment]::new('SEA', $day, 'DEN', 'DL', '1')
         $legs = [System.Collections.Generic.IReadOnlyList[Multiplex.Sites.GoogleFlights.ChosenSegment][]]@(, [Multiplex.Sites.GoogleFlights.ChosenSegment[]]@($chosen))
         $selection = [Multiplex.Sites.GoogleFlights.FlightSelection]::new($request, $legs, 'token')
 

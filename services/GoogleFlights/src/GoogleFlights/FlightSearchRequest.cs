@@ -113,6 +113,15 @@ public sealed record FlightLeg(string Origin, string Destination, DateOnly Date)
 /// </summary>
 public sealed partial record FlightSearchRequest
 {
+    /// <summary>
+    /// The most legs the client sends. Nothing larger was ever recorded, and a request Google will not take can
+    /// earn a refusal that stops the shared client for everyone.
+    /// </summary>
+    public const int MaxLegs = 5;
+
+    /// <summary>The most airlines and alliances one leg may filter on.</summary>
+    public const int MaxCarriers = 10;
+
     public required TripType TripType { get; init; }
 
     public required IReadOnlyList<FlightLeg> Legs { get; init; }
@@ -184,6 +193,8 @@ public sealed partial record FlightSearchRequest
                 throw new ArgumentException("A round trip's return leg must fly back from the destination to the origin.", nameof(Legs));
             case TripType.MultiCity when legs.Length < 2:
                 throw new ArgumentException("A multi-city search has at least two legs.", nameof(Legs));
+            case TripType.MultiCity when legs.Length > MaxLegs:
+                throw new ArgumentException($"The client searches at most {MaxLegs} legs.", nameof(Legs));
         }
         for (var i = 1; i < legs.Length; i++)
         {
@@ -243,6 +254,8 @@ public sealed partial record FlightSearchRequest
             if (!Enum.IsDefined(a))
                 throw new ArgumentException($"Unknown alliance {a} on {name}.");
         }
+        if (airlines.Length + alliances.Length > MaxCarriers)
+            throw new ArgumentException($"Give at most {MaxCarriers} airlines and alliances on {name}.");
 
         return new FlightLeg(origin, destination, leg.Date)
         {

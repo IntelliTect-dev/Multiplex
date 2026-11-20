@@ -16,7 +16,7 @@ public sealed record ChosenSegment(string From, DateOnly Date, string To, string
 /// <param name="Request">The normalized search the choices were made on.</param>
 /// <param name="ChosenLegs">One list of segments per leg chosen so far, in leg order.</param>
 /// <param name="Token">Google's token for the last choice. Opaque: it is passed back unchanged.</param>
-public sealed record FlightSelection(FlightSearchRequest Request, IReadOnlyList<IReadOnlyList<ChosenSegment>> ChosenLegs, string Token)
+public sealed partial record FlightSelection(FlightSearchRequest Request, IReadOnlyList<IReadOnlyList<ChosenSegment>> ChosenLegs, string Token)
 {
     /// <summary>Whether a flight is chosen for every leg, so booking options can be asked for.</summary>
     public bool IsComplete => ChosenLegs.Count == Request.Legs.Count;
@@ -68,10 +68,50 @@ public sealed record FlightSelection(FlightSearchRequest Request, IReadOnlyList<
             throw new ArgumentException("That is not a flight selection from this client. Search again and pass a selection it returned.", nameof(handle));
 
         var request = selection.Request.Normalize(selection.Request.Currency ?? "USD", selection.Request.Region ?? "US");
-        if (selection.ChosenLegs.Count == 0 || selection.ChosenLegs.Count > request.Legs.Count || selection.ChosenLegs.Any(l => l is null || l.Count == 0))
-            throw new ArgumentException("The selection's chosen flights do not fit its search.", nameof(handle));
-        return selection with { Request = request };
+        var checkedSelection = selection with { Request = request };
+        checkedSelection.Validate();
+        return checkedSelection;
     }
+
+    /// <summary>
+    /// Checks that the choices fit the search and look like flights Google listed, before any of it is sent:
+    /// a selection can come from outside the process (an MCP client), and a request Google will not take can
+    /// earn a refusal that stops the shared client for everyone.
+    /// </summary>
+    /// <exception cref="ArgumentException">The selection is not one this client could have made.</exception>
+    internal void Validate()
+    {
+        const string Again = " Search again and pass a selection it returned.";
+        if (ChosenLegs is null || ChosenLegs.Count == 0 || ChosenLegs.Count > Request.Legs.Count)
+            throw new ArgumentException("The selection's chosen flights do not fit its search." + Again);
+        if (string.IsNullOrEmpty(Token) || Token.Length > 2048 || !TokenPattern().IsMatch(Token))
+            throw new ArgumentException("The selection's token is not one Google issued." + Again);
+        foreach (var leg in ChosenLegs)
+        {
+            if (leg is null || leg.Count is 0 or > 8)
+                throw new ArgumentException("The selection's chosen flights do not fit its search." + Again);
+            foreach (var s in leg)
+            {
+                if (s is null || !AirportPattern().IsMatch(s.From ?? "") || !AirportPattern().IsMatch(s.To ?? "")
+                    || !CarrierPattern().IsMatch(s.Carrier ?? "") || !FlightNumberPattern().IsMatch(s.FlightNumber ?? ""))
+                {
+                    throw new ArgumentException("The selection holds a flight that is not in Google's form." + Again);
+                }
+            }
+        }
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z0-9+/=_#-]+$")]
+    private static partial System.Text.RegularExpressions.Regex TokenPattern();
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Z]{3}$")]
+    private static partial System.Text.RegularExpressions.Regex AirportPattern();
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Z0-9]{2}$")]
+    private static partial System.Text.RegularExpressions.Regex CarrierPattern();
+
+    [System.Text.RegularExpressions.GeneratedRegex("^[0-9]{1,4}[A-Z]?$")]
+    private static partial System.Text.RegularExpressions.Regex FlightNumberPattern();
 }
 
 internal static class HandleJson

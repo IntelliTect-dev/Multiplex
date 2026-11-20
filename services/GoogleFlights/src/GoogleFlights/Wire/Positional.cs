@@ -49,19 +49,23 @@ internal static class Positional
     public static IEnumerable<JsonElement> Items(this JsonElement? element, params ReadOnlySpan<int> path) =>
         element is { } e ? e.Items(path) : [];
 
-    /// <summary>A <c>[y, m, d]</c> date.</summary>
+    /// <summary>A <c>[y, m, d]</c> date; <c>null</c> when missing or not a real date.</summary>
     public static DateOnly? Date(this JsonElement element, params ReadOnlySpan<int> path)
     {
         var d = element.At(path);
-        return d.Int(0) is { } y && d.Int(1) is { } m && d.Int(2) is { } day ? new DateOnly(y, m, day) : null;
+        return d.Int(0) is { } y and >= 1 and <= 9999 && d.Int(1) is { } m and >= 1 and <= 12
+            && d.Int(2) is { } day && day >= 1 && day <= DateTime.DaysInMonth(y, m)
+            ? new DateOnly(y, m, day)
+            : null;
     }
 
-    /// <summary>An <c>[h, m]</c> time; Google omits a zero minute (<c>[11]</c> is 11:00).</summary>
+    /// <summary>An <c>[h, m]</c> time; Google omits a zero minute (<c>[11]</c> is 11:00). <c>null</c> when not a real time.</summary>
     public static TimeOnly? Time(this JsonElement element, params ReadOnlySpan<int> path)
     {
         var t = element.At(path);
         if (t is not { ValueKind: JsonValueKind.Array })
             return null;
-        return new TimeOnly(t.Int(0) ?? 0, t.Int(1) ?? 0);
+        var (h, m) = (t.Int(0) ?? 0, t.Int(1) ?? 0);
+        return h is >= 0 and <= 23 && m is >= 0 and <= 59 ? new TimeOnly(h, m) : null;
     }
 }

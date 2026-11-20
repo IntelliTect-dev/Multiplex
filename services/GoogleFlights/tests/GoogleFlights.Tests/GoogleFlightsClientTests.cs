@@ -24,6 +24,10 @@ public class GoogleFlightsClientTests
 
     private static FlightSearchRequest SeaDen => FlightSearchRequest.RoundTrip("SEA", "DEN", Dec15, Dec22);
 
+    /// <summary>For the tests on the real clock (retry delays): dates that stay in the future.</summary>
+    private static FlightSearchRequest SoonRoundTrip => FlightSearchRequest.RoundTrip("SEA", "DEN",
+        DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)), DateOnly.FromDateTime(DateTime.UtcNow.AddDays(37)));
+
     [Fact]
     public async Task A_search_identifies_itself_honestly_and_sends_only_what_Google_needs()
     {
@@ -251,7 +255,7 @@ public class GoogleFlightsClientTests
             new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 2, RetryDelay = TimeSpan.FromMilliseconds(1) },
             TimeProvider.System, _google);
 
-        await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.SearchAsync(SeaDen));
+        await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.SearchAsync(SoonRoundTrip));
 
         Assert.Equal(3, _google.Sent.Count);
     }
@@ -264,7 +268,7 @@ public class GoogleFlightsClientTests
             new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 2, RetryDelay = TimeSpan.FromMilliseconds(1) },
             TimeProvider.System, _google);
 
-        var result = await client.SearchAsync(SeaDen);
+        var result = await client.SearchAsync(SoonRoundTrip);
 
         Assert.Equal(13, result.AllFlights.Count());
     }
@@ -309,6 +313,143 @@ public class GoogleFlightsClientTests
         await Task.WhenAll(a, b);
 
         Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task A_request_waiting_its_turn_when_Google_refuses_is_never_sent()
+    {
+        // Review finding I1: the cool-down is checked again after the pacing wait, not only on entry.
+        _google.Answer(HarFixture.Load("direct-search-refused-2026-11-19")[0]).Answer(Flow[0]);
+        _google.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var limiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
+        {
+            // Replenished by hand below; a manual top-up still waits out the period, so keep it short.
+            TokenLimit = 1, TokensPerPeriod = 1, ReplenishmentPeriod = TimeSpan.FromMilliseconds(1), QueueLimit = 1, AutoReplenishment = false,
+        });
+        using var client = Client(o => o.RateLimiter = limiter);
+
+        var first = client.SearchAsync(SeaDen);
+        await Until(() => _google.Sent.Count == 1);
+        var queued = client.SearchAsync(FlightSearchRequest.OneWay("SEA", "LAX", Dec15));
+        await Until(() => limiter.GetStatistics()!.CurrentQueuedCount == 1);
+        _google.Gate.SetResult();
+        await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => first);
+        limiter.TryReplenish();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(ThrottleReason.CoolingDown, e.Reason);
+        Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task One_caller_giving_up_does_not_fail_another_caller_sharing_the_request()
+    {
+        // Review finding I2.
+        _google.Answer(Flow[0]);
+        _google.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = Client();
+        using var giveUp = new CancellationTokenSource();
+
+        var leaving = client.SearchAsync(SeaDen, ct: giveUp.Token);
+        await Until(() => _google.Sent.Count == 1);
+        var staying = client.SearchAsync(SeaDen);
+        giveUp.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => leaving);
+        _google.Gate.SetResult();
+
+        Assert.Equal(13, (await staying).AllFlights.Count());
+        Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task Forbidden_is_a_refusal_with_a_cool_down()
+    {
+        _google.Answer(HttpStatusCode.Forbidden, "<html>blocked</html>");
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        Assert.Equal(ThrottleReason.Refused, e.Reason);
+
+        var again = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        Assert.Equal(ThrottleReason.CoolingDown, again.Reason);
+        Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task A_retry_after_beyond_the_longest_cool_down_is_capped()
+    {
+        _google.Answer(HttpStatusCode.TooManyRequests, "", r => r.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromDays(3650)));
+        using var client = Client(o => o.MaxRefusalCooldown = TimeSpan.FromHours(6));
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+
+        Assert.Equal(_time.GetUtcNow() + TimeSpan.FromHours(6), e.RetryAfter);
+    }
+
+    [Fact]
+    public async Task A_garbled_data_item_is_a_format_error()
+    {
+        _google.Answer(HttpStatusCode.OK, ")]}'\n\n30\n[[\"wrb.fr\",null,\"[1,2,\",null]]\n");
+        using var client = Client();
+
+        await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(SeaDen));
+    }
+
+    [Theory]
+    [InlineData(-3, "in the past")]
+    [InlineData(400, "more than a year away")]
+    public async Task A_date_Google_does_not_sell_is_refused_before_any_request(int daysFromToday, string message)
+    {
+        using var client = Client();
+        var date = DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime).AddDays(daysFromToday);
+
+        var e = await Assert.ThrowsAsync<ArgumentException>(() => client.SearchAsync(FlightSearchRequest.OneWay("SEA", "DEN", date)));
+
+        Assert.Contains(message, e.Message, StringComparison.Ordinal);
+        Assert.Empty(_google.Sent);
+    }
+
+    [Fact]
+    public async Task Too_many_legs_or_airlines_are_refused_before_any_request()
+    {
+        using var client = Client();
+        var six = Enumerable.Range(0, 6).Select(i => new FlightLeg(i % 2 == 0 ? "SEA" : "DEN", i % 2 == 0 ? "DEN" : "SEA", Dec15.AddDays(i)));
+        var airlines = new LegFilters { Airlines = [.. Enumerable.Range(0, 11).Select(i => $"A{i % 10}").Distinct(), "ZZ", "YY"] };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SearchAsync(FlightSearchRequest.MultiCity(six)));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SearchAsync(FlightSearchRequest.OneWay("SEA", "DEN", Dec15, airlines)));
+        Assert.Empty(_google.Sent);
+    }
+
+    [Fact]
+    public async Task Calendar_spans_wider_than_the_page_asks_for_are_refused_before_any_request()
+    {
+        using var client = Client();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetCalendarAsync(new CalendarRequest(SeaDen, Dec15, Dec15.AddDays(61))));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetCalendarAsync(
+            new CalendarRequest(SeaDen, Dec15, Dec15.AddDays(7)) { ReturnFrom = Dec22, ReturnTo = Dec22.AddDays(2) }));
+        Assert.Empty(_google.Sent);
+    }
+
+    [Fact]
+    public async Task A_selection_holding_a_flight_not_in_Googles_form_is_refused_before_any_request()
+    {
+        using var client = Client();
+        var request = SeaDen.Normalize("USD", "US");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetReturnFlightsAsync(
+            new FlightSelection(request, [[new ChosenSegment("SEA", Dec15, "DEN", "DELTA", "1358")]], "token")));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetReturnFlightsAsync(
+            new FlightSelection(request, [[new ChosenSegment("SEA", Dec15, "DEN", "DL", "1358")]], "not a token\"]")));
+        Assert.Empty(_google.Sent);
+    }
+
+    private static async Task Until(Func<bool> condition)
+    {
+        for (var i = 0; i < 500 && !condition(); i++)
+            await Task.Delay(10);
+        Assert.True(condition(), "The condition was not reached in time.");
     }
 
     [Fact]
