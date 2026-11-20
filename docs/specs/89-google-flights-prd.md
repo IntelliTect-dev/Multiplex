@@ -91,6 +91,10 @@ for the whole process.
   direct HTTP is blocked": the client fetches over direct HTTP, and a browser
   is used only for a provider and use case the owner has approved. Google
   Flights has no such approval.
+- **Client identity (owner, 2026-11-20):** the client identifies itself with
+  the honest-bot User-Agent `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`.
+  Google refuses a plain product token and answers this form; nothing poses as
+  a browser.
 - **Design scenario (owner, 2026-11-19):** a sample multi-country
   island-hopping research question, not to be run for real, recorded without
   personal details on the issue:

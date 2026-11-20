@@ -30,43 +30,42 @@ Rules for anything in this folder that talks to Google:
 - **The client** paces itself and caches; see the client's own docs when it
   exists.
 
-## No browser: the client is direct HTTP, and direct HTTP is refused
+## No browser: the client is direct HTTP, with an honest-bot User-Agent
 
 **The rule (owner, 2026-11-20):** any browser use by Multiplex needs the
 owner's approval per provider and per use case. Google Flights has none, so
 its client fetches over **direct HTTP only**. The browser in the discovery
 captures was a recording tool, not part of the client.
 
-**The obstacle, as of 2026-11-20, from the owner's network:**
+**The User-Agent (owner's decision, 2026-11-20):** the client identifies
+itself as `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`,
+the conventional form for an honest automated client. It names the project; it
+does not pose as a browser.
 
-- Google's data endpoint refuses a plain HTTP search (bare gRPC 13), and did
-  so on 2026-11-19 and again 24 hours later.
-- A plain HTTP `GET` of a search page is redirected to
-  `/travel/flights/unsupported`: Google treats a client that names itself
-  honestly as an unsupported browser.
-- `flights.google.com` only redirects to `www.google.com/travel/flights`; the
-  data endpoints do not exist there (405).
+**Why that form, and not a plain product token:** Google refuses a direct
+request whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form
+(bare gRPC 13) and answers the identical request in that form: P3 refused,
+P8 answered 45 minutes later; the whole flow answered (F1-F4), then C1 refused
+again with the old User-Agent minutes later. See `docs/protocol.md` section 2.
+Do not "simplify" the User-Agent back to a plain product token.
 
-Google's own page in Chrome is answered on the same network, but only for
-searches that start with a **page load** of a search URL: the page load issues
-a search session id, and the search page's HTML already carries the first
-answer (block `ds:1`, the same layout as `GetShoppingResults`). Every search
-the page started without that id (the home-page form, the trip-type menu, a
-filter change) was refused. The earlier project saw the same split.
+What the client sends: that User-Agent, `content-type`, `x-same-domain: 1` and
+the `x-goog-ext-259736195-jspb` header (language, region, currency). No page
+token, no browser headers, no cookies except the `NID` Google itself sets.
 
-So a direct client would need to fetch the search page (`tfs`, built by the
-client) and read `ds:1`, or send its session id back. Getting the page needs a
-client Google does not redirect to "unsupported", and how the client may
-identify itself is the owner's decision, not this code's. Until then the
-provider is blocked from this network.
+Not available to it, and not needed: the search page (`GET
+/travel/flights/search` is redirected to `/travel/flights/unsupported` for
+this User-Agent too) and `flights.google.com` (a redirect to
+`www.google.com/travel/flights`; no data endpoints, 405).
 
 ## Gotcha: gRPC code 13 is ambiguous
 
 Google answers a refused request with HTTP 200 and a `wrb.fr` error item
-carrying gRPC code 13 (`INTERNAL`). Every refused search on 2026-11-19 sent
-selection `[]` (no session id); but the same code also answered two date-picker
-calls in B, and the earlier project's long block. Code 13 alone does not say
-why. Treat it as "stop and back off", never as "retry now".
+carrying gRPC code 13 (`INTERNAL`). It meant a User-Agent not in the
+`Mozilla/5.0 (compatible; ...)` form (P1-P3, C1); something about the automated
+capture browser (B, E, G); and, for the earlier project, a block lasting more
+than six hours. Code 13 alone does not say why. Treat it as "stop and back
+off", never as "retry now".
 
 ## Gotcha: holding the page's requests is not silent
 
