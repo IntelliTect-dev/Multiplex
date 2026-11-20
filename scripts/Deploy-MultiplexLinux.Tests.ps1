@@ -5,7 +5,6 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Multiplex.Linux.psm1') -Force
     $script:DeployFolder = Join-Path $PSScriptRoot '..' 'deploy' 'linux'
-    $script:Hash = 'pbkdf2-sha256$210000$AbCdEf+/==$Zz09+/=='
 
     # A fake server. -Status is a list of `tailscale status --json` answers, given in turn (the last repeats).
     # A remote script that writes files carries, per file, a "# file: <path>" line and the content as base64.
@@ -69,15 +68,15 @@ BeforeAll {
 
     function Invoke-Deploy($Server, [scriptblock] $Publish = $script:GoodPublish) {
         Invoke-MultiplexLinuxDeploy -Remote $Server.Remote -Upload $Server.Upload -Publish $Publish `
-            -PasscodeHash $script:Hash -Tag '20261120-1200-abc1234' -PollInterval ([TimeSpan]::Zero) `
+            -Tag '20261120-1200-abc1234' -PollInterval ([TimeSpan]::Zero) `
             -LoginTimeout ([TimeSpan]::FromSeconds(1)) -HealthTimeout ([TimeSpan]::FromSeconds(1)) 6>&1
     }
 }
 
 Describe 'the server''s environment file' {
-    It 'passes the passcode hash and address literally: single-quoted, so Docker Compose never expands the hash''s $ signs' {
-        $text = ConvertTo-MultiplexEnvFile ([ordered]@{ Multiplex__PublicBaseUrl = 'https://multiplex.tail1234.ts.net'; Multiplex__Gate__PasscodeHash = $script:Hash })
-        $text | Should -Be ("Multiplex__PublicBaseUrl='https://multiplex.tail1234.ts.net'`nMultiplex__Gate__PasscodeHash='$($script:Hash)'`n")
+    It 'passes values literally: single-quoted, so Docker Compose never expands a $ in them' {
+        $text = ConvertTo-MultiplexEnvFile ([ordered]@{ Multiplex__PublicBaseUrl = 'https://multiplex.tail1234.ts.net'; Other = 'a$b$c' })
+        $text | Should -Be ("Multiplex__PublicBaseUrl='https://multiplex.tail1234.ts.net'`nOther='a`$b`$c'`n")
     }
 
     It 'uses Linux line endings only' {
@@ -89,10 +88,10 @@ Describe 'the server''s environment file' {
         { ConvertTo-MultiplexEnvFile @{ A = "two`nlines" } } | Should -Throw '*A*'
     }
 
-    It 'holds the public address without a trailing slash, and the passcode hash' {
-        $env = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl 'https://multiplex.tail1234.ts.net/' -PasscodeHash $script:Hash
+    It 'holds only the public address, without a trailing slash: no passcode (#80), and not the sign-in settings the owner keeps in identity.env' {
+        $env = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl 'https://multiplex.tail1234.ts.net/'
         $env.Multiplex__PublicBaseUrl | Should -Be 'https://multiplex.tail1234.ts.net'
-        $env.Multiplex__Gate__PasscodeHash | Should -Be $script:Hash
+        @($env.Keys) | Should -Be @('Multiplex__PublicBaseUrl')
     }
 }
 
@@ -184,10 +183,11 @@ Describe 'deploying' {
         $result.BaseUrl | Should -Be 'https://multiplex.tail1234.ts.net'
     }
 
-    It 'gives the server its tailnet address and the passcode hash, in a file only its owner can read' {
+    It 'gives the server its tailnet address, in a file only its owner can read, and never writes identity.env' {
         $server = New-FakeServer
         Invoke-Deploy $server | Out-Null
-        $server.Files['multiplex/multiplex.env'] | Should -Be ("Multiplex__PublicBaseUrl='https://multiplex.tail1234.ts.net'`nMultiplex__Gate__PasscodeHash='$($script:Hash)'`n")
+        $server.Files['multiplex/multiplex.env'] | Should -Be ("Multiplex__PublicBaseUrl='https://multiplex.tail1234.ts.net'`n")
+        $server.Files.Keys | Should -Not -Contain 'multiplex/identity.env'
     }
 
     It 'on a first deploy, shows the link that adds the device to the tailnet and waits until it is added' {
