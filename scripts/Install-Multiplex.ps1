@@ -136,6 +136,7 @@ Write-Host "Connector address: $connector"
 Write-Host '  Claude (web, phone, Desktop): Settings > Connectors > Add custom connector > paste the address.'
 Write-Host '  ChatGPT: chatgpt.com/plugins > + > Add custom MCP server > paste the address, OAuth.'
 Write-Host '  Claude Code: claude mcp add --transport http --scope user tripit <address>'
+if ($config.PublicBaseUrl) { Write-Host '  To open the Claude and ChatGPT pages with every service filled in: ./scripts/Add-MultiplexConnector.ps1' }
 
 # 6. Microsoft sign-in: set up by the owner for their Windows account; only checked here.
 if ($redirectUri = Get-MultiplexMicrosoftRedirectUri -PublicBaseUrl $config.PublicBaseUrl) {
