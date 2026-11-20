@@ -85,8 +85,13 @@ function Get-MultiplexLinuxServerProblem {
         return "Docker on the server did not answer: $($f['dockererr'])"
     }
     if (-not $f.ContainsKey('docker')) { return "The server's check did not report Docker: $Facts" }
-    if ($f.ContainsKey('composeerr') -or -not ($f['compose'] -match '^v?(\d+)\.') -or [int]$Matches[1] -lt 2) {
+    if ($f.ContainsKey('composeerr') -or -not ($f['compose'] -match '^v?(\d+)\.(\d+)') -or [int]$Matches[1] -lt 2) {
         return "The server's Docker has no Compose v2 plugin. Install the docker-compose-plugin package, then run this again. ($($f['composeerr'] ?? $f['compose']))"
+    }
+    # compose.yaml lists identity.env as optional (required: false), which Compose reads from 2.24 on;
+    # an older one refuses the whole file at the first compose command.
+    if ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -lt 24) {
+        return "The server's Docker Compose is $($f['compose']); Multiplex needs 2.24 or newer. Update the docker-compose-plugin package, then run this again."
     }
     return $null
 }
@@ -162,7 +167,7 @@ function Invoke-MultiplexLinuxDeploy {
     <#
     Deploys Multiplex to a Linux server. Re-running it is safe, and a failure before the last step
     leaves the running server as it was:
-      1. checks the server can run it (x64, Docker, Compose v2) -- nothing changes before this passes;
+      1. checks the server can run it (x64, Docker, Compose 2.24+) -- nothing changes before this passes;
       2. -Publish builds the server on this PC; the build and deploy/linux are uploaded with -Upload;
       3. the server builds the image under -Tag -- a failed build stops here, and the upload is removed;
       4. on a first deploy, the Tailscale device starts (a redeploy leaves the running one alone); a new

@@ -139,6 +139,13 @@ Describe 'checking the server before anything changes' {
         Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndockererr=bash: docker: command not found`ncomposeerr=bash: docker: command not found" | Should -Match 'Docker is not installed'
     }
 
+    It 'asks for Compose 2.24 or newer, which reads an optional env file, rather than failing later on compose.yaml' {
+        Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndocker=27.3.1`ncompose=2.20.2" | Should -Match '2\.24'
+        Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndocker=27.3.1`ncompose=v2.23.9" | Should -Match '2\.24'
+        Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndocker=27.3.1`ncompose=2.24.0" | Should -BeNullOrEmpty
+        Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndocker=29.9.1`ncompose=5.6.0" | Should -BeNullOrEmpty
+    }
+
     It 'asks for the Compose plugin when only Docker is there' {
         Get-MultiplexLinuxServerProblem -Facts "arch=x86_64`ndocker=27.3.1`ncomposeerr=docker: 'compose' is not a docker command." | Should -Match 'Compose'
     }
