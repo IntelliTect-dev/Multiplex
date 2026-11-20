@@ -109,6 +109,13 @@ Describe 'finding the services that can go on an account' {
         $service.Address | Should -Be "$Base/tripit/mcp"
     }
 
+    It 'drops control characters from a service''s name, which is printed and shown as a hint' {
+        Use-FakeMultiplex -Slugs tripit -Resources @{ tripit = @{ resource = "$Base/tripit/mcp"; resource_name = "Trip`e[31mIt`r`n" } }
+        $name = (Get-MultiplexAccountService -BaseUrl $Base).Name
+        $name | Should -Not -Match '\p{Cc}'   # not -BeExactly: culture-aware comparison ignores control characters
+        $name.Length | Should -Be 'Trip[31mIt'.Length
+    }
+
     It 'stops when the server gives a service an address other than its own' {
         Use-FakeMultiplex -Slugs tripit -Resources @{ tripit = @{ resource = 'https://elsewhere.example/mcp'; resource_name = 'TripIt' } }
         { Get-MultiplexAccountService -BaseUrl $Base } | Should -Throw "*https://elsewhere.example/mcp*$Base/tripit/mcp*"
@@ -259,10 +266,13 @@ Describe 'the command' {
     }
 }
 
+
 Describe 'tab completion for -Service' {
     BeforeAll {
-        # What Tab offers at the end of -Line, as PowerShell's own completion works it out.
-        function Get-Completion([string] $Line) { (TabExpansion2 -inputScript $Line -cursorColumn $Line.Length).CompletionMatches }
+        # What Tab does at the end of -Line, as PowerShell's own completion works it out.
+        function Get-CompletionResult([string] $Line) { TabExpansion2 -inputScript $Line -cursorColumn $Line.Length }
+        function Get-Completion([string] $Line) { (Get-CompletionResult $Line).CompletionMatches }
+        function Get-Remembered { InModuleScope Multiplex.Connector { @($script:ServiceCompletionCache.Values) } }
         $script:Command = Join-Path $PSScriptRoot 'Add-MultiplexConnector.ps1'
     }
     BeforeEach {
@@ -277,15 +287,32 @@ Describe 'tab completion for -Service' {
         $offered[1].ToolTip | Should -BeLike "*LinkedIn*$Base/linkedin/mcp*"
     }
 
-    It 'offers only the services that start with what has been typed, by short or full name, in any case' {
+    It 'offers only the services that start with what has been typed, by short or full name, in any case, quoted or not' {
         (Get-Completion "& '$Command' -BaseUrl $Base -Service li").CompletionText | Should -Be 'linkedin'
         (Get-Completion "& '$Command' -BaseUrl $Base -Service TRIP").CompletionText | Should -Be 'tripit'
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service 'tr").CompletionText | Should -Be 'tripit'
     }
 
-    It 'with no match, leaves what was typed and says why, instead of offering file names' {
-        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service zz")
-        $offered.CompletionText | Should -Be 'zz'
-        $offered[0].ToolTip | Should -BeLike "*$Base*no service*'zz'*"
+    It 'uses an address given by position or by a shortened -BaseUrl' {
+        (Get-Completion "& '$Command' $Base -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+        (Get-Completion "& '$Command' -B $Base -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+    }
+
+    It 'leaves out the services already listed before a comma' {
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service tripit,").CompletionText | Should -Be 'linkedin'
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service tripit,li").CompletionText | Should -Be 'linkedin'
+        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service tripit,linkedin,")
+        $offered.CompletionText | Should -Be ' '
+        $offered[0].ToolTip | Should -BeLike '*already listed*'
+    }
+
+    It 'with no match, leaves what was typed exactly as it was, with the reason as the hint, instead of offering file names' {
+        $line = "& '$Command' -BaseUrl $Base -Service zz"
+        $result = Get-CompletionResult $line
+        @($result.CompletionMatches).CompletionText | Should -Be 'zz'
+        $result.ReplacementIndex | Should -Be ($line.Length - 2)
+        $result.ReplacementLength | Should -Be 2
+        $result.CompletionMatches[0].ToolTip | Should -BeLike "*$Base*no service*'zz'*"
     }
 
     It 'treats wildcard characters typed as plain text' {
@@ -299,11 +326,14 @@ Describe 'tab completion for -Service' {
         (Get-Completion "& '$Command' -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
     }
 
-    It 'when the server cannot be reached, changes nothing and gives the reason as the hint' {
+    It 'when the server cannot be reached, adds only a space where nothing was typed, with the reason as the hint' {
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
-        $offered = @(Get-Completion "& '$Command' -BaseUrl $Base -Service ")
-        $offered.CompletionText | Should -Be ' '
-        $offered[0].ToolTip | Should -BeLike "*$Base*No such host is known.*"
+        $line = "& '$Command' -BaseUrl $Base -Service "
+        $result = Get-CompletionResult $line
+        @($result.CompletionMatches).CompletionText | Should -Be ' '
+        $result.ReplacementIndex | Should -Be $line.Length
+        $result.ReplacementLength | Should -Be 0
+        $result.CompletionMatches[0].ToolTip | Should -BeLike "*$Base*No such host is known.*"
     }
 
     It 'when there is no address to ask, says to type -BaseUrl' {
@@ -312,30 +342,65 @@ Describe 'tab completion for -Service' {
         $offered[0].ToolTip | Should -BeLike '*public https address*'
     }
 
-    It 'asks the server only briefly, so Tab never hangs for long' {
+    It 'when -BaseUrl is a variable, says Tab needs it typed out, rather than that none was given' {
+        $offered = @(Get-Completion "& '$Command' -BaseUrl `$env:MULTIPLEX_NO_SUCH_VARIABLE -Service ")
+        $offered[0].ToolTip | Should -BeLike '*typed out*'
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 0 -Exactly
+    }
+
+    It 'asks each request briefly, so a single slow request cannot hold Tab for long' {
         Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
         Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -ParameterFilter { $TimeoutSec -gt 5 } -Times 0 -Exactly
-        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -ParameterFilter { $TimeoutSec -le 5 } -Times 3 -Exactly
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 3 -Exactly
+    }
+
+    It 'gives up on a slow server once its time is spent, however many services it has' {
+        Use-FakeMultiplex -Slugs 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'
+        Mock -ModuleName Multiplex.Connector Invoke-RestMethod {
+            Start-Sleep -Milliseconds 400
+            if ($Uri -like '*oauth-authorization-server') { return [pscustomobject]$global:MultiplexConnectorFakeServer }
+            [pscustomobject]@{ resource = $Uri -replace '/\.well-known/oauth-protected-resource', '' }
+        }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $offered = @(InModuleScope Multiplex.Connector { Get-MultiplexServiceCompletion -Word '' -Bound @{ BaseUrl = 'https://box.example.ts.net' } -TimeoutSec 1 })
+        $clock.Elapsed.TotalSeconds | Should -BeLessThan 2
+        $offered[0].ToolTip | Should -BeLike '*did not answer within 1 s*'
     }
 
     It 'remembers the services for a few minutes, so the next Tab answers at once' {
         Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
         (Get-Completion "& '$Command' -BaseUrl $Base -Service li").CompletionText | Should -Be 'linkedin'
         Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 3 -Exactly
+        ((Get-Remembered)[0].Until - [datetime]::UtcNow).TotalMinutes | Should -BeGreaterThan 1
     }
 
-    It 'asks the server again once what it remembers is a few minutes old' {
+    It 'asks the server again once what it remembers has expired' {
         Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
-        InModuleScope Multiplex.Connector { foreach ($entry in $script:ServiceCompletionCache.Values) { $entry.At = $entry.At.AddMinutes(-10) } }
+        InModuleScope Multiplex.Connector { foreach ($entry in $script:ServiceCompletionCache.Values) { $entry.Until = [datetime]::UtcNow.AddSeconds(-1) } }
         Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
         Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 6 -Exactly
     }
 
-    It 'does not remember a server that could not be reached' {
+    It 'remembers a server that could not be reached only briefly, so repeated Tabs answer at once' {
         Mock -ModuleName Multiplex.Connector Invoke-RestMethod { throw 'No such host is known.' }
         Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
-        Use-FakeMultiplex
+        (Get-Completion "& '$Command' -BaseUrl $Base -Service ")[0].ToolTip | Should -BeLike '*No such host is known.*'
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 1 -Exactly
+        ((Get-Remembered)[0].Until - [datetime]::UtcNow).TotalSeconds | Should -BeLessOrEqual 30
+    }
+
+    It 'remembers a server with no services only briefly, since it may be starting' {
+        Use-FakeMultiplex -Slugs @()
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        ((Get-Remembered)[0].Until - [datetime]::UtcNow).TotalSeconds | Should -BeLessOrEqual 30
+    }
+
+    It 'remembers each address apart' {
+        Get-Completion "& '$Command' -BaseUrl $Base -Service " | Out-Null
+        Use-FakeMultiplex -Issuer 'https://other.example.ts.net' -Slugs tripit
+        (Get-Completion "& '$Command' -BaseUrl https://other.example.ts.net -Service ").CompletionText | Should -Be 'tripit'
         (Get-Completion "& '$Command' -BaseUrl $Base -Service ").CompletionText | Should -Be 'tripit', 'linkedin'
+        Should -Invoke -ModuleName Multiplex.Connector Invoke-RestMethod -Times 5 -Exactly
     }
 
     It 'leaves the command itself asking the server afresh' {
@@ -346,5 +411,11 @@ Describe 'tab completion for -Service' {
 
     It 'completes the same way when the module''s own command is used' {
         (Get-Completion "Add-MultiplexConnector -BaseUrl $Base -Service link").CompletionText | Should -Be 'linkedin'
+    }
+
+    It 'loads what it needs by itself in a new PowerShell, where nothing is loaded yet' {
+        $line = "& '$Command' -BaseUrl http://localhost:5190 -Service "
+        $hint = pwsh -NoProfile -NonInteractive -Command "(TabExpansion2 -inputScript `"$line`" -cursorColumn $($line.Length)).CompletionMatches[0].ToolTip"
+        "$hint" | Should -BeLike '*public https address*'
     }
 }

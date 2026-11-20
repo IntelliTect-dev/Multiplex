@@ -20,7 +20,8 @@
     recorded for its tunnel.
 .PARAMETER Service
     The services to add, by name or short name (for example tripit). Defaults to all of them.
-    Tab offers the ones the server has, asking the address given with -BaseUrl (or the default).
+    Tab offers the ones the server has: it asks the address typed after -BaseUrl (or the
+    default) over the network, for at most a few seconds, and remembers the answer briefly.
 .PARAMETER Agent
     Claude, ChatGPT or both (the default).
 .EXAMPLE
@@ -34,7 +35,7 @@ param(
     # $args: the command, the parameter, the word typed, the syntax tree, the parameters typed so far.
     [ArgumentCompleter({
         Import-Module (Join-Path $PSScriptRoot 'Multiplex.Connector.psm1')
-        Get-MultiplexServiceCompletion -BaseUrl $args[4]['BaseUrl'] -Word $args[2] })]
+        Get-MultiplexServiceCompletion -Word $args[2] -CommandAst $args[3] -Bound $args[4] })]
     [string[]] $Service,
     [ValidateSet('Claude', 'ChatGPT')] [string[]] $Agent = @('Claude', 'ChatGPT'))
 Set-StrictMode -Version Latest
