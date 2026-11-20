@@ -69,7 +69,9 @@ internal sealed class GoogleFlightsTransport : IDisposable
             .AddTimeout(options.AttemptTimeout)
             .Build();
 
-        _http = new HttpClient(new ResilienceHandler(pipeline) { InnerHandler = transport ?? CreateNetworkHandler() })
+        // Pacing waits happen inside the pipeline, so the cool-down is checked again per attempt, after the wait.
+        var gated = new RefusalGateHandler(_gate) { InnerHandler = transport ?? CreateNetworkHandler() };
+        _http = new HttpClient(new ResilienceHandler(pipeline) { InnerHandler = gated })
         {
             Timeout = Timeout.InfiniteTimeSpan, // the pipeline's timeouts apply
         };
@@ -154,6 +156,15 @@ internal sealed class GoogleFlightsTransport : IDisposable
             throw new GoogleFlightsThrottledException(
                 $"Google Flights is limiting requests from this network (HTTP 429). The client will not ask again until {until:u}.",
                 ThrottleReason.TooManyRequests, until);
+        }
+
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            // A common block page. Treated like any refusal: stop and back off, never retry straight away.
+            var until = _gate.Refused();
+            throw new GoogleFlightsThrottledException(
+                $"Google Flights refused the request (HTTP 403). The client will not ask again until {until:u}, to avoid a block on this network.",
+                ThrottleReason.Refused, until);
         }
 
         if (status is >= 500 and < 600)

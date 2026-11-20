@@ -33,9 +33,12 @@ internal sealed class RefusalGate(TimeSpan initial, TimeSpan max, TimeProvider t
         {
             _inARow++;
             var cooldown = TimeSpan.FromTicks(Math.Min(max.Ticks, initial.Ticks * (1L << Math.Min(_inARow - 1, 20))));
-            var until = time.GetUtcNow() + cooldown;
+            var now = time.GetUtcNow();
+            var until = now + cooldown;
+            // Google's Retry-After is honoured, but never beyond the longest cool-down: a bad header must not
+            // silence the client for good.
             if (notBefore > until)
-                until = notBefore.Value;
+                until = notBefore.Value < now + max ? notBefore.Value : now + max;
             _until = until > _until ? until : _until;
             return _until;
         }

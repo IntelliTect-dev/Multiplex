@@ -22,6 +22,10 @@ internal static class ResponseParser
 
         // Several payloads stream in; flights come from the last one that has index 2 or 3.
         var payload = frames.LastWith(2) ?? frames.LastWith(3);
+        // No flight list at all is a real "no flights" only when the answer still has its header (index 0, with the
+        // search session id at 0.4). Without one, the answer is not in the shape the client knows.
+        if (payload is null && !frames.Payloads.Any(p => p.Str(0, 4) is { Length: > 0 }))
+            throw new GoogleFlightsFormatException("Google's flight search answer had neither flights nor its usual header.");
         var chosen = selection?.ChosenLegs ?? [];
         var isLastLeg = chosen.Count == request.Legs.Count - 1;
 

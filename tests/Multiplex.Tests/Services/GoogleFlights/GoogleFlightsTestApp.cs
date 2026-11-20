@@ -28,13 +28,20 @@ public sealed class GoogleFlightsTestApp : WebApplicationFactory<Program>
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<GoogleFlightsClient>();
+            // The day the references were recorded, so their dates are always "the future" to the client.
             services.AddSingleton(_ => new GoogleFlightsClient(
-                new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 0 }, TimeProvider.System, Google));
+                new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 0 }, new RecordedDay(), Google));
         });
     }
 
     public McpTestClient Mcp() =>
         new(CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }), token: null, "/google-flights/mcp");
+}
+
+/// <summary>A clock stopped on 2026-11-20, the day the direct-HTTP references were recorded.</summary>
+public sealed class RecordedDay : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => new(2026, 11, 20, 18, 0, 0, TimeSpan.Zero);
 }
 
 /// <summary>Answers each request with the next queued recorded answer, and keeps what was sent.</summary>
