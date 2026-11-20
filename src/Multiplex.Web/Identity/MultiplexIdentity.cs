@@ -136,6 +136,9 @@ public static class MultiplexIdentity
         o.Scope.Add("profile");
         o.Scope.Add("email");
         o.CallbackPath = CallbackPath;
+        // Multiplex never signs out at Microsoft, so the handler serves no sign-out paths of its own.
+        o.RemoteSignOutPath = PathString.Empty;
+        o.SignedOutCallbackPath = PathString.Empty;
         o.SignInScheme = CookieScheme;
         o.SaveTokens = false;
         o.GetClaimsFromUserInfoEndpoint = false;
@@ -163,18 +166,20 @@ public static class MultiplexIdentity
                 context.ProtocolMessage.Prompt = "select_account";
                 return Task.CompletedTask;
             },
-            OnTokenValidated = async context =>
+            // Not at TokenValidated: the handler checks the nonce (and the rest of the token response) only
+            // after that event, so admitting there could bind an address for a sign-in that then fails.
+            // TicketReceived runs once every check has passed, before the cookie is issued.
+            OnTicketReceived = async context =>
             {
                 var services = context.HttpContext.RequestServices;
-                if (MicrosoftAccounts.From(context.Principal!) is not { } identity)
-                {
-                    context.Fail(new SignInRefusedException(PersonAdmission.NotAllowedMessage, "the token has no tenant or object id"));
-                    return;
-                }
-                var admission = await services.GetRequiredService<PersonAdmission>().AdmitAsync(identity, context.HttpContext.RequestAborted);
+                var admission = MicrosoftAccounts.From(context.Principal!) is { } identity
+                    ? await services.GetRequiredService<PersonAdmission>().AdmitAsync(identity, context.HttpContext.RequestAborted)
+                    : new Admission.Refused(PersonAdmission.NotAllowedMessage);
                 if (admission is not Admission.Admitted { Person: var person })
                 {
-                    context.Fail(new SignInRefusedException(((Admission.Refused)admission).Message, "refused by the allowlist"));
+                    context.HandleResponse();
+                    await ConnectEndpoints.WriteHtmlAsync(context.HttpContext, StatusCodes.Status403Forbidden,
+                        nonce => ConnectHtml.Message(nonce, "Not allowed", ((Admission.Refused)admission).Message));
                     return;
                 }
 
@@ -190,13 +195,6 @@ public static class MultiplexIdentity
             {
                 context.HandleResponse();
                 var logger = context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(MultiplexIdentity));
-                if (context.Failure is SignInRefusedException refused)
-                {
-                    logger.LogWarning("Microsoft sign-in refused: {Reason}.", refused.Reason);
-                    await ConnectEndpoints.WriteHtmlAsync(context.HttpContext, StatusCodes.Status403Forbidden,
-                        nonce => ConnectHtml.Message(nonce, "Not allowed", refused.Message));
-                    return;
-                }
                 // The type only: a message can carry values from the request or from Microsoft.
                 logger.LogWarning("Microsoft sign-in did not complete: {Error}.", context.Failure?.GetType().Name ?? "unknown");
                 await ConnectEndpoints.WriteHtmlAsync(context.HttpContext, StatusCodes.Status400BadRequest,
@@ -213,12 +211,4 @@ public sealed class MicrosoftSignInSettings(IConfiguration configuration)
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(configuration[MultiplexIdentity.ClientIdKey])
         && !string.IsNullOrWhiteSpace(configuration[MultiplexIdentity.ClientSecretKey]);
-}
-
-/// <summary>A sign-in Microsoft completed but Multiplex refused.</summary>
-/// <param name="Message">Shown to the person.</param>
-/// <param name="Reason">For the log.</param>
-public sealed class SignInRefusedException(string message, string reason) : Exception(message)
-{
-    public string Reason { get; } = reason;
 }

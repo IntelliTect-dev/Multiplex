@@ -10,13 +10,13 @@
     Microsoft, with an email the owner allows, and a script cannot do that for a person. So the
     check confirms that /oauth/authorize sends a browser that is not signed in to Microsoft
     sign-in, with this server's redirect URI (<public address>/signin-microsoft) and a client id,
-    and ends there, saying so. The later steps (token exchange with PKCE, MCP initialize,
-    tools/list, the -ToolName call and -ExpectEmail, -WriteCheck, refresh and -SaveGrantTo) need
-    the code that sign-in ends with, so they are not reached. A server where Microsoft sign-in
-    is not set up answers HTTP 503, which fails the check. Exit code 0 when every step it can
-    run passes.
+    and ends there, saying so: the token exchange and the MCP calls after it need the code that
+    sign-in ends with. A server where Microsoft sign-in is not set up answers HTTP 503, which
+    fails the check. Exit code 0 when every step it can run passes.
 .NOTES
     -Passcode and $env:MULTIPLEX_PASSCODE were removed in #80: there is no owner passcode any more.
+    -ExpectEmail, -ToolName, -ToolArguments, -WriteCheck and -SaveGrantTo were removed in #80 too:
+    the steps they drove (a tool call, the write check, refresh) need a person's sign-in.
 .EXAMPLE
     ./scripts/Test-MultiplexConnect.ps1 -BaseUrl http://localhost:5190
 #>
@@ -24,15 +24,7 @@
 param(
     [Parameter(Mandatory)] [string] $BaseUrl,
     [string] $Slug = 'tripit',
-    [string] $ExpectEmail,
-    [string] $ToolName = 'tripit_get_profile',
-    [hashtable] $ToolArguments = @{},
-    [string] $ClientMetadataUrl,
-    # Also create a private, dated throwaway trip and delete it through the confirm step.
-    # Use only with a test account.
-    [switch] $WriteCheck,
-    # Saves the final refresh token and endpoints as JSON, to check renewal hours later. Test servers only.
-    [string] $SaveGrantTo)
+    [string] $ClientMetadataUrl)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $BaseUrl = $BaseUrl.TrimEnd('/')
@@ -126,101 +118,3 @@ Write-Host ('STOP  the remaining steps need a person: signing in with Microsoft,
     'that the token exchange, initialize, tools/list, the tool call and refresh need. This script cannot sign in for a ' +
     'person, so the check ends here.')
 exit 0
-
-# Not reached since #80 (above): they need the code a person's Microsoft sign-in ends with.
-$code = $null
-$tokens = Step 'token exchange with PKCE' {
-    Invoke-RestMethod $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
-        grant_type = 'authorization_code'; code = $code; redirect_uri = $redirectUri; client_id = $clientId
-        code_verifier = $verifier; resource = $mcpUrl }
-}
-
-$headers = @{ Authorization = "Bearer $($tokens.access_token)"; Accept = 'application/json, text/event-stream' }
-function Invoke-Mcp([string] $method, [hashtable] $params, [int] $id) {
-    $r = Invoke-WebRequest $mcpUrl -Method Post -ContentType 'application/json' -Headers $headers -SkipHttpErrorCheck `
-        -Body (@{ jsonrpc = '2.0'; id = $id; method = $method; params = $params } | ConvertTo-Json -Depth 10)
-    if ($r.StatusCode -ne 200) { throw "HTTP $($r.StatusCode)" }
-    $text = "$($r.Content)"
-    if ($text -match '(?m)^data:\s*(?<j>\{.*\})\s*$') { $text = $Matches['j'] }
-    $json = $text | ConvertFrom-Json
-    if ($json.PSObject.Properties['error']) { throw "JSON-RPC error: $($json.error.message)" }
-    $json.result
-}
-Step 'initialize with the token' { Invoke-Mcp 'initialize' @{ protocolVersion = '2025-06-18'; capabilities = @{}; clientInfo = @{ name = 'connect-test'; version = '1' } } 1 | Out-Null }
-$tools = Step 'tools/list' {
-    $t = (Invoke-Mcp 'tools/list' @{} 2).tools
-    if (-not ($t | Where-Object name -eq $ToolName)) { throw "no $ToolName among $(@($t).Count) tools" }
-    $t
-}
-Write-Host "      $(@($tools).Count) tools"
-Step "tools/call $ToolName" {
-    $res = Invoke-Mcp 'tools/call' @{ name = $ToolName; arguments = $ToolArguments } 3
-    if ($res.PSObject.Properties['isError'] -and $res.isError) { throw "tool error: $(@($res.content)[0].text)" }
-    $text = (@($res.content) | Where-Object type -eq 'text' | ForEach-Object text) -join "`n"
-    if ($ExpectEmail -and $text -notmatch [regex]::Escape($ExpectEmail)) { throw 'the expected account email is not in the result' }
-} | Out-Null
-
-if ($WriteCheck) {
-    # Writes to the signed-in account: one private, dated throwaway trip, deleted again.
-    function Invoke-Tool([string] $name, [hashtable] $arguments) {
-        $res = Invoke-Mcp 'tools/call' @{ name = $name; arguments = $arguments } (Get-Random -Minimum 100 -Maximum 100000)
-        $text = (@($res.content) | Where-Object type -eq 'text' | ForEach-Object text) -join "`n"
-        [pscustomobject]@{ IsError = [bool]($res.PSObject.Properties['isError'] -and $res.isError); Text = $text }
-    }
-    $start = (Get-Date).AddDays(400).ToString('yyyy-MM-dd')
-    $tripName = "ZZ Multiplex connect test $(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    $tripUuid = $null
-    try {
-        $tripUuid = Step 'write: create a private throwaway trip' {
-            $r = Invoke-Tool 'tripit_create_trip' @{ destination = 'Reykjavik, Iceland'; startDate = $start; endDate = (Get-Date).AddDays(402).ToString('yyyy-MM-dd'); name = $tripName }
-            if ($r.IsError) { throw $r.Text }
-            if ($r.Text -notmatch '"uuid"\s*:\s*"(?<u>[0-9a-fA-F-]{36})"') { throw "no trip uuid in: $($r.Text.Substring(0, [Math]::Min(200, $r.Text.Length)))" }
-            $Matches['u']
-        }
-        $confirm = Step 'write: delete without confirmation only previews' {
-            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = $tripName }
-            if ($r.Text -notmatch '"?confirm_token"?\s*[:=]\s*"?(?<t>[A-Za-z0-9_\-]{20,})') { throw "no confirm_token in: $($r.Text.Substring(0, [Math]::Min(300, $r.Text.Length)))" }
-            $token = $Matches['t']
-            $still = Invoke-Tool 'tripit_get_trip' @{ tripUuid = $tripUuid }
-            if ($still.IsError) { throw 'the trip is gone after a preview' }
-            $token
-        }
-        Step 'write: a token for other arguments is refused' {
-            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = "$tripName (changed)"; confirm_token = $confirm }
-            if (-not $r.IsError) { throw 'a confirm token was accepted for different arguments' }
-        } | Out-Null
-        Step 'write: delete with the confirm token' {
-            $r = Invoke-Tool 'tripit_delete_trip' @{ tripUuid = $tripUuid; confirmName = $tripName; confirm_token = $confirm }
-            if ($r.IsError) { throw $r.Text }
-            $gone = Invoke-Tool 'tripit_get_trip' @{ tripUuid = $tripUuid }
-            if (-not $gone.IsError) { throw 'the trip still exists after a confirmed delete' }
-            $script:tripUuid = $null
-        } | Out-Null
-    }
-    finally {
-        if ($tripUuid) { Write-Host "NOTE  throwaway trip '$tripName' ($tripUuid) may still exist on the account; delete it by hand." }
-    }
-}
-
-Step 'refresh token rotation' {
-    $new = Invoke-RestMethod $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
-        grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
-    if ($new.refresh_token -eq $tokens.refresh_token) { throw 'refresh token was not rotated' }
-    if ($SaveGrantTo) {
-        # For a later renewal check: the live refresh token and where to use it. Test servers only.
-        # The reuse check below is skipped: reusing a spent refresh token revokes the whole grant
-        # (as OAuth 2.1 requires), which would revoke the token being saved.
-        @{ client_id = $clientId; refresh_token = $new.refresh_token; token_endpoint = $as.token_endpoint; mcp_url = $mcpUrl } |
-            ConvertTo-Json | Set-Content -LiteralPath $SaveGrantTo
-        return
-    }
-    $reuse = Invoke-WebRequest $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck -Body @{
-        grant_type = 'refresh_token'; refresh_token = $tokens.refresh_token; client_id = $clientId; resource = $mcpUrl }
-    if ($reuse.StatusCode -ne 400) { throw "reusing the old refresh token gave HTTP $($reuse.StatusCode), expected 400" }
-    $after = Invoke-WebRequest $as.token_endpoint -Method Post -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck -Body @{
-        grant_type = 'refresh_token'; refresh_token = $new.refresh_token; client_id = $clientId; resource = $mcpUrl }
-    if ($after.StatusCode -ne 400) { throw "after a reuse, the newest refresh token still worked (HTTP $($after.StatusCode)); the grant should be revoked" }
-} | Out-Null
-
-if ($failures) { exit 1 }
-Write-Host 'All connect steps passed.'

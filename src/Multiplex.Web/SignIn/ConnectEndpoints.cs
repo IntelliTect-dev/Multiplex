@@ -171,13 +171,8 @@ public static class ConnectEndpoints
 
     // ---------------------------------------------------------------- helpers
 
-    /// <summary>The person signed in to Multiplex on this request (the access gate admits no one else here).</summary>
-    private sealed record Person(string Owner, string Email);
-
-    private static Person? PersonOf(HttpContext context) =>
-        context.User.Identity?.IsAuthenticated == true && context.User.FindFirst(SiteClaims.Owner)?.Value is { } owner
-            ? new Person(owner, context.User.FindFirst("email")?.Value ?? "")
-            : null;
+    /// <summary>The person signed in to Multiplex on this request, by their sign-in cookie (the access gate admits no one else here).</summary>
+    private static Identity.MultiplexPerson? PersonOf(HttpContext context) => Identity.MultiplexIdentity.PersonOf(context.User);
 
     private static async Task StartLiveAsync(HttpContext context, ISiteSignInDefinition site, string pendingId, string owner)
     {
@@ -194,7 +189,7 @@ public static class ConnectEndpoints
     /// Finds the pending authorization, the site's sign-in (null for a service that uses no site account) and
     /// the signed-in person, who must be the one that started it. On failure writes the page and returns null.
     /// </summary>
-    private static async Task<(PendingAuthorization Pending, ISiteSignInDefinition? Site, Person Person)?> ResolveAsync(
+    private static async Task<(PendingAuthorization Pending, ISiteSignInDefinition? Site, Identity.MultiplexPerson Person)?> ResolveAsync(
         HttpContext context, string slug, string? pendingId)
     {
         var services = context.RequestServices;

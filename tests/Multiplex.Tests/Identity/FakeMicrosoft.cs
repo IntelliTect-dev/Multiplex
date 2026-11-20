@@ -31,17 +31,12 @@ public sealed class FakeMicrosoft : HttpMessageHandler
     public const string AuthorizationEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
     public const string TokenEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
-    private readonly JsonWebKey _key;
+    public const string OtherTenant = "11111111-2222-4333-8444-555555555555";
+
     private readonly SigningCredentials _signing;
 
     public FakeMicrosoft()
     {
-        var rsa = new RsaSecurityKey(RSA.Create(2048)) { KeyId = "fake-microsoft-key" };
-        _signing = new SigningCredentials(rsa, SecurityAlgorithms.RsaSha256);
-        _key = JsonWebKeyConverter.ConvertFromRSASecurityKey(new RsaSecurityKey(rsa.Rsa.ExportParameters(false)) { KeyId = rsa.KeyId });
-        // As in Microsoft's common keys: valid for any tenant, the tenant put in by the token.
-        _key.AdditionalData["issuer"] = "https://login.microsoftonline.com/{tenantid}/v2.0";
-
         Configuration = new OpenIdConnectConfiguration
         {
             Issuer = "https://login.microsoftonline.com/{tenantid}/v2.0",
@@ -49,9 +44,30 @@ public sealed class FakeMicrosoft : HttpMessageHandler
             TokenEndpoint = TokenEndpoint,
             JsonWebKeySet = new JsonWebKeySet(),
         };
-        Configuration.JsonWebKeySet.Keys.Add(_key);
-        Configuration.SigningKeys.Add(_key);
+        // As in Microsoft's common keys: valid for any tenant, the tenant put in by the token.
+        _signing = AddKey("fake-microsoft-key", "https://login.microsoftonline.com/{tenantid}/v2.0");
+        // A key published for one tenant only (as for an app with its own signing key there).
+        OtherTenantKey = AddKey("other-tenant-key", $"https://login.microsoftonline.com/{OtherTenant}/v2.0");
+        // A key Microsoft never published: signatures made with it must not verify.
+        var unknown = new RsaSecurityKey(RSA.Create(2048)) { KeyId = "fake-microsoft-key" };
+        UnknownKey = new SigningCredentials(unknown, SecurityAlgorithms.RsaSha256);
     }
+
+    private SigningCredentials AddKey(string keyId, string issuer)
+    {
+        var rsa = new RsaSecurityKey(RSA.Create(2048)) { KeyId = keyId };
+        var key = JsonWebKeyConverter.ConvertFromRSASecurityKey(new RsaSecurityKey(rsa.Rsa.ExportParameters(false)) { KeyId = keyId });
+        key.AdditionalData["issuer"] = issuer;
+        Configuration.JsonWebKeySet.Keys.Add(key);
+        Configuration.SigningKeys.Add(key);
+        return new SigningCredentials(rsa, SecurityAlgorithms.RsaSha256);
+    }
+
+    /// <summary>Signs as the key published for <see cref="OtherTenant"/> only.</summary>
+    public SigningCredentials OtherTenantKey { get; }
+
+    /// <summary>Signs with a key that is not in Microsoft's published keys, under the real key's id.</summary>
+    public SigningCredentials UnknownKey { get; }
 
     public OpenIdConnectConfiguration Configuration { get; }
 
@@ -64,7 +80,8 @@ public sealed class FakeMicrosoft : HttpMessageHandler
     /// <summary>An ID token as Microsoft issues one for the <c>common</c> endpoint.</summary>
     /// <param name="verified">The <c>xms_edov</c> claim; null leaves it out.</param>
     /// <param name="issuerTenant">The tenant in <c>iss</c>; defaults to <paramref name="tenant"/>.</param>
-    public string IdToken(string nonce, string? email, bool? verified, string tenant = Tenant, string? objectId = null, string? issuerTenant = null)
+    public string IdToken(string nonce, string? email, bool? verified, string tenant = Tenant, string? objectId = null, string? issuerTenant = null,
+        string audience = ClientId, SigningCredentials? signWith = null)
     {
         var oid = objectId ?? ObjectIdOf(email ?? "nobody");
         var claims = new Dictionary<string, object>
@@ -82,12 +99,12 @@ public sealed class FakeMicrosoft : HttpMessageHandler
         return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Issuer = $"https://login.microsoftonline.com/{issuerTenant ?? tenant}/v2.0",
-            Audience = ClientId,
+            Audience = audience,
             Claims = claims,
             IssuedAt = now,
             NotBefore = now,
             Expires = now.AddHours(1),
-            SigningCredentials = _signing,
+            SigningCredentials = signWith ?? _signing,
         });
     }
 
