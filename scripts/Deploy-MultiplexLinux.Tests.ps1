@@ -276,6 +276,13 @@ Describe 'deploying' {
         $check | Should -Match '-lt 60'
     }
 
+    It 'opens a tab, which needs a working renderer, and force-stops Chrome so the time limit holds' {
+        $check = Get-Content (Join-Path $script:DeployFolder 'check-chrome.sh') -Raw
+        $check | Should -Match '/json/new'
+        $check | Should -Match 'curl[^\n]*-m \d+'
+        $check | Should -Match 'kill -9'
+    }
+
     It 'writes every file only its owner can read: umask 077 before the write' {
         $script = New-MultiplexRemoteFileScript -Path 'multiplex/multiplex.env' -Content "A='1'`n"
         $lines = $script -split "`n"
