@@ -233,7 +233,7 @@ docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
     # keeps the running ones, so the running server is untouched until then.
     $placeholder = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl 'http://localhost:5190' -PasscodeHash $PasscodeHash
     Invoke-MultiplexLinuxStep $Remote 'install-files' -Failure 'Could not put the compose files in ~/multiplex.' -Body @"
-cp -f '$root/incoming/compose.yaml' '$root/incoming/serve.json' '$root/'
+cp -f '$root/incoming/compose.yaml' '$root/incoming/serve.json' '$root/incoming/chrome-seccomp.json' '$root/'
 if [ ! -f '$root/.env' ]; then
 $(New-MultiplexRemoteFileScript -Path "$root/.env" -Content (ConvertTo-MultiplexEnvFile ([ordered]@{ MULTIPLEX_IMAGE = $image })))
 fi
