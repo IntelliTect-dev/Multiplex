@@ -7,6 +7,9 @@ Set-StrictMode -Version Latest
 
 $script:ClaudeAddConnectorPage = 'https://claude.ai/customize/connectors'
 $script:ChatGptAddPage = 'https://chatgpt.com/plugins'
+# What tab completion learned from each server, and for how long it is trusted.
+$script:ServiceCompletionCache = @{}
+$script:ServiceCompletionLifetime = [TimeSpan]::FromMinutes(5)
 
 function Resolve-MultiplexConnectorBaseUrl {
     <#
@@ -51,9 +54,12 @@ function Get-MultiplexAccountService {
     told otherwise. Stops when the server's own public address is not -BaseUrl, since sign-in
     from a connector added at -BaseUrl would then fail.
     #>
-    [CmdletBinding()] param([Parameter(Mandatory)] [string] $BaseUrl)
+    [CmdletBinding()] param([Parameter(Mandatory)] [string] $BaseUrl, [int] $TimeoutSec = 15)
+    # One session for every request: its connection is reused, so a slow link pays for setting
+    # one up (a round trip each for TCP and TLS) only once.
+    $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
     $settings = "$BaseUrl/.well-known/oauth-authorization-server"
-    try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec 15 -ErrorAction Stop }
+    try { $server = Invoke-RestMethod -Uri $settings -TimeoutSec $TimeoutSec -WebSession $session -ErrorAction Stop }
     catch { throw "Could not read Multiplex's sign-in settings at ${settings}: $($_.Exception.Message) Is Multiplex running and reachable at ${BaseUrl}?" }
     $issuer = "$(Get-JsonProperty $server 'issuer')".TrimEnd('/')
     if (-not $issuer) { throw "The server at $BaseUrl did not give its public address in $settings. Is it Multiplex?" }
@@ -68,7 +74,7 @@ function Get-MultiplexAccountService {
         }
         $address = "$BaseUrl/$slug/mcp"
         $metadata = "$BaseUrl/.well-known/oauth-protected-resource/$slug/mcp"
-        try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec 15 -ErrorAction Stop }
+        try { $resource = Invoke-RestMethod -Uri $metadata -TimeoutSec $TimeoutSec -WebSession $session -ErrorAction Stop }
         catch { throw "Could not read the settings of the $slug service at ${metadata}: $($_.Exception.Message)" }
         $reported = "$(Get-JsonProperty $resource 'resource')"
         if ($reported -and $reported -ne $address) {
@@ -76,6 +82,42 @@ function Get-MultiplexAccountService {
         }
         $name = "$(Get-JsonProperty $resource 'resource_name')"
         [pscustomobject]@{ Slug = "$slug"; Name = $name ? $name : "$slug"; Address = $address }
+    }
+}
+
+function Get-MultiplexServiceCompletion {
+    <#
+    What Tab offers for -Service: the services the Multiplex at -BaseUrl (by default, the one the
+    command itself would use) can add to an account, whose short or full name starts with
+    -Word, each with its full name and address as the hint. The server is asked briefly, so Tab
+    never hangs for long, and its answer is remembered for a few minutes, so only the first Tab
+    waits for it. With nothing to offer (no match, no address, no answer), it offers what was
+    typed, unchanged, with the reason as the hint: offering nothing would make PowerShell offer
+    file names instead.
+    #>
+    [CmdletBinding()] [OutputType([System.Management.Automation.CompletionResult])]
+    param([string] $BaseUrl, [string] $Word, [int] $TimeoutSec = 5)
+    $typed = "$Word".Trim("'", '"')
+    $offered = 0
+    try {
+        $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl
+        $known = $script:ServiceCompletionCache[$BaseUrl]
+        if (-not $known -or ([datetime]::UtcNow - $known.At) -gt $script:ServiceCompletionLifetime) {
+            $known = [pscustomobject]@{ At = [datetime]::UtcNow; Services = @(Get-MultiplexAccountService -BaseUrl $BaseUrl -TimeoutSec $TimeoutSec) }
+            $script:ServiceCompletionCache[$BaseUrl] = $known
+        }
+        foreach ($s in $known.Services) {
+            if ($s.Slug.StartsWith($typed, [StringComparison]::OrdinalIgnoreCase) -or $s.Name.StartsWith($typed, [StringComparison]::OrdinalIgnoreCase)) {
+                [System.Management.Automation.CompletionResult]::new($s.Slug, $s.Slug, 'ParameterValue', "$($s.Name)  $($s.Address)")
+                $offered++
+            }
+        }
+        $why = "The Multiplex at $BaseUrl has no service that can be added to an account$($typed ? " starting with '$typed'" : '')."
+    }
+    catch { $why = $_.Exception.Message }
+    if (-not $offered) {
+        # A completion must have text; a lone space leaves the line as it was.
+        [System.Management.Automation.CompletionResult]::new(($Word ? $Word : ' '), '(no service)', 'ParameterValue', $why)
     }
 }
 
@@ -121,6 +163,8 @@ function Add-MultiplexConnector {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [string] $BaseUrl,
+        # $args: the command, the parameter, the word typed, the syntax tree, the parameters typed so far.
+        [ArgumentCompleter({ Get-MultiplexServiceCompletion -BaseUrl $args[4]['BaseUrl'] -Word $args[2] })]
         [string[]] $Service,
         [ValidateSet('Claude', 'ChatGPT')] [string[]] $Agent = @('Claude', 'ChatGPT'))
     $BaseUrl = Resolve-MultiplexConnectorBaseUrl -BaseUrl $BaseUrl
