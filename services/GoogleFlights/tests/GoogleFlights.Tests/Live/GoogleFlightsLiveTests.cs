@@ -130,17 +130,6 @@ public class GoogleFlightsLiveTests(LiveClientFixture live)
     }
 
     [LiveFact]
-    public async Task A_one_way_price_graph_prices_departure_dates()
-    {
-        var search = FlightSearchRequest.OneWay("SEA", "DEN", Departure);
-
-        var graph = await live.Client.GetCalendarAsync(new CalendarRequest(search, Departure, Departure.AddDays(6)));
-
-        Assert.NotEmpty(graph.Prices);
-        Assert.All(graph.Prices, p => Assert.InRange(p.Departure, Departure, Departure.AddDays(6)));
-    }
-
-    [LiveFact]
     public async Task Prices_come_in_the_currency_asked_for()
     {
         var result = await live.Client.SearchAsync(FlightSearchRequest.OneWay("SEA", "SFO", Departure) with { Currency = "EUR" });

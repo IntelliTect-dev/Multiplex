@@ -62,11 +62,9 @@ internal static class RequestEncoder
     public static string BookingResults(FlightSelection selection) =>
         Serialize(new JsonArray(new JsonArray(null, selection.Token), Filter(selection.Request, selection.ChosenLegs), null, 0));
 
-    /// <summary><c>GetCalendarGraph</c>: one price per departure date, for a fixed trip length on a round trip.</summary>
-    public static string CalendarGraph(FlightSearchRequest request, DateOnly from, DateOnly to, int? tripDays) =>
-        Serialize(new JsonArray(
-            null, Filter(request), new JsonArray(Date(from), Date(to)), null,
-            tripDays is { } days ? new JsonArray(days, days) : null));
+    /// <summary><c>GetCalendarGraph</c>: one price per departure date, for a round trip of a fixed length.</summary>
+    public static string CalendarGraph(FlightSearchRequest request, DateOnly from, DateOnly to, int tripDays) =>
+        Serialize(new JsonArray(null, Filter(request), new JsonArray(Date(from), Date(to)), null, new JsonArray(tripDays, tripDays)));
 
     /// <summary><c>GetCalendarGrid</c>: departure dates by return dates, for a round trip.</summary>
     public static string CalendarGrid(FlightSearchRequest request, DateOnly departFrom, DateOnly departTo, DateOnly returnFrom, DateOnly returnTo) =>
