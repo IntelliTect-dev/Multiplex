@@ -27,9 +27,9 @@ public static class GoogleFlightsDocs
         "Booking options are always fetched fresh, never from the cache; verify changes nothing here. Nothing is booked.";
 
     public const string GetPriceCalendar =
-        "Lists the lowest price for each departure date in a range, for a one-way or round trip. A round trip keeps " +
-        "trip_length_days fixed, or, given return_date_from and return_date_to, prices every departure-by-return pair. " +
-        "Use it to find the cheapest dates before searching." + VerifyNote;
+        "Lists the lowest round-trip price for each departure date in a range: with trip_length_days fixed, or, given " +
+        "return_date_from and return_date_to, for every departure-by-return pair. Use it to find the cheapest dates " +
+        "before searching. One-way calendars are not available yet." + VerifyNote;
 
     public const string LookupAirport =
         "Finds airports for a place name, city or code, as Google Flights' own airport box does, e.g. 'Denver', 'Paris' or " +
@@ -97,7 +97,7 @@ public static class GoogleFlightsDocs
 
     public const string DepartureDateTo = "Last departure date to price, yyyy-MM-dd.";
 
-    public const string TripLengthDays = "For a round trip: days between departure and return. Omit for one way.";
+    public const string TripLengthDays = "Days between departure and return. Give this or the return date range.";
 
     public const string ReturnDateFrom = "For a round trip's date grid: first return date, yyyy-MM-dd.";
 
