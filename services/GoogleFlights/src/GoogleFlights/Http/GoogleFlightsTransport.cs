@@ -140,15 +140,10 @@ internal sealed class GoogleFlightsTransport : IDisposable
         var status = (int)response.StatusCode;
         var location = response.Headers.Location?.ToString() ?? "";
 
-        var framed = ResponseFrames.TryParse(text, out var frames);
-        if (location.Contains("/sorry/", StringComparison.OrdinalIgnoreCase)
-            || (!framed && text.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase)))
-        {
-            var until = _gate.Refused();
-            throw new GoogleFlightsThrottledException(
-                "Google Flights is asking for a check that a person must clear in a browser (\"unusual traffic\"). The client never clears it; it has stopped sending requests.",
-                ThrottleReason.Challenge, until);
-        }
+        // Every block signal in the status or headers is read before the body is parsed, so a body that fails
+        // to parse can never hide one.
+        if (location.Contains("/sorry/", StringComparison.OrdinalIgnoreCase))
+            throw Challenge();
 
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
@@ -177,8 +172,12 @@ internal sealed class GoogleFlightsTransport : IDisposable
                 : $"Google Flights answered HTTP {status} where an answer was expected.");
         }
 
-        if (!framed)
-            throw new GoogleFlightsFormatException("Google Flights' answer was not in its usual framed format.");
+        if (!ResponseFrames.TryParse(text, out var frames))
+        {
+            throw text.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase)
+                ? Challenge()
+                : new GoogleFlightsFormatException("Google Flights' answer was not in its usual framed format.");
+        }
 
         if (frames.Errors.Count > 0 && frames.Payloads.Count == 0)
         {
@@ -204,6 +203,10 @@ internal sealed class GoogleFlightsTransport : IDisposable
         _gate.Answered();
         return frames;
     }
+
+    private GoogleFlightsThrottledException Challenge() => new(
+        "Google Flights is asking for a check that a person must clear in a browser (\"unusual traffic\"). The client never clears it; it has stopped sending requests.",
+        ThrottleReason.Challenge, _gate.Refused());
 
     private DateTimeOffset? RetryAfter(HttpResponseMessage response)
     {
