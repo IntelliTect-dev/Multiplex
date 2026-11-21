@@ -25,38 +25,40 @@ public static class ConnectHtml
 
     private static string E(string? s) => WebUtility.HtmlEncode(s ?? "");
 
-    public static string Gate(string nonce, ISiteSignInDefinition site, PendingAuthorization pending, FormToken token, string? error)
-    {
-        var errorHtml = error is null ? "" : $"""<p class="error" role="alert">{E(error)}</p>""";
-        return Page(nonce, $"Connect to {site.DisplayName}", $"""
-            <h1>Connect {E(pending.ClientName)} to {E(site.DisplayName)}</h1>
-            <p><strong>{E(pending.ClientName)}</strong> wants to connect to your <strong>{E(site.DisplayName)}</strong> account.</p>
-            {(pending.ReturnsTo is { } back ? $"<p>Afterwards you go back to <strong>{E(back)}</strong>. Continue only if that is the app you are connecting.</p>" : "")}
-            <form method="post" action="/connect/{E(site.Slug)}?p={Uri.EscapeDataString(pending.Id)}" class="card">
-              {token.Html}
-              <label for="passcode">Multiplex passcode</label>
-              <input id="passcode" name="passcode" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
-              {errorHtml}
-              <button type="submit">Continue</button>
-            </form>
-            <p class="muted">Next you will sign in on {E(site.DisplayName)}'s own page, shown live here. Your {E(site.DisplayName)} password is not stored by this server.</p>
-            {CancelForm(site, token, "p", pending.Id, "Not now")}
-            """);
-    }
-
     /// <summary>
-    /// After the passcode: the only way on is to sign in. No account the server already holds a
-    /// session for is shown or offered; every connection signs in as its own account.
+    /// For a service that acts on a person's site account: who is asking, for whom, and the only way on,
+    /// which is to sign in to the site. No account the server already holds a session for is shown or
+    /// offered; every connection signs in as its own account.
     /// </summary>
-    public static string SignIn(string nonce, ISiteSignInDefinition site, PendingAuthorization pending, FormToken token) =>
+    public static string SignIn(string nonce, ISiteSignInDefinition site, PendingAuthorization pending, string personEmail, FormToken token) =>
         Page(nonce, $"Connect to {site.DisplayName}", $"""
             <h1>Connect {E(pending.ClientName)} to {E(site.DisplayName)}</h1>
+            <p><strong>{E(pending.ClientName)}</strong> wants to use your <strong>{E(site.DisplayName)}</strong> account, for <strong>{E(personEmail)}</strong>.</p>
+            {ReturnsTo(pending)}
             <form method="post" action="/connect/{E(site.Slug)}/start?p={Uri.EscapeDataString(pending.Id)}" data-busy="Opening {E(site.DisplayName)}…">
               {token.Html}
               <button type="submit">Sign in to {E(site.DisplayName)}</button>
             </form>
-            {CancelForm(site, token, "p", pending.Id, "Cancel")}
+            <p class="muted">You sign in on {E(site.DisplayName)}'s own page, shown live here. Your {E(site.DisplayName)} password is not stored by this server.</p>
+            {CancelForm(site.Slug, token, "p", pending.Id, "Cancel")}
             """, BusyScript);
+
+    /// <summary>For a service that uses no site account: allowing the app is all there is to connecting it.</summary>
+    public static string Consent(string nonce, PendingAuthorization pending, string personEmail, FormToken token) =>
+        Page(nonce, $"Connect to {pending.ServiceName}", $"""
+            <h1>Connect {E(pending.ClientName)} to {E(pending.ServiceName)}</h1>
+            <p><strong>{E(pending.ClientName)}</strong> wants to use <strong>{E(pending.ServiceName)}</strong> on this Multiplex server, for <strong>{E(personEmail)}</strong>.</p>
+            {ReturnsTo(pending)}
+            <form method="post" action="/connect/{E(pending.Site)}/allow?p={Uri.EscapeDataString(pending.Id)}">
+              {token.Html}
+              <button type="submit">Allow</button>
+            </form>
+            {CancelForm(pending.Site, token, "p", pending.Id, "Cancel")}
+            """);
+
+    private static string ReturnsTo(PendingAuthorization pending) => pending.ReturnsTo is { } back
+        ? $"<p>Afterwards you go back to <strong>{E(back)}</strong>. Continue only if that is the app you are connecting.</p>"
+        : "";
 
     public static string Live(string nonce, LiveSignInAttempt attempt, FormToken token)
     {
@@ -71,7 +73,7 @@ public static class ConnectHtml
             <div id="bar" class="bar">
               <div class="row top">
                 <span id="host" class="host" title="The site shown below">{E(site.DisplayName)}</span>
-                {CancelForm(site, token, "a", attempt.Id, "Cancel", "cancel-inline")}
+                {CancelForm(site.Slug, token, "a", attempt.Id, "Cancel", "cancel-inline")}
               </div>
               <p id="status" class="status" role="status" aria-live="polite">{E(attempt.StatusMessage)}</p>
               <div class="row type">
@@ -120,11 +122,11 @@ public static class ConnectHtml
               {token.Html}
               <button type="submit">Try again</button>
             </form>
-            {CancelForm(site, token, "p", pendingId, "Cancel")}
+            {CancelForm(site.Slug, token, "p", pendingId, "Cancel")}
             """);
 
-    private static string CancelForm(ISiteSignInDefinition site, FormToken token, string key, string value, string label, string cssClass = "") => $"""
-        <form method="post" action="/connect/{E(site.Slug)}/cancel?{key}={Uri.EscapeDataString(value)}" class="cancel {cssClass}">
+    private static string CancelForm(string slug, FormToken token, string key, string value, string label, string cssClass = "") => $"""
+        <form method="post" action="/connect/{E(slug)}/cancel?{key}={Uri.EscapeDataString(value)}" class="cancel {cssClass}">
           {token.Html}
           <button type="submit" class="link">{E(label)}</button>
         </form>

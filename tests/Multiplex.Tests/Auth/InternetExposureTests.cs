@@ -6,11 +6,18 @@ using Multiplex.Web.Sites;
 namespace Multiplex.Tests.Auth;
 
 /// <summary>
-/// Once a tunnel publishes the server, endpoints without sign-in must not be reachable from the
-/// internet, and lockouts/rate limits must key on the real caller rather than on the tunnel.
+/// Once a tunnel publishes the server, every MCP endpoint needs a token from the internet (a service
+/// that uses no site account, like Time, is tokenless only from this PC), and lockouts/rate limits
+/// must key on the real caller rather than on the tunnel.
 /// </summary>
 public class InternetExposureTests : IClassFixture<AuthTestApp>
 {
+    private const string TimeChallenge =
+        "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/time/mcp\", scope=\"time\"";
+
+    private const string TripItChallenge =
+        "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/tripit/mcp\", scope=\"tripit\"";
+
     private readonly AuthTestApp _app;
     public InternetExposureTests(AuthTestApp app) => _app = app;
 
@@ -25,26 +32,32 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
         return request;
     }
 
+    private static void AssertChallenged(HttpResponseMessage response, string challenge)
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(challenge, response.Headers.NonValidated["WWW-Authenticate"].ToString());
+    }
+
     [Fact]
-    public async Task OpenEndpoint_ThroughATunnel_IsNotFound()
+    public async Task Time_ThroughATunnel_WithoutAToken_IsChallenged()
     {
         using var request = Initialize("/time/mcp");
         request.Headers.Add("X-Forwarded-For", "203.0.113.7");
         var response = await _app.Client().SendAsync(request);
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        AssertChallenged(response, TimeChallenge);
     }
 
     [Fact]
-    public async Task OpenEndpoint_UnderThePublicHostName_IsNotFound()
+    public async Task Time_UnderThePublicHostName_WithoutAToken_IsChallenged()
     {
         using var request = Initialize("/time/mcp");
         request.Headers.Host = "box.example.ts.net";
         var response = await _app.Client().SendAsync(request);
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        AssertChallenged(response, TimeChallenge);
     }
 
     [Fact]
-    public async Task OpenEndpoint_FromThisPc_StillWorks()
+    public async Task Time_FromThisPc_StillWorksWithoutAToken()
     {
         using var request = Initialize("/time/mcp");
         request.Headers.Host = "localhost";
@@ -56,23 +69,35 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
     [InlineData("https://evil.example")]
     [InlineData("null")]
     [InlineData("http://localhost.evil.example")]
-    public async Task OpenEndpoint_FromAWebPageThatIsNotLocal_IsNotFound(string origin)
+    public async Task Time_FromAWebPageThatIsNotLocal_WithoutAToken_IsChallenged(string origin)
     {
         using var request = Initialize("/time/mcp");
         request.Headers.Host = "localhost";
         request.Headers.Add("Origin", origin);
         var response = await _app.Client().SendAsync(request);
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        AssertChallenged(response, TimeChallenge);
     }
 
     [Fact]
-    public async Task OpenEndpoint_FromALocalWebPage_StillWorks()
+    public async Task Time_FromALocalWebPage_StillWorksWithoutAToken()
     {
         using var request = Initialize("/time/mcp");
         request.Headers.Host = "localhost";
         request.Headers.Add("Origin", "http://localhost:6274");
         var response = await _app.Client().SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnregisteredMcpEndpoint_IsNotFound_FromThisPcAndThroughATunnel(bool throughTunnel)
+    {
+        using var request = Initialize("/nosuch/mcp");
+        request.Headers.Host = "localhost";
+        if (throughTunnel) request.Headers.Add("X-Forwarded-For", "203.0.113.7");
+        var response = await _app.Client().SendAsync(request);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Theory]
@@ -107,13 +132,16 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
         Assert.True(RequestOrigin.IsFromOutsideThisPc(context));
     }
 
-    [Fact]
-    public async Task AuthenticatedEndpoint_ThroughATunnel_StillChallenges()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SiteAccountEndpoint_WithoutAToken_IsChallenged_ThroughATunnelAndFromThisPc(bool throughTunnel)
     {
         using var request = Initialize("/tripit/mcp");
-        request.Headers.Add("X-Forwarded-For", "203.0.113.7");
+        request.Headers.Host = "localhost";
+        if (throughTunnel) request.Headers.Add("X-Forwarded-For", "203.0.113.7");
         var response = await _app.Client().SendAsync(request);
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        AssertChallenged(response, TripItChallenge);
     }
 
     [Theory]

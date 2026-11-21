@@ -1,10 +1,8 @@
 #Requires -Version 7.2
-# Helpers for installing Multiplex on this PC: configuration, the owner passcode, the
-# Claude Desktop bridge entry, the tunnel, and endpoint checks. Install-Multiplex.ps1 and
-# Start-Multiplex.ps1 use them; Install-Multiplex.Tests.ps1 tests them.
+# Helpers for installing Multiplex on this PC: configuration, the Microsoft sign-in setup
+# check, the Claude Desktop bridge entry, the tunnel, and endpoint checks. Install-Multiplex.ps1
+# and Start-Multiplex.ps1 use them; Install-Multiplex.Tests.ps1 tests them.
 Set-StrictMode -Version Latest
-
-$script:Pbkdf2Iterations = 210000
 
 function Get-MultiplexRoot {
     <#
@@ -54,62 +52,36 @@ function Get-MultiplexRootProblem {
     return $null
 }
 
-function New-MultiplexPasscode {
-    <# A random passcode that is easy to type on a phone: 4 groups of 4 lowercase letters/digits. #>
-    [CmdletBinding()] [OutputType([string])] param()
-    $alphabet = 'abcdefghjkmnpqrstuvwxyz23456789'   # no l/1/i/o/0
-    $groups = foreach ($g in 1..4) {
-        -join (1..4 | ForEach-Object { $alphabet[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alphabet.Length)] })
-    }
-    return $groups -join '-'
-}
-
-function ConvertTo-MultiplexPasscodeHash {
-    <# Hash format shared with the server: pbkdf2-sha256$<iterations>$<saltBase64>$<hashBase64> #>
-    [CmdletBinding()] [OutputType([string])]
-    param([Parameter(Mandatory)] [string] $Passcode, [int] $Iterations = $script:Pbkdf2Iterations, [byte[]] $Salt)
-    if (-not $Salt) { $Salt = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(16) }
-    $hash = [System.Security.Cryptography.Rfc2898DeriveBytes]::Pbkdf2(
-        [System.Text.Encoding]::UTF8.GetBytes($Passcode), $Salt, $Iterations,
-        [System.Security.Cryptography.HashAlgorithmName]::SHA256, 32)
-    return 'pbkdf2-sha256${0}${1}${2}' -f $Iterations, [Convert]::ToBase64String($Salt), [Convert]::ToBase64String($hash)
-}
-
-function Test-MultiplexPasscodeHash {
-    [CmdletBinding()] [OutputType([bool])]
-    param([Parameter(Mandatory)] [string] $Passcode, [Parameter(Mandatory)] [string] $Hash)
-    $parts = $Hash.Split('$')
-    if ($parts.Count -ne 4 -or $parts[0] -ne 'pbkdf2-sha256') { return $false }
-    $expected = [Convert]::FromBase64String($parts[3])
-    $actual = [System.Security.Cryptography.Rfc2898DeriveBytes]::Pbkdf2(
-        [System.Text.Encoding]::UTF8.GetBytes($Passcode), [Convert]::FromBase64String($parts[2]), [int]$parts[1],
-        [System.Security.Cryptography.HashAlgorithmName]::SHA256, $expected.Length)
-    return [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($actual, $expected)
-}
-
-function Save-MultiplexPasscodeSecret {
-    <# Keeps the plaintext passcode for the owner only, encrypted with Windows DPAPI (current user). #>
-    [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)] [string] $Passcode, [Parameter(Mandatory)] [string] $Path)
-    if ($PSCmdlet.ShouldProcess($Path, 'Save the owner passcode (DPAPI, current user)')) {
-        $secure = ConvertTo-SecureString -String $Passcode -AsPlainText -Force
-        New-Item -ItemType Directory -Force -Path (Split-Path $Path) | Out-Null
-        Set-Content -LiteralPath $Path -Value (ConvertFrom-SecureString -SecureString $secure) -NoNewline
-    }
-}
-
-function Read-MultiplexPasscodeSecret {
-    [CmdletBinding()] [OutputType([string])] param([Parameter(Mandatory)] [string] $Path)
-    $secure = ConvertTo-SecureString -String (Get-Content -LiteralPath $Path -Raw)
-    return [System.Net.NetworkCredential]::new('', $secure).Password
-}
-
 function Read-MultiplexConfig {
     [CmdletBinding()] param([Parameter(Mandatory)] [string] $Path)
     if (-not (Test-Path -LiteralPath $Path)) {
-        return [ordered]@{ Port = 5190; PublicBaseUrl = $null; Tunnel = 'None'; PasscodeHash = $null }
+        return [ordered]@{ Port = 5190; PublicBaseUrl = $null; Tunnel = 'None' }
     }
     return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+}
+
+function Remove-MultiplexRetiredSetting {
+    <#
+    Drops what an earlier install left behind that nothing uses any more, with one line for each:
+    the TripIt account list (#52: each connection uses the TripIt account signed in while it is
+    added) and the owner passcode (#80: people sign in with Microsoft), both its hash in -Config
+    and the saved passcode.dpapi in -Root. Changes -Config in place; the caller writes it.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Config, [Parameter(Mandatory)] [string] $Root)
+    if ($Config.Contains('AllowedAccounts')) {
+        $Config.Remove('AllowedAccounts')
+        Write-Host 'The TripIt account list in the configuration is no longer used: each connection uses the TripIt account signed in while it is added. Removing the list.'
+    }
+    if ($Config.Contains('PasscodeHash')) {
+        $Config.Remove('PasscodeHash')
+        Write-Host 'The owner passcode in the configuration is no longer used: people sign in with Microsoft. Removing it.'
+    }
+    $savedPasscode = Join-Path $Root 'passcode.dpapi'
+    if (Test-Path -LiteralPath $savedPasscode) {
+        Write-Host "The saved owner passcode ($savedPasscode) is no longer used: people sign in with Microsoft. Removing it."
+        if ($PSCmdlet.ShouldProcess($savedPasscode, 'Remove the saved owner passcode')) { Remove-Item -LiteralPath $savedPasscode -Force }
+    }
 }
 
 function Write-MultiplexConfig {
@@ -126,19 +98,68 @@ function Write-MultiplexConfig {
 function Get-MultiplexServerEnvironment {
     <#
     The environment variables Start-Multiplex.ps1 sets before launching the server. An account
-    list left in the configuration by an earlier install is not passed on: there is none any more.
+    list or a passcode hash left in the configuration by an earlier install is not passed on:
+    there is none any more. Microsoft sign-in (Multiplex__Identity__*) is neither set nor cleared
+    here: the owner sets it for their Windows account and the server inherits it from there.
     #>
     [CmdletBinding()] [OutputType([System.Collections.Specialized.OrderedDictionary])]
     param([Parameter(Mandatory)] [System.Collections.IDictionary] $Config, [Parameter(Mandatory)] [string] $Root)
     return [ordered]@{
-        ASPNETCORE_ENVIRONMENT        = 'Production'
+        ASPNETCORE_ENVIRONMENT   = 'Production'
         # "localhost" makes Kestrel listen on both 127.0.0.1 and ::1; binding only 127.0.0.1 costs
         # every client that resolves localhost to ::1 first a ~2 s connection retry.
-        ASPNETCORE_URLS               = "http://localhost:$($Config.Port)"
-        Multiplex__DataPath           = Join-Path $Root 'data'
-        Multiplex__PublicBaseUrl      = ($Config.PublicBaseUrl ?? "http://localhost:$($Config.Port)").TrimEnd('/')
-        Multiplex__Gate__PasscodeHash = $Config.PasscodeHash
+        ASPNETCORE_URLS          = "http://localhost:$($Config.Port)"
+        Multiplex__DataPath      = Join-Path $Root 'data'
+        Multiplex__PublicBaseUrl = ($Config.PublicBaseUrl ?? "http://localhost:$($Config.Port)").TrimEnd('/')
     }
+}
+
+# Microsoft sign-in, which the owner sets for their own Windows account (User scope) and the
+# Multiplex task inherits; never written by the installer, never committed. Each with the
+# expression the owner runs to supply it: typed at a prompt, so the line runs as shown and the
+# value never lands in shell history (the client secret at a masked prompt).
+$script:SignInSettings = [ordered]@{
+    'Multiplex__Identity__Microsoft__ClientId'     = "(Read-Host 'Application (client) ID')"
+    'Multiplex__Identity__Microsoft__ClientSecret' = "(Read-Host -MaskInput 'Client secret')"
+    'Multiplex__Identity__AllowedEmails'           = "(Read-Host 'Allowed emails or domains, separated by ;')"
+}
+
+function Test-MultiplexEnvironmentVariable {
+    <#
+    Whether environment variable -Name is set for this process or for the Windows account (User
+    scope). Only asks whether it exists: its value is never read.
+    #>
+    [CmdletBinding()] [OutputType([bool])] param([Parameter(Mandatory)] [string] $Name)
+    if (Test-Path -LiteralPath "Env:$Name") { return $true }
+    if (-not $IsWindows) { return $false }
+    $userEnvironment = Get-Item -LiteralPath 'HKCU:\Environment' -ErrorAction SilentlyContinue
+    return [bool]($userEnvironment -and ($userEnvironment.GetValueNames() -contains $Name))
+}
+
+function Get-MultiplexSignInSetupWarning {
+    <#
+    What the owner still has to do before anyone outside this PC can sign in, or nothing once
+    Microsoft sign-in is set up: the settings set neither for this process nor for the Windows
+    account, the line that sets each for the account, and the restart of the Multiplex task that
+    picks them up. Only tests whether each is set; never reads or prints a value.
+    #>
+    [CmdletBinding()] [OutputType([string])] param()
+    $missing = @($script:SignInSettings.Keys | Where-Object { -not (Test-MultiplexEnvironmentVariable -Name $_) })
+    if (-not $missing) { return $null }
+    $lines = @(
+        "Microsoft sign-in is not set up, so nobody outside this PC can sign in until it is: $($missing -join ', ') " +
+            "$(if ($missing.Count -eq 1) { 'is' } else { 'are' }) not set. Set each for your Windows account, in PowerShell 7:"
+        foreach ($name in $missing) { "  [Environment]::SetEnvironmentVariable('$name', $($script:SignInSettings[$name]), 'User')" }
+        'Then run this installer again: it restarts Multiplex, which then picks them up:'
+        '  ./scripts/Install-Multiplex.ps1')
+    return $lines -join [Environment]::NewLine
+}
+
+function Get-MultiplexMicrosoftRedirectUri {
+    <# The redirect URI to register for Microsoft sign-in: <public address>/signin-microsoft, or nothing without a public address. #>
+    [CmdletBinding()] [OutputType([string])] param([string] $PublicBaseUrl)
+    if (-not $PublicBaseUrl) { return $null }
+    return "$($PublicBaseUrl.TrimEnd('/'))/signin-microsoft"
 }
 
 function Set-ClaudeDesktopBridge {
@@ -646,17 +667,6 @@ function Update-MultiplexApp {
     Remove-Item -LiteralPath $previous -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-function Resolve-MultiplexPasscode {
-    <#
-    The owner passcode for a connect check: -Passcode when given, else $env:MULTIPLEX_PASSCODE, so
-    it need not appear on a command line (process lists, shell history). Never prints it.
-    #>
-    [CmdletBinding()] [OutputType([string])] param([string] $Passcode)
-    if ($Passcode) { return $Passcode }
-    if ($env:MULTIPLEX_PASSCODE) { return $env:MULTIPLEX_PASSCODE }
-    throw 'No owner passcode: set $env:MULTIPLEX_PASSCODE (for example to the output of ./scripts/Install-Multiplex.ps1 -ShowPasscode) or pass -Passcode.'
-}
-
 function Test-MultiplexEndpoint {
     <#
     Checks, without signing in, that an authenticated MCP endpoint is set up the way Claude and
@@ -701,4 +711,4 @@ function Test-MultiplexEndpoint {
     return $results
 }
 
-Export-ModuleMember -Function *-Multiplex*, Set-ClaudeDesktopBridge, Get-QuickTunnelUrl, ConvertTo-MultiplexPasscodeHash
+Export-ModuleMember -Function *-Multiplex*, Set-ClaudeDesktopBridge, Get-QuickTunnelUrl

@@ -71,10 +71,10 @@ public interface ILinkedInApi
     Task ReplyAsync(string conversationId, string text, CancellationToken ct);
 }
 
-/// <summary>Creates the <see cref="ILinkedInApi"/> of one account for one request.</summary>
+/// <summary>Creates the <see cref="ILinkedInApi"/> of one person's account for one request.</summary>
 public interface ILinkedInApiFactory
 {
-    Task<ILinkedInApi> CreateAsync(string accountId, IServiceProvider requestServices, CancellationToken ct);
+    Task<ILinkedInApi> CreateAsync(string owner, string accountId, IServiceProvider requestServices, CancellationToken ct);
 }
 
 /// <summary>LinkedIn refused or failed a request; <see cref="Exception.Message"/> is short and safe to show.</summary>

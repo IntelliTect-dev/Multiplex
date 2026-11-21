@@ -1,10 +1,9 @@
 namespace Multiplex.Web.SignIn;
 
 /// <summary>
-/// There is no list of site accounts any more: each connection is bound to the account signed in
-/// while it was added, and the connect passcode is the gate. A
-/// <c>Multiplex:Sites:{slug}:AllowedAccounts</c> left by an earlier install is ignored; when the
-/// server starts it says so in one log line, rather than failing or quietly doing nothing.
+/// There is no list of site accounts any more: each connection is bound to the site account its person
+/// signed in to while adding it. A <c>Multiplex:Sites:{slug}:AllowedAccounts</c> left by an earlier install
+/// is ignored; when the server starts it says so in one log line, rather than failing or quietly doing nothing.
 /// </summary>
 public sealed class RetiredAccountListNotice(IConfiguration config, ILogger<RetiredAccountListNotice> logger) : IHostedService
 {
@@ -18,8 +17,8 @@ public sealed class RetiredAccountListNotice(IConfiguration config, ILogger<Reti
         if (settings.Count > 0)
         {
             logger.LogWarning(
-                "{Settings} is no longer used and is ignored: each connection uses the account signed in while it was added, " +
-                "behind the connect passcode. It can be removed from the configuration.",
+                "{Settings} is no longer used and is ignored: each connection uses the account its person signed in to " +
+                "while adding it. It can be removed from the configuration.",
                 string.Join(", ", settings));
         }
         return Task.CompletedTask;

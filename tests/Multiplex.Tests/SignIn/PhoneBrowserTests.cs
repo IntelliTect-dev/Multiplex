@@ -1,15 +1,16 @@
 using System.Text;
 using System.Text.Json.Serialization;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.SignIn;
 using PuppeteerSharp;
 
 namespace Multiplex.Tests.SignIn;
 
 /// <summary>
-/// The whole connect flow as a phone sees it: a second Chromium, emulating a touch phone,
-/// opens the real connect pages over real HTTP, enters the passcode, taps on the mirrored
-/// image and types into the page's own text field. Covers the page's script, CSP, cookies and
-/// the WebSocket on Kestrel. Set MULTIPLEX_SIGNIN_SCREENSHOTS to a folder to keep screenshots.
+/// The whole connect flow as a phone sees it: a second Chromium, emulating a touch phone and
+/// signed in to Multiplex, opens the real connect pages over real HTTP, starts the sign-in, taps on
+/// the mirrored image and types into the page's own text field. Covers the page's script, CSP,
+/// cookies and the WebSocket on Kestrel. Set MULTIPLEX_SIGNIN_SCREENSHOTS to a folder to keep screenshots.
 /// </summary>
 [Collection(SignInBrowserCollection.Name)]
 public sealed class PhoneBrowserTests
@@ -46,7 +47,18 @@ public sealed class PhoneBrowserTests
                 ? e.Request.RespondAsync(new ResponseData { Status = System.Net.HttpStatusCode.OK, ContentType = "text/html", Body = "<h1>Back in the app</h1>" })
                 : e.Request.ContinueAsync();
 
-            var step = "gate";
+            // The phone is signed in to Multiplex (as if it had just come back from Microsoft).
+            var (_, cookie) = await TestPeople.SignInAsync(host.Services);
+            var separator = cookie.IndexOf('=');
+            await page.SetCookieAsync(new CookieParam
+            {
+                Name = cookie[..separator],
+                Value = cookie[(separator + 1)..],
+                Url = baseUrl.AbsoluteUri,
+                HttpOnly = true,
+            });
+
+            var step = "connect page";
             try
             {
                 await RunFlowAsync(host, page, baseUrl, console, s => step = s);
@@ -72,12 +84,13 @@ public sealed class PhoneBrowserTests
     private static async Task RunFlowAsync(SignInTestHost host, IPage page, Uri baseUrl, StringBuilder console, Action<string> step)
     {
         {
-            // Gate.
+            // Connect page: who is asking, for whom, and the button that starts the site's sign-in.
             await page.GoToAsync(new Uri(baseUrl, "/connect/stub?p=p1").AbsoluteUri);
-            Assert.Contains("wants to connect to your", await page.GetContentAsync());
-            await ScreenshotAsync(page, "1-gate");
-            await page.TypeAsync("#passcode", SignInTestHost.Passcode);
-            await Task.WhenAll(page.WaitForNavigationAsync(), TapAsync(page, "main form.card button[type=submit]"));
+            var connectPage = await page.GetContentAsync();
+            Assert.Contains("wants to use your", connectPage);
+            Assert.Contains(TestPeople.Owner, connectPage);
+            await ScreenshotAsync(page, "1-connect");
+            await Task.WhenAll(page.WaitForNavigationAsync(), TapAsync(page, "main form[action^='/connect/stub/start'] button[type=submit]"));
 
             // Live page: wait for a mirrored frame that matches the size the phone asked for.
             step("live page: first frame");
@@ -119,7 +132,8 @@ public sealed class PhoneBrowserTests
 
             step("checks");
             var completed = Assert.Single(host.Completer.Completed);
-            Assert.Equal(StubLoginSite.AccountId, completed.Account.AccountId);
+            Assert.Equal(TestPeople.OwnerOf(), completed.Owner);
+            Assert.Equal(StubLoginSite.AccountId, completed.Account?.AccountId);
             Assert.DoesNotContain("pageerror", console.ToString());
             Assert.DoesNotContain("Content Security Policy", console.ToString());
         }

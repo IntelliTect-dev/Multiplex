@@ -8,43 +8,21 @@ BeforeAll {
         $listener.Start()
         try { $listener.LocalEndpoint.Port } finally { $listener.Stop() }
     }
-}
-
-Describe 'owner passcode' {
-    It 'generates phone-friendly passcodes without look-alike characters' {
-        $p = New-MultiplexPasscode
-        $p | Should -Match '^[a-z2-9]{4}(-[a-z2-9]{4}){3}$'
-        $p | Should -Not -Match '[lio01]'
+    # The real installer in its own process, into a throwaway folder: -WhatIf skips the publish,
+    # the configuration write and removing anything; -NoScheduledTask and -NoStart leave the
+    # logon task and any running server alone. It inherits this process's environment.
+    function Invoke-Install([string] $Root) {
+        $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'Install-Multiplex.ps1') `
+            -Root $Root -NoScheduledTask -NoStart -WhatIf *>&1 | Out-String
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     }
-
-    It 'hashes in the server format and verifies the same passcode only' {
-        $hash = ConvertTo-MultiplexPasscodeHash -Passcode 'abcd-efgh-jkmn-pqrs'
-        $hash | Should -Match '^pbkdf2-sha256\$210000\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$'
-        Test-MultiplexPasscodeHash -Passcode 'abcd-efgh-jkmn-pqrs' -Hash $hash | Should -BeTrue
-        Test-MultiplexPasscodeHash -Passcode 'abcd-efgh-jkmn-pqrt' -Hash $hash | Should -BeFalse
-    }
-
-    It 'salts every hash' {
-        (ConvertTo-MultiplexPasscodeHash -Passcode 'x') | Should -Not -Be (ConvertTo-MultiplexPasscodeHash -Passcode 'x')
-    }
-
-    It 'matches a known PBKDF2-SHA256 vector so the server can verify it' {
-        # RFC 7914 section 11 test vector (P="passwd", S="salt", c=1, dkLen=64), first 32 bytes.
-        $hash = ConvertTo-MultiplexPasscodeHash -Passcode 'passwd' -Iterations 1 -Salt ([Text.Encoding]::UTF8.GetBytes('salt'))
-        $bytes = [Convert]::FromBase64String($hash.Split('$')[3])
-        [Convert]::ToHexString($bytes).ToLowerInvariant() | Should -Be '55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc'
-    }
-
-    It 'rejects malformed hashes' {
-        Test-MultiplexPasscodeHash -Passcode 'x' -Hash 'sha1$1$a$b' | Should -BeFalse
-        Test-MultiplexPasscodeHash -Passcode 'x' -Hash 'garbage' | Should -BeFalse
-    }
-
-    It 'round-trips the saved secret for the current user only (DPAPI)' -Skip:(-not $IsWindows) {
-        $path = Join-Path $TestDrive 'passcode.dpapi'
-        Save-MultiplexPasscodeSecret -Passcode 'abcd-efgh-jkmn-pqrs' -Path $path
-        (Get-Content -LiteralPath $path -Raw) | Should -Not -Match 'abcd'
-        Read-MultiplexPasscodeSecret -Path $path | Should -Be 'abcd-efgh-jkmn-pqrs'
+    $script:signInNames = 'Multiplex__Identity__Microsoft__ClientId', 'Multiplex__Identity__Microsoft__ClientSecret', 'Multiplex__Identity__AllowedEmails'
+    # Sets a variable of this process (and so of the processes it starts), or removes it for $null.
+    # Not [Environment]::SetEnvironmentVariable: from PowerShell its $null arrives as '', which
+    # leaves the variable set, empty.
+    function Set-ProcessVariable([string] $Name, $Value) {
+        if ($null -eq $Value) { Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue }
+        else { Set-Item -LiteralPath "Env:$Name" -Value $Value }
     }
 }
 
@@ -59,11 +37,9 @@ Describe 'configuration' {
         $path = Join-Path $TestDrive 'multiplex.config.json'
         $c = Read-MultiplexConfig -Path $path
         $c.PublicBaseUrl = 'https://box.example.ts.net/'
-        $c.PasscodeHash = 'pbkdf2-sha256$1$a$b'
         Write-MultiplexConfig -Config $c -Path $path
         $env = Get-MultiplexServerEnvironment -Config (Read-MultiplexConfig -Path $path) -Root 'C:\M'
         $env['Multiplex__PublicBaseUrl'] | Should -Be 'https://box.example.ts.net'
-        $env['Multiplex__Gate__PasscodeHash'] | Should -Be 'pbkdf2-sha256$1$a$b'
         $env['ASPNETCORE_URLS'] | Should -Be 'http://localhost:5190'
         $env['Multiplex__DataPath'] | Should -Be (Join-Path 'C:\M' 'data')
     }
@@ -71,6 +47,225 @@ Describe 'configuration' {
     It 'falls back to the local address when there is no public one' {
         $c = Read-MultiplexConfig -Path (Join-Path $TestDrive 'none2.json')
         (Get-MultiplexServerEnvironment -Config $c -Root 'C:\M')['Multiplex__PublicBaseUrl'] | Should -Be 'http://localhost:5190'
+    }
+
+    It 'a new configuration has no passcode' {
+        (Read-MultiplexConfig -Path (Join-Path $TestDrive 'new-no-passcode.json')).Contains('PasscodeHash') | Should -BeFalse
+    }
+
+    It 'passes no passcode to the server, even from a configuration an earlier install left one in' {
+        $c = Read-MultiplexConfig -Path (Join-Path $TestDrive 'old-passcode.json')
+        $c.PasscodeHash = 'pbkdf2-sha256$1$a$b'
+        $vars = Get-MultiplexServerEnvironment -Config $c -Root 'C:\M'
+        $vars.Keys | Should -Not -Contain 'Multiplex__Gate__PasscodeHash'
+        @($vars.Keys | Where-Object { $_ -match 'Passcode' }) | Should -BeNullOrEmpty
+        @($vars.Values | Where-Object { "$_" -match 'pbkdf2' }) | Should -BeNullOrEmpty
+    }
+
+    It 'neither sets nor clears Microsoft sign-in, which the owner sets for their Windows account' {
+        # Start-Multiplex.ps1 sets every one of these for the server, so a sign-in key here (even
+        # an empty one, which clears the variable) would override the owner's own setting.
+        $vars = Get-MultiplexServerEnvironment -Config (Read-MultiplexConfig -Path (Join-Path $TestDrive 'none3.json')) -Root 'C:\M'
+        @($vars.Keys | Where-Object { $_ -like 'Multiplex__Identity__*' }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'no owner passcode' {
+    # Retired in #80: people sign in with Microsoft. An install over an earlier one drops the
+    # passcode hash from the configuration and the saved passcode.dpapi, saying so for each.
+    BeforeAll {
+        function New-EarlierInstall {
+            $root = Join-Path $TestDrive "earlier-$([guid]::NewGuid().ToString('N'))"
+            $path = Join-Path $root 'multiplex.config.json'
+            $c = Read-MultiplexConfig -Path $path
+            $c.PasscodeHash = 'pbkdf2-sha256$210000$c2FsdA==$aGFzaA=='
+            Write-MultiplexConfig -Config $c -Path $path
+            Set-Content -LiteralPath (Join-Path $root 'passcode.dpapi') -Value 'encrypted' -NoNewline
+            $root
+        }
+    }
+
+    It 'the installer has no -ShowPasscode or -NewPasscode parameter, and its help says so' {
+        $script = Join-Path $PSScriptRoot 'Install-Multiplex.ps1'
+        (Get-Command $script).Parameters.Keys | Should -Not -Contain 'ShowPasscode'
+        (Get-Command $script).Parameters.Keys | Should -Not -Contain 'NewPasscode'
+        ((Get-Help $script -Full).alertSet.alert.Text -join ' ') |
+            Should -Match ([regex]::Escape('-ShowPasscode and -NewPasscode were removed in #80'))
+    }
+
+    It 'a fresh install makes no passcode and says nothing about one' {
+        $result = Invoke-Install -Root (Join-Path $TestDrive "fresh-$([guid]::NewGuid().ToString('N'))")
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Not -Match '(?i)passcode'
+        $result.Output | Should -Match 'Connector address'
+    }
+
+    It 'installs over an earlier install with a passcode, and says the passcode is no longer used' {
+        $root = New-EarlierInstall
+        $result = Invoke-Install -Root $root
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match 'The owner passcode in the configuration is no longer used'
+        $result.Output | Should -Match ([regex]::Escape("The saved owner passcode ($(Join-Path $root 'passcode.dpapi')) is no longer used"))
+        $result.Output | Should -Match 'Connector address'
+        Test-Path -LiteralPath (Join-Path $root 'passcode.dpapi') | Should -BeTrue   # -WhatIf
+    }
+
+    It 'removes the passcode hash an earlier install left in the configuration' {
+        $root = New-EarlierInstall
+        $path = Join-Path $root 'multiplex.config.json'
+        $c = Read-MultiplexConfig -Path $path
+        $said = Remove-MultiplexRetiredSetting -Config $c -Root $root 6>&1 | Out-String
+        Write-MultiplexConfig -Config $c -Path $path
+        (Read-MultiplexConfig -Path $path).Contains('PasscodeHash') | Should -BeFalse
+        Get-Content -LiteralPath $path -Raw | Should -Not -Match 'pbkdf2'
+        $said | Should -Match 'owner passcode in the configuration is no longer used'
+    }
+
+    It 'deletes the saved passcode.dpapi an earlier install left in the install folder' {
+        $root = New-EarlierInstall
+        $said = Remove-MultiplexRetiredSetting -Config (Read-MultiplexConfig -Path (Join-Path $root 'multiplex.config.json')) -Root $root 6>&1 | Out-String
+        Test-Path -LiteralPath (Join-Path $root 'passcode.dpapi') | Should -BeFalse
+        $said | Should -Match 'saved owner passcode .* is no longer used'
+    }
+
+    It 'keeps the saved passcode under -WhatIf' {
+        $root = New-EarlierInstall
+        Remove-MultiplexRetiredSetting -Config (Read-MultiplexConfig -Path (Join-Path $root 'multiplex.config.json')) -Root $root -WhatIf 6>$null
+        Test-Path -LiteralPath (Join-Path $root 'passcode.dpapi') | Should -BeTrue
+    }
+
+    It 'says nothing when an earlier install left nothing behind' {
+        $root = Join-Path $TestDrive "clean-$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $root | Out-Null
+        $said = Remove-MultiplexRetiredSetting -Config (Read-MultiplexConfig -Path (Join-Path $root 'multiplex.config.json')) -Root $root 6>&1 | Out-String
+        $said.Trim() | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Microsoft sign-in setup' {
+    # The owner sets the client id, the client secret and the allowed emails for their Windows
+    # account (User scope); the installer only checks whether each is set, never reads or prints
+    # a value, and shows the lines that set the ones missing.
+    It 'says nothing once the client id, the client secret and the allowed emails are all set' {
+        Mock -ModuleName Multiplex.Install Test-MultiplexEnvironmentVariable { $true }
+        Get-MultiplexSignInSetupWarning | Should -BeNullOrEmpty
+    }
+
+    It 'says nobody outside this PC can sign in, with the line that sets each setting for the Windows account and the task restart' {
+        Mock -ModuleName Multiplex.Install Test-MultiplexEnvironmentVariable { $false }
+        $warning = Get-MultiplexSignInSetupWarning
+        $warning | Should -Match 'nobody outside this PC can sign in'
+        foreach ($name in $script:signInNames) {
+            $warning | Should -Match ("(?m)^\s+" + [regex]::Escape("[Environment]::SetEnvironmentVariable('$name', ") + ".*, 'User'\)\r?$")
+        }
+        $warning | Should -Match ([regex]::Escape('./scripts/Install-Multiplex.ps1'))
+        $warning | Should -Not -Match 'Stop-ScheduledTask'
+    }
+
+    It 'has the client secret typed at a masked prompt, so it never lands in shell history' {
+        Mock -ModuleName Multiplex.Install Test-MultiplexEnvironmentVariable { $false }
+        Get-MultiplexSignInSetupWarning |
+            Should -Match ([regex]::Escape("[Environment]::SetEnvironmentVariable('Multiplex__Identity__Microsoft__ClientSecret', (Read-Host -MaskInput 'Client secret'), 'User')"))
+    }
+
+    It 'shows lines only for the settings that are not set' {
+        Mock -ModuleName Multiplex.Install Test-MultiplexEnvironmentVariable { $Name -ne 'Multiplex__Identity__Microsoft__ClientSecret' }
+        $warning = Get-MultiplexSignInSetupWarning
+        $warning | Should -Match 'Multiplex__Identity__Microsoft__ClientSecret'
+        $warning | Should -Not -Match 'Multiplex__Identity__Microsoft__ClientId'
+        $warning | Should -Not -Match 'Multiplex__Identity__AllowedEmails'
+    }
+
+    It 'shows lines that PowerShell runs as they are' {
+        Mock -ModuleName Multiplex.Install Test-MultiplexEnvironmentVariable { $false }
+        $commands = @((Get-MultiplexSignInSetupWarning) -split '\r?\n' | Where-Object { $_ -match '^\s+\S' } | ForEach-Object Trim)
+        $commands.Count | Should -Be 4
+        foreach ($command in $commands) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseInput($command, [ref]$null, [ref]$errors) | Out-Null
+            $errors.Count | Should -Be 0 -Because $command
+        }
+    }
+
+    It 'never prints a value: a secret set for this process is found, and not shown' {
+        $saved = @{}
+        foreach ($name in $script:signInNames) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+        try {
+            $secret = "secret-$([guid]::NewGuid().ToString('N'))"
+            Set-ProcessVariable 'Multiplex__Identity__Microsoft__ClientSecret' $secret
+            Set-ProcessVariable 'Multiplex__Identity__Microsoft__ClientId' $null
+            $set = Test-MultiplexEnvironmentVariable -Name 'Multiplex__Identity__Microsoft__ClientSecret'
+            $set | Should -BeOfType [bool]
+            $set | Should -BeTrue
+            "$(Get-MultiplexSignInSetupWarning)" | Should -Not -Match $secret
+        }
+        finally { foreach ($name in $script:signInNames) { Set-ProcessVariable $name $saved[$name] } }
+    }
+
+    It 'a setting is set when this process has it, and not when nothing has it' {
+        $name = "Multiplex__Test__$([guid]::NewGuid().ToString('N'))"
+        Test-MultiplexEnvironmentVariable -Name $name | Should -BeFalse
+        Set-ProcessVariable $name 'value'
+        try { Test-MultiplexEnvironmentVariable -Name $name | Should -BeTrue }
+        finally { Set-ProcessVariable $name $null }
+    }
+
+    It 'a setting is set when the Windows account has it (User scope), found without reading its value' -Skip:(-not $IsWindows) {
+        # Only the names of the account's variables are offered: reading a value would fail here.
+        Mock -ModuleName Multiplex.Install Get-Item {
+            [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name GetValueNames -Value { @('Path', 'Multiplex__Test__SetForTheAccount') } -PassThru
+        } -ParameterFilter { $LiteralPath -eq 'HKCU:\Environment' }
+        Test-MultiplexEnvironmentVariable -Name 'Multiplex__Test__SetForTheAccount' | Should -BeTrue
+        Test-MultiplexEnvironmentVariable -Name 'Multiplex__Test__SetNowhere' | Should -BeFalse
+    }
+
+    It 'the redirect URI to register is the public address with /signin-microsoft, and there is none without one' {
+        Get-MultiplexMicrosoftRedirectUri -PublicBaseUrl 'https://box.example.ts.net/' | Should -Be 'https://box.example.ts.net/signin-microsoft'
+        Get-MultiplexMicrosoftRedirectUri -PublicBaseUrl $null | Should -BeNullOrEmpty
+    }
+
+    Context 'the installer' {
+        BeforeEach {
+            $script:savedSignIn = @{}
+            foreach ($name in $script:signInNames) { $script:savedSignIn[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+        }
+        AfterEach { foreach ($name in $script:signInNames) { Set-ProcessVariable $name $script:savedSignIn[$name] } }
+
+        It 'prints the redirect URI to register for the public address' {
+            $root = Join-Path $TestDrive "public-$([guid]::NewGuid().ToString('N'))"
+            $c = Read-MultiplexConfig -Path (Join-Path $root 'multiplex.config.json')
+            $c.Tunnel = 'Tailscale'
+            $c.PublicBaseUrl = 'https://box.example.ts.net'
+            Write-MultiplexConfig -Config $c -Path (Join-Path $root 'multiplex.config.json')
+            $result = Invoke-Install -Root $root
+            $result.ExitCode | Should -Be 0
+            $result.Output | Should -Match ([regex]::Escape('redirect URI (register it for the app, under Authentication > Web): https://box.example.ts.net/signin-microsoft'))
+        }
+
+        It 'says nothing about sign-in once all three are set, and prints none of their values' {
+            $values = foreach ($name in $script:signInNames) {
+                $value = "value-$([guid]::NewGuid().ToString('N'))"
+                Set-ProcessVariable $name $value
+                $value
+            }
+            $result = Invoke-Install -Root (Join-Path $TestDrive "set-up-$([guid]::NewGuid().ToString('N'))")
+            $result.ExitCode | Should -Be 0
+            $result.Output | Should -Not -Match 'Microsoft sign-in is not set up'
+            foreach ($value in $values) { $result.Output | Should -Not -Match $value }
+        }
+
+        It 'warns, with the line to run, while the client secret is not set' -Skip:($IsWindows -and
+            @((Get-Item -LiteralPath 'HKCU:\Environment').GetValueNames()) -contains 'Multiplex__Identity__Microsoft__ClientSecret') {
+            Set-ProcessVariable 'Multiplex__Identity__Microsoft__ClientId' 'client-id'
+            Set-ProcessVariable 'Multiplex__Identity__AllowedEmails' 'owner@example.com'
+            Set-ProcessVariable 'Multiplex__Identity__Microsoft__ClientSecret' $null
+            $result = Invoke-Install -Root (Join-Path $TestDrive "no-secret-$([guid]::NewGuid().ToString('N'))")
+            $result.ExitCode | Should -Be 0
+            $result.Output | Should -Match 'nobody outside this PC can sign in'
+            $result.Output | Should -Match ([regex]::Escape("(Read-Host -MaskInput 'Client secret'), 'User')"))
+            $result.Output | Should -Not -Match ([regex]::Escape("SetEnvironmentVariable('Multiplex__Identity__Microsoft__ClientId'"))
+            $result.Output | Should -Not -Match 'owner@example\.com'
+        }
     }
 }
 
@@ -626,18 +821,7 @@ Describe 'install folder' {
 
 Describe 'no TripIt account list' {
     # Each connection added in Claude or ChatGPT is bound to the TripIt account signed in while it
-    # is added, behind the passcode, so the installer neither needs nor asks for an account.
-    BeforeAll {
-        # The real installer in its own process, into a throwaway folder: -WhatIf skips the publish,
-        # the passcode file and the configuration write; -NoScheduledTask and -NoStart leave the
-        # logon task and any running server alone.
-        function Invoke-Install([string] $Root) {
-            $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'Install-Multiplex.ps1') `
-                -Root $Root -NoScheduledTask -NoStart -WhatIf *>&1 | Out-String
-            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
-        }
-    }
-
+    # is added, behind Microsoft sign-in, so the installer neither needs nor asks for an account.
     It 'the installer has no -AllowedAccount parameter, and its help says so' {
         $script = Join-Path $PSScriptRoot 'Install-Multiplex.ps1'
         (Get-Command $script).Parameters.Keys | Should -Not -Contain 'AllowedAccount'
@@ -736,30 +920,134 @@ Describe 'Claude Desktop bridge' {
     }
 }
 
-Describe 'connect check passcode' {
+Describe 'connect check' {
+    # Test-MultiplexConnect.ps1 against a stand-in that answers as Multiplex does since #80:
+    # discovery and registration are open, and /oauth/authorize sends a browser that is not
+    # signed in to Microsoft sign-in, or answers 503 while sign-in is not set up.
+    BeforeAll {
+        function Start-StandIn([ValidateSet('microsoft', 'not-set-up', 'wrong-redirect', 'elsewhere')] [string] $Authorize) {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+            $listener.Start()
+            $base = "http://127.0.0.1:$($listener.LocalEndpoint.Port)"
+            $job = Start-ThreadJob -ArgumentList $listener, $base, $Authorize {
+                param($listener, $base, $authorize)
+                try {
+                    while ($true) {
+                        $client = $listener.AcceptTcpClient()
+                        try {
+                            $stream = $client.GetStream()
+                            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 4096, $true)
+                            $method, $target = $reader.ReadLine().Split(' ')[0, 1]
+                            $length = 0
+                            while ($line = $reader.ReadLine()) { if ($line -match '^Content-Length:\s*(\d+)') { $length = [int]$Matches[1] } }
+                            if ($length) { $null = $reader.ReadBlock([char[]]::new($length), 0, $length) }
+                            $path = $target.Split('?')[0]
+                            $status, $type, $body, $headers = 404, 'text/plain', 'not found', ''
+                            if ($method -eq 'POST' -and $path -eq '/tripit/mcp') {
+                                $status, $body = 401, ''
+                                $headers = "WWW-Authenticate: Bearer resource_metadata=`"$base/.well-known/oauth-protected-resource/tripit/mcp`"`r`n"
+                            }
+                            elseif ($path -eq '/.well-known/oauth-protected-resource/tripit/mcp') {
+                                $status, $type = 200, 'application/json'
+                                $body = @{ resource = "$base/tripit/mcp"; authorization_servers = @($base) } | ConvertTo-Json -Compress
+                            }
+                            elseif ($path -eq '/.well-known/oauth-authorization-server') {
+                                $status, $type = 200, 'application/json'
+                                $body = @{
+                                    issuer = $base; authorization_endpoint = "$base/oauth/authorize"; token_endpoint = "$base/oauth/token"
+                                    registration_endpoint = "$base/oauth/register"; code_challenge_methods_supported = @('S256')
+                                } | ConvertTo-Json -Compress
+                            }
+                            elseif ($method -eq 'POST' -and $path -eq '/oauth/register') {
+                                $status, $type, $body = 201, 'application/json', '{"client_id":"stand-in-client"}'
+                            }
+                            elseif ($path -eq '/oauth/authorize') {
+                                $back = [Uri]::EscapeDataString(($authorize -eq 'wrong-redirect') ? 'https://elsewhere.example/signin-microsoft' : "$base/signin-microsoft")
+                                switch ($authorize) {
+                                    'not-set-up' { $status, $type, $body = 503, 'text/html', '<!doctype html><title>Sign-in is not set up</title><p>Sign-in is not set up on this server.</p>' }
+                                    'elsewhere' { $status, $body, $headers = 302, '', "Location: /connect`r`n" }
+                                    default {
+                                        $status, $body = 302, ''
+                                        $headers = "Location: https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=ms-client-id&response_type=code&scope=openid%20email&redirect_uri=$back&state=s`r`n"
+                                    }
+                                }
+                            }
+                            elseif ($path -eq '/connect') { $status, $type, $body = 200, 'text/html', '<form method="post"><input name="passcode"></form>' }
+                            $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+                            $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status Stand-in`r`nContent-Type: $type`r`nContent-Length: $($bytes.Length)`r`n${headers}Connection: close`r`n`r`n")
+                            $stream.Write($head, 0, $head.Length)
+                            $stream.Write($bytes, 0, $bytes.Length)
+                        }
+                        catch { Write-Verbose "The stand-in could not answer: $($_.Exception.Message)" }
+                        finally { $client.Dispose() }
+                    }
+                }
+                catch { Write-Verbose 'The stand-in was stopped.' }
+            }
+            [pscustomobject]@{ BaseUrl = $base; Listener = $listener; Job = $job }
+        }
+        function Invoke-Connect([string] $Authorize) {
+            $standIn = Start-StandIn -Authorize $Authorize
+            try {
+                $output = & (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot 'Test-MultiplexConnect.ps1') `
+                    -BaseUrl $standIn.BaseUrl *>&1 | Out-String
+                [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output; BaseUrl = $standIn.BaseUrl }
+            }
+            finally {
+                $standIn.Listener.Stop()
+                $standIn.Job | Wait-Job -Timeout 10 | Out-Null
+                $standIn.Job | Remove-Job -Force
+            }
+        }
+    }
+
     BeforeEach { $script:savedPasscode = $env:MULTIPLEX_PASSCODE }
     AfterEach { $env:MULTIPLEX_PASSCODE = $script:savedPasscode }
 
-    It 'reads the passcode from MULTIPLEX_PASSCODE when -Passcode is absent' {
-        $env:MULTIPLEX_PASSCODE = 'from-env-0000'
-        Resolve-MultiplexPasscode | Should -Be 'from-env-0000'
+    It 'passes once authorize sends the person to Microsoft sign-in, then says the rest needs a person and ends' {
+        $env:MULTIPLEX_PASSCODE = $null   # there is no passcode any more
+        $result = Invoke-Connect -Authorize microsoft
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $result.Output | Should -Match 'PASS  client registration'
+        $result.Output | Should -Match 'PASS  authorize sends the person to Microsoft sign-in'
+        $result.Output | Should -Match ([regex]::Escape("Microsoft client_id ms-client-id; redirect_uri $($result.BaseUrl)/signin-microsoft"))
+        $result.Output | Should -Match 'STOP  the remaining steps need a person'
+        $result.Output | Should -Not -Match 'FAIL'
+        $result.Output | Should -Not -Match 'PASS  token exchange'
     }
 
-    It 'prefers an explicit -Passcode' {
-        $env:MULTIPLEX_PASSCODE = 'from-env-0000'
-        Resolve-MultiplexPasscode -Passcode 'given-1111' | Should -Be 'given-1111'
+    It 'fails, saying Microsoft sign-in is not set up, when the server answers 503' {
+        $result = Invoke-Connect -Authorize not-set-up
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match 'FAIL  authorize sends the person to Microsoft sign-in -- HTTP 503 .*Microsoft sign-in is not set up'
+        $result.Output | Should -Match 'Multiplex__Identity__Microsoft__ClientSecret'
+        $result.Output | Should -Not -Match 'STOP'
     }
 
-    It 'explains how to supply it when neither is set' {
-        $env:MULTIPLEX_PASSCODE = $null
-        { Resolve-MultiplexPasscode } | Should -Throw '*MULTIPLEX_PASSCODE*'
+    It 'fails when Microsoft sign-in is asked to send the person back anywhere but this server''s /signin-microsoft' {
+        $result = Invoke-Connect -Authorize wrong-redirect
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match ([regex]::Escape("FAIL  authorize sends the person to Microsoft sign-in -- Microsoft sign-in is asked to send the person back to 'https://elsewhere.example/signin-microsoft'"))
     }
 
-    It 'Test-MultiplexConnect.ps1 no longer requires the passcode on its command line' {
+    It 'fails when authorize leads anywhere but Microsoft sign-in' {
+        $result = Invoke-Connect -Authorize elsewhere
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match ([regex]::Escape("FAIL  authorize sends the person to Microsoft sign-in -- HTTP 200 at $($result.BaseUrl)/connect, not a redirect to Microsoft sign-in"))
+    }
+
+    It 'takes no passcode' {
         $script = Get-Command (Join-Path $PSScriptRoot 'Test-MultiplexConnect.ps1')
-        $script.Parameters['Passcode'].Attributes |
-            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory } |
-            Should -BeNullOrEmpty
+        $script.Parameters.Keys | Should -Not -Contain 'Passcode'
+        ((Get-Help $script.Source -Full).alertSet.alert.Text -join ' ') | Should -Match ([regex]::Escape('-Passcode and $env:MULTIPLEX_PASSCODE were removed in #80'))
+    }
+
+    It 'has no parameters for the steps a person''s sign-in now stands in front of, and its help says so' {
+        $script = Get-Command (Join-Path $PSScriptRoot 'Test-MultiplexConnect.ps1')
+        foreach ($gone in 'ExpectEmail', 'ToolName', 'ToolArguments', 'WriteCheck', 'SaveGrantTo') {
+            $script.Parameters.Keys | Should -Not -Contain $gone
+        }
+        ((Get-Help $script.Source -Full).alertSet.alert.Text -join ' ') | Should -Match ([regex]::Escape('-WriteCheck and -SaveGrantTo were removed in #80'))
     }
 }
 
