@@ -240,10 +240,33 @@ Describe 'adding the services to your accounts' {
         $said | Should -BeLike '*https://chatgpt.com/plugins*'
     }
 
-    It 'says that sign-in asks for the Multiplex passcode, and that an existing connector would be added twice' {
+    It 'says that sign-in asks for the Multiplex passcode' {
         $said = Add-MultiplexConnector -BaseUrl $Base -Service tripit 6>&1 | Out-String
         $said | Should -BeLike '*passcode*-ShowPasscode*'
-        $said | Should -BeLike '*already*second*'
+    }
+
+    It 'says, before the Claude and ChatGPT steps, that they reach the address from the internet: Funnel or an open incoming port' -ForEach @(
+        @{ Agent = 'Claude'; Heading = 'Claude (' }
+        @{ Agent = 'ChatGPT'; Heading = 'ChatGPT (' }
+    ) {
+        $said = Add-MultiplexConnector -BaseUrl $Base -Service tripit -Agent $Agent -WhatIf 6>&1 | Out-String
+        $note = $said.IndexOf('reachable from the internet')
+        $note | Should -BeGreaterOrEqual 0
+        $note | Should -BeLessThan $said.IndexOf($Heading)
+        $said | Should -BeLike '*their own servers*'
+        $said | Should -BeLike '*Tailscale Funnel*'
+        $said | Should -BeLike '*open incoming port*'
+        $said | Should -BeLike '*only your tailnet*'
+    }
+
+    It 'says Claude refuses an address it already has, and that ChatGPT may add a second copy' {
+        $claude = Add-MultiplexConnector -BaseUrl $Base -Service tripit -Agent Claude -WhatIf 6>&1 | Out-String
+        $claude | Should -BeLike '*Claude already has*Cancel*'
+        $claude | Should -Not -BeLike '*second copy*'
+
+        $chatGpt = Add-MultiplexConnector -BaseUrl $Base -Service tripit -Agent ChatGPT -WhatIf 6>&1 | Out-String
+        $chatGpt | Should -BeLike '*ChatGPT may add a second copy*'
+        $chatGpt | Should -Not -BeLike '*Cancel*'
     }
 
     It 'shows the one-line commands for agents on a PC, and says they do not reach the phone' {

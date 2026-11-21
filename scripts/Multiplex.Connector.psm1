@@ -256,6 +256,10 @@ function Add-MultiplexConnector {
 
     Write-Host "Adding from the Multiplex at ${BaseUrl}:"
     foreach ($s in $chosen) { Write-Host "  $($s.Name)  $($s.Address)" }
+    Write-Host ''
+    Write-Host 'Claude and ChatGPT call these addresses from their own servers on the internet, not from your phone or this PC.'
+    Write-Host 'So this Multiplex must be reachable from the internet, through Tailscale Funnel or an open incoming port;'
+    Write-Host 'one that only your tailnet can reach will not connect.'
 
     if ('Claude' -in $Agent) {
         Write-Host ''
@@ -267,6 +271,7 @@ function Add-MultiplexConnector {
             Write-Host "  $($s.Name): $($opened ? 'opened' : 'open') this link, check the name and address, click Continue, then sign in:"
             Write-Host "    $link"
         }
+        Write-Host '  If Claude already has a connector with that address, it says so and leaves Continue greyed out; click Cancel.'
     }
 
     if ('ChatGPT' -in $Agent) {
@@ -284,11 +289,11 @@ function Add-MultiplexConnector {
             Write-Host '  Add one server per address:'
             foreach ($s in $chosen) { Write-Host "    $($s.Name): $($s.Address)" }
         }
+        Write-Host '  ChatGPT may add a second copy of a server it already has; remove the extra one in its connector settings.'
     }
 
     Write-Host ''
     Write-Host 'Signing in asks for the Multiplex passcode. On the PC that runs Multiplex, show it with: ./scripts/Install-Multiplex.ps1 -ShowPasscode'
-    Write-Host 'A service already on your account gets a second copy; remove the extra one in the app''s connector settings.'
     Write-Host ''
     Write-Host 'Agents on a PC (these change that PC only, not your account, so they do not reach your phone):'
     foreach ($s in $chosen) {
