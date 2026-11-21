@@ -227,8 +227,8 @@ function Add-MultiplexConnector {
     installed on this PC) to your Claude and ChatGPT accounts, as far
     as a command can: for Claude it opens the add-connector dialog already filled in, one per
     service; for ChatGPT it opens the add page once and, for a single service, copies its
-    address. You finish in the browser: confirm, then sign in (the Multiplex passcode, then the
-    site). Every link and address is also printed, with the one-line commands for agents that
+    address. You finish in the browser: confirm, then sign in (to Multiplex with Microsoft, then to
+    the site). Every link and address is also printed, with the one-line commands for agents that
     only run on a PC. -WhatIf prints all of it and opens nothing.
     #>
     [CmdletBinding(SupportsShouldProcess)]
@@ -293,7 +293,7 @@ function Add-MultiplexConnector {
     }
 
     Write-Host ''
-    Write-Host 'Signing in asks for the Multiplex passcode. On the PC that runs Multiplex, show it with: ./scripts/Install-Multiplex.ps1 -ShowPasscode'
+    Write-Host 'Connecting asks you to sign in to Multiplex with Microsoft, with an email on its allowed list, then to the site.'
     Write-Host ''
     Write-Host 'Agents on a PC (these change that PC only, not your account, so they do not reach your phone):'
     foreach ($s in $chosen) {
