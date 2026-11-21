@@ -86,7 +86,7 @@ POST /_/FlightsFrontendUi/data/batchexecute
 | `x-same-domain: 1` | Google's CSRF guard for these endpoints | sent |
 | `content-type: application/x-www-form-urlencoded;charset=UTF-8` | | sent |
 | `accept: */*` | | sent by the C# client (L1). The discovery probes ran on Node's `fetch`, which also adds `accept-language: *` and `sec-fetch-mode: cors` on its own; the C# client sends neither and is answered |
-| `x-goog-batchexecute-bgr` | Ideally computed by the page's own script on every request. | **not sent, not needed** |
+| `x-goog-batchexecute-bgr` | Ideally computed by the page's own script on every request. | **not sent; required since the evening of 2026-11-20.** From about 09:52 to 18:13 local that day, searches without it were answered (P8, F1-F4, L1, G1, M1). Since then every search without it has been refused with a bare gRPC 13, on every network tried: P8 resent byte for byte (22:36), and the same request from a signed-out real browser with its own cookies (11-21 05:05), while the page's own requests, which carry it, were answered ([#101 diagnosis](https://github.com/IntelliTect-dev/Multiplex/issues/101#issuecomment-7058758064), [browser test](https://github.com/IntelliTect-dev/Multiplex/issues/101#issuecomment-7063037192)) |
 | Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) | none needed; `NID`, which Google sets on the first answer, is sent back like any HTTP client would |
 | `f.sid`, `bl`, `_reqid` | Page session, build label, request counter | not sent, not needed |
 | `x-browser-validation`, `x-client-data`, `sec-ch-ua-*` | Chrome's own client headers (C) | not sent |
