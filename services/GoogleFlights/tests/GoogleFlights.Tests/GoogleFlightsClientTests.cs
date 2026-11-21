@@ -389,17 +389,32 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task An_error_code_the_client_does_not_know_is_treated_as_a_refusal()
     {
-        // 2026-11-20: a refused network answered one search with gRPC 9, never seen before. Unknown means "stop".
-        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[9]]]\n");
+        // Unknown means "stop": asking again at once could only deepen a block.
+        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[8]]]\n");
         using var client = Client();
 
         var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
         Assert.Equal(ThrottleReason.Refused, e.Reason);
-        Assert.Contains("gRPC 9", e.Message, StringComparison.Ordinal);
+        Assert.Contains("gRPC 8", e.Message, StringComparison.Ordinal);
 
         var again = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
         Assert.Equal(ThrottleReason.CoolingDown, again.Reason);
         Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task Failed_precondition_is_a_passing_error_without_a_cool_down()
+    {
+        // 2026-11-20: gRPC 9 came once from a network Google was refusing and once from a network it was answering,
+        // where the next search ten minutes later was answered. It says nothing about a block.
+        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[9]]]\n").Answer(Flow[0]);
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.SearchAsync(SeaDen));
+        Assert.Contains("gRPC 9", e.Message, StringComparison.Ordinal);
+
+        Assert.Equal(13, (await client.SearchAsync(SeaDen)).AllFlights.Count());
+        Assert.Equal(2, _google.Sent.Count);
     }
 
     [Fact]
