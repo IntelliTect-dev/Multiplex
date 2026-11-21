@@ -5,6 +5,8 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Multiplex.Linux.psm1') -Force
     $script:DeployFolder = Join-Path $PSScriptRoot '..' 'deploy' 'linux'
+    # A device that is up, with HTTPS certificates, and that the tailnet lets use Funnel (the funnel node attribute).
+    $script:Running = '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"funnel":null,"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}'
 
     # A fake server. -Status is a list of `tailscale status --json` answers, given in turn (the last repeats).
     # A remote script that writes files carries, per file, a "# file: <path>" line and the content as base64.
@@ -14,7 +16,7 @@ BeforeAll {
             [string] $Docker = 'docker=27.3.1',
             [string] $Compose = 'compose=2.29.7',
             [bool] $BuildFails = $false,
-            [object[]] $Status = @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":["multiplex.tail1234.ts.net"]}'),
+            [object[]] $Status = @($script:Running),
             [bool] $Healthy = $true,
             # A redeploy: the Tailscale device already runs (and the server with it).
             [bool] $TailscaleRunning = $false,
@@ -113,6 +115,13 @@ Describe 'the Tailscale device''s status' {
         (ConvertFrom-MultiplexTailscaleStatus '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}').HttpsEnabled | Should -BeFalse
     }
 
+    It 'reads whether the tailnet lets the device use Funnel: the funnel node attribute, as Tailscale''s own check reads it' {
+        (ConvertFrom-MultiplexTailscaleStatus $script:Running).FunnelAllowed | Should -BeTrue
+        (ConvertFrom-MultiplexTailscaleStatus '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}').FunnelAllowed | Should -BeFalse
+        (ConvertFrom-MultiplexTailscaleStatus '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":["multiplex.tail1234.ts.net"]}').FunnelAllowed | Should -BeFalse
+        (ConvertFrom-MultiplexTailscaleStatus 'service "tailscale" is not running').FunnelAllowed | Should -BeFalse
+    }
+
     It 'reports output that is not a status as not ready, without throwing' {
         $s = ConvertFrom-MultiplexTailscaleStatus 'service "tailscale" is not running'
         $s.State | Should -Be 'Unknown'
@@ -195,7 +204,7 @@ Describe 'deploying' {
             '{"BackendState":"NeedsLogin","AuthURL":"","Self":{"DNSName":""}}',
             '{"BackendState":"NeedsLogin","AuthURL":"https://login.tailscale.com/a/1a2b3c","Self":{"DNSName":""}}',
             '{"BackendState":"NeedsLogin","AuthURL":"https://login.tailscale.com/a/1a2b3c","Self":{"DNSName":""}}',
-            '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":["multiplex.tail1234.ts.net"]}')
+            $script:Running)
         $output = Invoke-Deploy $server
         ($output | Where-Object { "$_" -match 'login\.tailscale\.com/a/1a2b3c' }).Count | Should -Be 1 -Because 'the link is shown once, not on every poll'
         $server.Files['multiplex/multiplex.env'] | Should -Match 'multiplex\.tail1234\.ts\.net'
@@ -211,6 +220,23 @@ Describe 'deploying' {
         $server = New-FakeServer -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}')
         { Invoke-Deploy $server } | Should -Throw '*HTTPS*'
         $server.Steps | Should -Not -Contain 'start'
+    }
+
+    It 'stops and says where to let the device use Funnel when the tailnet does not, rather than serving the tailnet only without a word (#108)' {
+        $server = New-FakeServer -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}')
+        $message = try { Invoke-Deploy $server | Out-Null; $null } catch { $_.Exception.Message }
+        $message | Should -Match 'Funnel'
+        $message | Should -Match 'admin console'
+        $message | Should -Match 'not started'
+        $server.Steps | Should -Not -Contain 'start'
+    }
+
+    It 'recreates the Tailscale device when it starts the server, so a changed serve.json reaches it: the device reads the file only as it starts (#108)' {
+        # The deploy rewrites serve.json in place through a one-file bind mount, which sends the device no
+        # change event, and "up -d" alone leaves a device whose compose settings did not change running.
+        $server = New-FakeServer -TailscaleRunning $true
+        Invoke-Deploy $server | Out-Null
+        $server.Scripts[$server.Steps.IndexOf('start')] | Should -Match '(?m)^cd ''multiplex'' && docker compose up -d --force-recreate\b'
     }
 
     It 'reports the server''s own log when it does not become healthy' {
@@ -361,11 +387,19 @@ Describe 'the tools this PC runs' {
 }
 
 Describe 'what the Linux host publishes' {
-    It 'serves only the tailnet, through Tailscale''s HTTPS proxy to the server on loopback' {
+    It 'serves HTTPS on 443 only, through Tailscale''s HTTPS proxy to the server on loopback' {
         $serve = Get-Content (Join-Path $script:DeployFolder 'serve.json') -Raw | ConvertFrom-Json -AsHashtable
+        @($serve.TCP.Keys) | Should -Be @('443')
         $serve.TCP['443'].HTTPS | Should -BeTrue
+        @($serve.Web.Keys) | Should -Be @('${TS_CERT_DOMAIN}:443')
         $serve.Web['${TS_CERT_DOMAIN}:443'].Handlers['/'].Proxy | Should -Be 'http://127.0.0.1:5190'
-        $serve.ContainsKey('AllowFunnel') | Should -BeFalse -Because 'the owner chose tailnet only (#97)'
+    }
+
+    It 'opens 443, and only 443, to the internet through Funnel: Claude''s and ChatGPT''s connectors call from their own clouds, off the tailnet (#108)' {
+        $serve = Get-Content (Join-Path $script:DeployFolder 'serve.json') -Raw | ConvertFrom-Json -AsHashtable
+        $serve.ContainsKey('AllowFunnel') | Should -BeTrue -Because 'the owner opened the Linux host to the internet (#108)'
+        @($serve.AllowFunnel.Keys) | Should -Be @('${TS_CERT_DOMAIN}:443')
+        $serve.AllowFunnel['${TS_CERT_DOMAIN}:443'] | Should -BeTrue
     }
 
     It 'never forwards raw TCP: it would drop the forwarding headers, and every caller would look like the host itself (#80)' {
