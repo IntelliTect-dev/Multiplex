@@ -82,21 +82,27 @@ public static class MultiplexIdentity
 
     /// <summary>
     /// Where a failed sign-in's page sends the person to start again: the page they were going to, if it
-    /// is a path on this server, else the home page. A path starting "//" or "/\" would leave the server.
+    /// is a path on this server, else the home page. A browser reads "\" as "/" and strips tabs and line
+    /// breaks from a URL, so a path holding either could become "//other.site/".
     /// </summary>
     internal static string StartAgainPath(string? returnTo) =>
-        returnTo is ['/', ..] && !returnTo.StartsWith("//", StringComparison.Ordinal) && !returnTo.StartsWith("/\\", StringComparison.Ordinal)
+        returnTo is ['/', ..] && !returnTo.StartsWith("//", StringComparison.Ordinal)
+        && !returnTo.Contains('\\') && !returnTo.Any(char.IsControl)
             ? returnTo
             : "/";
 
     /// <summary>
-    /// Whether Microsoft says the person declined its permission request: a personal account answers
-    /// access_denied, a work or school account AADSTS65004 (seen as consent_required).
+    /// Whether Microsoft says the person declined its permission request: AADSTS65004 (a work or school
+    /// account, sent as consent_required or access_denied), or a personal account's access_denied, which
+    /// carries no AADSTS code. Another AADSTS code (admin approval needed, say) is not the person's choice.
     /// </summary>
-    private static bool Declined(Exception? failure) =>
-        failure is OpenIdConnectProtocolException { Data: var data }
-        && (data["error"] as string == "access_denied"
-            || (data["error_description"] as string)?.StartsWith("AADSTS65004:", StringComparison.Ordinal) == true);
+    private static bool Declined(Exception? failure)
+    {
+        if (failure is not OpenIdConnectProtocolException { Data: var data }) return false;
+        var description = data["error_description"] as string ?? "";
+        return description.StartsWith("AADSTS65004:", StringComparison.Ordinal)
+               || (data["error"] as string == "access_denied" && !description.StartsWith("AADSTS", StringComparison.Ordinal));
+    }
 
     private static CookieSecurePolicy SecurePolicy(AuthIssuer issuer) =>
         issuer.Issuer.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
