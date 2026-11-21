@@ -115,6 +115,39 @@ public class HomePageTests(WebApplicationFactory<Program> factory) : IClassFixtu
     }
 
     [Fact]
+    public async Task Each_action_is_described_by_its_services_name_so_a_screen_reader_can_tell_them_apart()
+    {
+        // The visible text stays the accessible name, so "Copied" is heard too (review of #114).
+        var html = await _client.GetStringAsync("/");
+
+        foreach (var service in Services)
+        {
+            var item = ItemFor(html, service.Slug);
+            foreach (var (element, text) in new[] { ("a", "Add to Claude"), ("a", "Add to ChatGPT"), ("button", "Copy address") })
+            {
+                var id = Attribute(TagWithText(item, element, text), "aria-describedby");
+                Assert.False(string.IsNullOrEmpty(id), $"\"{text}\" for {service.Slug} names no description");
+                Assert.Matches($"<[a-z]+ id=\"{Regex.Escape(id!)}\">{Regex.Escape(WebUtility.HtmlEncode(service.DisplayName))}</", item);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task The_addresses_come_from_the_configured_public_address_never_from_the_requests_Host()
+    {
+        // A loopback Host keeps the page open without sign-in; only its port differs from the server's own.
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Host = "localhost:47123";
+
+        var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("47123", html);
+        foreach (var service in Services) Assert.Contains($"<code>{WebUtility.HtmlEncode(service.Resource)}</code>", html);
+    }
+
+    [Fact]
     public async Task Says_what_to_click_in_each_assistant()
     {
         var html = await _client.GetStringAsync("/");
