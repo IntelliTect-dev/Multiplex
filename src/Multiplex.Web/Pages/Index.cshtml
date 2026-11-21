@@ -1,7 +1,6 @@
 ﻿@page
 @model IndexModel
 @using Multiplex.Web.Identity
-@using Multiplex.Web.Mcp
 @{
     ViewData["Title"] = "Hello World";
     var person = MultiplexIdentity.PersonOf(User);
@@ -18,10 +17,24 @@ else
 {
     <p>Opened on the Multiplex host itself, so no sign-in is needed here.</p>
 }
-<p>Multiplex is up. Each service's MCP address:</p>
-<ul>
-    @foreach (var path in McpEndpointRouting.EndpointPaths)
+<p>Multiplex is up. Add a service to your assistant:</p>
+<ul class="services">
+    @foreach (var service in Model.Services)
     {
-        <li><code>@path</code></li>
+        <li data-service="@service.Slug">
+            <strong>@service.DisplayName</strong> <code>@service.Resource</code>
+            <span class="actions">
+                <a class="button" href="@IndexModel.ClaudeAddLink(service)" target="_blank" rel="noopener noreferrer">Add to Claude</a>
+                <a class="button" href="@IndexModel.ChatGptAddPage" target="_blank" rel="noopener noreferrer" data-copy="@service.Resource">Add to ChatGPT</a>
+                <button type="button" data-copy="@service.Resource">Copy address</button>
+            </span>
+        </li>
     }
 </ul>
+<p class="muted"><strong>Claude</strong> opens its own dialog with the name and address filled in: check them, click Continue, then sign in. Claude refuses an address it already has.</p>
+<p class="muted"><strong>ChatGPT</strong> opens its page, and the address is copied: click Add, add a custom MCP server, paste the address, choose OAuth, then sign in.</p>
+<p class="muted">A connector added on your account also appears in the phone apps.</p>
+
+@section Scripts {
+    <script src="~/js/home.js" asp-append-version="true"></script>
+}

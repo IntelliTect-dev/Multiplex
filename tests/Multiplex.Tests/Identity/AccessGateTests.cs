@@ -72,7 +72,7 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
         var response = await _app.Client().GetAsync("/");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("<code>/tripit/mcp</code>", await response.Content.ReadAsStringAsync());
+        Assert.Matches("<code>[^<]*/tripit/mcp</code>", await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
