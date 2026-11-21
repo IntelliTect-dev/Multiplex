@@ -196,9 +196,14 @@ public sealed class PersonAdmissionTests
     [InlineData("pat@sub.intellitect.com")]
     [InlineData("pat@intellitect.com.evil.test")]
     [InlineData("pat@notintellitect.com")]
+    [InlineData("pat@evil.test@intellitect.com")]
+    [InlineData("pat@intellitect.com.")]
+    [InlineData("pat@Kntellitect.com")]
     public async Task A_domain_entry_admits_that_domain_only(string email)
     {
-        _settings[AllowedPeople.Key] = "intellitect.com";
+        // "kntellitect.com" is listed too, so the Kelvin sign (which lower-cases to "k") is refused for being
+        // non-ASCII, not merely for not matching.
+        _settings[AllowedPeople.Key] = "intellitect.com; kntellitect.com";
 
         Assert.IsType<Admission.Refused>(await Admission().AdmitAsync(Microsoft(email), CancellationToken.None));
     }
