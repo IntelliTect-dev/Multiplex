@@ -43,9 +43,9 @@ function ConvertFrom-MultiplexTailscaleStatus {
     <#
     The parts of `tailscale status --json` the deploy needs: the state (Running, NeedsLogin, ...), the
     link that adds the device to the tailnet, the device's DNS name, whether the tailnet issues HTTPS
-    certificates, and whether it lets the device use Funnel (the "funnel" node attribute in the device's
-    CapMap, which Tailscale's own `tailscale funnel` checks). Output that is not a status (the container
-    not up yet) is state Unknown.
+    certificates, and whether it lets the device use Funnel on 443 (node attributes in the device's
+    CapMap, read as Tailscale's own `tailscale funnel` reads them). Output that is not a status (the
+    container not up yet) is state Unknown.
     #>
     [CmdletBinding()]
     param([AllowEmptyString()] [string] $Json)
@@ -57,12 +57,19 @@ function ConvertFrom-MultiplexTailscaleStatus {
     $self = $status['Self']
     if ($self -isnot [System.Collections.IDictionary]) { $self = @{} }
     $dnsName = if ($self['DNSName']) { ([string]$self['DNSName']).TrimEnd('.') }
+    # As Tailscale's own check (ipn.CheckFunnelAccess): the funnel attribute, and a funnel-ports
+    # attribute whose list of ports and first-last ranges holds 443. HTTPS is HttpsEnabled.
+    $caps = if ($self['CapMap'] -is [System.Collections.IDictionary]) { $self['CapMap'] } else { @{} }
+    $ports = foreach ($key in $caps.Keys) {
+        if ($key -match '^https://tailscale\.com/cap/funnel-ports\?ports=(.*)$') { $Matches[1] -split ',' }
+    }
+    $has443 = @($ports | Where-Object { $_ -match '^(\d+)(?:-(\d+))?$' -and [int]$Matches[1] -le 443 -and 443 -le [int]($Matches[2] ?? $Matches[1]) }).Count -gt 0
     return [pscustomobject]@{
         State         = [string]$status['BackendState']
         LoginUrl      = ($status['AuthURL'] ? [string]$status['AuthURL'] : $null)
         DnsName       = ($dnsName ? $dnsName : $null)
         HttpsEnabled  = [bool]@($status['CertDomains'] | Where-Object { $_ }).Count
-        FunnelAllowed = $self['CapMap'] -is [System.Collections.IDictionary] -and $self['CapMap'].Contains('funnel')
+        FunnelAllowed = $caps.Contains('funnel') -and $has443
         Detail        = $null
     }
 }
@@ -285,7 +292,7 @@ fi
     # serve.json opens the address to the internet with Funnel. Without the funnel node attribute the
     # device takes that setting without complaint and serves the tailnet only, so say so here instead.
     if (-not $status.FunnelAllowed) {
-        throw "Your tailnet does not let the 'multiplex' device use Funnel, which opens its address to the internet for Claude's and ChatGPT's connectors. In the Tailscale admin console, Access controls, give the device the 'funnel' node attribute (https://tailscale.com/kb/1223/funnel), then run this again. The server was not started."
+        throw "Your tailnet does not let the 'multiplex' device use Funnel on port 443, which opens its address to the internet for Claude's and ChatGPT's connectors. In the Tailscale admin console, Access controls, give the device the 'funnel' node attribute (https://tailscale.com/kb/1223/funnel), then run this again. The server was not started."
     }
     $baseUrl = "https://$($status.DnsName)"
 
@@ -293,8 +300,8 @@ fi
     $settings = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl $baseUrl
     # The pull comes first and may fail (no registry): the device then keeps the image it has, and the
     # settings are rewritten only when the server is about to start with them. Both containers are
-    # recreated: the device reads serve.json only as it starts, since the in-place copy above reaches it
-    # through a one-file bind mount that sends no change event, and the server is new each deploy anyway.
+    # recreated: serve.json reaches the device through a one-file bind mount, whose changes the device's
+    # watch on its /config folder does not see, and the server is new each deploy anyway.
     Invoke-MultiplexLinuxStep $Remote 'start' -Failure 'The server did not start.' -Body @"
 (cd '$root' && docker compose pull --quiet tailscale 2>&1) || echo 'Could not pull the Tailscale image; keeping the one this server has.'
 $(New-MultiplexRemoteFileScript -Path "$root/multiplex.env" -Content (ConvertTo-MultiplexEnvFile $settings))

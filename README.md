@@ -141,8 +141,8 @@ Tailscale Funnel, to the internet.
   `https://multiplex.<your-tailnet>.ts.net/tripit/mcp` as a custom connector, or
   in Claude Code
   (`claude mcp add --transport http tripit https://multiplex.<your-tailnet>.ts.net/tripit/mcp`).
-  Every caller, on the tailnet or not, signs in with Microsoft: a web page sends
-  you to the sign-in, and an MCP call without a token gets 401.
+  On the tailnet or not, a web page sends you to the Microsoft sign-in, and an
+  MCP call without a token gets 401.
 - **Data** lives in the `multiplex_multiplex-data` Docker volume, readable by the
   container's own user only. Nothing moves over from a Windows install: its keys
   and browser sign-ins are encrypted to that Windows account, so connectors are

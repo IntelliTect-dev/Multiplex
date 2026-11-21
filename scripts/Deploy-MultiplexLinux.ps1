@@ -9,7 +9,8 @@ Builds the server on this PC, uploads it, and runs it on the server as two Docke
 browsers, and a Tailscale device named "multiplex" that serves it over HTTPS at
 https://multiplex.<your-tailnet>.ts.net, to your tailnet and, through Tailscale Funnel, to the
 internet, where Claude's and ChatGPT's connectors call from. Funnel needs no incoming port: the
-device carries the traffic over its own outgoing Tailscale connection. Every caller signs in.
+device carries the traffic over its own outgoing Tailscale connection. Every page needs a Microsoft
+sign-in, and every MCP call a token.
 
 Run it again to update the server. Re-running is safe: until the new image has built and the
 Tailscale device is up, the running server is left as it was.
@@ -99,8 +100,8 @@ Write-Host ($checks | Format-Table -AutoSize | Out-String -Width 200).TrimEnd()
 
 Write-Host @"
 Multiplex runs at $($result.BaseUrl) (image $($result.Image)), open to your tailnet and, through
-Tailscale Funnel, to the internet. Everyone signs in with Microsoft, with an address on the allowed
-list in ~/multiplex/identity.env on the server.
+Tailscale Funnel, to the internet. Every page needs a Microsoft sign-in with an address on the
+allowed list in ~/multiplex/identity.env on the server, and every MCP call a token.
   TripIt MCP address: $($result.BaseUrl)/tripit/mcp
   Claude Code:        claude mcp add --transport http tripit $($result.BaseUrl)/tripit/mcp
 Claude's web, phone and Desktop connectors and ChatGPT add the same address as a custom connector.
