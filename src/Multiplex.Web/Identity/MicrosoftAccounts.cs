@@ -41,10 +41,11 @@ public static class MicrosoftAccounts
             return null;
         }
 
-        var verified = tenant == PersonalAccountsTenant
+        var personal = tenant == PersonalAccountsTenant;
+        var verified = personal
             || (principal.FindFirst("xms_edov")?.Value is { } flag
                 && (flag.Equals("true", StringComparison.OrdinalIgnoreCase) || flag == "1"));
-        return new ExternalIdentity(Provider, $"{tenant:D}/{objectId:D}", principal.FindFirst("email")?.Value, verified);
+        return new ExternalIdentity(Provider, $"{tenant:D}/{objectId:D}", principal.FindFirst("email")?.Value, verified, personal);
     }
 
     /// <summary>

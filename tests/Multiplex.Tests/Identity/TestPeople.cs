@@ -33,7 +33,8 @@ public static class TestPeople
     public static async Task<(MultiplexPerson Person, string Cookie)> SignInAsync(IServiceProvider services, string email = Owner)
     {
         var admission = await services.GetRequiredService<PersonAdmission>()
-            .AdmitAsync(new ExternalIdentity(MicrosoftAccounts.Provider, SubjectOf(email), email, EmailVerified: true), CancellationToken.None);
+            .AdmitAsync(new ExternalIdentity(MicrosoftAccounts.Provider, SubjectOf(email), email, EmailVerified: true, PersonalAccount: false),
+                CancellationToken.None);
         var person = admission is Admission.Admitted a ? a.Person : throw new InvalidOperationException($"{email} was not admitted: {admission}");
         return (person, CookieFor(services, person));
     }

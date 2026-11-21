@@ -121,7 +121,7 @@ function Get-MultiplexServerEnvironment {
 $script:SignInSettings = [ordered]@{
     'Multiplex__Identity__Microsoft__ClientId'     = "(Read-Host 'Application (client) ID')"
     'Multiplex__Identity__Microsoft__ClientSecret' = "(Read-Host -MaskInput 'Client secret')"
-    'Multiplex__Identity__AllowedEmails'           = "(Read-Host 'Allowed emails, separated by ;')"
+    'Multiplex__Identity__AllowedEmails'           = "(Read-Host 'Allowed emails or domains, separated by ;')"
 }
 
 function Test-MultiplexEnvironmentVariable {

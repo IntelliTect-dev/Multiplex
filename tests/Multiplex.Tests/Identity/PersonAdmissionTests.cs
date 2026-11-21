@@ -19,8 +19,8 @@ public sealed class PersonAdmissionTests
         new(_store, new AllowedPeople(new ConfigurationBuilder().AddInMemoryCollection(_settings).Build()),
             TimeProvider.System, NullLogger<PersonAdmission>.Instance);
 
-    private static ExternalIdentity Microsoft(string? email, bool verified = true, string? subject = null) =>
-        new(MicrosoftAccounts.Provider, subject ?? TestPeople.SubjectOf(email ?? "nobody"), email, verified);
+    private static ExternalIdentity Microsoft(string? email, bool verified = true, string? subject = null, bool personal = false) =>
+        new(MicrosoftAccounts.Provider, subject ?? TestPeople.SubjectOf(email ?? "nobody"), email, verified, personal);
 
     [Fact]
     public async Task A_verified_allowlisted_email_is_admitted_and_bound_on_first_sign_in()
@@ -78,7 +78,7 @@ public sealed class PersonAdmissionTests
         var first = (Admission.Admitted)await Admission().AdmitAsync(Microsoft(TestPeople.Owner), CancellationToken.None);
 
         var later = await Admission().AdmitAsync(
-            new ExternalIdentity(MicrosoftAccounts.Provider, TestPeople.SubjectOf(TestPeople.Owner), "renamed@example.test", false),
+            new ExternalIdentity(MicrosoftAccounts.Provider, TestPeople.SubjectOf(TestPeople.Owner), "renamed@example.test", false, false),
             CancellationToken.None);
 
         Assert.Equal(first.Person, Assert.IsType<Admission.Admitted>(later).Person);
@@ -154,7 +154,7 @@ public sealed class PersonAdmissionTests
         var list = new AllowedPeople(new ConfigurationBuilder().AddInMemoryCollection(
             new Dictionary<string, string?> { [AllowedPeople.Key] = value }).Build()).Current();
 
-        Assert.Equal(["friend@example.test", "owner@example.test"], list.Order());
+        Assert.Equal(["friend@example.test", "owner@example.test"], list.Addresses.Order());
     }
 
     [Fact]
@@ -166,7 +166,89 @@ public sealed class PersonAdmissionTests
             [AllowedPeople.Key + ":1"] = "Friend@example.test",
         }).Build()).Current();
 
-        Assert.Equal(["friend@example.test", "owner@example.test"], list.Order());
+        Assert.Equal(["friend@example.test", "owner@example.test"], list.Addresses.Order());
+    }
+
+    [Fact]
+    public void A_domain_entry_is_a_bare_domain_an_at_domain_or_a_star_at_domain_ignoring_case()
+    {
+        var list = new AllowedPeople(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [AllowedPeople.Key] = "*@IntelliTect.com; michaelis.net, @Example.org; pat@Example.com; not-a-domain; *@; @; x@; *@bad..test",
+        }).Build()).Current();
+
+        Assert.Equal(["example.org", "intellitect.com", "michaelis.net"], list.Domains.Order());
+        Assert.Equal(["pat@example.com"], list.Addresses.Order());
+    }
+
+    [Fact]
+    public async Task A_domain_entry_admits_a_verified_work_account_in_that_domain_and_binds_it()
+    {
+        _settings[AllowedPeople.Key] = "*@IntelliTect.com";
+
+        var admission = await Admission().AdmitAsync(Microsoft("Pat@intellitect.com"), CancellationToken.None);
+
+        Assert.Equal("pat@intellitect.com", Assert.IsType<Admission.Admitted>(admission).Person.Email);
+        Assert.False((await _store.ReadAsync(s => s.People["pat@intellitect.com"], CancellationToken.None)).PersonalAccount);
+    }
+
+    [Theory]
+    [InlineData("pat@sub.intellitect.com")]
+    [InlineData("pat@intellitect.com.evil.test")]
+    [InlineData("pat@notintellitect.com")]
+    public async Task A_domain_entry_admits_that_domain_only(string email)
+    {
+        _settings[AllowedPeople.Key] = "intellitect.com";
+
+        Assert.IsType<Admission.Refused>(await Admission().AdmitAsync(Microsoft(email), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_domain_entry_never_admits_a_personal_account_but_an_exact_entry_does()
+    {
+        _settings[AllowedPeople.Key] = "michaelis.net";
+        var personal = $"{FakeMicrosoft.PersonalTenant}/6f1a7f5a-0000-4000-8000-000000000009";
+
+        Assert.IsType<Admission.Refused>(
+            await Admission().AdmitAsync(Microsoft("old@michaelis.net", subject: personal, personal: true), CancellationToken.None));
+
+        _settings[AllowedPeople.Key] = "michaelis.net; old@michaelis.net";
+        Assert.IsType<Admission.Admitted>(
+            await Admission().AdmitAsync(Microsoft("old@michaelis.net", subject: personal, personal: true), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_personal_account_let_in_by_its_exact_entry_is_shut_out_when_only_its_domain_stays_listed()
+    {
+        _settings[AllowedPeople.Key] = "old@michaelis.net";
+        var personal = $"{FakeMicrosoft.PersonalTenant}/6f1a7f5a-0000-4000-8000-000000000009";
+        var person = ((Admission.Admitted)await Admission().AdmitAsync(
+            Microsoft("old@michaelis.net", subject: personal, personal: true), CancellationToken.None)).Person;
+
+        _settings[AllowedPeople.Key] = "michaelis.net";
+
+        Assert.False(await Admission().IsAllowedAsync(person.Owner, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_work_account_in_a_listed_domain_still_needs_a_verified_address()
+    {
+        _settings[AllowedPeople.Key] = "michaelis.net";
+
+        Assert.IsType<Admission.Refused>(
+            await Admission().AdmitAsync(Microsoft("pat@michaelis.net", verified: false), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Taking_a_domain_off_the_list_shuts_out_everyone_it_let_in()
+    {
+        _settings[AllowedPeople.Key] = "michaelis.net";
+        var person = ((Admission.Admitted)await Admission().AdmitAsync(Microsoft("pat@michaelis.net"), CancellationToken.None)).Person;
+        Assert.True(await Admission().IsAllowedAsync(person.Owner, CancellationToken.None));
+
+        _settings[AllowedPeople.Key] = TestPeople.AllowList;
+
+        Assert.False(await Admission().IsAllowedAsync(person.Owner, CancellationToken.None));
     }
 
     [Fact]
