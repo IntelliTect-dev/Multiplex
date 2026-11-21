@@ -6,7 +6,9 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'Multiplex.Linux.psm1') -Force
     $script:DeployFolder = Join-Path $PSScriptRoot '..' 'deploy' 'linux'
     # A device that is up, with HTTPS certificates, and that the tailnet lets use Funnel (the funnel node attribute).
-    $script:Running = '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"funnel":null,"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}'
+    $script:Running = '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"funnel":null,"https":null,"https://tailscale.com/cap/funnel-ports?ports=443,8443,10000":null}},"CertDomains":["multiplex.tail1234.ts.net"]}'
+    # The same device without the funnel node attribute.
+    $script:NoFunnel = '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}'
 
     # A fake server. -Status is a list of `tailscale status --json` answers, given in turn (the last repeats).
     # A remote script that writes files carries, per file, a "# file: <path>" line and the content as base64.
@@ -117,9 +119,22 @@ Describe 'the Tailscale device''s status' {
 
     It 'reads whether the tailnet lets the device use Funnel: the funnel node attribute, as Tailscale''s own check reads it' {
         (ConvertFrom-MultiplexTailscaleStatus $script:Running).FunnelAllowed | Should -BeTrue
-        (ConvertFrom-MultiplexTailscaleStatus '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}').FunnelAllowed | Should -BeFalse
+        (ConvertFrom-MultiplexTailscaleStatus $script:NoFunnel).FunnelAllowed | Should -BeFalse
         (ConvertFrom-MultiplexTailscaleStatus '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":["multiplex.tail1234.ts.net"]}').FunnelAllowed | Should -BeFalse
         (ConvertFrom-MultiplexTailscaleStatus 'service "tailscale" is not running').FunnelAllowed | Should -BeFalse
+    }
+
+    It 'lets the device use Funnel only on a port its funnel-ports attribute lists, a port or a first-last range holding 443, as Tailscale''s own check does' {
+        function Funnel([string] $Ports) {
+            $port = if ($Ports) { ",`"https://tailscale.com/cap/funnel-ports?ports=$Ports`":null" }
+            (ConvertFrom-MultiplexTailscaleStatus ('{"BackendState":"Running","Self":{"DNSName":"m.t.ts.net.","CapMap":{"funnel":null,"https":null' + $port + '}},"CertDomains":["m.t.ts.net"]}')).FunnelAllowed
+        }
+        Funnel '' | Should -BeFalse -Because 'Tailscale refuses Funnel when no funnel-ports attribute is granted'
+        Funnel '8443,10000' | Should -BeFalse
+        Funnel '4430,8443' | Should -BeFalse
+        Funnel '8443,443' | Should -BeTrue
+        Funnel '1-1000' | Should -BeTrue
+        Funnel '444-1000' | Should -BeFalse
     }
 
     It 'reports output that is not a status as not ready, without throwing' {
@@ -223,7 +238,7 @@ Describe 'deploying' {
     }
 
     It 'stops and says where to let the device use Funnel when the tailnet does not, rather than serving the tailnet only without a word (#108)' {
-        $server = New-FakeServer -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net.","CapMap":{"https":null}},"CertDomains":["multiplex.tail1234.ts.net"]}')
+        $server = New-FakeServer -Status @($script:NoFunnel)
         $message = try { Invoke-Deploy $server | Out-Null; $null } catch { $_.Exception.Message }
         $message | Should -Match 'Funnel'
         $message | Should -Match 'admin console'
@@ -231,12 +246,13 @@ Describe 'deploying' {
         $server.Steps | Should -Not -Contain 'start'
     }
 
-    It 'recreates the Tailscale device when it starts the server, so a changed serve.json reaches it: the device reads the file only as it starts (#108)' {
-        # The deploy rewrites serve.json in place through a one-file bind mount, which sends the device no
-        # change event, and "up -d" alone leaves a device whose compose settings did not change running.
+    It 'recreates the Tailscale device when it starts the server, so a changed serve.json reaches it (#108)' {
+        # serve.json reaches the device through a one-file bind mount, whose changes the device's watch on
+        # its /config folder does not see, and "up -d" alone leaves a device whose compose settings did not
+        # change running.
         $server = New-FakeServer -TailscaleRunning $true
         Invoke-Deploy $server | Out-Null
-        $server.Scripts[$server.Steps.IndexOf('start')] | Should -Match '(?m)^cd ''multiplex'' && docker compose up -d --force-recreate\b'
+        $server.Scripts[$server.Steps.IndexOf('start')] | Should -Match 'docker compose up -d --force-recreate\b'
     }
 
     It 'reports the server''s own log when it does not become healthy' {
@@ -275,9 +291,12 @@ Describe 'deploying' {
         $start | Should -Match 'docker compose pull[^\n]*\|\|'
     }
 
-    It 'a redeploy that stops before the start step never touches the running device or server' {
-        $server = New-FakeServer -TailscaleRunning $true -Status @('{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}')
-        { Invoke-Deploy $server } | Should -Throw '*HTTPS*'
+    It 'a redeploy that stops before the start step (<Why>) never touches the running device or server' -ForEach @(
+        @{ Why = 'no HTTPS certificates'; Status = '{"BackendState":"Running","Self":{"DNSName":"multiplex.tail1234.ts.net."},"CertDomains":null}'; Expected = '*HTTPS*' }
+        @{ Why = 'no Funnel'; Status = $null; Expected = '*Funnel*' }
+    ) {
+        $server = New-FakeServer -TailscaleRunning $true -Status @($Status ?? $script:NoFunnel)
+        { Invoke-Deploy $server } | Should -Throw $Expected
         foreach ($script in $server.Scripts) {
             $script | Should -Not -Match 'docker compose (up|pull|restart|stop|down)' -Because ($script -split "`n")[0]
         }

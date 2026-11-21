@@ -1,5 +1,6 @@
 # Multiplex on a Linux host (issue #97), reachable from your tailnet and, through Tailscale Funnel, from
-# the internet, where Claude's and ChatGPT's connectors call from (#108). Every caller signs in (#80).
+# the internet, where Claude's and ChatGPT's connectors call from (#108). Every page needs a Microsoft
+# sign-in and every MCP call a token (#80).
 # scripts/Deploy-MultiplexLinux.ps1 copies this file and serve.json to ~/multiplex on the server and
 # writes .env (which image runs) and multiplex.env (the server's address) beside them.
 name: multiplex
@@ -8,7 +9,8 @@ services:
   tailscale:
     # A tailnet device of its own, named "multiplex": the address belongs to Multiplex, not to this box,
     # and the box's own Tailscale (if any) is left alone. serve.json proxies HTTPS on 443 to the server
-    # and opens 443 to the internet with Funnel. The device reads serve.json only as it starts.
+    # and opens 443 to the internet with Funnel. The device does not see a change to this one-file
+    # mount until it is recreated, which every deploy does.
     image: tailscale/tailscale:stable
     hostname: multiplex
     environment:
