@@ -321,6 +321,50 @@ public sealed class MicrosoftSignInTests : IDisposable
         Assert.DoesNotContain("go back", html, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    // Admin approval is needed: the person could not have chosen Accept (review of #112).
+    [InlineData("access_denied", "AADSTS90094: An administrator of Contoso has set a policy that prevents you from granting Multiplex the permissions it is requesting.")]
+    [InlineData("consent_required", "AADSTS65001: The user or administrator has not consented to use the application.")]
+    public async Task A_refusal_the_person_could_not_have_accepted_is_not_called_declined(string error, string description)
+    {
+        var browser = _app.Browser();
+        var (_, signIn) = await ChallengeAsync(browser, await AuthorizeUrlAsync());
+
+        var back = await ReturnErrorFromMicrosoftAsync(browser, signIn, error, description);
+
+        Assert.Equal(HttpStatusCode.BadRequest, back.StatusCode);
+        var html = await back.Content.ReadAsStringAsync();
+        Assert.Contains("did not finish", html);
+        Assert.DoesNotContain("declined", html);
+        Assert.DoesNotContain("Accept", html);
+    }
+
+    [Theory]
+    // Paths a browser could read as another site: a tab or line break is stripped from a URL, and a
+    // backslash read as a slash, leaving "//elsewhere.example/" (review of #112).
+    [InlineData("/%09/elsewhere.example/")]
+    [InlineData("/%0A/elsewhere.example/")]
+    [InlineData("/%5C/elsewhere.example/")]
+    public async Task A_sign_in_started_from_a_path_a_browser_could_read_as_another_site_never_returns_off_this_server(string path)
+    {
+        var browser = _app.Browser();
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add("X-Forwarded-For", "203.0.113.7");
+        var challenge = await browser.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Redirect, challenge.StatusCode);
+        var signIn = QueryHelpers.ParseQuery(challenge.Headers.Location!.Query).ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
+        _app.Microsoft.NextIdToken = _app.Microsoft.IdToken(signIn["nonce"], TestPeople.Owner, verified: true);
+
+        var back = await ReturnFromMicrosoftAsync(browser, signIn);
+
+        Assert.Equal(HttpStatusCode.Redirect, back.StatusCode);
+        var location = back.Headers.NonValidated["Location"].ToString();
+        Assert.StartsWith("/", location);
+        Assert.False(location.StartsWith("//", StringComparison.Ordinal), location);
+        Assert.DoesNotContain(location, char.IsControl);
+        Assert.DoesNotContain('\\', location);
+    }
+
     [Fact]
     public async Task A_sign_in_reply_opened_again_links_to_a_fresh_sign_in_and_never_says_go_back()
     {
@@ -350,6 +394,12 @@ public sealed class MicrosoftSignInTests : IDisposable
     [InlineData("//elsewhere.example/", "/")]
     [InlineData("/\\elsewhere.example/", "/")]
     [InlineData("oauth/authorize", "/")]
+    // A browser strips tabs and line breaks from a URL and reads "\" as "/" (review of #112).
+    [InlineData("/\t/elsewhere.example/", "/")]
+    [InlineData("/\n/elsewhere.example/", "/")]
+    [InlineData("/\r\\elsewhere.example/", "/")]
+    [InlineData("/a\\b", "/")]
+    [InlineData("/a\u007fb", "/")]
     public void The_fresh_start_link_is_only_ever_a_path_on_this_server(string? returnTo, string expected) =>
         Assert.Equal(expected, Multiplex.Web.Identity.MultiplexIdentity.StartAgainPath(returnTo));
 
