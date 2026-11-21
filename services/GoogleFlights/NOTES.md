@@ -53,7 +53,7 @@ All in `src/GoogleFlights/Http/` and `GoogleFlightsClientOptions`.
   from the server. The MCP tools pass it as a compact handle (Brotli-compressed
   JSON, base64url); it holds no secret.
 
-## Gotcha: the honest-bot client has a small allowance
+## Gotcha: what makes Google refuse the honest-bot client is not known yet
 
 The bare `[13]` (no `ErrorResponse` detail) was first seen only for a
 User-Agent not in the `Mozilla/5.0 (compatible; ...)` form. On 2026-11-20 the
@@ -62,7 +62,7 @@ C# client, with the right User-Agent, got it twice: for a one-way price graph
 had answered at 13:07. About 16 direct requests had left this network that
 day, most of them hours earlier (`docs/protocol.md` sections 2 and 9, L1-L3).
 
-**It is the network, not the client** (`docs/protocol.md` section 2, AB and
+**It is the network, not the client stack** (`docs/protocol.md` section 2, AB and
 G1/G2). From that network the same search was then refused from three client
 stacks (Node `fetch` exactly as the morning's answered probes, Node with the C#
 client's headers, the C# client) and with both User-Agent strings, while the C#
@@ -71,19 +71,30 @@ wifi) in the same window, which in turn refused the next request. Do not
 "fix" this by changing headers, the TLS stack or the User-Agent string: none
 of them matters, and rotating User-Agents to dodge a limit would be evasion.
 
-So the `Mozilla/5.0 (compatible; ...)` form is necessary, not sufficient:
-Google lets a self-identified client make far fewer requests per network than
-the ~230 in 35 minutes that blocked the earlier, browser-like project (about 8
-answered from one network that day, 1 from another). How many, over what
-window, and for how long it then refuses, are not known yet (#101). Until they
-are:
+**It is not a small count per network either** (`docs/protocol.md` section 2,
+M1/M2). From a third network, one search every 10 minutes was answered 10 times
+out of 12 over nearly three hours. Of the other two, one was gRPC 9, a passing
+error, and one a single refusal just after the machine woke and reconnected;
+the search 10 minutes later was answered. On the same cadence, L1-L3's network
+stayed refused from 13:19 to at least 17:21.
 
-- A bare 13 is read as "this network's allowance is spent", and the client
-  stops (the cool-down). It may also mean a request the service will not take;
-  the answer does not say which.
+So the `Mozilla/5.0 (compatible; ...)` form is necessary, not sufficient, and
+what starts a long refusal, and what ends it, are open (#101). The candidates:
+
+- requests close together: the in-flight network refused a search 6 s after
+  answering one (G1/G2);
+- the one-way price graph Google refused at 13:19 (L2), which opened L1-L3's
+  long refusal;
+- asking a refused network again: L1-L3's network was asked every 10 minutes
+  throughout, and may have stayed refused because of it.
+
+Until #101 settles it:
+
+- A bare 13 is read as "stop", and the client cools down. It may also mean a
+  request the service will not take; the answer does not say which.
 - The live suite is run rarely and stopped at the first refusal. The client's
-  default pacing (4 back to back, then one per 20 s) bounds bursts, not a daily
-  allowance; it will need lowering once the allowance is measured.
+  default pacing (4 back to back, then one per 20 s) allows exactly the close
+  requests that came before refusals; it changes once a safe pace is measured.
 - No one-way calendar: the one form tried was refused, and the page's own
   request is not recorded.
 

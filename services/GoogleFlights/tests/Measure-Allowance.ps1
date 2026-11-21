@@ -5,9 +5,9 @@
     10 minutes, 12 at most (2 hours). Stop it any time with Ctrl+C.
 
 .DESCRIPTION
-    Issue #101. Google refuses the client per network once a small allowance is spent (docs/protocol.md
-    section 2). This records, for one connection, which searches are answered and which refused, and when,
-    so the allowance and how long a refusal lasts can be read off the log.
+    Issue #101. Google refuses the client per network at times (docs/protocol.md section 2). This records,
+    for one connection, which searches are answered and which refused, and when, so what Google allows and
+    how long a refusal lasts can be read off the log.
 
     Each search runs in a fresh PowerShell process: the client's own refusal cool-down would otherwise skip
     the later probes, and the point here is a fixed, slow cadence. The same one-way search (SEA-DEN, six
