@@ -41,12 +41,12 @@
  * timings, uncapped bodies, base64 for anything not valid UTF-8, and the
  * failed requests that a `response`-driven recorder drops entirely.
  *
- * ## A browser Playwright launched is a browser a site can refuse
+ * ## Recording in the ordinary Chrome a person would use anyway
  *
- * The paragraph above is true of a browser this script LAUNCHES. On a
- * protected site, that launch is the end of the recording before it starts:
- * Playwright marks the browser as automated, and bot protection answers the
- * marking rather than the traffic. Measured against car-rental sites (#73):
+ * The paragraph above is true of a browser this script LAUNCHES, and a
+ * Playwright launch is a test-automation launch: Playwright starts its browser
+ * with automation switches, and some sites decline to serve such a browser at
+ * all. Measured against car-rental sites (#73), browsing by hand:
  *
  *   Hertz          Imperva      403 "Access denied, Error 15" on the FIRST page
  *                               load, before any interaction, browsing by hand
@@ -58,7 +58,8 @@
  *                               was typed into, including with a fresh profile
  *
  * The SAME sites, on the same machine and the same network, all worked in a
- * normally launched Chrome. So there is a second way to obtain a browser:
+ * normally launched Chrome. So there is a second way to obtain a browser: the
+ * ordinary Chrome a person would use anyway, one they can watch and take over.
  * `--browser native` starts `chrome.exe` itself with no automation flags, and
  * `--attach` records in one that is already running. Both then reach it the way
  * the paragraph above says an AI reaches a recording --
@@ -75,9 +76,9 @@
  * ending, and the confinement of raw captures below.
  *
  * NO STEALTH MEASURES, deliberately. Nothing here patches
- * `navigator.webdriver`, spoofs a fingerprint, or rotates anything -- a
- * normally launched Chrome needs none of it, which is the entire finding. A
- * site may still challenge; the human answers it.
+ * `navigator.webdriver`, spoofs a fingerprint, or rotates anything -- this is
+ * an ordinary browser, not an automated one dressed up as one. A site may
+ * still challenge; the challenge is the person's to answer.
  *
  * AND NOTHING HERE EVER CLOSES A BROWSER IT DID NOT LAUNCH. `stop` detaches.
  * The operator's window, and every signed-in tab in it, survives the recording
@@ -86,9 +87,9 @@
  * ## An agent can drive it, and the prompt is generated (#98)
  *
  * `--ai` hands the browsing to an agent while this process goes on recording.
- * It implies `--browser native`, because a browser Playwright launched is a
- * browser the sites worth driving an agent at refuse (the table above), so an
- * agent driving one would be driving the refusal.
+ * It implies `--browser native`, because the agent browses in the ordinary
+ * Chrome a person would use -- one the person can watch and take over -- not
+ * in a test-automation launch (see the table above for what that launch met).
  *
  * `--describe` BECOMES THE GOAL. It is already required (#366), so the switch
  * needs no new input: the prompt is assembled from drive-prompt.md, this run's
@@ -291,11 +292,11 @@
  *                    dedicated capture profile, which stays signed in between
  *                    sessions -- bundled Chromium can silently close against
  *                    a profile Chrome created, hence channel:'chrome'.
- *   --browser        `playwright` (default) launches the browser here, which is
- *                    the mode a protected site detects and refuses. `native`
- *                    starts chrome.exe with NO automation flags and attaches
- *                    over CDP -- use it on a site that blocks the default. See
- *                    the measured table above. Exclusive with --isolated.
+ *   --browser        `playwright` (default) launches the browser here, a
+ *                    test-automation launch. `native` starts chrome.exe with NO
+ *                    automation flags and attaches over CDP -- the ordinary
+ *                    browser a person would use anyway. See the measured table
+ *                    above. Exclusive with --isolated.
  *   --attach         record in a Chrome that is ALREADY running with
  *                    --remote-debugging-port, given its HTTP endpoint
  *                    (http://127.0.0.1:9222, 127.0.0.1:9222, or just 9222).
@@ -619,8 +620,9 @@ const LAUNCH_TIMEOUT_MS = 45000;
 const CDP_PROBE_MS = 1500;
 const PORT_SCAN_LIMIT = 64;
 // The two ways a browser can come to exist for a recording (#73). The default
-// is unchanged; `native` exists because Playwright's launch is DETECTABLE and
-// protected sites refuse it outright -- see the measured table at the top.
+// is unchanged; `native` records in an ordinary Chrome with no automation
+// flags, where Playwright's is a test-automation launch -- see the measured
+// table at the top.
 const BROWSER_PLAYWRIGHT = 'playwright';
 const BROWSER_NATIVE = 'native';
 const BROWSER_MODES = [BROWSER_PLAYWRIGHT, BROWSER_NATIVE];
@@ -882,9 +884,9 @@ function usage(msg) {
         '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
         '                                     [--session <dir>] [--output-path <dir>]\n' +
         '\n' +
-        '  --browser native            start chrome.exe with no automation flags and\n' +
-        '                              attach over CDP, for a site that refuses a\n' +
-        '                              Playwright-launched browser.\n' +
+        '  --browser native            start an ordinary chrome.exe, with no automation\n' +
+        '                              flags, and attach over CDP: the browser a person\n' +
+        '                              would use anyway.\n' +
         '  --attach <cdp>              record in a Chrome already running with\n' +
         '                              --remote-debugging-port. `stop` detaches only.\n' +
         '                              With either, only this capture\'s tabs are\n' +
@@ -1535,21 +1537,21 @@ function discoverStorageState(startDir, stopAt) {
  * refusal with no cause.
  *
  * Every combination below is refused rather than silently resolved. `--isolated`
- * means "bundled Chromium, throwaway profile", which is the exact launch a
- * protected site rejects -- so honouring one flag while the operator typed both
- * would record in the browser they were trying to avoid, and the evidence would
- * be a 403 they then spend an afternoon on.
+ * means "bundled Chromium, throwaway profile", a test-automation launch -- so
+ * honouring one flag while the operator typed both would record in the browser
+ * they chose not to use, and the evidence would be a 403 they then spend an
+ * afternoon on.
  */
 function resolveBrowserMode(args) {
     // `--ai` MOVES THE DEFAULT (#98), it does not add a third mode.
     //
-    // An agent driving a Playwright-launched browser is an agent driving the one
-    // launch the protected sites in the table above refuse outright -- which are
-    // the sites `--ai` was built for. So the implication is part of the switch
-    // rather than something the operator has to remember to type, and the two
-    // combinations that contradict it are refused below rather than resolved by
-    // precedence. Precedence here would silently record in the browser the
-    // operator was avoiding, and the evidence would be a 403 an afternoon later.
+    // An agent browses in the ordinary Chrome a person would use, one they can
+    // watch and take over -- not in a test-automation launch. So the implication
+    // is part of the switch rather than something the operator has to remember
+    // to type, and the two combinations that contradict it are refused below
+    // rather than resolved by precedence. Precedence here would silently record
+    // in the browser the operator chose not to use, and the evidence would be a
+    // 403 an afternoon later.
     const ai = !!args.ai;
     const asked = args.browser === undefined
         ? (ai ? BROWSER_NATIVE : BROWSER_PLAYWRIGHT)
@@ -1564,15 +1566,15 @@ function resolveBrowserMode(args) {
     if (ai && args.isolated) {
         return {
             error: '--ai and --isolated are exclusive. --isolated launches Playwright\'s bundled' +
-                '\n  Chromium, which IS the launch a protected site refuses -- and an agent ' +
-                'driving\n  that browser is an agent driving the refusal'
+                '\n  Chromium, a test-automation launch -- and an agent browses in an ordinary ' +
+                'Chrome\n  with no automation flags, one a person can watch and take over'
         };
     }
     if (ai && asked !== BROWSER_NATIVE) {
         return {
             error: `--ai and --browser ${asked} are exclusive: --ai implies --browser native.` +
-                '\n  Playwright\'s launch is detectable and the sites worth driving an agent at ' +
-                'refuse\n  it, so there would be nothing to drive'
+                '\n  An agent browses in an ordinary Chrome with no automation flags, one a ' +
+                'person\n  can watch and take over, not in a test-automation launch'
         };
     }
     const attaching = args.attach !== undefined;
@@ -1580,7 +1582,8 @@ function resolveBrowserMode(args) {
         if (asked === BROWSER_NATIVE && args.isolated) {
             return {
                 error: '--browser native and --isolated are exclusive. --isolated launches ' +
-                    "Playwright's\n  bundled Chromium, which IS the launch a protected site refuses"
+                    "Playwright's\n  bundled Chromium, a test-automation launch -- the opposite of " +
+                    'an ordinary Chrome'
             };
         }
         return { browser: asked, attached: false };
@@ -1742,8 +1745,9 @@ function findChromeExecutable(opts = {}) {
  *                              operator did not ask to switch to.
  *
  * AND NOTHING ELSE. No --disable-blink-features, no --disable-extensions, no
- * automation switches, no headless. Those are the marks this mode exists to
- * avoid; the two suppressions above are first-run UI, not automation, and
+ * automation switches, no headless. This mode is an ordinary browser, and
+ * those would make it a test-automation one; the two suppressions above are
+ * first-run UI, not automation, and
  * `navigator.webdriver` stays false -- which is the property that matters and
  * is asserted in the suite rather than assumed here.
  *
@@ -3137,8 +3141,8 @@ function chromeExtensionNotice(session) {
  *
  * `--ai` with no agent to run is UNANSWERABLE, so it is a refusal rather than a
  * warning that falls back to a recording nobody is driving: the operator asked
- * for a capture to be driven, and a browser sitting open on a bot-protected site
- * with nothing happening in it is not a lesser version of that.
+ * for a capture to be driven, and a browser sitting open on the site with
+ * nothing happening in it is not a lesser version of that.
  */
 function resolveAgent(ctx = {}) {
     if (!ctx.ai) return {};
@@ -4410,9 +4414,9 @@ function startBannerLines(session) {
             '  DETACHES: the browser, its window and its tabs are left exactly as they are.']);
     } else if (session.browser === BROWSER_NATIVE) {
         lines.push(['info',
-            '  Recording in a natively launched Chrome -- no automation flags, so a site\n' +
-            '  with bot protection sees an ordinary browser. Ending the recording detaches\n' +
-            '  and leaves it running; close the window yourself when you are done with it.']);
+            '  Recording in an ordinary Chrome with no automation flags -- watch it, and\n' +
+            '  take over whenever you like. Ending the recording detaches and\n' +
+            '  leaves it running; close the window yourself when you are done with it.']);
     }
     // WHICH TABS, said where the operator can still act on it (#85). Not in
     // the Playwright mode, where the browser is this run's own and holds
@@ -4944,8 +4948,8 @@ async function start(args) {
     // the same reason the preflight itself sits above everything else: this is
     // the other gate whose answer makes the rest pointless. An operator left with
     // a Chrome open, a profile warmed up and no driver has to clean up after a run
-    // that could never have worked -- and on the protected sites this mode exists
-    // for, that browser was the expensive part.
+    // that could never have worked -- and that browser, signed in on its
+    // capture profile, was the expensive part.
     //
     // Not enforced under --validate-only either, and for the same reason asked
     // there by startGateVerdict rather than skipped.

@@ -518,16 +518,20 @@ holds live sessions this must not disturb -- and records every request. Pass
 | `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only thing that says what a capture was for, and the only part that cannot be reconstructed afterwards. Who made it is recorded for you: see *Which run made a capture*. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one. Refused with `-Attach`, whose endpoint already names one |
-| `-Browser` | `Playwright` (default) launches the browser here; `Native` starts an ordinary Chrome instead, for a site that refuses the default. See below |
+| `-Browser` | `Playwright` (default) launches the browser here; `Native` starts an ordinary Chrome with no automation flags instead -- the browser a person would use anyway. See below |
 | `-Attach` | record in a Chrome that is already running, given its debugging endpoint. Stopping **detaches** |
 | `-AI` | an **agent** does the browsing while the recorder records. Implies `-Browser Native`; `-Describe` is the goal; the prompt and its safety rules are generated. See below |
 | `-AITools` | with `-AI`: which tools the agent has. `Auto` (default) is auto permission mode, its classifier approves or blocks each action; `BrowserOnly` removes every built-in tool (`--tools ""`), leaving only MCP tools -- use it when signed into something sensitive, with only the browser MCP configured. Refused without `-AI`. See below |
 
-#### When the site refuses the browser: `-Browser Native`
+#### Record in the Chrome a person would use anyway: `-Browser Native`
 
-**A Playwright-launched browser is a browser a site can refuse.** Playwright
-marks the browser as automated, and bot protection answers the marking rather
-than the traffic. Measured on car-rental sites, browsing **by hand**:
+**`-Browser Native` records in an ordinary Chrome** -- the browser a person
+would open to do this by hand, started with no automation flags, in a window you
+can watch and take over at any moment. Nothing about it is disguised: it is
+simply not a test-automation launch. The default Playwright launch *is* one --
+Playwright starts its browser with automation switches -- and some sites decline
+to serve a test-automation browser at all. Measured on car-rental sites,
+browsing **by hand**:
 
 | Site | Protection | What happened in the Playwright-launched window |
 |---|---|---|
@@ -542,7 +546,7 @@ hand, and Chrome writes a **0-byte file** when exporting a large multi-site log
 — so the capture was unobtainable rather than merely awkward.
 
 So there are two ways to obtain a browser, and the second one records in the
-browser the site accepts:
+ordinary Chrome a person would have used anyway:
 
 ```powershell
 # The recorder starts chrome.exe itself, with no automation flags, and attaches
@@ -556,9 +560,10 @@ Invoke-HarCapture https://www.avis.com -Describe 'vehicle search' -Attach 9222
 ```
 
 - **No stealth measures, and none are wanted.** Nothing patches
-  `navigator.webdriver`, spoofs a fingerprint or rotates anything — a normally
-  launched Chrome needs none of it, which is the whole finding. A site may still
-  challenge; **you** answer it in the window.
+  `navigator.webdriver`, spoofs a fingerprint or rotates anything — this is an
+  ordinary browser, not an automated one dressed up as one. A site may still
+  challenge; the challenge is **yours** to answer in the window, or to walk away
+  from.
 - **Stopping DETACHES.** The browser, its window and every tab in it are left
   exactly as they are — including under `-Browser Native`, where the recorder
   started it. Nothing in the recorder closes a browser, for the same reason
@@ -594,7 +599,8 @@ Invoke-HarCapture https://www.avis.com -Describe 'vehicle search' -Attach 9222
 - **The Chromium binary is not a dependency.** These modes drive the Chrome the
   machine already has, so the preflight asks only for the `playwright` *module*.
 - `-Browser Native` and `-Attach` are **exclusive with `-Isolated`**, which
-  launches the bundled Chromium — the very launch a protected site rejects.
+  launches the bundled Chromium — a test-automation launch, the opposite of the
+  ordinary browser these modes record in.
   `-Attach` also refuses `-Port` and `-Profile`: that browser is already
   listening on a port and already running on a profile, so neither is the run's
   to choose. A new tab is opened for the URI rather than navigating one of yours
@@ -616,9 +622,9 @@ Invoke-HarCapture https://www.avis.com -AI `
 
 An **agent does the browsing** while the recorder records. `-Describe` becomes
 the agent's goal — it is already mandatory, so the switch needs no new input —
-and `-AI` **implies `-Browser Native`**, because an agent driving a
-Playwright-launched browser would be driving the one launch the sites in the
-table above refuse. It is therefore exclusive with `-Isolated` and with
+and `-AI` **implies `-Browser Native`**, because the agent browses in the
+ordinary Chrome a person would use -- one you can watch and take over -- not in
+a test-automation launch. It is therefore exclusive with `-Isolated` and with
 `-Browser Playwright`, and it needs the `claude` CLI on `PATH`, which is checked
 **before** a browser is started so a missing driver costs nothing to clean up.
 
@@ -703,16 +709,17 @@ with an unknown value it is refused at exit 2. Allow rules in your own Claude
 Code settings still apply in either mode.
 
 **Driving modes.** Preferred is the **Claude-in-Chrome extension** inside the
-capture profile — in the car-rental capture that was the setup that passed
-Imperva, Akamai, DataDome and PerimeterX. The fallback is a **Playwright MCP
-attached to the same CDP endpoint**; it adds no automation flag to the browser,
-but it is still CDP-driven input and a protected site may challenge it, in which
-case the hand-back rule applies.
+capture profile: it works in the ordinary browser a person is watching, as an
+extension that person installed, so they can see every step and take over at
+any moment, and it adds no automation flag. The fallback is a **Playwright MCP
+attached to the same CDP endpoint**; it adds no automation flag to the browser
+either, but it is CDP-driven input. With either driver a site may challenge,
+and then the hand-back rule applies: the challenge is the person's to answer.
 
 **The extension is the default driver once it is set up** (#117), once, in the
 capture profile. Nothing installs it there for you -- no automated install and
-no `--load-extension` (that is an automation flag, which the native launch
-exists to avoid). **One-time setup**, per capture profile:
+no `--load-extension` (that is an automation flag, and the native launch is an
+ordinary browser with none). **One-time setup**, per capture profile:
 
 1. Open the capture browser on its profile -- a run without `-AI`, e.g.
    `Invoke-HarCapture <url> -Describe 'setup' -Browser Native`.

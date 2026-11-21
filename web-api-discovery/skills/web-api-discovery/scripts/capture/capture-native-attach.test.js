@@ -5,8 +5,8 @@
 // ## The incident
 //
 // `capture-har.js start` could only record in a browser it launched with
-// Playwright, and Playwright's launch is DETECTABLE. On a protected site that
-// ends the recording before it starts. Measured against car-rental sites, by
+// Playwright, and Playwright's launch is a TEST-AUTOMATION launch, which some
+// sites decline to serve -- ending the recording before it starts. Measured against car-rental sites, by
 // hand, with nothing automated driving them:
 //
 //   Hertz          Imperva      403 "Access denied, Error 15" on the FIRST page
@@ -306,9 +306,9 @@ test('N3: every unanswerable flag combination is a usage error, not a guess', ()
     const repo = makeRepo('exclusivity');
     plantOperatorProfile(repo);
     const cases = [
-        // --isolated is bundled Chromium on a throwaway profile, which IS the
-        // launch a protected site refuses. Honouring one flag while the operator
-        // typed both would record in the browser they were avoiding, and the
+        // --isolated is bundled Chromium on a throwaway profile, a test-automation
+        // launch. Honouring one flag while the operator typed both would record
+        // in the browser they chose not to use, and the
         // evidence would be a 403 they then spend an afternoon on.
         { args: ['--browser', 'native', '--isolated'], match: /exclusive/i },
         { args: ['--attach', '9222', '--isolated'], match: /exclusive/i },
@@ -389,7 +389,7 @@ test('N5: the native launch carries NO automation flags', () => {
     // failure says WHY it matters.
     const forbidden = /automation|blink-features|headless|disable-extensions|disable-gpu|remote-allow-origins|load-extension/i;
     for (const a of args) {
-        assert.ok(!forbidden.test(a), `${a} is an automation marking -- a site reads it and refuses`);
+        assert.ok(!forbidden.test(a), `${a} is an automation flag -- the native launch is an ordinary Chrome with none`);
     }
 
     // about:blank ON PURPOSE: the site is navigated to after the attach, so its
@@ -451,6 +451,12 @@ test('N7: the banner says whose browser it is and what stopping will do', () => 
         requestedPort: 9333, profileDir: 'p', harPath: 'r', outputPath: 'o'
     });
     assert.match(native, /no automation flags/i);
+    // #42: the native launch is an ordinary browser a person can watch and
+    // take over -- said as what it is, not as what bot protection will "see".
+    assert.match(native, /ordinary Chrome/i);
+    assert.match(native, /take over/i);
+    assert.doesNotMatch(native, /bot protection/i,
+        'the banner describes the browser, not what it gets past');
     assert.match(native, /leaves it running/i,
         'every other mode ends with the browser gone, so a window that stays open reads ' +
         'as a leak unless it was announced as the contract');

@@ -83,8 +83,8 @@ process.stdout.write(JSON.stringify(m.START_OPTIONS || null));
         # search locations is reachable from this list.
         #
         # #73 is "WHOSE BROWSER", which no existing lever can express. Playwright's
-        # launch is detectable and protected sites refuse it outright, so recording
-        # at all on those sites means recording in a browser this script did not
+        # launch is a test-automation launch, and recording in the ordinary Chrome
+        # a person would use means recording in a browser this script did not
         # launch. The issue names both flags, and the argument for them is written
         # up on capture-har.js and in SKILL.md rather than here.
         #
