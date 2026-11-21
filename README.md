@@ -95,7 +95,8 @@ The app registration, once, in the Microsoft Entra admin center:
 server over SSH, where it runs as two Docker containers (`deploy/linux`): the
 server, with Google Chrome and a virtual display for the sign-in browsers, and
 a Tailscale device named `multiplex` that serves it over HTTPS at
-`https://multiplex.<your-tailnet>.ts.net`, to your tailnet only.
+`https://multiplex.<your-tailnet>.ts.net`, to your tailnet and, through
+Tailscale Funnel, to the internet.
 
 ```powershell
 ./scripts/Deploy-MultiplexLinux.ps1 -Target me@192.168.1.20
@@ -111,7 +112,9 @@ a Tailscale device named `multiplex` that serves it over HTTPS at
 
 - **The first deploy** prints a Tailscale link: open it and sign in to add the
   `multiplex` device to your tailnet. The tailnet must issue HTTPS certificates
-  (Tailscale admin console, DNS page).
+  (Tailscale admin console, DNS page) and let the device use Funnel: the
+  `funnel` node attribute, which Tailscale's default access controls give every
+  member's devices. The deploy stops and says so when either is missing.
 - **Sign-in** ([Signing in to Multiplex](#signing-in-to-multiplex)) is kept on
   the server in `~/multiplex/identity.env`, which you write yourself, mode 0600:
   `Multiplex__Identity__Microsoft__ClientId=...`,
@@ -130,10 +133,16 @@ a Tailscale device named `multiplex` that serves it over HTTPS at
   sign-in starts it: as the server's own user, sandboxed, with a window on the
   virtual display (`deploy/linux/check-chrome.sh`). If it cannot start, the deploy
   says so, and how to go back to an earlier image: every site sign-in would fail.
-- **Tailnet only.** Claude Code on a tailnet device can use it
+- **Open to the internet, through Funnel.** Claude's web, phone and Desktop
+  connectors and ChatGPT call from their own clouds, off your tailnet, so the
+  device opens port 443, and only 443, with Tailscale Funnel. Funnel needs no
+  incoming port on your network: Tailscale's relays hand each request to the
+  device over its own outgoing connection, and the device ends the TLS. Add
+  `https://multiplex.<your-tailnet>.ts.net/tripit/mcp` as a custom connector, or
+  in Claude Code
   (`claude mcp add --transport http tripit https://multiplex.<your-tailnet>.ts.net/tripit/mcp`).
-  Claude's web, phone and Desktop connectors and ChatGPT call from their own
-  clouds and cannot reach it.
+  Every caller, on the tailnet or not, signs in with Microsoft: a web page sends
+  you to the sign-in, and an MCP call without a token gets 401.
 - **Data** lives in the `multiplex_multiplex-data` Docker volume, readable by the
   container's own user only. Nothing moves over from a Windows install: its keys
   and browser sign-ins are encrypted to that Windows account, so connectors are

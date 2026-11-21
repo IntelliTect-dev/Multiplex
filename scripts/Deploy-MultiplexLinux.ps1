@@ -1,13 +1,15 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-Deploys Multiplex to a Linux server over SSH, reachable from your tailnet only.
+Deploys Multiplex to a Linux server over SSH, reachable from your tailnet and the internet.
 
 .DESCRIPTION
 Builds the server on this PC, uploads it, and runs it on the server as two Docker containers
 (deploy/linux): the server itself, with Google Chrome and a virtual display for the sign-in
-browsers, and a Tailscale device named "multiplex" that serves it to your tailnet over HTTPS at
-https://multiplex.<your-tailnet>.ts.net. Nothing is reachable from the internet.
+browsers, and a Tailscale device named "multiplex" that serves it over HTTPS at
+https://multiplex.<your-tailnet>.ts.net, to your tailnet and, through Tailscale Funnel, to the
+internet, where Claude's and ChatGPT's connectors call from. Funnel needs no incoming port: the
+device carries the traffic over its own outgoing Tailscale connection. Every caller signs in.
 
 Run it again to update the server. Re-running is safe: until the new image has built and the
 Tailscale device is up, the running server is left as it was.
@@ -21,7 +23,9 @@ Multiplex__Identity__Microsoft__ClientSecret and Multiplex__Identity__AllowedEma
 writes, reads or uploads it; after editing it, run `cd ~/multiplex && docker compose up -d` there.
 
 On the first deploy the Tailscale device prints a link: open it and sign in to Tailscale to add the
-device to your tailnet. The tailnet must issue HTTPS certificates (Tailscale admin console, DNS page).
+device to your tailnet. The tailnet must issue HTTPS certificates (Tailscale admin console, DNS page)
+and let the device use Funnel (the "funnel" node attribute, which Tailscale's default access
+controls give every member's devices); the deploy stops and says so when either is missing.
 
 .PARAMETER Target
 The server's SSH destination: user@host (for example me@192.168.1.20) or an alias from your SSH config.
@@ -94,10 +98,11 @@ do {
 Write-Host ($checks | Format-Table -AutoSize | Out-String -Width 200).TrimEnd()
 
 Write-Host @"
-Multiplex runs at $($result.BaseUrl) (image $($result.Image)), for devices on your tailnet only.
+Multiplex runs at $($result.BaseUrl) (image $($result.Image)), open to your tailnet and, through
+Tailscale Funnel, to the internet. Everyone signs in with Microsoft, with an address on the allowed
+list in ~/multiplex/identity.env on the server.
   TripIt MCP address: $($result.BaseUrl)/tripit/mcp
   Claude Code:        claude mcp add --transport http tripit $($result.BaseUrl)/tripit/mcp
-Claude's web, phone and Desktop connectors and ChatGPT call from their own clouds, which are not on
-your tailnet, so they cannot reach this address.
+Claude's web, phone and Desktop connectors and ChatGPT add the same address as a custom connector.
 "@
 if ($checks | Where-Object { -not $_.Passed }) { throw 'Some checks failed; see the table above.' }

@@ -45,7 +45,7 @@ Each service lives in its own folder, with its code, its tests and a README. The
 
 On the owner's PC for now, reachable from the internet over HTTPS through a tunnel, and on a real host later. It has to be reachable from the internet because Claude and ChatGPT call it from their own clouds, even when the person is at the same PC. (Decided with the TripIt work, issue #6.)
 
-It can also run on a Linux server, deployed from a PC over SSH, as its own device on the owner's tailnet. That host serves the tailnet only, so it reaches clients on tailnet devices (Claude Code, for one) but not Claude's or ChatGPT's own connectors. (Issue #97.)
+It can also run on a Linux server, deployed from a PC over SSH, as its own device on the owner's tailnet (issue #97). That host is also open to the internet through Tailscale Funnel, so Claude's and ChatGPT's own connectors reach it as well as clients on tailnet devices. Funnel needs no incoming port on the server's network. (Issue #108, reversing #97's tailnet-only choice.)
 
 ## Constraints and risks
 
