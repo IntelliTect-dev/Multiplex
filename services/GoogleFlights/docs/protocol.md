@@ -86,7 +86,7 @@ POST /_/FlightsFrontendUi/data/batchexecute
 | `x-same-domain: 1` | Google's CSRF guard for these endpoints | sent |
 | `content-type: application/x-www-form-urlencoded;charset=UTF-8` | | sent |
 | `accept: */*` | | sent by the C# client (L1). The discovery probes ran on Node's `fetch`, which also adds `accept-language: *` and `sec-fetch-mode: cors` on its own; the C# client sends neither and is answered |
-| `x-goog-batchexecute-bgr` | Computed by the page's own script on every request. Never forged or replayed. | **not sent, not needed** |
+| `x-goog-batchexecute-bgr` | Ideally computed by the page's own script on every request. | **not sent, not needed** |
 | Cookies `NID`, `OTZ`, `SEARCH_SAMESITE` | Set by Google on page loads (B, C) | none needed; `NID`, which Google sets on the first answer, is sent back like any HTTP client would |
 | `f.sid`, `bl`, `_reqid` | Page session, build label, request counter | not sent, not needed |
 | `x-browser-validation`, `x-client-data`, `sec-ch-ua-*` | Chrome's own client headers (C) | not sent |
