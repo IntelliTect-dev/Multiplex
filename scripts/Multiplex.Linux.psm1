@@ -1,8 +1,8 @@
 #Requires -Version 7.2
 # Deploying Multiplex to a Linux server over SSH (issue #97): the server runs it as two Docker
 # containers from deploy/linux -- the server, and a Tailscale device named "multiplex" that serves it
-# to the tailnet only. Deploy-MultiplexLinux.ps1 wires these helpers to ssh and scp;
-# Deploy-MultiplexLinux.Tests.ps1 tests them against a fake server.
+# to the tailnet and, through Funnel, the internet (#108). Deploy-MultiplexLinux.ps1 wires these
+# helpers to ssh and scp; Deploy-MultiplexLinux.Tests.ps1 tests them against a fake server.
 Set-StrictMode -Version Latest
 
 # Everything on the server lives in ~/multiplex: compose.yaml, serve.json, .env (which image runs) and
@@ -42,24 +42,28 @@ function Get-MultiplexLinuxServerEnvironment {
 function ConvertFrom-MultiplexTailscaleStatus {
     <#
     The parts of `tailscale status --json` the deploy needs: the state (Running, NeedsLogin, ...), the
-    link that adds the device to the tailnet, the device's DNS name, and whether the tailnet issues
-    HTTPS certificates. Output that is not a status (the container not up yet) is state Unknown.
+    link that adds the device to the tailnet, the device's DNS name, whether the tailnet issues HTTPS
+    certificates, and whether it lets the device use Funnel (the "funnel" node attribute in the device's
+    CapMap, which Tailscale's own `tailscale funnel` checks). Output that is not a status (the container
+    not up yet) is state Unknown.
     #>
     [CmdletBinding()]
     param([AllowEmptyString()] [string] $Json)
     try { $status = $Json | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
     catch { $status = $null }
     if ($status -isnot [System.Collections.IDictionary] -or -not $status['BackendState']) {
-        return [pscustomobject]@{ State = 'Unknown'; LoginUrl = $null; DnsName = $null; HttpsEnabled = $false; Detail = "$Json".Trim() }
+        return [pscustomobject]@{ State = 'Unknown'; LoginUrl = $null; DnsName = $null; HttpsEnabled = $false; FunnelAllowed = $false; Detail = "$Json".Trim() }
     }
     $self = $status['Self']
-    $dnsName = if ($self -is [System.Collections.IDictionary] -and $self['DNSName']) { ([string]$self['DNSName']).TrimEnd('.') }
+    if ($self -isnot [System.Collections.IDictionary]) { $self = @{} }
+    $dnsName = if ($self['DNSName']) { ([string]$self['DNSName']).TrimEnd('.') }
     return [pscustomobject]@{
-        State        = [string]$status['BackendState']
-        LoginUrl     = ($status['AuthURL'] ? [string]$status['AuthURL'] : $null)
-        DnsName      = ($dnsName ? $dnsName : $null)
-        HttpsEnabled = [bool]@($status['CertDomains'] | Where-Object { $_ }).Count
-        Detail       = $null
+        State         = [string]$status['BackendState']
+        LoginUrl      = ($status['AuthURL'] ? [string]$status['AuthURL'] : $null)
+        DnsName       = ($dnsName ? $dnsName : $null)
+        HttpsEnabled  = [bool]@($status['CertDomains'] | Where-Object { $_ }).Count
+        FunnelAllowed = $self['CapMap'] -is [System.Collections.IDictionary] -and $self['CapMap'].Contains('funnel')
+        Detail        = $null
     }
 }
 
@@ -173,7 +177,8 @@ function Invoke-MultiplexLinuxDeploy {
       3. the server builds the image under -Tag -- a failed build stops here, and the upload is removed;
       4. on a first deploy, the Tailscale device starts (a redeploy leaves the running one alone); a new
          device shows the link that adds it to the tailnet, and the deploy waits (up to -LoginTimeout);
-      5. the server's settings are written, and the device and the server are updated together;
+         it stops here unless the tailnet gives the device HTTPS certificates and lets it use Funnel;
+      5. the server's settings are written, and the device and the server are recreated together;
       6. waits (up to -HealthTimeout) for the server to answer /healthz, else reports its log;
       7. removes the upload, all but the last three images, and week-old build cache;
       8. checks that Chrome starts, sandboxed, in the server's container.
@@ -277,17 +282,24 @@ fi
     if (-not $status.HttpsEnabled) {
         throw "Your tailnet does not issue HTTPS certificates, which the server's address needs. Turn on 'HTTPS Certificates' in the Tailscale admin console (DNS page), then run this again. The server was not started."
     }
+    # serve.json opens the address to the internet with Funnel. Without the funnel node attribute the
+    # device takes that setting without complaint and serves the tailnet only, so say so here instead.
+    if (-not $status.FunnelAllowed) {
+        throw "Your tailnet does not let the 'multiplex' device use Funnel, which opens its address to the internet for Claude's and ChatGPT's connectors. In the Tailscale admin console, Access controls, give the device the 'funnel' node attribute (https://tailscale.com/kb/1223/funnel), then run this again. The server was not started."
+    }
     $baseUrl = "https://$($status.DnsName)"
 
     Write-Host "Starting the server at $baseUrl..."
     $settings = Get-MultiplexLinuxServerEnvironment -PublicBaseUrl $baseUrl
     # The pull comes first and may fail (no registry): the device then keeps the image it has, and the
-    # settings are rewritten only when the server is about to start with them.
+    # settings are rewritten only when the server is about to start with them. Both containers are
+    # recreated: the device reads serve.json only as it starts, since the in-place copy above reaches it
+    # through a one-file bind mount that sends no change event, and the server is new each deploy anyway.
     Invoke-MultiplexLinuxStep $Remote 'start' -Failure 'The server did not start.' -Body @"
 (cd '$root' && docker compose pull --quiet tailscale 2>&1) || echo 'Could not pull the Tailscale image; keeping the one this server has.'
 $(New-MultiplexRemoteFileScript -Path "$root/multiplex.env" -Content (ConvertTo-MultiplexEnvFile $settings))
 $(New-MultiplexRemoteFileScript -Path "$root/.env" -Content (ConvertTo-MultiplexEnvFile ([ordered]@{ MULTIPLEX_IMAGE = $image })))
-cd '$root' && docker compose up -d 2>&1
+cd '$root' && docker compose up -d --force-recreate 2>&1
 "@ | Out-Null
 
     $deadline = [DateTime]::UtcNow + $HealthTimeout
