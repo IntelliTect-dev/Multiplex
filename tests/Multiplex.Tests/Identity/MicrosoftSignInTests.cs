@@ -273,6 +273,23 @@ public sealed class MicrosoftSignInTests : IDisposable
     }
 
     [Fact]
+    public async Task When_Microsoft_refuses_to_redeem_the_code_the_log_says_why_and_the_person_is_told_to_try_again()
+    {
+        var browser = _app.Browser();
+        var (_, signIn) = await ChallengeAsync(browser, await AuthorizeUrlAsync());
+        _app.Microsoft.NextTokenError = ("invalid_client", "AADSTS7000215: Invalid client secret provided.");
+
+        var back = await ReturnFromMicrosoftAsync(browser, signIn);
+
+        Assert.Equal(HttpStatusCode.BadRequest, back.StatusCode);
+        Assert.Contains("did not finish", await back.Content.ReadAsStringAsync());
+        var logged = string.Join("\n", _app.Logs.Entries.Select(e => e.Message));
+        Assert.Contains("invalid_client", logged);
+        Assert.Contains("AADSTS7000215", logged);
+        Assert.DoesNotContain("test-client-secret", logged);
+    }
+
+    [Fact]
     public async Task Without_the_Microsoft_app_registration_nothing_outside_this_PC_can_sign_in()
     {
         using var app = new AuthTestApp();

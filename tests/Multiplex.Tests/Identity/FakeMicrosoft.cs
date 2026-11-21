@@ -74,6 +74,9 @@ public sealed class FakeMicrosoft : HttpMessageHandler
     /// <summary>The ID token the next code redemption returns.</summary>
     public string? NextIdToken { get; set; }
 
+    /// <summary>When set, the next code redemption is refused with this OAuth error and description instead.</summary>
+    public (string Error, string Description)? NextTokenError { get; set; }
+
     /// <summary>Every code redemption the host made, as form fields.</summary>
     public ConcurrentQueue<Dictionary<string, string>> Redemptions { get; } = new();
 
@@ -120,6 +123,11 @@ public sealed class FakeMicrosoft : HttpMessageHandler
         var form = QueryHelpers.ParseQuery(await request.Content!.ReadAsStringAsync(cancellationToken))
             .ToDictionary(kv => kv.Key, kv => kv.Value.ToString());
         Redemptions.Enqueue(form);
+        if (NextTokenError is { } refusal)
+        {
+            var error = JsonSerializer.Serialize(new { error = refusal.Error, error_description = refusal.Description });
+            return new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(error, Encoding.UTF8, "application/json") };
+        }
         var body = JsonSerializer.Serialize(new { id_token = NextIdToken, access_token = "microsoft-access-token", token_type = "Bearer", expires_in = 3600 });
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     }
