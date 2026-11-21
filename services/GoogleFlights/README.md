@@ -63,10 +63,10 @@ var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Select
 
 ## Limits and safety
 
-- **Google throttles, and allows this client little.** A block applies to the
-  whole network. On 2026-11-20 Google started refusing the client after about
-  16 requests from the network that day; the allowance and how long a refusal
-  lasts are not measured yet. The client paces itself (4 requests back to back,
+- **Google throttles this client, and what sets it off is not known yet.** A
+  refusal applies to the whole network. On 2026-11-20 one network stayed
+  refused for at least four hours, while another answered one search every 10
+  minutes for nearly three hours (#101). The client paces itself (4 requests back to back,
   then one per 20 seconds), caches answers for 12 minutes, never retries a
   refusal, and after one stops sending anything for 15 minutes (doubling with
   each refusal in a row, up to 6 hours). See `NOTES.md`.
@@ -88,8 +88,8 @@ var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Select
 
 `tests/Invoke-LiveTests.ps1` runs all of the live tests in one go on the
 machine's own connection: build, offline tests, one search first, then the
-rest, stopping at the first failure or refusal. Run it on a connection whose
-Google Flights allowance you can spare.
+rest, stopping at the first failure or refusal. Run it on a connection you can
+spare: a refusal can stop the client there for hours.
 
 `tests/Measure-Allowance.ps1` measures how a connection is treated over time
 (#101): one search every 10 minutes, 12 at most, logged to the capture store.

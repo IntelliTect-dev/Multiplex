@@ -4,14 +4,13 @@
     Runs every Google Flights live test on this machine's internet connection, stopping at the first failure.
 
 .DESCRIPTION
-    About 21 requests to Google Flights, paced by the client, in about 5 minutes. They spend this
-    connection's Google Flights allowance, which is small and not yet measured (issue #101), and is shared
-    with everyone on the connection, so do not run this in a loop.
+    About 21 requests to Google Flights, paced by the client, in about 5 minutes. A refusal can stop the
+    client on this connection for hours, for everyone on it (issue #101), so do not run this in a loop.
 
     Stages, each only after the one before passed:
       1. Prerequisites: git, the .NET 10 SDK, Pester 5 or later.
       2. Build, then the offline tests (no requests to Google).
-      3. One live search (1 request). If Google refuses it, stop: this connection's allowance is spent.
+      3. One live search (1 request). If Google refuses it, stop: this connection is refused.
       4. The client's live suite (12 requests).
       5. The MCP tools (5 requests) and the PowerShell module (3 requests), live.
 

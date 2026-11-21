@@ -197,7 +197,7 @@ internal sealed class GoogleFlightsTransport : IDisposable
                     throw new GoogleFlightsTransientException("Google Flights is unavailable just now (gRPC 14).");
                 case 9:
                     // Seen from a network Google was refusing and from one it was answering, whose next search was
-                    // answered: it says nothing about a block. Not retried here, since every request spends allowance.
+                    // answered: it says nothing about a block. Not retried here: requests close together came before refusals.
                     throw new GoogleFlightsTransientException("Google Flights could not answer just now (gRPC 9). Try again in a few minutes.");
                 default:
                     // A code the client does not know: stop and back off, as for 13. Asking again at once could only

@@ -113,20 +113,23 @@ No `at=` token is sent: the page is signed out.
 | 11-20 13:07 (L1) | the C# client | a one-way search; .NET sends only the four headers above and `Accept: */*` | **flights** |
 | 11-20 13:19 (L2) | the C# client | a one-way `GetCalendarGraph` with no trip length | bare `[13]` (section 9) |
 | 11-20 13:36 (L3) | the C# client | L1's search, unchanged, 17 minutes after L2 | bare `[13]`: **refused** |
-
 | 11-20 14:08 (G1, G2) | the C# client, another network (in-flight wifi) | the same search twice, 6 s apart | first **answered**, second bare `[13]` |
 | 11-20 14:16-14:25 (AB) | Node `fetch` as the morning; Node with the C# client's headers; Node `fetch` with the morning's User-Agent | the same search, from L1-L3's network | all bare `[13]` |
+| 11-20 15:30-17:21 (M2) | the module, one process per search (`tests/Measure-Allowance.ps1`) | the same one-way search every 10 minutes, from L1-L3's network | gRPC 9 once (section 9), then a refusal every time |
+| 11-20 15:30-18:13 (M1) | the same, from a third network | the same | **10 of 12 answered**; one gRPC 9 (15:50); one refusal (17:22, just after the machine woke and reconnected), and the next, 10 minutes later, answered |
 
-**The refusal follows the network, not the client.** On L1-L3's network the
-same search was refused from three client stacks and with both User-Agent
+**The refusal follows the network, not the client stack.** On L1-L3's network
+the same search was refused from three client stacks and with both User-Agent
 strings (AB), including exactly the requests answered there that morning,
 while the C# client's identical search was answered from another network
 inside the same window (G1). That network then refused the next request too
-(G2). So Google refuses honest-bot traffic per network once some allowance is
-spent: about 8 answered requests from L1-L3's network that day, one from the
-in-flight network. The `Mozilla/5.0 (compatible; ...)` form is necessary, not
-sufficient. The allowance, its window and how long a refusal lasts are not
-established (section 8, #101).
+(G2). **It is not a small count per network:** a third network answered one
+search every 10 minutes for nearly three hours (M1), while L1-L3's network,
+asked on the same cadence, stayed refused for at least four hours (M2). The
+`Mozilla/5.0 (compatible; ...)` form is necessary, not sufficient. What starts
+a long refusal (requests close together, as in G1/G2? the refused graph, L2?)
+and what ends it are not established (section 8, #101). M1 and M2 logged only
+that a search was refused, not whether as a bare `[13]` or as HTTP 403.
 
 **The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
 request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
@@ -485,10 +488,10 @@ and **pending**.
   calendar calls without one were answered.
 - The Best / Cheapest tabs, which did not appear on a filtered one-way page.
 - The page's price-calendar request for a one-way trip (the one form tried was
-  refused, L2; with L3 refused too, L2 may have been the allowance running out
-  rather than the form).
-- How many requests Google allows the honest-bot client per network, over what
-  window, and how long a refusal lasts (L3).
+  refused, L2; with L3 refused too, L2 may have been a refusal of the network
+  rather than of the form).
+- What starts a long refusal of the honest-bot client, what pace Google
+  answers without one, and what ends one (L3, M1, M2).
 - Every response position marked **pending** above.
 
 ## 9. Errors and throttling
