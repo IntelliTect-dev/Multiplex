@@ -91,8 +91,11 @@ machine's own connection: build, offline tests, one search first, then the
 rest, stopping at the first failure or refusal. Run it on a connection you can
 spare: a refusal can stop the client there for hours.
 
-`tests/Measure-Allowance.ps1` measures how a connection is treated over time
-(#101): one search every 10 minutes, 12 at most, logged to the capture store.
+`tests/Measure-Allowance.ps1` finds how fast a connection may search (#101):
+the same search at a shrinking interval, 5 minutes down to 10 seconds, until
+the first refusal, then how long that refusal lasts, logged to the capture
+store. It is built to end in a refusal, so run it only on a connection you can
+spare.
 
 Live tests assert structure and meaning, never prices. Every live exchange is
 saved in full to the repository's gitignored capture store
