@@ -14,8 +14,8 @@
     A connector added this way is on the account, so it appears in the phone apps as well.
     Claude and ChatGPT call the services from their own servers on the internet, so the Multiplex
     must be reachable from the internet (Tailscale Funnel or an open incoming port); one that only
-    your tailnet can reach will not connect. Signing in asks for the Multiplex passcode, then signs
-    in to the site. Claude refuses an address it already has; ChatGPT may add a second copy. It
+    your tailnet can reach will not connect. Connecting asks you to sign in to Multiplex with Microsoft,
+    then to the site. Claude refuses an address it already has; ChatGPT may add a second copy. It
     also prints the one-line commands for agents that only run on a PC (Codex, Copilot CLI); it
     never runs them.
 .PARAMETER BaseUrl

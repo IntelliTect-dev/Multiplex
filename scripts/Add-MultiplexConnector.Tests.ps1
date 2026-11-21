@@ -240,9 +240,10 @@ Describe 'adding the services to your accounts' {
         $said | Should -BeLike '*https://chatgpt.com/plugins*'
     }
 
-    It 'says that sign-in asks for the Multiplex passcode' {
+    It 'says that signing in to Multiplex is with Microsoft and an allowed email, and mentions no passcode (#80)' {
         $said = Add-MultiplexConnector -BaseUrl $Base -Service tripit 6>&1 | Out-String
-        $said | Should -BeLike '*passcode*-ShowPasscode*'
+        $said | Should -BeLike '*sign in to Multiplex with Microsoft*allowed*'
+        $said | Should -Not -BeLike '*passcode*'
     }
 
     It 'says, before the steps for <Agent>, that they reach the address from the internet: Funnel or an open incoming port' -ForEach @(
