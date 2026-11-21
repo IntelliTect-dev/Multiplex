@@ -104,7 +104,9 @@ public sealed record RegisteredClient(
 /// <param name="Provider">Who vouched for the address, e.g. <c>microsoft</c>.</param>
 /// <param name="Subject">The provider's immutable account key; for Microsoft <c>{tid}/{oid}</c>.</param>
 /// <param name="Owner">The Multiplex user id derived from provider and subject; grants and site sessions are kept under it.</param>
-public sealed record PersonBinding(string Email, string Provider, string Subject, string Owner, DateTimeOffset BoundAt);
+/// <param name="PersonalAccount">Whether the account is a personal one, which a domain entry never admits. A binding saved
+/// without it counts as personal, so a domain entry admits it only after its next sign-in records what it is.</param>
+public sealed record PersonBinding(string Email, string Provider, string Subject, string Owner, DateTimeOffset BoundAt, bool PersonalAccount = true);
 
 // Owner (on the records below) is the Multiplex user the entry belongs to. It is null only in
 // entries saved before people signed in to Multiplex; AuthState.DropUnowned removes those.

@@ -69,7 +69,7 @@ server; each connector belongs to the person who added it.
 |---|---|
 | `Multiplex:Identity:Microsoft:ClientId` | The Microsoft Entra app registration's Application (client) ID |
 | `Multiplex:Identity:Microsoft:ClientSecret` | Its client secret. Set it on the host only; never commit it |
-| `Multiplex:Identity:AllowedEmails` | Who may sign in, separated by `;` (or a JSON array). Empty lets no one in |
+| `Multiplex:Identity:AllowedEmails` | Who may sign in, separated by `;` (or a JSON array): addresses (`pat@example.com`), or domains (`example.com` or `*@example.com`), which let in work or school accounts only; a personal account needs its exact address. Empty lets no one in |
 
 Set them on the host, never in the repository: on Windows as User
 environment variables (`Multiplex__Identity__Microsoft__ClientId` and so on;

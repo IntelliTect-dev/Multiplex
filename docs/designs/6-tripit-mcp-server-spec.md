@@ -242,7 +242,9 @@ human (re-sign-in, a challenge), the person is sent to it.
   school accounts). Only an address on `Multiplex:Identity:AllowedEmails` gets in, and only a
   verified one: for a work or school account, the ID token's `xms_edov` claim must be true;
   a personal account's address counts as verified, since Microsoft proves it at sign-up and
-  never sends `xms_edov` for personal accounts (owner, #80 N2). The first sign-in binds the
+  never sends `xms_edov` for personal accounts (owner, #80 N2). An entry may also be a domain
+  (`example.com`, `*@example.com`); a domain entry lets in work or school accounts only, and a
+  personal account needs its exact address (owner, #80 N3). The first sign-in binds the
   address to Microsoft's tenant ID plus object ID; after that the address admits only that
   account. Taking an address off the list shuts its person out at once (their sign-in cookie
   and their tokens stop working). The shared owner passcode is retired.
