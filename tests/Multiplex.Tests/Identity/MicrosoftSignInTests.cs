@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Multiplex.Tests.Auth;
@@ -37,6 +38,14 @@ public sealed class MicrosoftSignInTests : IDisposable
     /// <summary>Microsoft sends the browser back with a code, as after the person signed in there.</summary>
     private static Task<HttpResponseMessage> ReturnFromMicrosoftAsync(HttpClient browser, Dictionary<string, string> signIn) =>
         browser.GetAsync($"/signin-microsoft?code=microsoft-code&state={Uri.EscapeDataString(signIn["state"])}");
+
+    /// <summary>Microsoft sends the browser back with an error, as when the person declined there.</summary>
+    private static Task<HttpResponseMessage> ReturnErrorFromMicrosoftAsync(HttpClient browser, Dictionary<string, string> signIn, string error, string description) =>
+        browser.GetAsync($"/signin-microsoft?error={Uri.EscapeDataString(error)}&error_description={Uri.EscapeDataString(description)}&state={Uri.EscapeDataString(signIn["state"])}");
+
+    /// <summary>The link a failure page offers, as the browser would follow it.</summary>
+    private static string Link(string html) =>
+        WebUtility.HtmlDecode(Regex.Match(html, "<a class=\"button\" href=\"([^\"]*)\"").Groups[1].Value);
 
     [Fact]
     public async Task Connecting_without_a_sign_in_sends_the_person_to_Microsoft_from_authorize()
@@ -282,12 +291,67 @@ public sealed class MicrosoftSignInTests : IDisposable
         var back = await ReturnFromMicrosoftAsync(browser, signIn);
 
         Assert.Equal(HttpStatusCode.BadRequest, back.StatusCode);
-        Assert.Contains("did not finish", await back.Content.ReadAsStringAsync());
+        var html = await back.Content.ReadAsStringAsync();
+        Assert.Contains("did not finish", html);
+        Assert.DoesNotContain("declined", html);
         var logged = string.Join("\n", _app.Logs.Entries.Select(e => e.Message));
         Assert.Contains("invalid_client", logged);
         Assert.Contains("AADSTS7000215", logged);
         Assert.DoesNotContain("test-client-secret", logged);
     }
+
+    [Theory]
+    // A work or school account that cancels "Permissions requested", as on the owner's phone (#112).
+    [InlineData("consent_required", "AADSTS65004: User declined to consent to access the app. Trace ID: 0 Correlation ID: 0 Timestamp: 2026-11-21 04:11:49Z")]
+    // A personal account that answers No.
+    [InlineData("access_denied", "The user has denied access to the scope requested by the client application.")]
+    public async Task When_the_person_declines_Microsofts_permission_request_the_page_says_so_and_links_to_a_fresh_start(string error, string description)
+    {
+        var browser = _app.Browser();
+        var authorize = await AuthorizeUrlAsync();
+        var (_, signIn) = await ChallengeAsync(browser, authorize);
+
+        var back = await ReturnErrorFromMicrosoftAsync(browser, signIn, error, description);
+
+        Assert.Equal(HttpStatusCode.BadRequest, back.StatusCode);
+        var html = await back.Content.ReadAsStringAsync();
+        Assert.Contains("declined", html);
+        Assert.Contains("Accept", html);
+        Assert.Equal(authorize, Link(html));
+        Assert.DoesNotContain("go back", html, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_sign_in_reply_opened_again_links_to_a_fresh_sign_in_and_never_says_go_back()
+    {
+        // Back from a failure page reopens Microsoft's reply, whose one-time correlation cookie is spent (#112).
+        var browser = _app.Browser();
+        var authorize = await AuthorizeUrlAsync();
+        var (_, signIn) = await ChallengeAsync(browser, authorize);
+        await ReturnErrorFromMicrosoftAsync(browser, signIn, "consent_required", "AADSTS65004: User declined to consent to access the app.");
+
+        var again = await ReturnFromMicrosoftAsync(browser, signIn);
+
+        Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
+        var html = await again.Content.ReadAsStringAsync();
+        Assert.Contains("did not finish", html);
+        Assert.DoesNotContain("declined", html);
+        Assert.Contains("Back button", html);
+        Assert.DoesNotContain("go back", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(authorize, Link(html));
+    }
+
+    [Theory]
+    [InlineData("/oauth/authorize?client_id=a&state=b", "/oauth/authorize?client_id=a&state=b")]
+    [InlineData("/", "/")]
+    [InlineData(null, "/")]
+    [InlineData("", "/")]
+    [InlineData("https://elsewhere.example/", "/")]
+    [InlineData("//elsewhere.example/", "/")]
+    [InlineData("/\\elsewhere.example/", "/")]
+    [InlineData("oauth/authorize", "/")]
+    public void The_fresh_start_link_is_only_ever_a_path_on_this_server(string? returnTo, string expected) =>
+        Assert.Equal(expected, Multiplex.Web.Identity.MultiplexIdentity.StartAgainPath(returnTo));
 
     [Fact]
     public async Task Without_the_Microsoft_app_registration_nothing_outside_this_PC_can_sign_in()
