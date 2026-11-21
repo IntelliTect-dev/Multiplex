@@ -115,7 +115,7 @@ No `at=` token is sent: the page is signed out.
 | 11-20 13:36 (L3) | the C# client | L1's search, unchanged, 17 minutes after L2 | bare `[13]`: **refused** |
 | 11-20 14:08 (G1, G2) | the C# client, another network (in-flight wifi) | the same search twice, 6 s apart | first **answered**, second bare `[13]` |
 | 11-20 14:16-14:25 (AB) | Node `fetch` as the morning; Node with the C# client's headers; Node `fetch` with the morning's User-Agent | the same search, from L1-L3's network | all bare `[13]` |
-| 11-20 15:30-17:21 (M2) | the module, one process per search (`tests/Measure-Allowance.ps1`) | the same one-way search every 10 minutes, from L1-L3's network | gRPC 9 once (section 9), then a refusal every time |
+| 11-20 15:30-17:21 (M2) | the module, one process per search (`tests/Measure-Allowance.ps1` as of `6eceebe`) | the same one-way search every 10 minutes, from L1-L3's network | gRPC 9 once (section 9), then a refusal every time |
 | 11-20 15:30-18:13 (M1) | the same, from a third network | the same | **10 of 12 answered**; one gRPC 9 (15:50); one refusal (17:22, just after the machine woke and reconnected), and the next, 10 minutes later, answered |
 
 **The refusal follows the network, not the client stack.** On L1-L3's network
