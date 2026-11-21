@@ -12,9 +12,12 @@
       - ChatGPT: opens ChatGPT's add page and, for a single service, copies its address; you
         add a custom MCP server, paste it, choose OAuth, then sign in.
     A connector added this way is on the account, so it appears in the phone apps as well.
-    Signing in asks for the Multiplex passcode, then signs in to the site. A service already on
-    the account gets a second copy. It also prints the one-line commands for agents that only
-    run on a PC (Codex, Copilot CLI); it never runs them.
+    Claude and ChatGPT call the services from their own servers on the internet, so the Multiplex
+    must be reachable from the internet (Tailscale Funnel or an open incoming port); one that only
+    your tailnet can reach will not connect. Signing in asks for the Multiplex passcode, then signs
+    in to the site. Claude refuses an address it already has; ChatGPT may add a second copy. It
+    also prints the one-line commands for agents that only run on a PC (Codex, Copilot CLI); it
+    never runs them.
 .PARAMETER BaseUrl
     Multiplex's public https address. Defaults to the one the Multiplex installed on this PC
     recorded for its tunnel.
