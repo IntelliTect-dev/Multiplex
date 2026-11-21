@@ -80,6 +80,24 @@ public static class MultiplexIdentity
         return app;
     }
 
+    /// <summary>
+    /// Where a failed sign-in's page sends the person to start again: the page they were going to, if it
+    /// is a path on this server, else the home page. A path starting "//" or "/\" would leave the server.
+    /// </summary>
+    internal static string StartAgainPath(string? returnTo) =>
+        returnTo is ['/', ..] && !returnTo.StartsWith("//", StringComparison.Ordinal) && !returnTo.StartsWith("/\\", StringComparison.Ordinal)
+            ? returnTo
+            : "/";
+
+    /// <summary>
+    /// Whether Microsoft says the person declined its permission request: a personal account answers
+    /// access_denied, a work or school account AADSTS65004 (seen as consent_required).
+    /// </summary>
+    private static bool Declined(Exception? failure) =>
+        failure is OpenIdConnectProtocolException { Data: var data }
+        && (data["error"] as string == "access_denied"
+            || (data["error_description"] as string)?.StartsWith("AADSTS65004:", StringComparison.Ordinal) == true);
+
     private static CookieSecurePolicy SecurePolicy(AuthIssuer issuer) =>
         issuer.Issuer.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
 
@@ -197,9 +215,16 @@ public static class MultiplexIdentity
                 var logger = context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(MultiplexIdentity));
                 // The type only: a message can carry values from the request or from Microsoft.
                 logger.LogWarning("Microsoft sign-in did not complete: {Error}.", context.Failure?.GetType().Name ?? "unknown");
-                await ConnectEndpoints.WriteHtmlAsync(context.HttpContext, StatusCodes.Status400BadRequest,
-                    nonce => ConnectHtml.Message(nonce, "Sign-in did not finish",
-                        "The sign-in with Microsoft did not finish. Go back to the app or page you came from and try again."));
+                // Never "go back": Back reopens Microsoft's reply, whose one-time cookie is spent, so it
+                // fails again (#112). The link starts a fresh sign-in for the page the person wanted.
+                var again = StartAgainPath(context.Properties?.RedirectUri);
+                await ConnectEndpoints.WriteHtmlAsync(context.HttpContext, StatusCodes.Status400BadRequest, nonce => Declined(context.Failure)
+                    ? ConnectHtml.Message(nonce, "Sign-in was declined",
+                        "Microsoft's permission request for Multiplex was declined, so you are not signed in. Multiplex asks only to sign you in and to see your name and email address. To sign in, start again and choose Accept.",
+                        again, "Start the sign-in again")
+                    : ConnectHtml.Message(nonce, "Sign-in did not finish",
+                        "The sign-in with Microsoft did not finish, or this page was opened again after it had. Start the sign-in again with the link below, not the Back button.",
+                        again, "Start the sign-in again"));
             },
         };
     }
