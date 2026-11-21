@@ -259,7 +259,7 @@ function Add-MultiplexConnector {
     Write-Host ''
     Write-Host 'Claude and ChatGPT call these addresses from their own servers on the internet, not from your phone or this PC.'
     Write-Host 'So this Multiplex must be reachable from the internet, through Tailscale Funnel or an open incoming port;'
-    Write-Host 'one that only your tailnet can reach will not connect.'
+    Write-Host 'an address that only your tailnet can reach will not connect.'
 
     if ('Claude' -in $Agent) {
         Write-Host ''
@@ -271,7 +271,7 @@ function Add-MultiplexConnector {
             Write-Host "  $($s.Name): $($opened ? 'opened' : 'open') this link, check the name and address, click Continue, then sign in:"
             Write-Host "    $link"
         }
-        Write-Host '  If Claude already has a connector with that address, it says so and leaves Continue greyed out; click Cancel.'
+        Write-Host '  If Claude already has a connector with one of these addresses, it says so and leaves Continue greyed out; click Cancel for that one.'
     }
 
     if ('ChatGPT' -in $Agent) {
