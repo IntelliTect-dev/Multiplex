@@ -91,11 +91,14 @@ machine's own connection: build, offline tests, one search first, then the
 rest, stopping at the first failure or refusal. Run it on a connection you can
 spare: a refusal can stop the client there for hours.
 
-`tests/Measure-Allowance.ps1` finds how fast a connection may search (#101):
-the same search at a shrinking interval, 5 minutes down to 10 seconds, until
-the first refusal, then how long that refusal lasts, logged to the capture
-store. It is built to end in a refusal, so run it only on a connection you can
-spare.
+`tests/Measure-Allowance.ps1` finds what makes Google refuse the client
+(#101). It measures how close together two searches may be, how many may go
+back to back, and what pace may follow a burst. Each experiment starts easy,
+gets harder until the first refusal, then narrows in. It also times every
+refusal. It runs for hours or days and continues where it stopped when run
+again. Its state, log and report are kept per network in the capture store,
+and the report is posted to #101 after each experiment. It is built to get
+refused, so run it only on a connection you can spare.
 
 Live tests assert structure and meaning, never prices. Every live exchange is
 saved in full to the repository's gitignored capture store
