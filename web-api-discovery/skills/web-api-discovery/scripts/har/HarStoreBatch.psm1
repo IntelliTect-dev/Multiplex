@@ -389,5 +389,73 @@ function Get-HarFreeName {
     return $candidate
 }
 
+# The store directory name. A LITERAL, and `capture-store.js`'s CAPTURES_DIR is
+# still the definition: shelling out to node for a constant would add a
+# subprocess and a failure path to every caller, and reading it at runtime would
+# make the checks below agree with whatever that file says, including a typo.
+# The two are pinned to each other by a test instead (HarCaptureRemove.Tests.ps1)
+# -- the same trade `node-test-coverage.Tests.ps1` already makes for the
+# runner's default root.
+$script:CapturesDirName = '.har-captures'
+
+<#
+.SYNOPSIS
+    The folder that HOLDS the capture store a path sits in, or nothing when the
+    path is not inside one.
+
+.DESCRIPTION
+    A capture lives at `<folder>/.har-captures/<host>/<stamp>` (or, in the
+    legacy layout, `<folder>/.har-captures/<stamp>`). `<folder>` is the store's
+    home: where the recorder anchored it, where its `.gitignore` is, and where
+    a phase re-run on a capture looks for the operator profile.
+
+    Walked SEGMENT BY SEGMENT rather than matched as a substring: a sibling
+    called `.har-captures-archive` starts with the store name and is not one,
+    and a path component merely containing it is not one either. Compared with
+    PowerShell's default string comparison, which is case-insensitive, because
+    the filesystem this runs on is.
+
+    A NAME, not an identity. It answers "is this spelled like somewhere
+    recordings live", which is the question that stops a capture-shaped folder
+    elsewhere on disk from being acted on. It does not answer "is this the
+    store `resolveCaptureRoot` would name", and asking that would refuse a
+    capture tree reached through a junction, which is an ordinary setup rather
+    than an attack.
+
+    Two callers, one definition. `Remove-HarCapture` asks it before deleting a
+    tree; `Invoke-HarCapture -Scrub / -Catalogue` asks it to find the folder
+    its phases must run from. A copy in each would be two answers to what
+    "inside a capture store" means.
+#>
+function Get-HarCaptureStoreRoot {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $dir = [System.IO.Directory]::GetParent($Path)
+    while ($dir) {
+        if ($dir.Name -eq $script:CapturesDirName -and $dir.Parent) { return $dir.Parent.FullName }
+        $dir = $dir.Parent
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Does this path sit anywhere under a capture-store directory?
+
+.DESCRIPTION
+    The yes/no form of Get-HarCaptureStoreRoot, for a caller that only needs
+    the guard.
+#>
+function Test-HarCaptureStorePath {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    return [bool](Get-HarCaptureStoreRoot -Path $Path)
+}
+
 Export-ModuleMember -Function Get-HarCaptureInventory, Invoke-HarCaptureBatch,
-    Get-HarBatchSummaryLines, Get-HarCaptureLabel, Get-HarFreeName, Get-HarScrubVerdictLine
+    Get-HarBatchSummaryLines, Get-HarCaptureLabel, Get-HarFreeName, Get-HarScrubVerdictLine,
+    Get-HarCaptureStoreRoot, Test-HarCaptureStorePath

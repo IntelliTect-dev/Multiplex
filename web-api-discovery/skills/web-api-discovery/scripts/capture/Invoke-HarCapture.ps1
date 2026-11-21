@@ -3,7 +3,8 @@
 
 <#
 .SYNOPSIS
-    Record a browser session, scrub it, and catalogue it -- one command.
+    Record a browser session, scrub it, and catalogue it -- one command. Or
+    re-run the scrub, the catalogue, or both on a capture that already exists.
 
 .DESCRIPTION
     PowerShell front door for capture-har.js. Opens a browser on a dedicated
@@ -78,8 +79,77 @@
     printing the ready-to-paste har/extract-har-reference.js command, with the
     provider, the action and the destination filled in.
 
+    RE-RUNNING ONE PHASE. `-Scrub` and `-Catalogue` run on a capture that
+    ALREADY EXISTS and record nothing -- no browser, no new session directory:
+
+        Invoke-HarCapture https://example.com -Catalogue
+        Invoke-HarCapture https://example.com -Scrub -Catalogue
+
+    They are for the capture you already have: the scrubber improved, a finding
+    was waived, the AI cataloguing pass failed. A browser session somebody
+    drove by hand is not a thing to repeat for any of those. Without either
+    switch the command records, exactly as before.
+
+    The first argument then says WHICH capture instead of which site to open --
+    the site's URL, the capture's directory, or its `host/stamp` label -- and
+    the run says which one it selected before it does anything. A site recorded
+    more than once is refused with the list rather than resolved to the newest;
+    see -Uri and -Describe for how to name one. A capture that is not in the
+    state a phase needs is refused too: there is nothing to scrub without a raw,
+    and a catalogue is only ever derived from a scrubbed, verified capture.
+
+    Both phases read and write the capture's OWN directory under
+    .har-captures/, and both are the pipeline's existing re-entry points --
+    Invoke-SanitizeHar for the scrub, the recorder's `catalogue` command for
+    the catalogue -- so the leak gate, the quarantine of a refused scrub and
+    the refusal to replace a catalogue somebody worked on are all exactly what
+    they are when those are run directly.
+
+    THE OPERATOR PROFILE THAT APPLIES IS THE ONE THE RECORDING USED. Both
+    phases are run from the folder that holds the capture's .har-captures,
+    whatever directory the command was typed in, and you are returned to where
+    you were. -Scrub uses the .har-profile.json -- your own identifiers, and
+    the salt every pseudonym is derived from -- that the recording itself
+    scrubbed with, which the recorder writes into session.json
+    (scrubProfilePath), and says which file that is. It refuses when that file
+    no longer exists. It is the PATH that is recorded, not the content: a
+    re-scrub follows what the file says now, so a literal removed from it or a
+    changed salt changes the result.
+
+    A capture recorded before the recorder wrote that path is NOT SAFE BY
+    DEFAULT. Nothing says which profile its recording used, so -Scrub refuses
+    it while a scrubbed.har or a quarantined, rejected scrub is there -- either
+    was checked against a profile nothing names. With neither, it scrubs with
+    the profile found from the store root and WARNS which file that is: it may
+    not be the recording's own, so check the result for your own identifiers.
+
+    -Catalogue alone asks the leak gate with the profile found from the store
+    root, which may be WEAKER than the one the recording scrubbed with: a
+    literal only the recording's profile maps is not looked for. -Scrub
+    -Catalogue scrubs, and gates, with the recorded profile first.
+
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
+
+    WITH -Scrub OR -Catalogue it names the existing capture to run on, and
+    nothing is opened. Any of:
+
+      * the site's URL, scheme included -- the capture recorded for that site.
+        Only the host is used, and of a URL only the host is ever printed;
+      * the capture's directory, which `Get-HarCapture` reports as Path;
+      * its `host/stamp` label, e.g. app.example.com/2026-01-02-143000 --
+        `Get-HarCapture`'s Site and Stamp joined by a slash. It is the name
+        this command's own refusals list captures by, and the one
+        `Remove-HarCapture` takes.
+
+    It has to come to exactly one capture this recorder made. None, several, or
+    one somebody imported are each refused, with what was found.
+
+    Anything that is none of the three is looked up as a label, finds nothing,
+    and is refused WITHOUT being echoed: a URL pasted without its `https://`
+    lands there, and may carry a token. A wildcard is refused by its spelling,
+    before anything is looked up -- a capture is named, never matched -- and a
+    directory has to be inside a capture store, under a .har-captures folder.
 
 .PARAMETER OutputPath
     Where the scrubbed capture, the digest and the catalogue are written.
@@ -134,6 +204,12 @@
     command says both when the recording ends. `Get-HarCapture` lists them.
 
     It is never the source of action names -- those come from the traffic.
+
+    WITH -Scrub OR -Catalogue it is not required: the capture was described
+    when it was recorded. Typed anyway, it NARROWS the selection to the capture
+    recorded with that description -- the whole of it, letter case and
+    surrounding spaces aside -- so the command that made a capture, with a
+    phase switch added, names that capture. It renames nothing.
 
 .PARAMETER Profile
     Which signed-in identity to record as.
@@ -376,8 +452,83 @@
     works around a bot check. Each pause is recorded under `pauses` in
     session.json. See "Pacing, throttling, and where the line is" in SKILL.md.
 
+.PARAMETER Scrub
+    Scrub an EXISTING capture again, and verify the result. Records nothing.
+
+    The capture's raw is scrubbed into its own directory under a temporary
+    name, put in front of the leak gate, and called `scrubbed.har` only once
+    the gate has passed it. A scrub the gate rejects is quarantined beside the
+    raw as `scrubbed.rejected.har` and replaces nothing -- a `scrubbed.har` an
+    earlier run verified stays as it was. The raw is never written to.
+
+    A capture that was already scrubbed is scrubbed AGAIN: that is the request.
+    Its digest and catalogue then describe the scrub that was replaced, and the
+    run says so; add -Catalogue to rebuild them in the same run.
+
+    Refused when the capture has no raw.har, and while the recorder that made
+    the capture is still working on it.
+
+    IT SCRUBS WITH THE OPERATOR PROFILE THE RECORDING USED, as its content is
+    NOW: see the description. Refused when that file is gone (copy it back to
+    the path the refusal names), and, for a capture that does not record one,
+    while a scrubbed.har or a quarantined rejected scrub is there.
+
+    A CAPTURE WHOSE RECORDER SIGNED IN FOR IT is the exception. The values it
+    filled were handed to the scrub at recording time and exist nowhere else,
+    so a scrub run now removes them by field name and cannot prove them gone.
+    When such a capture already has a scrubbed.har, that file was checked
+    against the values and a new one cannot be, so it is NOT replaced: the run
+    is refused, and moving scrubbed.har aside is how to say you mean it. When
+    its scrub was REJECTED and quarantined, the run is refused as well: the
+    gate that rejected it could see those values and a new one cannot, so a
+    re-scrub could pass the very thing that was refused. With neither file
+    there is nothing to lose, and the scrub runs with a warning -- check the
+    result before sharing it. A capture whose session.json CANNOT BE READ is
+    treated the same way: that file is the only record of whether the recorder
+    signed in, and not knowing is not a no.
+
+    A capture recorded OUTSIDE a git repository cannot be scrubbed from here
+    until the folder is one: the scrub writes its substitution tables only
+    where git confirms they are ignored. The run fails and, while the folder
+    is still not a repository, says so; `git init` in the folder that holds
+    .har-captures is the way through.
+
+    THE EXIT CODE, for -Scrub without -Catalogue: 0 for a clean scrub; 7 when
+    the gate KEPT the artifact with ADVISORY findings (identity evidence by
+    shape alone) -- the recorder's code for the same thing; the scrub's own
+    non-zero code when it failed or the gate rejected it. An ADVISORY verdict,
+    and a scrub in which values were BLUNTED (still 0: the gate passed it),
+    are each said on the WARNING stream, so silencing the status lines does
+    not hide them.
+
+.PARAMETER Catalogue
+    Digest and catalogue an EXISTING, already scrubbed capture. Records
+    nothing, and emits the catalogue rows exactly as a recording does.
+
+    The recorder asks the leak gate about the capture's scrubbed.har again
+    before it derives anything from it, decides who does the cataloguing as it
+    does after a recording, and will not replace a catalogue that already
+    carries described actions -- move that file aside to catalogue afresh.
+
+    BY ITSELF IT RE-CHECKS WITH THE STORE ROOT'S OPERATOR PROFILE, which may
+    be weaker than the one the recording scrubbed with: a literal only the
+    recording's profile maps is not looked for. -Scrub -Catalogue scrubs, and
+    gates, with the recorded profile first.
+
+    Refused, by itself, on a capture with no scrubbed.har -- one that was never
+    scrubbed, or whose only scrub the gate rejected -- and while the recorder
+    that made the capture is still working on it. With -Scrub the scrub runs
+    FIRST, whichever order the switches are typed in, and the catalogue runs
+    only when the scrub produced a verified capture.
+
+    The exit code is the recorder's own, passed on whole: 0, or 7 when the
+    catalogue was produced over ADVISORY findings, or the code of whatever it
+    refused.
+
 .OUTPUTS
     WebApiDiscovery.HarCapture.CatalogueEntry
+
+    Nothing, for -Scrub without -Catalogue.
 
 .EXAMPLE
     Invoke-HarCapture https://example.com -Describe 'sign in, then sign out'
@@ -411,6 +562,22 @@
     # built-in tools at all.
     Invoke-HarCapture https://admin.example.com -AI -AITools BrowserOnly `
         -Describe 'list users, open one, view its audit log'
+
+.EXAMPLE
+    # The AI cataloguing pass failed, or was never run. Catalogue the capture
+    # that is already there -- nothing is recorded.
+    Invoke-HarCapture https://example.com -Catalogue
+
+.EXAMPLE
+    # The scrubber improved: scrub the existing capture again, then rebuild its
+    # catalogue from the new scrub.
+    Invoke-HarCapture https://example.com -Scrub -Catalogue
+
+.EXAMPLE
+    # The site has been recorded more than once, so say which capture: by the
+    # label the refusal lists, or by the description it was recorded with.
+    Invoke-HarCapture example.com/2026-01-02-143000 -Scrub
+    Invoke-HarCapture https://example.com -Describe 'create, then delete, a post' -Catalogue
 #>
 
 [CmdletBinding()]
@@ -436,6 +603,10 @@ param(
     # to offer. So the check lives in the body, below, and terminates.
     #
     # Whitespace is empty, for the same reason it is on the Node side.
+    #
+    # Required to RECORD. With -Scrub or -Catalogue there is no recording to
+    # describe, and a second reason Mandatory would have been wrong: there it
+    # is an optional narrowing of which existing capture is meant.
     [string]$Describe,
 
     [string]$Profile,
@@ -471,10 +642,40 @@ param(
     # HOW FAST. Forwarded as --pace only when typed; the recorder owns the
     # default (human pace) and refuses a value it cannot read, so this file
     # validates nothing about it -- one owner, as for -Browser and -AI.
-    [string]$Pace
+    [string]$Pace,
+
+    # WHICH PHASES RUN, on a capture that already exists (#24).
+    #
+    # The owner's shape, and the reason it is two switches rather than one
+    # -SkipCapture: "I'm not sure it is skip capture so much as -Catalogue
+    # -Scrub, which both imply skip capture because it is already done." Each
+    # names what WILL run, so there is no way to type a combination that means
+    # "record nothing and do nothing".
+    #
+    # These two are the whole of what the feature adds. WHICH capture they act
+    # on is said with what was already here -- the positional first argument,
+    # and -Describe -- because a third parameter to carry a target would be a
+    # new option, and those are an owner decision.
+    [switch]$Scrub,
+
+    [switch]$Catalogue
 )
 
 $ErrorActionPreference = 'Stop'
+
+# EVERY EXIT CODE THIS COMMAND READS IS A NON-ZERO THAT MEANS SOMETHING: 2 a
+# usage error, 5 a recording assembled from the log, 6 a phase that failed, 7 a
+# catalogue produced over advisory findings, 8 sign-in needed. A caller that
+# has set $PSNativeCommandUseErrorActionPreference turns each of them into a
+# terminating error the moment node returns -- under the 'Stop' above -- so a
+# run that produced its catalogue and answered 7 ended as exit 1 with no rows.
+# The preference is the caller's to set for their own commands; for the ones
+# run from here it is switched off, in this scope and the ones it calls.
+$PSNativeCommandUseErrorActionPreference = $false
+
+# Read by VALUE, never by presence in $PSBoundParameters: `-Scrub:$false` means
+# off, and a run with both switches off is a recording exactly as it always was.
+$reentering = [bool]$Scrub -or [bool]$Catalogue
 
 # THE REFUSAL, before anything else runs and before any host is consulted.
 #
@@ -485,7 +686,10 @@ $ErrorActionPreference = 'Stop'
 # varied by how the script was launched would be a second behaviour to reason
 # about, and the one the operator would hit least often is the one that would
 # rot.
-if ([string]::IsNullOrWhiteSpace($Describe)) {
+#
+# A RECORDING needs it. -Scrub and -Catalogue record nothing: the capture they
+# run on was described when it was made, and that description is on disk.
+if (-not $reentering -and [string]::IsNullOrWhiteSpace($Describe)) {
     # The explanation goes to stderr as its own lines, and only then does the
     # terminating error fire. Throwing the whole paragraph instead would hand it
     # to PowerShell's error renderer, which reflows it into one run-on line and
@@ -584,7 +788,966 @@ function Get-HarUriFolder {
     return $folded
 }
 
+# ---------------------------------------------------------------------------
+# -Scrub / -Catalogue: ONE PHASE, ON A CAPTURE THAT ALREADY EXISTS (#24)
+# ---------------------------------------------------------------------------
+#
+# The functions below are used only by the block that follows them, and that
+# block ends in `exit`: a run that typed a phase switch never reaches the
+# recording further down, and a recording never enters the block.
+#
+# WHAT THIS SECTION DOES NOT DO is the reason it is short. It does not scrub,
+# gate, promote, quarantine, digest or catalogue. It answers ONE question that
+# nothing else could -- which capture -- and then hands that capture's
+# directory to the two re-entry points the pipeline already has.
 
+<#
+.SYNOPSIS
+    Say why a phase run was refused: clean lines on stderr.
+
+.DESCRIPTION
+    The same shape as the -Describe refusal above, for the same reason: thrown
+    instead, the lines would go through PowerShell's error renderer, which
+    reflows them into one run-on sentence and takes the ready-to-paste command
+    with it. The caller exits with the refusal's code.
+#>
+function Write-HarCaptureRefusal {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Refusal)
+
+    [Console]::Error.WriteLine((@($Refusal.Line) -join [Environment]::NewLine))
+}
+
+<#
+.SYNOPSIS
+    Captures, one per line, as an operator can name them back: label, then the
+    description they were recorded with.
+
+.DESCRIPTION
+    `host/stamp` is HarStoreBatch.psm1's answer to how a capture is named, not
+    a second one, and it is exactly what this command accepts as its first
+    argument -- so a line of this list can be pasted straight back.
+
+    The description is the operator's own -Describe text, which Get-HarCapture
+    and Remove-HarCapture already print. Nothing from inside a capture is: no
+    URI the recording started from, no header, no entry.
+#>
+function Format-HarCaptureChoice {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][object[]]$Capture)
+
+    $shown = 10
+    $Capture | Select-Object -First $shown | ForEach-Object {
+        $described = if ($_.describe) { $_.describe } else { '(no description)' }
+        "    $(Get-HarCaptureLabel -Capture $_) -- $described"
+    }
+    if ($Capture.Count -gt $shown) {
+        "    ... and $($Capture.Count - $shown) more -- Get-HarCapture lists them all"
+    }
+}
+
+<#
+.SYNOPSIS
+    Every capture the first argument could mean.
+
+.DESCRIPTION
+    THREE SPELLINGS, ONE PARAMETER. A phase run has to say which capture, and
+    the only things an operator has to say it with are the things the store
+    already shows them:
+
+      a URL          the site. Its captures are the ones in that site's folder,
+                     derived by the same function a recording derives it with.
+      a directory    the capture's own directory -- what Get-HarCapture reports
+                     as Path -- or a folder holding captures.
+      host/stamp     the label: Get-HarCapture's Site and Stamp joined by a
+                     slash, which is how this command's own refusals name a
+                     capture and what Remove-HarCapture takes.
+
+    ASKED OF THE SHARED WALK, never of the file system from here. What a
+    capture is, and which store this clone records into, each have exactly one
+    definition (capture-store.js), and Get-HarCaptureInventory is how every
+    PowerShell caller reaches it.
+
+    `Named` is what a message may print about the request, and it is never
+    simply what was typed. For a URL it is the HOST: a magic-link or reset URL
+    carries its token in the path or the query, and this is echoed to a
+    console. For a label it is not the label either, because the label reading
+    is also where everything UNREADABLE lands -- a URL pasted without its
+    scheme is not a URL to the parser, and echoing "no capture found for
+    '<that>'" would print the token it carried. What was typed is on the
+    operator's own command line; `ReadAs` lets a refusal say how it was read,
+    which is the part they cannot see.
+
+    A WILDCARD IS REFUSED BY ITS SPELLING, before anything is looked up --
+    Remove-HarCapture's rule, asked of PowerShell's own wildcard parser. A
+    pattern that happened to match one capture and was accepted would teach the
+    habit, and the next one would match four. A URL is exempt, because `?` is
+    how its query string starts and `[` how an IPv6 host does; but only a URL
+    with its scheme is a URL, so one pasted without it is a pattern here, and
+    is refused -- unechoed -- for that. `ReadAs` is then 'pattern' and nothing
+    was looked up.
+#>
+function Find-HarCaptureCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Spec,
+        [Parameter(Mandatory)][string]$CaptureStoreJs
+    )
+
+    $site = Get-HarUriFolder -Uri $Spec
+    if (-not $site -and [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($Spec)) {
+        return [pscustomobject]@{ ReadAs = 'pattern'; Named = 'that pattern'; Found = @() }
+    }
+
+    if (Test-Path -LiteralPath $Spec -PathType Container) {
+        $folder = (Resolve-Path -LiteralPath $Spec).ProviderPath
+        return [pscustomobject]@{
+            ReadAs = 'folder'
+            Named  = $folder
+            Found  = @(Get-HarCaptureInventory -Path $folder -CaptureStoreJs $CaptureStoreJs)
+        }
+    }
+
+    $store = @(Get-HarCaptureInventory -CaptureStoreJs $CaptureStoreJs)
+    if ($site) {
+        return [pscustomobject]@{
+            ReadAs = 'site'
+            Named  = $site
+            Found  = @($store | Where-Object { $_.host -eq $site })
+        }
+    }
+
+    # A label is compared the way it is printed: forward slashes.
+    $label = $Spec.Replace('\', '/').Trim('/')
+    return [pscustomobject]@{
+        ReadAs = 'label'
+        Named  = 'that label'
+        Found  = @($store | Where-Object { (Get-HarCaptureLabel -Capture $_) -eq $label })
+    }
+}
+
+<#
+.SYNOPSIS
+    The one capture a phase run is about, or the refusal that says why there
+    is not exactly one.
+
+.DESCRIPTION
+    NAMED, NEVER PICKED. A site recorded twice has two captures, and "the
+    newest" is a guess: captures coexist, several sessions record into one
+    store, and the recording further down already refuses to find its own
+    session that way. So more than one match is refused by listing them, newest
+    first, with the command that names one.
+
+    -Describe NARROWS, when it was typed. The description is how one recording
+    of a site is told from another, so the command that made a capture, plus a
+    phase switch, names that capture. It is compared WHOLE -- letter case and
+    surrounding spaces aside -- because a near miss is a different capture,
+    not a match.
+
+    Only RECORDER OUTPUT is a candidate -- asked as `recorderOutput`, the field
+    the walk answers, never as a list of classes to exclude. A dump with no
+    session.json has nothing to say whose traffic it holds.
+
+    Returns `Capture`, or `Code` and `Line` for the refusal. 2 is this door's
+    usage error (the invocation named several); 3 is the recorder's own code
+    for "no capture to act on".
+#>
+function Resolve-HarCaptureSelection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Spec,
+        [AllowEmptyString()][string]$Describe,
+        # The phase switches as they were typed, for the command a refusal
+        # offers back.
+        [Parameter(Mandatory)][string]$PhaseSwitch,
+        [Parameter(Mandatory)][string]$CaptureStoreJs
+    )
+
+    $candidate = Find-HarCaptureCandidate -Spec $Spec -CaptureStoreJs $CaptureStoreJs
+    $named = $candidate.Named
+    if ($candidate.ReadAs -eq 'pattern') {
+        return [pscustomobject]@{ Capture = $null; Code = 2; Line = @(
+                'Invoke-HarCapture: the first argument has a wildcard character in it, and -Scrub and'
+                '  -Catalogue take one capture by name, never a pattern. Nothing was looked up.'
+                '  Name the capture: its host/stamp label, as Get-HarCapture lists Site and Stamp, or'
+                '  its directory. For a site, give its URL with https:// in front -- without the'
+                '  scheme it is not read as a URL, and its ? is read as a wildcard.') }
+    }
+    if (-not $candidate.Found.Count) {
+        $lines = @("Invoke-HarCapture: no capture found for $named.")
+        if (Test-Path -LiteralPath $Spec -PathType Leaf) {
+            $lines += "  $Spec is a file: name the capture's directory instead."
+        }
+        elseif ($candidate.ReadAs -eq 'label') {
+            $lines += @(
+                '  The first argument is not a URL with a scheme and not a directory that exists, so'
+                '  it was read as a capture label: host/stamp, as Get-HarCapture lists Site and Stamp.'
+                '  For a site, give its URL with https:// in front.')
+        }
+        $lines += @(
+            '  -Scrub and -Catalogue run on a capture that already exists. Get-HarCapture lists'
+            "  the ones in this clone's store; to record a new one, run this without -Scrub or"
+            '  -Catalogue.')
+        return [pscustomobject]@{ Capture = $null; Code = 3; Line = $lines }
+    }
+
+    $ours = @($candidate.Found | Where-Object { $_.recorderOutput } | Sort-Object -Property stamp -Descending)
+    if (-not $ours.Count) {
+        $declined = $candidate.Found[0]
+        return [pscustomobject]@{ Capture = $null; Code = 3; Line = @(
+                "Invoke-HarCapture: $(Get-HarCaptureLabel -Capture $declined) was not made by this recorder ($($declined.reason))."
+                '  Nothing says whose traffic it holds, so it is never scrubbed or catalogued here --'
+                '  the same reason the folder drivers decline it.') }
+    }
+
+    $pool = $ours
+    if (-not [string]::IsNullOrWhiteSpace($Describe)) {
+        $pool = @($ours | Where-Object { ([string]$_.describe).Trim() -eq $Describe.Trim() })
+        if (-not $pool.Count) {
+            return [pscustomobject]@{ Capture = $null; Code = 3; Line = @(
+                    "Invoke-HarCapture: $($ours.Count) capture(s) match $named, but none is described '$($Describe.Trim())'."
+                    Format-HarCaptureChoice -Capture $ours
+                    '  With -Scrub or -Catalogue, -Describe narrows to the capture recorded with that'
+                    '  description. Drop it, or name the capture by its label.') }
+        }
+    }
+
+    if ($pool.Count -gt 1) {
+        # A COMMAND THAT CANNOT BE PASTED BACK IS NOT AN OFFER. The directory
+        # goes in single quotes, so an apostrophe in it is doubled -- and it is
+        # left out altogether when the path has a wildcard character in it,
+        # because this command would then refuse it as a pattern. The label
+        # always works.
+        $directory = $pool[0].dir
+        $byDirectory = if (-not [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($directory)) {
+            "    Invoke-HarCapture '$($directory.Replace("'", "''"))' $PhaseSwitch"
+        }
+        return [pscustomobject]@{ Capture = $null; Code = 2; Line = @(
+                "Invoke-HarCapture: $($pool.Count) captures match $named -- say which one. Nothing was run."
+                Format-HarCaptureChoice -Capture $pool
+                "  Name it by its label$(if ($byDirectory) { ', or by its directory' }):"
+                "    Invoke-HarCapture $(Get-HarCaptureLabel -Capture $pool[0]) $PhaseSwitch"
+                if ($byDirectory) { $byDirectory }
+                "  -Describe '<text>' also narrows, to the capture recorded with that description.") }
+    }
+
+    return [pscustomobject]@{ Capture = $pool[0]; Code = 0; Line = @() }
+}
+
+<#
+.SYNOPSIS
+    Why this capture cannot go through the phases that were asked for, or
+    nothing when it can.
+
+.DESCRIPTION
+    Each phase needs what the one before it produces, and the walk has already
+    said what is there.
+
+    The scrub needs the raw. With both switches that is the only question: the
+    scrub is what produces the scrubbed capture the catalogue is derived from.
+
+    The catalogue ALONE needs a scrubbed capture that passed the gate. The
+    recorder refuses an unscrubbed one too -- it asks the gate again, whatever
+    this says -- but it can only say "nothing to catalogue". Here the refusal
+    can name the way through, which is this same command with -Scrub added.
+
+    AND THE SCRUB WILL NOT REPLACE AN ARTIFACT IT CANNOT MATCH. A recording
+    that signed in scrubbed WITH the values it filled and the gate proved them
+    absent; those values are gone for good (see Get-HarCaptureSessionFact), so
+    scrubbing such a capture again can only produce a weaker scrubbed.har, and
+    would overwrite the stronger one with nothing able to put it back. So when
+    one is already there, the answer is no -- and the way through is the one
+    the recorder's `catalogue` gives for a catalogue somebody worked on: move
+    the file aside, which is an unambiguous statement of intent and keeps the
+    better artifact. With none there, there is nothing to lose and the scrub
+    runs, with a warning.
+
+    A session.json that CANNOT BE READ is refused on the same terms. It is the
+    only place the sign-in is recorded, so with it unreadable the question has
+    no answer -- and "no" is the one answer that must not be assumed.
+
+    A QUARANTINED, REJECTED SCRUB BLOCKS ON THOSE TERMS TOO, and it is the
+    sharper case. The gate that rejected it HAD the sign-in values, and may
+    have rejected it precisely because one of them survived the scrub. A scrub
+    run now is gated without them: it cannot see what the first gate saw, so it
+    can pass -- and name scrubbed.har, and let a catalogue be derived from --
+    the very thing that was refused. Nothing is lost by refusing, either: the
+    refused candidate is still there to triage.
+
+    AND FIRST OF ALL: NOT WHILE ITS RECORDER STILL HAS IT. A recorder writes
+    scrubbed.har, the digest and the catalogue into this same directory, for
+    minutes after the recording stops, and `postProcess` only when it is done.
+    A phase run in that window races it for the same files -- so both phases
+    are refused while the recorder's process is alive and has not said it
+    finished (see Get-HarCaptureSessionFact for how that is told).
+
+    AND NOT WITH A DIFFERENT OPERATOR PROFILE THAN THE RECORDING USED -- see
+    Get-HarScrubProfileBlocker.
+#>
+function Get-HarCapturePhaseBlocker {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Capture,
+        [Parameter(Mandatory)][bool]$Scrubbing,
+        [Parameter(Mandatory)][object]$Fact
+    )
+
+    $label = Get-HarCaptureLabel -Capture $Capture
+    if ($Fact.RecorderId) {
+        return [pscustomobject]@{ Code = 3; Line = @(
+                "Invoke-HarCapture: $label is still in the hands of the recorder that made it (process $($Fact.RecorderId))."
+                '  That recorder has not finished its own scrub and catalogue, and it writes them into'
+                '  this same directory: a phase run now would race it for the same files. Nothing was run.'
+                '  Let it finish -- or end the recording with Stop-HarRecording -- and run this again.') }
+    }
+    if ($Scrubbing) {
+        if (-not $Capture.raw) {
+            return [pscustomobject]@{ Code = 3; Line = @(
+                    "Invoke-HarCapture: $label has no raw.har, so there is nothing to scrub.") }
+        }
+        if (-not ($Fact.SignedIn -or $Fact.Unreadable)) { return (Get-HarScrubProfileBlocker -Capture $Capture -Fact $Fact) }
+        if (-not ($Capture.scrubbed -or $Capture.rejected)) { return (Get-HarScrubProfileBlocker -Capture $Capture -Fact $Fact) }
+
+        $who = if ($Fact.Unreadable) {
+            @(
+                'has a session.json that cannot be read'
+                '  session.json is where the recorder says whether it signed in for a capture. When it'
+                '  did, the values it filled were given to that scrub and to the leak gate, and exist')
+        }
+        else {
+            @(
+                'signed in while it was recorded'
+                '  The values the recorder filled were given to that scrub and to the leak gate, and exist')
+        }
+        if ($Capture.scrubbed) {
+            return [pscustomobject]@{ Code = 3; Line = @(
+                    "Invoke-HarCapture: $label $($who[0]), and already has a scrubbed.har."
+                    $who | Select-Object -Skip 1
+                    '  nowhere else: a scrub run now removes them by field name only and cannot prove them'
+                    '  gone. It would replace a checked artifact with an unchecked one, so nothing was run.'
+                    '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.'
+                    '  -Catalogue by itself catalogues the scrubbed.har that is already there.') }
+        }
+        # "IF the rejected scrub was the recording's own": a scrub quarantined
+        # by an earlier run of this very phase was gated without the values
+        # too, and the quarantine does not say which gate made it.
+        return [pscustomobject]@{ Code = 3; Line = @(
+                "Invoke-HarCapture: $label $($who[0]), and a scrub of it was REJECTED by the leak gate."
+                $who | Select-Object -Skip 1
+                "  nowhere else. If the rejected scrub was the recording's own, its gate could see them"
+                '  and may have refused it for one that survived; a scrub run now cannot, and could pass'
+                '  -- and call scrubbed.har -- that very value. Nothing was run. Triage the quarantined'
+                '  scrub and its findings beside the raw first. To scrub again anyway, move the'
+                '  quarantined scrubbed.rejected file aside (rename it) and run this again.') }
+    }
+    if ($Capture.scrubbed) { return $null }
+    if ($Capture.rejected) {
+        return [pscustomobject]@{ Code = 3; Line = @(
+                "Invoke-HarCapture: $label has no scrubbed.har -- its last scrub was REJECTED by the leak gate"
+                '  and quarantined beside the raw. Triage the findings there, then run this with'
+                '  -Scrub -Catalogue.') }
+    }
+    return [pscustomobject]@{ Code = 3; Line = @(
+            "Invoke-HarCapture: $label has not been scrubbed -- there is no scrubbed.har to catalogue."
+            '  A catalogue is only ever derived from a scrubbed, verified capture. To do both, run'
+            '  this with -Scrub -Catalogue.') }
+}
+
+<#
+.SYNOPSIS
+    Why a re-scrub cannot use the operator profile the recording scrubbed with,
+    or $null when it can (#24 N1).
+
+.DESCRIPTION
+    The operator profile -- .har-profile.json, the operator's own identifiers
+    and the salt every pseudonym is derived from -- is found by walking up from
+    the WORKING DIRECTORY. A recording scrubs with the one found from where it
+    was started; a re-scrub runs from the store root, and a recording started
+    in a subfolder or a linked worktree with a profile of its own found a
+    different file. Re-scrubbed with the root's, the identifiers the recording
+    replaced came back, the gate (same wrong profile) passed them, and the run
+    said "clean". So the recorder records the path it resolved, and the
+    re-scrub uses exactly that file:
+
+      * Recorded, and still there: no blocker; the scrub is handed that path.
+      * Recorded, and gone: refused. Any other profile could be the wrong one,
+        and a deleted profile is not a reason to guess.
+      * Not recorded (a capture made before the recorder said which profile it
+        used) and a scrubbed.har is already there: refused. That file was
+        checked against a profile nothing names, and the only one available
+        here may not be it; replacing it could swap a verified scrub for one
+        that carries the operator's identifiers. Moving scrubbed.har aside is
+        the way through, as for a capture that signed in.
+      * Not recorded and a quarantined, REJECTED scrub is there: refused on
+        the same terms (#24 I1). The gate that rejected it may have had a
+        profile the store root's is not; a re-scrub gated with the root's
+        could pass what that gate refused, and override the rejection.
+      * Not recorded and nothing there at all: no blocker. The scrub uses the
+        profile found from the store root, as before, and WARNS which file
+        that is -- nothing says it is the recording's own.
+#>
+function Get-HarScrubProfileBlocker {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Capture,
+        [Parameter(Mandatory)][object]$Fact
+    )
+
+    $label = Get-HarCaptureLabel -Capture $Capture
+    if ($Fact.ScrubProfilePath) {
+        if (Test-Path -LiteralPath $Fact.ScrubProfilePath -PathType Leaf) { return $null }
+        return [pscustomobject]@{ Code = 3; Line = @(
+                "Invoke-HarCapture: $label was scrubbed with the operator profile $($Fact.ScrubProfilePath),"
+                '  which no longer exists. A scrub with any other profile could put back identifiers that'
+                '  one replaced -- and its leak gate, given the same other profile, would pass them.'
+                '  Nothing was run. The usual cause is a recording made in a linked worktree that has'
+                '  since been removed, taking its gitignored profile with it.'
+                "  To go on, copy the profile back to $($Fact.ScrubProfilePath) and run this again.") }
+    }
+    # A QUARANTINED, REJECTED SCRUB counts as much as a scrubbed.har (#24 I1):
+    # it was gated with a profile nothing names, and a re-scrub with the store
+    # root's -- gated with that same profile -- could pass what it refused.
+    if (-not ($Capture.scrubbed -or $Capture.rejected)) { return $null }
+    $what = if ($Capture.scrubbed) {
+        @('  and already has a scrubbed.har. It was recorded before the recorder said so, and the'
+            '  profile found from the store root may not be the one that made that file: scrubbing with'
+            '  it could replace a verified scrub with one that carries your identifiers. Nothing was run.'
+            '  To scrub it again anyway, move scrubbed.har aside (rename it) and run this again.')
+    }
+    else {
+        @('  and a scrub of it was REJECTED by the leak gate. It was recorded before the recorder said'
+            '  so, and the gate that rejected it may have had a profile the store root does not: a'
+            '  scrub with the store root''s could pass -- and call scrubbed.har -- what that gate'
+            '  refused. Nothing was run. Triage the quarantined scrub and its findings beside the raw'
+            '  first. To scrub again anyway, move the quarantined scrubbed.rejected file aside (rename'
+            '  it) and run this again.')
+    }
+    return [pscustomobject]@{ Code = 3; Line = @(
+            "Invoke-HarCapture: $label does not record which operator profile its recording scrubbed with,"
+            $what) }
+}
+
+<#
+.SYNOPSIS
+    One spelling for a folder, so two paths can be compared as folders.
+
+.DESCRIPTION
+    Full (no `..`, no 8.3 short names -- GetFullPath expands those on Windows),
+    without a trailing separator, and with every link on the way resolved to
+    its target: a junction or symbolic link to a folder is that folder. A
+    segment that cannot be read is kept as it is spelled.
+#>
+function Get-HarCanonicalPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $resolved = $root
+    $segments = $full.Substring($root.Length).Split(
+        [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar),
+        [System.StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($segment in $segments) {
+        $resolved = [System.IO.Path]::Combine($resolved, $segment)
+        try {
+            $target = [System.IO.Directory]::ResolveLinkTarget($resolved, $true)
+            if ($target) { $resolved = [System.IO.Path]::GetFullPath($target.FullName) }
+        }
+        catch { Write-Verbose "$resolved could not be read as a link; kept as spelled." }
+    }
+    return $resolved.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+}
+
+<#
+.SYNOPSIS
+    The two things the recorder wrote into session.json that a scrub run
+    afterwards has to know, and that the shared walk does not carry.
+
+.DESCRIPTION
+    SignedIn -- did the recorder itself sign in for this capture? A recording
+    that fills a sign-in form hands the values it filled to the scrub and to
+    the leak gate over stdin, so they are removed under whatever name the site
+    used and then PROVED absent (#115). They exist only in that recorder's
+    memory -- not in session.json, not on disk, by design -- so a scrub run
+    afterwards cannot be given them. It still removes them by field name; it
+    cannot prove them gone. `postProcess` in capture-har.js owns that rule and
+    says exactly this when it scrubs for a recorder that has already exited;
+    this asks the same field so re-scrubbing through this door is not the one
+    place it goes unsaid.
+
+    Asked as "anything but `none`", NOT as the recorder's list of sources.
+    `none` means a form was met and the operator signed in by hand, so nothing
+    was filled and nothing is missing. A copy of the list would go quiet the
+    day a third way to sign in is added, and quiet is the wrong way to fail.
+
+    OutsideRepository -- was it recorded where there was no git repository?
+    The recorder then placed the scrub's substitution tables in the session
+    directory itself (`unprotectedTables`). The scrub re-entry point will not:
+    it writes them only where git confirms they are ignored.
+
+    Unreadable -- could session.json be read as the object the recorder writes?
+    NOT KNOWING IS NOT THE SAME AS NO. Every capture reaching here has the
+    file -- the walk requires it -- so an unreadable one is torn or hand-edited,
+    and "did not sign in" is exactly the answer damage must not be able to
+    produce: it would switch off the one refusal that reads this file. So it
+    is reported as its own fact and the caller treats it as it treats a
+    sign-in. `signIn` present in any shape but `source: none` counts as signed
+    in for the same reason.
+
+    Read as a hashtable, with the indexer: a session that never signed in has
+    no `signIn` at all, and under StrictMode -- which the module command brings
+    with it -- a bare property read of something absent throws. It also reads
+    a file whose keys differ only by letter case, which Node accepts and the
+    object form does not.
+
+    RecorderId -- the process id of a recorder that STILL HAS this capture, or
+    0. A recorder is still at work on a capture until it writes `postProcess`,
+    which it does only when its own scrub and catalogue -- the AI pass included
+    -- have finished; `endedUtc` comes minutes earlier, when the recording
+    stops. So "not finished" alone cannot be the test: a recorder that was
+    KILLED during its AI pass leaves exactly that state, for good, and that
+    capture is the one these switches exist for. What separates the two is
+    whether the recorder is still running, so that is what is asked -- see
+    Get-HarLiveRecorderId.
+
+    ScrubProfilePath -- the operator profile (.har-profile.json) the recording
+    scrubbed with, as the recorder resolved it from its own working directory
+    (#24 N1), or $null for a capture recorded before the recorder said so. A
+    re-scrub uses that file, never whichever one the store root finds.
+#>
+function Get-HarCaptureSessionFact {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Directory)
+
+    $fact = [pscustomobject]@{
+        SignedIn = $false; OutsideRepository = $false; Unreadable = $true; RecorderId = 0; ScrubProfilePath = $null
+    }
+    try {
+        $session = Get-Content -LiteralPath (Join-Path -Path $Directory -ChildPath 'session.json') -Raw -ErrorAction Stop |
+            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        if ($session -is [System.Collections.IDictionary]) {
+            $signIn = $session['signIn']
+            $source = if ($signIn -is [System.Collections.IDictionary]) { "$($signIn['source'])" }
+            $fact.SignedIn = ($null -ne $signIn) -and ($source -ne 'none')
+            $fact.OutsideRepository = [bool]$session['unprotectedTables']
+            if ($session['scrubProfilePath'] -is [string] -and $session['scrubProfilePath']) {
+                $fact.ScrubProfilePath = $session['scrubProfilePath']
+            }
+            if ($null -eq $session['postProcess']) { $fact.RecorderId = Get-HarLiveRecorderId -Session $session }
+            $fact.Unreadable = $false
+        }
+    }
+    catch {
+        # The reason is not repeated: a JSON parse error quotes the text it
+        # stopped at, and nothing here prints what a capture's files hold.
+        Write-Verbose "session.json in $Directory could not be read."
+    }
+    return $fact
+}
+
+<#
+.SYNOPSIS
+    The process id of the recorder that made this session, if that recorder is
+    still running; 0 otherwise.
+
+.DESCRIPTION
+    The recorder writes its own process id and its start time into
+    session.json as a recording begins. Its own liveness test is a bare "does
+    a process with that id exist", and it says of itself that it cannot tell a
+    running recorder from an unrelated process that inherited the id. For
+    `stop` that costs a wait. Here it would REFUSE a capture for as long as
+    some stranger happened to be running, with no way round it.
+
+    So one more thing is asked, and it is cheap: a recorder is OLDER than the
+    session it opened. A process that started after `startedUtc` is not that
+    recorder, whatever its id.
+
+    When that comparison cannot be made -- no start time in the session, or a
+    process whose start time may not be read -- the process is taken to be the
+    recorder. A refusal can be waited out; racing a live recorder for its
+    files cannot be undone.
+#>
+function Get-HarLiveRecorderId {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Session)
+
+    $id = $Session['pid'] -as [int]
+    if (-not $id) { return 0 }
+    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $process) { return 0 }
+    try {
+        $started = $Session['startedUtc']
+        $sessionStart = if ($started -is [datetime]) { $started.ToUniversalTime() }
+        else { [datetimeoffset]::Parse("$started", [cultureinfo]::InvariantCulture).UtcDateTime }
+        if ($process.StartTime.ToUniversalTime() -gt $sessionStart) { return 0 }
+    }
+    catch { Write-Verbose "process $id may be this capture's recorder; its age could not be compared." }
+    return $id
+}
+
+if ($reentering) {
+    $phases = @(if ($Scrub) { 'Scrub' }; if ($Catalogue) { 'Catalogue' })
+
+    # REFUSED, NOT QUIETLY IGNORED. Every one of these says how to RECORD --
+    # which browser, which identity, who drives, how fast, where a new
+    # capture's artifacts go. A phase run records nothing, so accepting one
+    # would let an operator believe it had done something. A switch is read by
+    # value here too: `-AI:$false` asked for nothing.
+    $recordingOnly = foreach ($name in 'OutputPath', 'Profile', 'Isolated', 'Port', 'Browser', 'Attach', 'AI', 'AITools', 'Pace') {
+        if (-not $PSBoundParameters.ContainsKey($name)) { continue }
+        $value = $PSBoundParameters[$name]
+        if ($value -is [switch] -and -not $value) { continue }
+        "-$name"
+    }
+    if ($recordingOnly) {
+        Write-HarCaptureRefusal -Refusal @{ Line = @(
+                "Invoke-HarCapture: $($recordingOnly -join ', ') cannot be combined with -Scrub or -Catalogue."
+                '  Those switches run on a capture that already exists and record nothing, so there is'
+                '  no browser, no recording and no new output directory for a recording option to apply'
+                "  to. The phases read and write the capture's own directory under .har-captures/.") }
+        exit 2
+    }
+
+    # Built and resolved by .NET, not Join-Path (#24 N2): Join-Path goes
+    # through the provider of the current LOCATION, and from Env:\ or a
+    # registry drive it dropped the `..`, so the module was looked for under
+    # capture\har and not found.
+    $harScripts = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, '..', 'har'))
+    Import-Module (Join-Path -Path $harScripts -ChildPath 'HarStoreBatch.psm1') -Force
+
+    $selection = Resolve-HarCaptureSelection -Spec $Uri -Describe $Describe `
+        -PhaseSwitch (($phases | ForEach-Object { "-$_" }) -join ' ') `
+        -CaptureStoreJs (Join-Path -Path $PSScriptRoot -ChildPath 'capture-store.js')
+    if (-not $selection.Capture) {
+        Write-HarCaptureRefusal -Refusal $selection
+        exit $selection.Code
+    }
+    $capture = $selection.Capture
+    $label = Get-HarCaptureLabel -Capture $capture
+
+    # WHICH ONE, said before anything runs -- and before the state check, so a
+    # refusal about a capture's state follows the line that says which capture
+    # it is about.
+    $described = if ($capture.describe) { $capture.describe } else { '(no description)' }
+    Write-Information "Invoke-HarCapture: selected $label -- $described"
+    Write-Information "  at $($capture.dir)"
+
+    # WHERE THE PHASES RUN: the folder that holds this capture's .har-captures,
+    # and never wherever the command happened to be typed.
+    #
+    # The scrub and the leak gate find the operator profile -- .har-profile.json,
+    # the operator's own identifiers and the salt every pseudonym is derived
+    # from -- by walking up from the WORKING DIRECTORY. A capture can be named
+    # from anywhere, by its directory. Put those together and a re-scrub typed
+    # in another repository scrubbed and gated with THAT repository's profile:
+    # the operator's identifiers went back into scrubbed.har, the gate passed
+    # it, and the run said "clean". So both re-entry calls are made from the
+    # capture's own store root, and the caller is put back where they were
+    # afterwards -- and the scrub is handed the profile the RECORDING used,
+    # which may not be the root's (#24 N1; see Get-HarScrubProfileBlocker).
+    #
+    # It also has to EXIST, which is the shared guard: the walk decides what a
+    # capture is by the files in a directory and anchors to nothing, so a stray
+    # session.json and raw.har somewhere else pass for one. They have no store
+    # root to run from and no profile beside them.
+    $storeRoot = Get-HarCaptureStoreRoot -Path $capture.dir
+    if (-not $storeRoot) {
+        Write-HarCaptureRefusal -Refusal @{ Line = @(
+                "Invoke-HarCapture: $($capture.dir) is not inside a capture store."
+                '  Recordings live under a .har-captures directory, and -Scrub and -Catalogue run from'
+                '  the folder that holds it -- that is where the operator profile that applies to a'
+                '  capture is found. A capture-shaped folder anywhere else has neither. Nothing was run.') }
+        exit 3
+    }
+    # Said only when it is news: compared as FOLDERS, not as spellings (#24 N3)
+    # -- a short name, a `..`, or a link to the store folder is still the store
+    # folder. A location that is not a folder at all (Env:\, a registry drive)
+    # is never it.
+    $here = Get-Location
+    $atStoreRoot = $here.Provider.Name -eq 'FileSystem' -and
+        (Get-HarCanonicalPath -Path $here.ProviderPath) -eq (Get-HarCanonicalPath -Path $storeRoot)
+    if (-not $atStoreRoot) {
+        Write-Information "  from $storeRoot -- the folder that holds its capture store"
+    }
+
+    $fact = Get-HarCaptureSessionFact -Directory $capture.dir
+    $blocker = Get-HarCapturePhaseBlocker -Capture $capture -Scrubbing ([bool]$Scrub) -Fact $fact
+    if ($blocker) {
+        Write-HarCaptureRefusal -Refusal $blocker
+        exit $blocker.Code
+    }
+
+    Write-Information ("  running $(($phases | ForEach-Object { "the $($_.ToLowerInvariant())" }) -join ', then '). " +
+        'Nothing is recorded.')
+
+    # What a run that replaces the scrub leaves behind it, said in one place so
+    # the two moments that say it cannot drift apart.
+    $staleNote = 'digest.json and catalogue.json in that directory were derived from the previous scrub.'
+    $leavesStale = [bool]($capture.digest -or $capture.catalogue)
+
+    if ($Scrub) {
+        # Said BEFORE the scrub, and on the warning stream: it is about what
+        # this scrub cannot check, so it belongs ahead of a summary that will
+        # otherwise read as the whole verdict. (A capture that signed in AND
+        # already has a scrubbed.har never gets here -- see the blocker.)
+        if ($fact.SignedIn -or $fact.Unreadable) {
+            $signedIn = if ($fact.Unreadable) {
+                "$label has a session.json that cannot be read, so nothing says whether the recorder " +
+                'signed in for it. If it did, the values it filled were held only by that recorder.'
+            }
+            else {
+                "$label signed in while it was recorded, and the values it filled were held only by " +
+                'the recorder that made it.'
+            }
+            Write-Warning ("$signedIn This scrub removes them by field name and cannot prove them " +
+                'gone, as a scrub at recording time does -- check the new scrubbed.har for them before ' +
+                'sharing it.')
+        }
+
+        # THE FOLDER FORM OF THE SCRUB WRAPPER, pointed at this one capture.
+        #
+        # Not its file form (-InputHar raw -OutputHar scrubbed). That one writes
+        # the scrub straight to its destination before the gate has judged it,
+        # which is why composing it here was refused in the first place (see
+        # the note above the recording, below). The folder form scrubs under a
+        # temporary name, calls it scrubbed.har only once the gate has passed
+        # it, and quarantines a refusal beside the raw -- so promotion,
+        # quarantine and the verdict stay where they are implemented, and this
+        # file restates none of them.
+        #
+        # -Force, because the operator asked for THIS capture to be scrubbed
+        # again: without it a capture a recording already scrubbed would answer
+        # "already scrubbed -- use -Force", naming a switch this door does not
+        # have. It replaces the derived scrubbed.har and never touches a raw.
+        #
+        # -WhatIf:$false and -Confirm:$false, because that wrapper supports
+        # ShouldProcess and this command does not. A $WhatIfPreference set in
+        # an outer scope would otherwise turn the phase into a run that reports
+        # and writes nothing; a lowered $ConfirmPreference would have it PROMPT
+        # per capture, which a run with nobody at a terminal cannot answer.
+        #
+        # ITS STATUS LINES ARE COLLECTED, then passed on. The wrapper answers 0
+        # for an artifact it KEPT, whatever the gate said of it, and puts the
+        # verdict in a summary on the information stream -- which a caller who
+        # silences status never sees. So the wrapper is always asked to speak
+        # (-InformationAction Continue), what it says is taken here (6>&1), and
+        # each line is then written again under the CALLER's preference: shown
+        # when they want status, dropped when they do not, and read by this
+        # script either way. Anything else it emits goes to the host, off this
+        # command's success stream, whose only content is catalogue rows.
+        #
+        # THE GATE'S FINDINGS REPORT is noted before the run so that one
+        # written BY this run can be told from one an earlier run left: the
+        # gate writes it only when a run is not clean, and nothing removes it.
+        $findingsPath = Join-Path -Path $capture.dir -ChildPath 'scrub-findings.json'
+        $findingsBefore = if (Test-Path -LiteralPath $findingsPath) { (Get-Item -LiteralPath $findingsPath).LastWriteTimeUtc.Ticks }
+
+        # WITH THE PROFILE THE RECORDING SCRUBBED WITH (#24 N1), named
+        # explicitly, so the scrub and its leak gate both use that file and not
+        # whichever one is found from the store root. The blocker has already
+        # refused a recorded profile that is gone, and a capture that records
+        # none while a scrubbed.har is there to replace.
+        $profileArgs = @{}
+        if ($fact.ScrubProfilePath) {
+            $profileArgs.ProfilePath = $fact.ScrubProfilePath
+            Write-Information "  scrubbing with the operator profile $($fact.ScrubProfilePath), the one its recording used"
+        }
+        else {
+            # On the WARNING stream (#24 I1): nothing says the store root's
+            # profile is the recording's, so this is something to check, not a
+            # status line that silencing status may drop. The file is named as
+            # the scrub will find it -- the nearest at or above the store root,
+            # which is where the scrub runs from (see Push-Location below).
+            $rootProfile = $null
+            for ($dir = $storeRoot; $dir; $dir = [System.IO.Path]::GetDirectoryName($dir)) {
+                $candidate = [System.IO.Path]::Combine($dir, '.har-profile.json')
+                if ([System.IO.File]::Exists($candidate)) { $rootProfile = $candidate; break }
+            }
+            $profileName = if ($rootProfile) { "the operator profile $rootProfile" }
+            else { "whichever operator profile is found from $storeRoot (none was found there)" }
+            Write-Warning ("$label does not record which operator profile its recording scrubbed with; " +
+                "scrubbing with $profileName, which may not be the recording's own -- " +
+                'check the result for your own identifiers before sharing it.')
+        }
+
+        Push-Location -LiteralPath $storeRoot
+        try {
+            $said = & (Join-Path -Path $harScripts -ChildPath 'Invoke-SanitizeHar.ps1') -InputHar $capture.dir @profileArgs -Force -WhatIf:$false -Confirm:$false -InformationAction Continue 6>&1
+            $scrubExit = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+
+        $summary = [System.Collections.Generic.List[string]]::new()
+        foreach ($item in @($said)) {
+            if ($item -is [System.Management.Automation.InformationRecord]) {
+                $summary.Add("$($item.MessageData)")
+                Write-Information $item.MessageData
+            }
+            else { $item | Out-Host }
+        }
+
+        if ($scrubExit -ne 0) {
+            # The wrapper's summary, printed just above, says what happened and
+            # where a refused scrub was quarantined. Its code is passed on
+            # whole; the one thing added is what this run did NOT go on to do.
+            Write-Warning ("The scrub did not produce a verified scrubbed.har for $label -- its summary " +
+                'above says why. The raw capture is untouched.' +
+                $(if ($Catalogue) { ' Nothing was catalogued.' }))
+            # The one failure whose stated remedy cannot be followed from here.
+            # The scrub says to re-run inside the repository that owns the
+            # capture, or to pass --subs: there is no repository, and this door
+            # has no such option to pass. What CAN be done is make the folder
+            # the repository the scrub is asking for.
+            #
+            # ONLY WHILE IT IS STILL TRUE. The flag in session.json says where
+            # the capture was MADE and never changes; the folder can become a
+            # repository afterwards, and from then on a failure is about
+            # something else -- a scrub the gate rejected, a raw that will not
+            # parse. So git is asked about the folder as it is now, and the
+            # hint is kept for the case it describes. With no git to ask, the
+            # scrub could not have confirmed anything either, and it stands.
+            $insideWorkTree = $false
+            if ($fact.OutsideRepository) {
+                try {
+                    $insideWorkTree = "$(& git -C $capture.dir rev-parse --is-inside-work-tree 2>$null)".Trim() -eq 'true'
+                }
+                catch { $insideWorkTree = $false }
+            }
+            if ($fact.OutsideRepository -and -not $insideWorkTree) {
+                Write-Warning ("$label was recorded outside a git repository, and its folder still is " +
+                    "not one. The recorder placed the scrub's substitution tables itself; the scrub run " +
+                    'here writes them only where git confirms they are ignored, so it refuses. Run ' +
+                    '`git init` in the folder that holds .har-captures -- the recorder already wrote a ' +
+                    '.gitignore there that keeps the store out of it -- and run this again.')
+            }
+            exit $scrubExit
+        }
+
+        # THE VERDICT OF THE SCRUB THAT JUST RAN, because exit 0 from the
+        # wrapper only says an artifact was kept.
+        #
+        # ADVISORY is read from the gate's own findings report: verify-scrub
+        # writes it beside the file it judged whenever a run is not clean, with
+        # the verdict in it as data (`verdict`), before it prints anything. A
+        # report this run wrote that says `advisory` IS the verdict -- no
+        # wording is parsed to learn it. It is said on the WARNING stream, which
+        # silencing status does not reach, and -Scrub alone then answers 7: the
+        # recorder's own code for "produced, with advisory findings", and what
+        # -Scrub -Catalogue already answers, since the recorder asks the gate
+        # again.
+        #
+        # ANYTHING ELSE THAT IS NOT CLEAN is caught by comparison, not by
+        # reading: the wrapper's summary carries one verdict line, and the
+        # module that writes that line is asked what it says for ONE CLEAN
+        # CAPTURE. If the wrapper did not say exactly that, the scrub did not
+        # come back clean -- values were BLUNTED, or the line is missing -- and
+        # what it did say is passed on as a warning. That case keeps exit 0:
+        # the gate passed the artifact, and 7 means the gate had findings.
+        $gateVerdict = $null
+        if ((Test-Path -LiteralPath $findingsPath) -and
+            (Get-Item -LiteralPath $findingsPath).LastWriteTimeUtc.Ticks -ne $findingsBefore) {
+            try {
+                $gateVerdict = "$((Get-Content -LiteralPath $findingsPath -Raw | ConvertFrom-Json -AsHashtable)['verdict'])"
+            }
+            catch { $gateVerdict = 'unreadable' }
+        }
+        $cleanLine = Get-HarScrubVerdictLine -Results @([pscustomobject]@{ Outcome = 'processed'; Reason = $null })
+        $verdictStem = $cleanLine.Substring(0, $cleanLine.IndexOf(':') + 1)
+        $verdictLine = $summary | Where-Object { $_.StartsWith($verdictStem) } | Select-Object -First 1
+
+        $scrubCode = 0
+        if ($gateVerdict -eq 'advisory') {
+            Write-Warning ("The scrub of $label was kept with ADVISORY findings: identity evidence by shape " +
+                'alone, which the leak gate reports and does not block on. scrubbed.har was replaced. ' +
+                'Review scrub-findings.json beside it, then waive or correct each finding.')
+            $scrubCode = 7
+        }
+        elseif ($gateVerdict -or $verdictLine -ne $cleanLine) {
+            $reported = if ($verdictLine) { $verdictLine } else { 'the scrub wrapper printed no verdict line' }
+            Write-Warning ("The scrub of $label did not come back clean -- $reported. scrubbed.har was " +
+                "replaced; the wrapper's summary says what was done to it.")
+        }
+
+        if (-not $Catalogue -and $leavesStale) {
+            # Nothing else would say it: the digest and catalogue already in
+            # that directory describe the scrub this run just replaced.
+            Write-Information ("  $staleNote Run this with -Catalogue to rebuild them; a catalogue " +
+                'that carries described actions is never replaced, so move that one aside first.')
+        }
+        if (-not $Catalogue) { exit $scrubCode }
+    }
+
+    if (-not $Scrub -and $capture.rejected) {
+        # A verified scrubbed.har and a quarantined one side by side: a
+        # re-scrub was refused, or an earlier refusal has since been corrected.
+        # Which came first is not something the names say, and it does not
+        # change the answer -- but an operator who has just watched a scrub be
+        # REJECTED should not have to work out which file this is built from.
+        Write-Information ('  this capture also holds a scrub the leak gate REJECTED, quarantined beside ' +
+            'the raw. The catalogue is derived from scrubbed.har, which the recorder verifies again first.')
+    }
+
+    # THE RECORDER'S OWN `catalogue` COMMAND, the pipeline's second door.
+    #
+    # --output-path is the capture's own directory, said explicitly. Left out,
+    # the recorder reads the output path the capture was RECORDED with -- and
+    # for a capture recorded with -OutputPath that is a published copy
+    # somewhere else, not the scrubbed.har a -Scrub just wrote here. The phases
+    # work on the capture's directory, as the folder drivers do.
+    #
+    # Everything else is the recorder's: it asks the leak gate again, builds
+    # the digest, decides who catalogues, and refuses to replace a catalogue
+    # that carries described actions. Its stderr is left alone, so its table,
+    # its warnings and its refusals arrive in its own words.
+    #
+    # FROM THE STORE ROOT, like the scrub, and for the same reason: the gate it
+    # asks again checks the operator's literals, and finds them where it is run
+    # from. One consequence is visible: where the recorder suggests a place for
+    # a committed reference, it suggests one in that folder's work tree.
+    $catalogueArgs = @('catalogue', $capture.dir, '--output-path', $capture.dir)
+    if ($VerbosePreference -ne 'SilentlyContinue') { $catalogueArgs += @('--log-level', 'verbose') }
+    Write-Verbose "capture-har.js $($catalogueArgs -join ' ')"
+    Push-Location -LiteralPath $storeRoot
+    try {
+        & node $captureJs @catalogueArgs | Out-Host
+        $catalogueExit = $LASTEXITCODE
+    }
+    finally { Pop-Location }
+    Write-Verbose "capture-har.js exited $catalogueExit"
+
+    # The recorder's codes are passed on whole. 0 and 7 both mean a catalogue
+    # was produced -- 7 over ADVISORY findings, non-zero so nothing reads the
+    # run as clean. Any other code has already been explained by the recorder,
+    # and a second, vaguer sentence about it from here would only blur that.
+    #
+    # ONE THING the recorder cannot know is added: that a scrub ran first. Its
+    # refusal says "nothing was written", which is true of the catalogue and
+    # silent about the catalogue now describing a scrub that has been replaced.
+    if ($catalogueExit -notin 0, 7) {
+        if ($Scrub -and $leavesStale) {
+            Write-Warning "scrubbed.har was replaced, and the catalogue step then stopped (exit $catalogueExit). $staleNote"
+        }
+        exit $catalogueExit
+    }
+    if ($catalogueExit -eq 7) {
+        Write-Warning ('Catalogued, but the leak gate reported ADVISORY findings. The recorder printed ' +
+            'each finding and the path to the full report -- review them, then waive or correct each one.')
+    }
+
+    # The DATA, as a recording returns it: typed rows on the success stream, so
+    # `... -Catalogue | Where-Object Status -eq Observed` composes the same way.
+    $cataloguePath = Join-Path $capture.dir 'catalogue.json'
+    if (Test-Path -LiteralPath $cataloguePath) {
+        & (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath
+    }
+    else {
+        Write-Warning "no catalogue was written to $cataloguePath"
+    }
+    exit $catalogueExit
+}
 
 $uriFolder = Get-HarUriFolder -Uri $Uri
 if (-not $uriFolder) {
@@ -637,11 +1800,28 @@ if (-not $uriFolder) {
 #      3 / 4 -> 6 / 7 mapping with them. Three of the four invariants restated
 #      on this side of the process boundary, drifting from the Node ones.
 #
-# So the composition is left undone deliberately, and the front door goes on
-# delegating. If it is wanted, the honest shape is a `scrub` command on
-# capture-har.js exposing postProcess's phase A whole -- another entry point to
-# existing code, the same move the `catalogue` command makes -- rather than a
-# PowerShell reassembly of it.
+# So the composition is left undone deliberately, and A RECORDING goes on
+# delegating whole.
+#
+# WHAT -Scrub AND -Catalogue CHANGED, AND WHAT THEY DID NOT (#24). They re-enter
+# the pipeline for a capture that already exists -- the section above -- and
+# they do it through those same two entry points. That is not the composition
+# refused here, and the difference is point 2. The scrub wrapper's FOLDER form
+# arrived with #386, after this note was written: it scrubs under a temporary
+# name, calls the result scrubbed.har only once the gate has passed it, and
+# quarantines a refusal. Called that way the wrapper carries those invariants
+# itself, so they are still not restated in this file; its FILE form, which
+# carries none of them, is still never called from here.
+#
+# What that leaves short of postProcess's phase A is narrow and known. The
+# folder form writes into the capture's own directory rather than publishing to
+# the output path a capture was recorded with, and it answers 0 or 1 rather
+# than 0, 6 or 7 -- so the section above has to read the gate's own findings
+# report to say ADVISORY and answer 7, where a recorder command would simply
+# return it. The honest shape for closing that is still a `scrub` command on
+# capture-har.js exposing phase A whole -- another entry point to existing
+# code, the same move the `catalogue` command makes -- and it is still new
+# command-line surface, which needs approval, not initiative.
 $captureArgs = @('start', '--uri', $Uri)
 if ($PSBoundParameters.ContainsKey('Port')) { $captureArgs += @('--port', $Port) }
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }

@@ -245,31 +245,40 @@ Describe 'ShouldProcess cannot silently disable a stage' {
     }
 
     It 'every internal call to the scrub wrapper passes -WhatIf:$false' {
-        # TRIPWIRE, and VACUOUS TODAY -- there are currently no internal call
-        # sites, because Invoke-HarCapture.ps1 delegates the whole pipeline to
-        # capture-har.js rather than composing the PowerShell stages. That was
-        # a deliberate stop, not an oversight: composing would have to restate
-        # promotion, quarantine and the exit-code mapping in PowerShell, and
-        # the rationale is written out above `$captureArgs` in that file.
+        # NO LONGER VACUOUS (#24). It was written as a tripwire for the day the
+        # first call site arrived, and that day came with `Invoke-HarCapture
+        # -Scrub`, which re-enters the scrub stage through the wrapper's FOLDER
+        # form -- the form that carries promotion and quarantine itself, so the
+        # front door still restates neither. A RECORDING is unchanged: it still
+        # hands the whole pipeline to capture-har.js, and the rationale for
+        # that is still written out above `$captureArgs` in that file.
         #
-        # It is here because the day somebody adds the first call site is the
-        # day the trap becomes reachable: Invoke-SanitizeHar.ps1 now declares
-        # SupportsShouldProcess, so an ambient $WhatIfPreference would make the
-        # composed pipeline record traffic and silently skip scrubbing it.
+        # The trap is the one this was put here to catch: Invoke-SanitizeHar.ps1
+        # declares SupportsShouldProcess and Invoke-HarCapture.ps1 does not, so
+        # an ambient $WhatIfPreference would reach the wrapper and turn -Scrub
+        # into a run that reports and writes nothing while looking like success.
         #
-        # Reported as a guard, not as evidence: it asserts nothing about the
-        # current tree beyond the absence of call sites.
+        # This is the STRUCTURAL half, over every script in capture/. The
+        # behaviour -- a scrub that still happens under the preference -- is
+        # asserted in HarCapturePhases.Tests.ps1.
         $callers = Get-ChildItem -LiteralPath (Join-Path $script:ScriptsDir 'capture') -File -Filter '*.ps1'
+        $callSites = 0
         $offenders = foreach ($file in $callers) {
             $raw = Get-Content -LiteralPath $file.FullName -Raw
             $withoutBlocks = [regex]::Replace($raw, '(?s)<#.*?#>', ' ')
             $code = ($withoutBlocks -split "`r?`n" | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n"
             foreach ($line in ($code -split "`n")) {
-                if ($line -match 'Invoke-SanitizeHar\.ps1' -and $line -notmatch '-WhatIf:\$false') {
-                    "$($file.Name): $($line.Trim())"
-                }
+                if ($line -notmatch 'Invoke-SanitizeHar\.ps1') { continue }
+                $callSites++
+                if ($line -notmatch '-WhatIf:\$false') { "$($file.Name): $($line.Trim())" }
             }
         }
+        # The scan has something to look at, or the assertion below is the
+        # vacuous one it used to be: a call site spelled so this cannot see it
+        # would otherwise pass unexamined.
+        $callSites | Should -BeGreaterThan 0 -Because (
+            'Invoke-HarCapture.ps1 -Scrub calls the scrub wrapper; a scan that finds no call ' +
+            'site is not checking that call')
         @($offenders) -join "`n" | Should -BeNullOrEmpty -Because (
             'Invoke-SanitizeHar.ps1 supports ShouldProcess, so an ambient $WhatIfPreference ' +
             'would suppress the scrub in a composed pipeline while the run still looked ' +

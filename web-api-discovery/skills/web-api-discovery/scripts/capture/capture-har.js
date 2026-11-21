@@ -5105,7 +5105,15 @@ async function start(args) {
         snapshotSeconds: snapshotMs / 1000,
         // The pace this run's own steps were taken at, and an agent was told
         // to keep -- on every session, because every run signs in at it.
-        pace
+        pace,
+        // WHICH OPERATOR PROFILE THIS CAPTURE IS SCRUBBED WITH (#24 N1): the
+        // .har-profile.json nearest this process's working directory, which is
+        // the one the scrub and the leak gate below find for themselves. A
+        // later re-scrub runs from somewhere else -- the store root -- and can
+        // find a different one there; with this it uses the same file, and
+        // refuses when that file is gone. Null when there is none (only a
+        // --validate-only that is about to say so).
+        scrubProfilePath: harProfile.findProfilePath(process.cwd())
     };
 
     // ONLY WHEN ONE WAS ASKED FOR (#98). A hand-driven capture's session.json
