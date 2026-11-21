@@ -23,7 +23,7 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     {
         var body = await _client.GetStringAsync("/");
 
-        Assert.Contains("<code>/time/mcp</code>", body);
+        Assert.Matches("<code>[^<]*/time/mcp</code>", body);
     }
 
     [Fact]
@@ -31,7 +31,7 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     {
         var body = await _client.GetStringAsync("/");
 
-        Assert.DoesNotContain("<code>/mcp</code>", body);
+        Assert.DoesNotMatch("<code>[^<]*://[^/<]+/mcp</code>|<code>/mcp</code>", body);
     }
 
     [Fact]
