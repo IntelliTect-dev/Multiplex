@@ -245,14 +245,18 @@ Describe 'adding the services to your accounts' {
         $said | Should -BeLike '*passcode*-ShowPasscode*'
     }
 
-    It 'says, before the Claude and ChatGPT steps, that they reach the address from the internet: Funnel or an open incoming port' -ForEach @(
-        @{ Agent = 'Claude'; Heading = 'Claude (' }
-        @{ Agent = 'ChatGPT'; Heading = 'ChatGPT (' }
+    It 'says, before the steps for <Agent>, that they reach the address from the internet: Funnel or an open incoming port' -ForEach @(
+        @{ Agent = @('Claude'); Headings = @('Claude (') }
+        @{ Agent = @('ChatGPT'); Headings = @('ChatGPT (') }
+        @{ Agent = @('Claude', 'ChatGPT'); Headings = @('Claude (', 'ChatGPT (') }
     ) {
         $said = Add-MultiplexConnector -BaseUrl $Base -Service tripit -Agent $Agent -WhatIf 6>&1 | Out-String
         $note = $said.IndexOf('reachable from the internet')
         $note | Should -BeGreaterOrEqual 0
-        $note | Should -BeLessThan $said.IndexOf($Heading)
+        foreach ($heading in $Headings) {
+            $at = $said.IndexOf("`n$heading")   # the heading at the start of its line
+            $at | Should -BeGreaterThan $note
+        }
         $said | Should -BeLike '*their own servers*'
         $said | Should -BeLike '*Tailscale Funnel*'
         $said | Should -BeLike '*open incoming port*'
