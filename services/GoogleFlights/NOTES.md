@@ -67,9 +67,7 @@ G1/G2). From that network the same search was then refused from three client
 stacks (Node `fetch` exactly as the morning's answered probes, Node with the C#
 client's headers, the C# client) and with both User-Agent strings, while the C#
 client's identical search was answered from a different network (in-flight
-wifi) in the same window, which in turn refused the next request. Do not
-"fix" this by changing headers, the TLS stack or the User-Agent string: none
-of them matters, and rotating User-Agents to dodge a limit would be evasion.
+wifi) in the same window, which in turn refused the next request.
 
 **It is not a small count per network either** (`docs/protocol.md` section 2,
 M1/M2). From a third network, one search every 10 minutes was answered 10 times
