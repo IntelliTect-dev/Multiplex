@@ -1,4 +1,5 @@
-# Multiplex on a Linux host, reachable from your tailnet only (issue #97).
+# Multiplex on a Linux host (issue #97), reachable from your tailnet and, through Tailscale Funnel, from
+# the internet, where Claude's and ChatGPT's connectors call from (#108). Every caller signs in (#80).
 # scripts/Deploy-MultiplexLinux.ps1 copies this file and serve.json to ~/multiplex on the server and
 # writes .env (which image runs) and multiplex.env (the server's address) beside them.
 name: multiplex
@@ -6,7 +7,8 @@ name: multiplex
 services:
   tailscale:
     # A tailnet device of its own, named "multiplex": the address belongs to Multiplex, not to this box,
-    # and the box's own Tailscale (if any) is left alone. serve.json proxies HTTPS on 443 to the server.
+    # and the box's own Tailscale (if any) is left alone. serve.json proxies HTTPS on 443 to the server
+    # and opens 443 to the internet with Funnel. The device reads serve.json only as it starts.
     image: tailscale/tailscale:stable
     hostname: multiplex
     environment:
@@ -26,8 +28,8 @@ services:
 
   multiplex:
     image: ${MULTIPLEX_IMAGE:?Deploy-MultiplexLinux.ps1 sets it in .env}
-    # The Tailscale device's network: Serve reaches the server on loopback and adds X-Forwarded-For,
-    # which is how the server tells a tailnet caller from this host itself (RequestOrigin.cs).
+    # The Tailscale device's network: Serve and Funnel reach the server on loopback and add
+    # X-Forwarded-For, which is how the server tells any caller from this host itself (RequestOrigin.cs).
     network_mode: service:tailscale
     depends_on:
       - tailscale
