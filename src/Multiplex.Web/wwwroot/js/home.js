@@ -15,12 +15,14 @@ function copyWithCommand(text) {
   try { return document.execCommand('copy'); } catch { return false; } finally { area.remove(); }
 }
 
-async function copy(text) {
+async function copy(text, target) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    return copyWithCommand(text);
+    const copied = copyWithCommand(text);
+    target.focus(); // The command's text area took the focus; give it back for keyboard users.
+    return copied;
   }
 }
 
@@ -47,7 +49,7 @@ function say(target, text) {
 document.addEventListener('click', async (event) => {
   const target = event.target instanceof Element ? event.target.closest('[data-copy]') : null;
   if (!target) return;
-  if (await copy(target.getAttribute('data-copy'))) {
+  if (await copy(target.getAttribute('data-copy'), target)) {
     say(target, 'Copied');
   } else {
     selectAddress(target);
