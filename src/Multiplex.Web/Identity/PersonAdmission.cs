@@ -32,6 +32,13 @@ public abstract record Admission
 /// </summary>
 public sealed record Allowlist(IReadOnlySet<string> Addresses, IReadOnlySet<string> Domains)
 {
+    /// <summary>
+    /// Plain ASCII with exactly one @. Checked on the address as the provider sent it, before anything
+    /// lower-cases it: then no other character can fold into a listed one (the Kelvin sign U+212A into "k"),
+    /// and no two readings of the domain can differ (<c>a@evil.test@example.com</c>).
+    /// </summary>
+    public static bool IsPlainAddress(string email) => Ascii.IsValid(email) && email.Count(c => c == '@') == 1;
+
     public bool IsEmpty => Addresses.Count == 0 && Domains.Count == 0;
 
     /// <summary>
@@ -42,6 +49,7 @@ public sealed record Allowlist(IReadOnlySet<string> Addresses, IReadOnlySet<stri
     /// </summary>
     public bool Admits(string email, bool personalAccount)
     {
+        if (!IsPlainAddress(email)) return false;
         var address = AllowedPeople.Normalize(email);
         if (Addresses.Contains(address)) return true;
         var at = address.LastIndexOf('@');
@@ -129,6 +137,7 @@ public sealed partial class PersonAdmission(IAuthStore store, AllowedPeople allo
                     (new Admission.Admitted(new MultiplexPerson(bound.Owner, bound.Email)), "already bound"), dropped > 0);
             }
             if (email is null || !identity.EmailVerified) return Refuse(NotVerifiedMessage, "no verified email address");
+            if (!Allowlist.IsPlainAddress(identity.Email!)) return Refuse(NotAllowedMessage, "not a plain ASCII address with one @");
             if (!list.Admits(email, identity.PersonalAccount)) return Refuse(NotAllowedMessage, "not on the allowlist");
             if (s.People.ContainsKey(email)) return Refuse(NotAllowedMessage, "the address is bound to a different account");
 
