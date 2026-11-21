@@ -22,6 +22,8 @@
   <ItemGroup>
     <!-- Each service keeps its saved pages in Services/<Name>/Fixtures; they keep that path in the output folder. -->
     <Content Include="Services\*\Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Google Flights' fixtures are its committed, scrubbed references, not copies. -->
+    <None Include="..\..\services\GoogleFlights\references\google-flights\*.har" Link="Services\GoogleFlights\References\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

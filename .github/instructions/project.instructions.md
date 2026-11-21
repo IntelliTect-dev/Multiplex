@@ -30,6 +30,11 @@ with the catalog of services, is `spec/product.md`.
   Its tests and saved pages are in `tests/Multiplex.Tests/Services/<Name>/`.
 - `Browser/BrowserService.cs` -- one shared browser, launched lazily; tools rent
   and return pages.
+- `services/<Name>/` -- one folder per provider (the owner's decision in #83):
+  its client library, PowerShell module, scrubbed references, protocol docs and
+  tests. Google Flights (`services/GoogleFlights/`) is the first; its MCP tool
+  class stays in `src/Multiplex.Web/Services/GoogleFlights/` until #83's
+  host-contracts library lets the host find tools in provider assemblies.
 - `tests/Multiplex.Tests/` -- xUnit: `WebApplicationFactory<Program>`
   integration tests, HTML-fixture parsing tests, and opt-in browser and live
   tests.
@@ -113,6 +118,10 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 ## External Dependencies & Secrets
 
 - time.now (public, no credentials) for `get_local_time`.
+- Google Flights' own web endpoints on `www.google.com` (public, no
+  credentials, direct HTTP) for `/google-flights/mcp`. Google throttles a whole
+  network for hours: keep the client's pacing and refusal cool-down, and run its
+  live tests sparingly (`services/GoogleFlights/NOTES.md`).
 - Chromium: a system install via `Browser:ExecutablePath`, else Puppeteer
   downloads one on first use (needs network).
 - No secrets are configured today.

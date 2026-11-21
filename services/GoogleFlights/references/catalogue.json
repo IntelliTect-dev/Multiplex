@@ -1,0 +1,500 @@
+[
+  {
+    "Action": "airport-autocomplete",
+    "Description": "Typed 'Seattle' into Where from? and 'Denv' into Where to?, then chose SEA and DEN. H028ib is called once per keystroke (12 kept); origin calls send kinds [1,2,3,5], destination calls add 4. Choosing an airport calls tDoGIe for its details (name, city id, coordinates, country) and BVAT3 once for the route pair (four booleans, meaning pending). The page's first H028ib call, made with the origin Google pre-fills from the network's location, is left out on purpose: it carries the operator's approximate location.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/batchexecute"
+    ],
+    "EntryCount": 15,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-airport-autocomplete-2026-11-19.har",
+    "RequestBodies": 15,
+    "RequestBytes": 2122,
+    "ResponseBytes": 22288,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      70
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "date-picker-prices",
+    "Description": "Opened the Departure date picker for a SEA-DEN round trip: GetCalendarPicker asked for 2026-11-19..2026-12-31 with a 7-day trip and answered 43 priced cells. Then chose Tue 2027-01-12: the page asked twice for return-date prices 2027-01-12..31 and BOTH answered HTTP 200 carrying gRPC code 13 and a travel.frontend.flights.ErrorResponse -- the failure path, recorded on purpose.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarPicker"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-date-picker-prices-2026-11-19.har",
+    "RequestBodies": 3,
+    "RequestBytes": 1408,
+    "ResponseBytes": 8379,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "round-trip-search-refused",
+    "Description": "Searched SEA-DEN round trip 2027-01-12/19 from the home page form: GetShoppingResults answered HTTP 200 carrying gRPC code 13 and a travel.frontend.flights.ErrorResponse, with no flights. The request is the page's own fresh-search filter (selection [], sort 0), so this pins how a refused search looks on the wire, not why it was refused.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-round-trip-search-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 571,
+    "ResponseBytes": 362,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T21:30:32.551Z"
+  },
+  {
+    "Action": "direct-search-refused",
+    "Description": "One direct HTTP GetShoppingResults (not a browser), one-way SEA-DEN 2026-12-15, sent with an honest User-Agent, no cookies, no browser headers and no anti-bot token, 60 minutes after the browser refusals. Answered HTTP 200 with a BARE gRPC 13 item ([13], no ErrorResponse detail) in about 200 ms, and set an NID cookie. The browser refusals carried an ErrorResponse with a search session id; this one did not. Redirects were not followed (there was none).",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-search-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 131,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-19T22:32:42.514Z"
+  },
+  {
+    "Action": "one-way-search",
+    "Description": "Signed out, browsed by hand: one-way SEA-SFO 2026-12-15. GetShoppingResults streamed 6 payload frames: frames 0, 1 and 5 carry the 3 best and 15 other flights (index 17 only in frame 0), frames 2-4 are status only. The fresh-search selection was [null,null,null,<search session id>]. Source of the itinerary, segment, itinerary-protobuf and selection-token field maps in docs/protocol.md.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-one-way-search-2026-11-18.har",
+    "RequestBodies": 1,
+    "RequestBytes": 467,
+    "ResponseBytes": 106580,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      70
+    ],
+    "CapturedUtc": "2026-11-18T20:44:20.593Z"
+  },
+  {
+    "Action": "round-trip-search",
+    "Description": "ONE browser page load of a round-trip search URL (SEA-DEN 2026-12-15/22, tfs built by the encoder), five minutes after direct probe P2 was refused. The search page's GetShoppingResults, selection [null,null,null,<page-load session id>], answered with 3 best and 10 other flights in 5 frames: the network was not blocked, only plain requests were. Its answer also issued the selection token used by the return step in round-trip-to-booking.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-round-trip-search-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 656,
+    "ResponseBytes": 90955,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T00:39:32Z"
+  },
+  {
+    "Action": "round-trip-to-booking",
+    "Description": "Round trip SEA-DEN 2026-12-15/22. Entry 1: a search page's GetShoppingResults (session id), answered. Entry 2: choosing the Delta outbound DL2759 -- the return-flight step, selection [null,<selection token>] with leg 0 index 8 = the chosen flight; it was made in the round-trip-search tab, so its token comes from THAT reference's answer. Entry 3: choosing the Delta return DL1731 -- GetBookingResults with both legs chosen (token from entry 2's answer), answered with seven Delta fare brands from Main Basic to First Classic. All three answered.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetBookingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-round-trip-to-booking-2026-11-19.har",
+    "RequestBodies": 3,
+    "RequestBytes": 2374,
+    "ResponseBytes": 283600,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T00:42:38Z"
+  },
+  {
+    "Action": "one-way-switch-refused",
+    "Description": "On answered SEA-DEN round-trip results, the trip-type menu switched to one way. The page's own GetShoppingResults went out with selection [] (no session id) and was refused: HTTP 200, gRPC 13, ErrorResponse. Five minutes later the IDENTICAL filter sent with a page-load session id was answered (one-way-search-from-url). The pair is the evidence that searches without a session id are refused while the network is not blocked.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-one-way-switch-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 382,
+    "ResponseBytes": 361,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T00:47:18Z"
+  },
+  {
+    "Action": "one-way-search-from-url",
+    "Description": "ONE browser page load of the one-way URL the page produced in one-way-switch-refused (SEA-DEN 2026-12-15), five minutes after that refusal. GetShoppingResults with a page-load session id and the same filter byte for byte, answered with flights.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-one-way-search-from-url-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 467,
+    "ResponseBytes": 97322,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T00:53:19Z"
+  },
+  {
+    "Action": "filter-change-refused",
+    "Description": "One-way SEA-DEN 2026-12-15 search page loaded and answered (not kept), then Stops: Nonstop only chosen on the results page. The page sent selection [] with leg index 3 = 1 and was refused with gRPC 13. It still wrote the filter into the URL (tfs leg field 5 = 0), which is how the nonstop URL in filter-requests-held was obtained.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-filter-change-refused-2026-11-19.har",
+    "RequestBodies": 1,
+    "RequestBytes": 382,
+    "ResponseBytes": 366,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T00:55:41Z"
+  },
+  {
+    "Action": "filter-requests-held",
+    "Description": "Entry 1: page load of the nonstop-only one-way URL, answered -- stops proven both ways. Entries 2-23 (status 0): each filter applied once on the results page with the page's own requests HELD in the capture browser and never sent to Google: SkyTeam alliance, clearing it, airlines DL then DL+AS, departure and arrival time windows, max price, max duration, economy excluding Basic, premium economy, business, first, passengers 2/2/1/1 then 2/2/0/1. Each shows exactly what one filter puts in the request; the tfs the page wrote at the same moment is in the referer. Each held request made the page send Google a jserror report (not kept).",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 23,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-filter-requests-held-2026-11-19.har",
+    "RequestBodies": 23,
+    "RequestBytes": 10449,
+    "ResponseBytes": 97437,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T01:01:49Z"
+  },
+  {
+    "Action": "sort-and-multi-city-held",
+    "Description": "All 10 requests were HELD in the capture browser and never sent to Google (status 0). Nine had been answered locally with an earlier Google response so the page kept its menus; those local answers are replaced here by an explicit placeholder. In order: sort by price (twice), departure time, arrival time, duration, emissions, top flights; then the trip type switched to multi-city, a second leg added, and its destination changed to LAX. The page load before them used a tfs BUILT BY THE ENCODER with every filter stacked; Google's server-rendered page answered it with the filtered flights (the 2 MB page itself is not kept).",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 10,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-sort-and-multi-city-held-2026-11-19.har",
+    "RequestBodies": 10,
+    "RequestBytes": 5608,
+    "ResponseBytes": 0,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T01:10:02Z"
+  },
+  {
+    "Action": "multi-city-to-booking",
+    "Description": "Page load of an encoder-built multi-city URL: SEA-DEN 2026-12-15, then DEN-LAX 2026-12-19, economy, 1 adult. Entry 1: leg 1 results (session id). Entry 2: Delta DL2759 chosen on leg 1, answered with leg 2 results (token from entry 1). Entry 3: Delta DL2148 chosen on leg 2, GetBookingResults answered with Delta fare brands for the whole trip. All three answered. The booking token's flight key reads DL2148#2 at 261.80 USD and is not found literally in entry 2's answer (which offered DL2148 at 263.00); how the page forms it is pending.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetBookingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-multi-city-to-booking-2026-11-19.har",
+    "RequestBodies": 3,
+    "RequestBytes": 2380,
+    "ResponseBytes": 366415,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T01:15:05Z"
+  },
+  {
+    "Action": "calendar-grid-and-graph",
+    "Description": "On SEA-DEN 2026-12-15/22 round-trip results: the Date grid button (GetCalendarGrid, departures 2026-12-12..18 by returns 2026-12-19..25) and the Price graph button (GetCalendarGraph, 2026-12-08..2027-01-31 with 7-day trips). Both answered; neither request carries a selection or a session id.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGraph",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGrid"
+    ],
+    "EntryCount": 2,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-calendar-grid-and-graph-2026-11-19.har",
+    "RequestBodies": 2,
+    "RequestBytes": 1295,
+    "ResponseBytes": 17616,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T01:17:57Z"
+  },
+  {
+    "Action": "direct-http-probes",
+    "Description": "Four direct HTTP requests (not a browser), 75 s apart, a day after the browser captures, all with an honest non-browser User-Agent and redirects not followed. 1: P1's one-way search again (selection []) -- still a bare gRPC 13. 2: GET flights.google.com -- 301 to www.google.com/travel/flights. 3: GET of a round-trip search page -- 302 to /travel/flights/unsupported with an empty body (Google treats the client as an unsupported browser), sets NID. 4: P1's search sent to flights.google.com -- 405, no data endpoint on that host.",
+    "Provider": "google-flights",
+    "Methods": [
+      "GET",
+      "POST"
+    ],
+    "Endpoints": [
+      "flights.google.com/",
+      "flights.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/travel/flights/search"
+    ],
+    "EntryCount": 4,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-http-probes-2026-11-20.har",
+    "RequestBodies": 2,
+    "RequestBytes": 762,
+    "ResponseBytes": 2114,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:07:00Z"
+  },
+  {
+    "Action": "direct-honest-bot-user-agent",
+    "Description": "Two direct HTTP requests (not a browser), 75 s apart, with the honest-bot User-Agent the owner approved -- Mozilla/5.0 (compatible; Multiplex-GoogleFlights/0.1; +<issue link>) -- and no cookies, browser headers or anti-bot token. 1: the one-way search P1-P3 sent (selection []) -- ANSWERED, 3 best and 11 other flights, 45 minutes after the identical request with the old User-Agent was refused. 2: GET of a search page -- still 302 to /travel/flights/unsupported.",
+    "Provider": "google-flights",
+    "Methods": [
+      "GET",
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults",
+      "www.google.com/travel/flights/search"
+    ],
+    "EntryCount": 2,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-honest-bot-user-agent-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 75465,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:52:37Z"
+  },
+  {
+    "Action": "direct-http-flow",
+    "Description": "The whole flow over direct HTTP with the honest-bot User-Agent, 75 s apart, sending back only the NID cookie Google set during the run: round-trip search SEA-DEN 2026-12-15/22 (selection [], 13 flights); the return-flight step with DL1358's selection token (17 flights); booking options with DL1731 (7 Delta fare brands); price graph 2026-12-10..20 (11 cells). Then a control: the first search again with the old non-Mozilla User-Agent -- refused with gRPC 13. The User-Agent's form is the gate.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetBookingResults",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGraph",
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 5,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-http-flow-2026-11-20.har",
+    "RequestBodies": 5,
+    "RequestBytes": 3491,
+    "ResponseBytes": 205624,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T17:56:14Z"
+  },
+  {
+    "Action": "direct-airport-autocomplete",
+    "Description": "One direct HTTP airport autocomplete request (batchexecute H028ib, typed \"Denv\") with the honest-bot User-Agent and no page session (f.sid), build label (bl), request counter, anti-bot token, browser header or cookie. Answered: five places with their airports (Denver, Colorado -> DEN first). The batchexecute transport needs no page session either.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/batchexecute"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-airport-autocomplete-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 134,
+    "ResponseBytes": 1834,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T20:49:01Z"
+  },
+  {
+    "Action": "direct-client-search",
+    "Description": "The C# client's first live request (the client's live one-way search test): SEA-DEN six weeks out, sent by .NET with only the User-Agent, Accept: */*, x-same-domain, the language/region/currency header and the content type. Answered with flights.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-client-search-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 58455,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:07:58Z"
+  },
+  {
+    "Action": "direct-one-way-graph-refused",
+    "Description": "A one-way price graph from the C# client (GetCalendarGraph with no trip length: [null, filter, [from, to], null, null]), 12 minutes after the client's search was answered: refused with a bare gRPC 13. The page was never recorded asking for a one-way calendar; the client no longer offers one. A bare 13 is therefore not only the User-Agent's refusal.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetCalendarGraph"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-one-way-graph-refused-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 433,
+    "ResponseBytes": 132,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:19:31Z"
+  },
+  {
+    "Action": "direct-client-search-refused",
+    "Description": "The same one-way search the C# client had answered at 13:07 local (direct-client-search), sent again after the 15-minute cool-down that followed the refused one-way graph: refused with a bare gRPC 13, same User-Agent and headers. About 16 direct requests had left this network that day. So the honest-bot client is being refused on this network, not one request form; live testing stopped for the day.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 1,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-client-search-refused-2026-11-20.har",
+    "RequestBodies": 1,
+    "RequestBytes": 381,
+    "ResponseBytes": 131,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89
+    ],
+    "CapturedUtc": "2026-11-20T21:36:37Z"
+  },
+  {
+    "Action": "direct-network-refusal-ab",
+    "Description": "The same one-way search from the network whose earlier requests were answered, sent three ways about a minute apart, 40-50 minutes after its first refusal: 1. Node fetch exactly as the morning's answered probes; 2. Node with exactly the C# client's headers (no accept-language, no sec-fetch-mode); 3. Node fetch with the morning's exact User-Agent (0.1, issue link). All three refused with a bare gRPC 13, while the C# client's identical search was answered from another network (in-flight wifi) inside the same window. The refusal follows the network, not the client stack or the User-Agent string.",
+    "Provider": "google-flights",
+    "Methods": [
+      "POST"
+    ],
+    "Endpoints": [
+      "www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
+    ],
+    "EntryCount": 3,
+    "Status": "Exercised",
+    "HarFile": "google-flights/google-flights-direct-network-refusal-ab-2026-11-20.har",
+    "RequestBodies": 3,
+    "RequestBytes": 1143,
+    "ResponseBytes": 398,
+    "RequestBodiesAbsent": null,
+    "Related": [
+      89,
+      101
+    ],
+    "CapturedUtc": "2026-11-20T22:16:28.000Z"
+  }
+]

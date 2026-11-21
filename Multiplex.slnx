@@ -1,4 +1,10 @@
 <Solution>
+  <Folder Name="/services/" />
+  <Folder Name="/services/GoogleFlights/">
+    <Project Path="services/GoogleFlights/src/GoogleFlights.PowerShell/GoogleFlights.PowerShell.csproj" />
+    <Project Path="services/GoogleFlights/src/GoogleFlights/GoogleFlights.csproj" />
+    <Project Path="services/GoogleFlights/tests/GoogleFlights.Tests/GoogleFlights.Tests.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Multiplex.Web/Multiplex.Web.csproj" />
   </Folder>

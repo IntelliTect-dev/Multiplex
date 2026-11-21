@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+  <ViewDefinitions>
+    <View>
+      <Name>FlightOption</Name>
+      <ViewSelectedBy>
+        <TypeName>Multiplex.Sites.GoogleFlights.FlightOption</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Flights</Label></TableColumnHeader>
+          <TableColumnHeader><Label>From</Label></TableColumnHeader>
+          <TableColumnHeader><Label>To</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Departs</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Arrives</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Duration</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Stops</Label><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Price</Label><Alignment>Right</Alignment></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>$_.Flights -join ' '</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Origin</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Destination</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.DepartsLocal.ToString('yyyy-MM-dd HH:mm')</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.ArrivesLocal.ToString('yyyy-MM-dd HH:mm')</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>'{0}h {1:00}m' -f [int][math]::Floor($_.Duration.TotalHours), $_.Duration.Minutes</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Stops</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Price</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>BookingOption</Name>
+      <ViewSelectedBy>
+        <TypeName>Multiplex.Sites.GoogleFlights.BookingOption</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Fare</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Seller</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Price</Label><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Flights</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>FareName</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>($_.Sellers | ForEach-Object Name) -join ', '</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Price</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Flights -join ' '</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>CalendarPrice</Name>
+      <ViewSelectedBy>
+        <TypeName>Multiplex.Sites.GoogleFlights.CalendarPrice</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Departure</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Return</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Price</Label><Alignment>Right</Alignment></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>$_.Departure.ToString('yyyy-MM-dd ddd')</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Return) { $_.Return.ToString('yyyy-MM-dd ddd') }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>$_.Price</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+  </ViewDefinitions>
+</Configuration>
