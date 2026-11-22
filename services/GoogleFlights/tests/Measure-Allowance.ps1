@@ -1,9 +1,12 @@
 #Requires -Version 7.5
 <#
 .SYNOPSIS
-    Finds what makes Google Flights refuse this connection's honest-bot client, and how long a refusal lasts: how
-    close together two searches may be, how many may go back to back, and what pace may follow a burst. It runs
-    for hours or days, and picks up where it left off when run again. Stop it any time with Ctrl+C.
+    Finds what makes Google Flights refuse this connection's client, and how long a refusal lasts: how close
+    together two searches may be, how many may go back to back, and what pace may follow a burst. It runs for
+    hours or days, and picks up where it left off when run again. Stop it any time with Ctrl+C.
+
+    Since 2026-11-22 a search is a search page fetched over HTTPS (about 2-3 MB; protocol.md section 2), so this
+    measures the search pages. The data-endpoint measurement of 2026-11-20 keeps its own files and is not continued.
 
 .DESCRIPTION
     Issue #101. Three experiments, in order, each changing one thing so its result can be told apart:
@@ -38,9 +41,11 @@
     experiment finishes, or the run stops, the report is also posted to issue #101 with gh, if gh is signed in.
     Times there are UTC.
 
-    It is built to get refused, which can stop the client on this network for hours, for everyone on it. Run it
-    only on a connection you can spare, with the owner's go-ahead. It keeps Windows from sleeping while it runs,
-    but not from sleeping when the lid closes.
+    It is built to get refused, which can stop the client on this network for hours, for everyone on it. A refusal
+    of a search page may take the form of Google's "unusual traffic" check, which then applies to Google on this
+    network, not only to Google Flights. Run it only on a connection you can spare, with the owner's go-ahead. It
+    keeps Windows from sleeping while it runs, but not from sleeping when the lid closes. It builds the module into
+    a folder of its own, so the branch's own build is not locked while it runs.
 
 .EXAMPLE
     # From an existing Multiplex checkout with the branch in .worktrees/89-google-flights:
@@ -67,6 +72,8 @@ $paced = 6        # searches at the pace, after the burst, in a Pace trial
 $root = (git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
 $common = (git -C $root rev-parse --path-format=absolute --git-common-dir).Trim()
 $dir = Join-Path (Split-Path $common -Parent) '.har-captures/www.google.com/pace'
+# What is measured, in every file name: the data endpoint's files (2026-11-20) are named by the network alone.
+$target = 'pages'
 
 function Get-Now { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0 }
 
@@ -94,10 +101,11 @@ function Get-NetworkId {
 function Initialize-Client {
     $project = Join-Path $root 'services/GoogleFlights/src/GoogleFlights.PowerShell'
     Write-Host 'Building the module...'
-    dotnet build $project --nologo -v quiet | Out-Null
+    # A folder of the run's own: a run lasts days, and a loaded module locks the files it was loaded from.
+    $out = Join-Path ([IO.Path]::GetTempPath()) "multiplex-measure-allowance/$PID/"
+    dotnet build $project --nologo -v quiet "-p:OutDir=$out" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "The module did not build: dotnet build $project" }
-    $manifest = Get-ChildItem (Join-Path $project 'bin') -Recurse -Filter GoogleFlights.psd1 | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    Import-Module $manifest.FullName
+    Import-Module (Join-Path $out 'GoogleFlights.psd1')
     $options = [Multiplex.Sites.GoogleFlights.GoogleFlightsClientOptions]::new()
     $options.BurstRequests = 1000000          # no pacing: the experiment sets the timing
     $options.MaxWaitingRequests = 0
@@ -117,7 +125,9 @@ function Invoke-Search {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
         $result = $script:client.SearchAsync($request, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-        $outcome, $detail = 'answered', "$(@($result.AllFlights).Count) flights"
+        $count = @($result.AllFlights).Count
+        # This route always has flights: a page that carries none is Google withholding them, not an empty route.
+        $outcome, $detail = $count -gt 0 ? ('answered', "$count flights") : ('refused', 'the page carried no flights')
     }
     catch {
         $e = $_.Exception
@@ -131,6 +141,10 @@ function Invoke-Search {
         }
         elseif ($e -is [Multiplex.Sites.GoogleFlights.GoogleFlightsRequestException]) {
             $outcome, $detail = 'invalid', $code
+        }
+        elseif ($e -is [Multiplex.Sites.GoogleFlights.GoogleFlightsFormatException]) {
+            # A page without its flight data, or an unexpected redirect: Google not serving the search.
+            $outcome, $detail = 'refused', "no flight data: $($e.Message)"
         }
         else {
             $outcome, $detail = 'error', "$($e.GetType().Name): $($e.Message)"
@@ -240,7 +254,7 @@ function Get-Ladder([string] $name) {
 # ---------------------------------------------------------------------------------------------------------------
 # State, log and report, one set per network.
 
-function Get-StatePath([string] $network) { Join-Path $dir "$network.json" }
+function Get-StatePath([string] $network) { Join-Path $dir "$network-$target.json" }
 
 function Get-State([string] $network) {
     $path = Get-StatePath $network
@@ -282,7 +296,7 @@ function Send-Search([string] $name, $level, [int] $trial, [int] $index, [string
     $state.searches += $at
     if ($s.Outcome -eq 'refused' -and -not $state.recovering) { $state.recovering = @{ refusedAt = $at; probes = @() } }
     $detail = $s.Detail -replace '[,\r\n]', ';'
-    "$(Format-Time $at),$($state.network),$name,$level,$trial,$index,$since,$($s.Ms),$($s.Outcome),$detail" | Add-Content (Join-Path $dir "$($state.network).csv")
+    "$(Format-Time $at),$($state.network),$name,$level,$trial,$index,$since,$($s.Ms),$($s.Outcome),$detail" | Add-Content (Join-Path $dir "$($state.network)-$target.csv")
     Save-State
     $gapText = if ($null -ne $since) { "+$since s" } else { '' }
     Write-Host ('{0}  {1,-9} {2,-24} {3,9}  {4} ({5}, {6:N1} s)' -f (Format-Time $at -Local), $name, $label, $gapText, $s.Outcome, $s.Detail, ($s.Ms / 1000)) `
@@ -293,11 +307,11 @@ function Send-Search([string] $name, $level, [int] $trial, [int] $index, [string
 function Get-Count([double] $before, [double] $window) { @($state.searches | Where-Object { $_ -ge $before - $window -and $_ -lt $before }).Count }
 
 function Write-Report([string] $headline) {
-    $path = Join-Path $dir "$($state.network).md"
+    $path = Join-Path $dir "$($state.network)-$target.md"
     $lines = @(
-        "## Measure-Allowance, network $($state.network): $headline"
+        "## Measure-Allowance (search pages), network $($state.network): $headline"
         ''
-        "Client: ``$($state.userAgent)``, one client for the run, with pacing, retries, cache and cool-down off. The same one-way search (SEA-DEN, six weeks out) every time. Started $(Format-Time $state.started); $(@($state.searches).Count) searches so far. Times are UTC."
+        "Client: ``$($state.userAgent)``, one client for the run, with pacing, retries, cache and cool-down off. Each search fetches the search page over HTTPS. The same one-way search (SEA-DEN, six weeks out) every time. Started $(Format-Time $state.started); $(@($state.searches).Count) searches so far. Times are UTC."
         ''
         '| Experiment | State | Hardest answered | Easiest refused | Refusals | Note |'
         '|---|---|---|---|---|---|'

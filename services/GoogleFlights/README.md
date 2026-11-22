@@ -103,7 +103,9 @@ rest, stopping at the first failure or refusal. Run it on a connection you can
 spare: a refusal can stop the client there for hours.
 
 `tests/Measure-Allowance.ps1` finds what makes Google refuse the client
-(#101). It measures how close together two searches may be, how many may go
+(#101); since 2026-11-22 it measures the search pages the client fetches,
+with files of their own (the data-endpoint run of 2026-11-20 is kept as it
+was). It measures how close together two searches may be, how many may go
 back to back, and what pace may follow a burst. Each experiment starts easy,
 gets harder until the first refusal, then narrows in. It also times every
 refusal. It runs for hours or days and continues where it stopped when run
