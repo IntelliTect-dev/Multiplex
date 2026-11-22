@@ -532,8 +532,11 @@ lock, timeouts and the refresher's signed-out path.
 - TripIt's only third-party sign-in is Google, and it is not offered (#117): TripIt is
   Multiplex's example of a site with its own sign-in, and a Google password must never be typed
   into a page this server drives. Allowed navigation hosts default to `www.tripit.com` and
-  `tripit.com`, so "Sign in with Google" is blocked when it reaches `accounts.google.com`; the
-  connect page says to use the TripIt email and password.
+  `tripit.com`, so "Sign in with Google" is blocked when it reaches `accounts.google.com`
+  (as a top-level page or a popup; frames may still load from anywhere, as for every site);
+  the connect page says to use the TripIt email and password. Setting
+  `Multiplex:Sites:tripit:AllowedNavigationHosts` replaces the defaults, so an operator who
+  lists `accounts.google.com` there brings Google back.
 - Only email addresses TripIt marks confirmed are kept on an account.
 - "Keep me signed in" must be ticked during the mirrored sign-in, or the session ends when
   the browser closes; the page says so.
@@ -560,5 +563,6 @@ lock, timeouts and the refresher's signed-out path.
 **Not verified yet (needs the owner):** the internet-facing address (Tailscale Funnel not yet
 enabled; the Cloudflare tool's install is waiting on an administrator prompt); adding the
 connector in Claude and ChatGPT, on the web and on a phone; a real TripIt password sign-in
-through the mirrored page on a phone (including Google sign-in and CAPTCHAs); ChatGPT plan
+through the mirrored page on a phone (including CAPTCHAs, and that "Sign in with Google" is
+refused there); ChatGPT plan
 limits for write tools.
