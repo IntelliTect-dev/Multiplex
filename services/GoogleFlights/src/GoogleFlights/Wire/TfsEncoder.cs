@@ -7,8 +7,8 @@ namespace Multiplex.Sites.GoogleFlights.Wire;
 /// <summary>
 /// Encodes the <c>tfs</c> URL parameter (base64url protobuf) from a request filter, by the field map in
 /// protocol.md section 7. Proven both ways: it reproduces the <c>tfs</c> the page produced for every
-/// recorded filter state, and Google answered search URLs it built. The client uses it only for links a
-/// person can open; it never loads those pages itself.
+/// recorded filter state, and Google answered search URLs it built. The client fetches the search pages it
+/// builds (their HTML carries the flights), and gives booking-page links for a person to open.
 /// </summary>
 internal static class TfsEncoder
 {

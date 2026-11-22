@@ -2,6 +2,55 @@
 
 Read this before touching the client, the captures or the live tests.
 
+## Since 2026-11-22: search pages over HTTPS, not the data endpoint
+
+**What changed (#101).** From about 18:13 local on 2026-11-20, Google answers
+its flight data endpoint (`GetShoppingResults` and the other service RPCs)
+only with the `x-goog-batchexecute-bgr` token the page's own script computes
+for each request. Everything without it is refused with gRPC 13, on every
+network, from a real browser too (`docs/protocol.md` section 2, Q1-Q4).
+
+**What the client does instead.** A Google Flights search page carries its
+first answer in its HTML (data block `ds:1`, the `GetShoppingResults`
+layout). The client fetches search pages over plain HTTPS and reads that
+block: a search's first leg (H1), and a round trip's returns from the search
+page with the outbound pinned in its link (H2). The airport lookup still goes
+to its RPC, which needs no token (H5).
+
+**Owner's decisions, 2026-11-22.**
+
+- Strictly HTTPS: the PowerShell module and the MCP tools call the client,
+  and the client calls Google over HTTPS. No browser is loaded.
+- The User-Agent is Chrome's form followed by this project's name and link
+  (`... Chrome/... Safari/537.36 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`):
+  Google serves its pages only to a browser User-Agent (P5, P9). The project's
+  name stays in it.
+
+**Not available, by design.** What the page loads only through its own
+script: booking options (the booking page carries none, H3), multi-city trips
+(the page carries no flights, H4) and price calendars. Those calls send
+nothing and raise `GoogleFlightsUnavailableException` with the Google Flights
+link for a person to open.
+
+### Traps
+
+- **Never report "not available" as "no flights".** A multi-city page loads
+  with HTTP 200 and an empty `ds:1`: read naively, it is an empty result.
+- **Never ask an endpoint Google refuses.** Its refusal starts the cool-down
+  that stops every search too. That is why booking options and calendars
+  send nothing rather than "trying".
+- **Look for the flights before looking for a check.** A 2-3 MB page has
+  room for any phrase; "unusual traffic" or "/sorry/" in a script must not
+  stop the client when the page carries `ds:1`.
+- **A redirect to `/travel/flights/unsupported` is a refusal**, with the
+  cool-down, not a format error: it is how Google turns away a User-Agent it
+  will not serve pages to.
+- **Pages are heavy.** About 2-3 MB a search against about 55 KB for the old
+  RPC: keep the pacing.
+- **Test fixtures are the pages' own data blocks** (`references/pages/`),
+  verbatim except the page's one-time script nonce. The rest of a page is not
+  kept: it is megabytes of scripts, and nothing the client reads.
+
 ## Built from scratch, against Google's own endpoints
 
 The data comes from the requests Google Flights' own page sends to
@@ -96,7 +145,7 @@ Until #101 settles it:
 - No one-way calendar: the one form tried was refused, and the page's own
   request is not recorded.
 
-## No browser: the client is direct HTTP, with an honest-bot User-Agent
+## No browser: the client is direct HTTP (User-Agent superseded 2026-11-22)
 
 **The rule (owner, 2026-11-20):** any browser use by Multiplex needs the
 owner's approval per provider and per use case. Google Flights has none, so
@@ -106,7 +155,9 @@ captures was a recording tool, not part of the client.
 **The User-Agent (owner's decision, 2026-11-20):** the client identifies
 itself as `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`,
 the conventional form for an honest automated client. It names the project; it
-does not pose as a browser.
+does not pose as a browser. **Superseded on 2026-11-22** (top of this file):
+Google's search pages need a browser User-Agent, and the client now sends
+Chrome's form followed by this same name.
 
 **Why that form, and not a plain product token:** Google refuses a direct
 request whose User-Agent is not in the `Mozilla/5.0 (compatible; ...)` form
@@ -119,9 +170,10 @@ What the client sends: that User-Agent, `content-type`, `x-same-domain: 1` and
 the `x-goog-ext-259736195-jspb` header (language, region, currency). No page
 token, no browser headers, no cookies except the `NID` Google itself sets.
 
-Not available to it, and not needed: the search page (`GET
-/travel/flights/search` is redirected to `/travel/flights/unsupported` for
-this User-Agent too) and `flights.google.com` (a redirect to
+Not available to it with this User-Agent, and not needed until 2026-11-20: the
+search page (`GET /travel/flights/search` is redirected to
+`/travel/flights/unsupported` for this User-Agent too; since 2026-11-22 the
+client fetches it with the Chrome form) and `flights.google.com` (a redirect to
 `www.google.com/travel/flights`; no data endpoints, 405).
 
 ## Gotcha: gRPC code 13 is ambiguous

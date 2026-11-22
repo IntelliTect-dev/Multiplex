@@ -33,6 +33,15 @@ relied on.
 | **L3** | `2026-11-20-133637-live` | L1's search again, after the client's 15-minute cool-down: refused, bare gRPC 13. Reference `direct-client-search-refused`. |
 | **G1, G2** | another machine, on in-flight wifi (not kept) | The C# client's live script: the one-way search answered (14:08:30 local), then the same search 6 s later refused, bare gRPC 13. |
 | **AB** | `2026-11-20-142549-ab` | From L1-L3's network, the same search three ways (Node `fetch` as the morning; Node with the C# client's headers; the morning's exact User-Agent): all refused. Reference `direct-network-refusal-ab`. |
+| **Q1** | `2026-11-20-223406` | Diagnostic, second network, in the capture browser: ONE page load of the one-way SEA-DEN 2026-12-15 search URL. The page's own `GetShoppingResults` was answered (3 best, 13 other) and matches F's request field for field: f.req, the jspb header and the URL parameter names; only `bl` moved (`_20261118.02_p0` to `_p1`) and the page's own tokens differ. Not committed. |
+| **Q2** | `2026-11-20-223639-direct` | P8 resent byte for byte (Node `fetch`), two minutes after Q1, same network: refused, bare gRPC 13, 264 ms. |
+| **Q3** | the Claude desktop app's built-in browser, 2026-11-21 05:05 local (not kept) | P8's URL, body and three protocol headers sent with `fetch` from a script-free google.com page in a real, signed-out Chromium, carrying its own User-Agent, client hints and Google cookies, between two answered page searches: refused, bare gRPC 13. Settles that the data endpoint wants the page's per-request values, not a browser identity or this project's name. |
+| **H1** | `2026-11-22-121104-page-direct` | The branch's client (search page over direct HTTPS, Chrome-form User-Agent naming the project): the one-way SEA-DEN 2026-12-15 search page, HTTP 200, 2.8 MB, `ds:1` carrying 4 best and 10 other flights. Fixture `pages/google-flights-search-page-data-one-way-2026-11-22.html`. |
+| **H2** | `2026-11-22-124003-probe-return` | The same, the round-trip search page with Delta DL2759 pinned on the outbound leg (`tfs` leg field 4): HTTP 200, `ds:1` carrying 3 best and 14 other DEN-SEA returns for 2026-12-22, priced as round trips. Fixture `pages/google-flights-search-page-data-return-leg-2026-11-22.html`. |
+| **H3** | `2026-11-22-124105-probe-booking` | The same, the booking page with DL2759 out and DL1731 back pinned: HTTP 200, 1.6 MB, data blocks `ds:0`-`ds:3` only, none with sellers, fares or prices. The page loads them through its own script (`GetBookingResults`). Not committed. |
+| **H4** | `2026-11-22-124703-probe-multicity` | The same, a multi-city search page (SEA-DEN 2026-12-15, DEN-LAX 2026-12-20): HTTP 200, `ds:1` present but with no flights at indices 2 and 3. The page loads them through its own script. Not committed. |
+| **H5** | `2026-11-22-124404-probe-autocomplete` | The branch's client's airport lookup (batchexecute `H028ib`, "Denv"), Chrome-form User-Agent: answered, 5 places, Denver first. Not committed. |
+| **Q4** | `2026-11-22-125002-direct-p8` | P8 resent once more: refused, gRPC 13 now WITH the `ErrorResponse` detail and a search session id. Not committed. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
 ## 1. Endpoints
@@ -81,7 +90,7 @@ POST /_/FlightsFrontendUi/data/batchexecute
 
 | Item | Meaning | Direct client |
 |---|---|---|
-| `User-Agent` | | **Required in the honest-bot form** `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)` (owner's decision, 2026-11-20). A User-Agent without the `Mozilla/5.0 (compatible; ...)` form is refused (below) |
+| `User-Agent` | | **Since 2026-11-22: Chrome's form followed by this project's name**, `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<v> Safari/537.36 (compatible; Multiplex-GoogleFlights/<version>; +<url>)` (owner's decision, 2026-11-22): Google serves its search pages only to a browser User-Agent and redirects anything else to `/travel/flights/unsupported` (P5, P9, H1). From 2026-11-20 to 11-22 the honest-bot form `Mozilla/5.0 (compatible; ...)` alone (owner's decision, 2026-11-20); a User-Agent without the `Mozilla/5.0 (compatible; ...)` form was refused on the data endpoint (below) |
 | `x-goog-ext-259736195-jspb` | `[language, region, currency, 2, null, [UTC offset minutes], null, null, 7, []]`. **This is where currency and region are chosen per request**; the payload carries neither. | sent |
 | `x-same-domain: 1` | Google's CSRF guard for these endpoints | sent |
 | `content-type: application/x-www-form-urlencoded;charset=UTF-8` | | sent |
@@ -117,6 +126,16 @@ No `at=` token is sent: the page is signed out.
 | 11-20 14:16-14:25 (AB) | Node `fetch` as the morning; Node with the C# client's headers; Node `fetch` with the morning's User-Agent | the same search, from L1-L3's network | all bare `[13]` |
 | 11-20 15:30-17:21 (M2) | the module, one process per search (`tests/Measure-Allowance.ps1` as of `6eceebe`) | the same one-way search every 10 minutes, from L1-L3's network | gRPC 9 once (section 9), then a refusal every time |
 | 11-20 15:30-18:13 (M1) | the same, from a third network | the same | **10 of 12 answered**; one gRPC 9 (15:50); one refusal (17:22, just after the machine woke and reconnected), and the next, 10 minutes later, answered |
+| 11-20 21:36-22:20 | the C# client and the module, three networks (the first, still at 22:06 after nearly 5 hours with nothing sent; the evening network, on its first search; a phone hotspot that had never sent anything, on its first) | the same search | every one refused: **since about 18:13, nowhere answered** |
+| 11-20 22:34 (Q1) | the page, in the capture browser, the evening network | one page load of the one-way search URL | **answered**; its request matches F's field for field |
+| 11-20 22:36 (Q2) | direct HTTP | P8 exactly | bare `[13]` |
+| 11-21 05:05 (Q3) | a real, signed-out Chromium (`fetch` from a google.com page) | P8's URL, body and protocol headers, with the browser's own User-Agent, client hints and cookies, no page token | bare `[13]`, between two answered page searches |
+| 11-22 12:11 (H1) | the client, search page over direct HTTPS | `GET /travel/flights/search?tfs=...`, Chrome-form User-Agent naming the project | **200, 2.8 MB page, 14 flights in `ds:1`** |
+| 11-22 12:40 (H2) | the same | the round-trip search page with the outbound pinned | **200, 17 returns in `ds:1`** |
+| 11-22 12:41 (H3) | the same | the booking page with both flights pinned | 200, but **no sellers or fares** in the HTML |
+| 11-22 12:44 (H5) | the client, batchexecute | the airport lookup, Chrome-form User-Agent | **places and airports** |
+| 11-22 12:47 (H4) | the client, search page | a multi-city search page | 200, but **no flights** in `ds:1` |
+| 11-22 12:50 (Q4) | direct HTTP | P8 exactly | `[13]` with the `ErrorResponse` detail |
 
 **The refusal follows the network, not the client stack.** On L1-L3's network
 the same search was refused from three client stacks and with both User-Agent
@@ -134,18 +153,53 @@ that a search was refused, not whether as a bare `[13]` or as HTTP 403.
 **The User-Agent's form decides.** P3 (refused) and P8 (answered) are the same
 request 45 minutes apart with different User-Agents, and C1 flips F1 back to a
 refusal minutes later. Both User-Agents name this project; only the form
-differs. No cookie, browser header, page token or session id is needed. The
+differs. On 2026-11-20, until about 18:13 local, no cookie, browser header, page
+token or session id was needed; since then the page's token is (below). The
 search **page** is still "unsupported" for that User-Agent (P9); the client
 does not need it.
 
-So the client is **direct HTTP** with the honest-bot User-Agent, and no
-browser is involved (`../NOTES.md`). Everything a browser sent beyond the
-headers marked "sent" above is unnecessary.
+So the client was **direct HTTP** with the honest-bot User-Agent, and no
+browser was involved (`../NOTES.md`). Everything a browser sent beyond the
+headers marked "sent" above was unnecessary on 2026-11-20 until about 18:13
+local; since then the data endpoint wants the page's token, and the client
+reads search pages instead (below).
 
 Earlier readings that this replaces: on 11-19 the plain requests looked
 blocked and the page looked necessary. The refusals then were the User-Agent
 (P1, P2) and, in the automated capture browser, something about that browser
 (section 5).
+### Since the evening of 2026-11-20: the page's token, and search pages
+
+**The data endpoint wants the page's token again.** From about 18:13 local on
+11-20 every `GetShoppingResults` without it was refused, on every network
+tried, including P8 byte for byte (Q2, Q4) and the same request from a real
+signed-out browser with its own identity and cookies (Q3), while the page's
+own requests, which carry `x-goog-batchexecute-bgr`, were answered (Q1, Q3).
+Others measured the same in August: the token is computed by the page's
+script and bound to the exact request bytes (punitarani/fli#223). The client
+does not send it. Google did not enforce it for this client for most of 11-20
+(P8 to M1).
+
+**Search pages carry the flights.** A search page's HTML carries its first
+answer in the data block `ds:1`, laid out exactly like a `GetShoppingResults`
+payload (section 5). Google serves the page over plain HTTPS to a browser
+User-Agent (H1) and redirects anything else to `/travel/flights/unsupported`
+(P5, P9). So since 2026-11-22 the client fetches search pages, with Chrome's
+User-Agent form followed by its own name (the owner's decision):
+
+| What | Over direct HTTPS | Evidence |
+|---|---|---|
+| A one-way or round-trip search's first leg | the search page: **yes** | H1 |
+| A round trip's returns | the search page with the outbound pinned in `tfs` (leg field 4): **yes** | H2 |
+| Booking options | the booking page carries **none**; the page loads them with `GetBookingResults` | H3 |
+| A multi-city trip | the search page carries **no flights**; the page loads them with `GetShoppingResults` | H4 |
+| Price calendars | no page carries one; the page loads them with the calendar RPCs | section 5 |
+| Airport lookup | batchexecute `H028ib`: **yes**, no token needed | P10, H5 |
+
+What a page carries no flights for is reported as not available, with the
+Google Flights link, and nothing is sent: never as "no flights found". A data
+endpoint the client knows Google refuses is never asked, because its refusal
+would cool the client down for every search.
 
 ## 3. Response framing
 
@@ -492,6 +546,11 @@ and **pending**.
   rather than of the form).
 - What starts a long refusal of the honest-bot client, what pace Google
   answers without one, and what ends one (L3, M1, M2).
+- Whether Google keeps serving search pages to the Chrome-form User-Agent,
+  and at what pace: one day's evidence so far (H1-H5). Each search page is
+  about 2-3 MB.
+- Whether Google will stop demanding the page's token again, as it did for
+  most of 2026-11-20.
 - Every response position marked **pending** above.
 
 ## 9. Errors and throttling
@@ -573,9 +632,10 @@ full.
 | `wrb.fr` error, code 3 | X notes: an unknown airport or an invalid date | `INVALID_ARGUMENT`; do not retry |
 | `wrb.fr` error, code 14 | X notes only | `UNAVAILABLE`; transient |
 | `wrb.fr` error, code 9 | twice, 2026-11-20, from two networks: at 15:30 local from one already refusing the client (the same search 15 and 40 s later got the bare 13), and at 15:50 from one answering it (the searches 10 minutes before and after were answered). Neither body was recorded | `FAILED_PRECONDITION`. Says nothing about a block: a passing error, with no cool-down and no automatic retry. Any other code the client does not know is treated as a refusal |
+| HTTP 302 to `/travel/flights/unsupported` | a search page fetched with a non-browser User-Agent (P5, P9) | refused: Google does not serve its pages to this client. A refusal, with a cool-down |
 | HTTP 429 | **not yet seen** | throttled; honour `Retry-After` |
 | HTTP 302 to `/sorry/index` | **not yet seen**; Google's usual "unusual traffic" page elsewhere | blocked: a person must clear a check; never automated |
-| HTML body containing "unusual traffic" | **not yet seen** | blocked, as above |
+| HTML body containing "unusual traffic" | **not yet seen** | blocked, as above. On a search page the flights are looked for first: a page that carries `ds:1` is an answer, whatever its scripts or help texts mention |
 
 Every probe and capture in this work records a refusal **in full** (status,
 headers, body, any redirect, which is not followed). When one of the

@@ -51,6 +51,18 @@ public sealed class GoogleFlightsTransientException(string message, Exception? i
 public sealed class GoogleFlightsRequestException(string message) : GoogleFlightsException(message);
 
 /// <summary>
+/// What was asked is not available over plain HTTPS: Google provides it only through its page's own script, whose
+/// requests carry a token the client cannot make (protocol.md section 2). Nothing was sent to Google.
+/// </summary>
+/// <param name="message">What is not available, and what to do instead.</param>
+/// <param name="googleFlightsUrl">The Google Flights page a person can open for the same thing, when there is one.</param>
+public sealed class GoogleFlightsUnavailableException(string message, Uri? googleFlightsUrl = null) : GoogleFlightsException(message)
+{
+    /// <summary>The Google Flights page a person can open for the same thing, or <c>null</c>.</summary>
+    public Uri? GoogleFlightsUrl { get; } = googleFlightsUrl;
+}
+
+/// <summary>
 /// Google's answer was not in the shape the client knows. Google has most likely changed its payloads; the
 /// field maps in <c>docs/protocol.md</c> need re-deriving from a fresh capture.
 /// </summary>

@@ -3,7 +3,7 @@
 <#
     The Google Flights PowerShell module. Build first (dotnet build), then:
         Invoke-Pester services/GoogleFlights/tests/GoogleFlights.PowerShell.Tests
-    The live part runs only with MULTIPLEX_LIVE_TESTS=1 and spends three requests.
+    The live part runs only with MULTIPLEX_LIVE_TESTS=1 and spends two requests.
 #>
 
 BeforeAll {
@@ -78,14 +78,16 @@ Describe 'Live, against Google Flights' -Skip:($env:MULTIPLEX_LIVE_TESTS -ne '1'
         (Find-Airport Denver).Code | Should -Contain 'DEN'
     }
 
-    It 'Find-Flight pipes a choice into Get-FlightBookingOption' {
+    It 'Find-Flight pipes a choice into Get-FlightBookingOption, which gives the booking link instead' {
         $flights = Find-Flight SEA DEN $departure
         $flights | Should -Not -BeNullOrEmpty
         $flights | ForEach-Object { $_.Origin | Should -Be 'SEA'; $_.Destination | Should -Be 'DEN' }
         $flights[0].RetrievedAt | Should -BeOfType [DateTimeOffset]
 
-        $options = $flights | Select-Object -First 1 | Get-FlightBookingOption
-        $options | Should -Not -BeNullOrEmpty
-        $options[0].Sellers | Should -Not -BeNullOrEmpty
+        # Booking options are not available over HTTPS: an error holding the booking page's link, nothing sent.
+        $options = $flights | Select-Object -First 1 | Get-FlightBookingOption -ErrorVariable failed -ErrorAction SilentlyContinue
+        $options | Should -BeNullOrEmpty
+        $failed[0].Exception | Should -BeOfType ([Multiplex.Sites.GoogleFlights.GoogleFlightsUnavailableException])
+        $failed[0].Exception.GoogleFlightsUrl.AbsolutePath | Should -Be '/travel/flights/booking'
     }
 }
