@@ -40,7 +40,7 @@ public static class ConnectHtml
               <button type="submit">Sign in to {E(site.DisplayName)}</button>
             </form>
             <p class="muted">You sign in on {E(site.DisplayName)}'s own page, shown live here.</p>
-            <p class="warning">What you type there, including your password, goes through this Multiplex server on its way to {E(site.DisplayName)}. This server does not store or log it.</p>
+            <p class="warning">What you type there, including your password, goes through this Multiplex server on its way to {E(site.DisplayName)}. This server never logs it.</p>
             {CancelForm(site.Slug, token, "p", pending.Id, "Cancel")}
             """, BusyScript);
 
@@ -81,7 +81,7 @@ public static class ConnectHtml
                 <input id="txt" type="text" maxlength="500" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the {E(site.DisplayName)} page" aria-describedby="type-warning">
                 <button id="send" type="button">Send</button>
               </div>
-              <p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server. It is not stored or logged.</p>
+              <p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server. It is never logged.</p>
               <div class="row keys">
                 <button type="button" data-key="Enter" aria-label="Press Enter">Enter</button>
                 <button type="button" data-key="Backspace" aria-label="Delete one character">Delete</button>
@@ -178,7 +178,7 @@ public static class ConnectHtml
         .cancel{text-align:center}
         .error{color:var(--danger);font-weight:600}
         .warning{border-left:3px solid var(--danger);padding:2px 0 2px 10px;font-size:14px}
-        .bar .warning{margin:6px 2px 0;font-size:13px;line-height:1.35}
+        .bar .warning{margin:6px 2px 0;line-height:1.35}
         body.live main{max-width:none;padding:0}
         .bar{position:sticky;top:0;z-index:2;background:var(--bg);padding:max(8px,env(safe-area-inset-top)) 10px 6px;border-bottom:1px solid var(--border)}
         .row{display:flex;gap:6px;align-items:center}
