@@ -45,6 +45,10 @@ link for a person to open.
 - **A redirect to `/travel/flights/unsupported` is a refusal**, with the
   cool-down, not a format error: it is how Google turns away a User-Agent it
   will not serve pages to.
+- **An empty page is read as an empty route.** A search page whose `ds:1` has no
+  flights (and is not multi-city) is reported as "no flights" and cached for 12
+  minutes: nothing on the page tells an empty route from a page Google chose
+  not to fill. Not seen so far; if it is, stop caching empty page answers.
 - **Pages are heavy.** About 2-3 MB a search against about 55 KB for the old
   RPC: keep the pacing.
 - **Test fixtures are the pages' own data blocks** (`references/pages/`),
