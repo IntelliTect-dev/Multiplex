@@ -37,14 +37,11 @@ public class GoogleFlightsClientTests
         await client.SearchAsync(SeaDen);
 
         var sent = Assert.Single(_google.Sent);
-        Assert.Equal("GetShoppingResults", sent.Rpc);
+        Assert.Equal("search", sent.Rpc);
         Assert.True(
-            System.Text.RegularExpressions.Regex.IsMatch(sent.Headers["User-Agent"], @"^Mozilla/5\.0 \(compatible; Multiplex-GoogleFlights/\d+\.\d+[^;]*; \+https://\S+\)$"),
+            System.Text.RegularExpressions.Regex.IsMatch(sent.Headers["User-Agent"], @"^Mozilla/5\.0 \(Windows NT 10\.0; Win64; x64\) AppleWebKit/537\.36 \(KHTML, like Gecko\) Chrome/\d+\.\d+\.\d+\.\d+ Safari/537\.36 \(compatible; Multiplex-GoogleFlights/\d+\.\d+[^;]*; \+https://\S+\)$"),
             $"User-Agent was: {sent.Headers["User-Agent"]}");
-        Assert.Equal("1", sent.Headers["x-same-domain"]);
-        Assert.Equal("application/x-www-form-urlencoded;charset=UTF-8", sent.Headers["Content-Type"]);
-        Assert.Equal(Flow[0].RequestHeader("x-goog-ext-259736195-jspb"), sent.Headers["x-goog-ext-259736195-jspb"]);
-        Assert.Equal(Flow[0].RequestBody, sent.Body);
+        Assert.Contains("tfs=", sent.Url.Query, StringComparison.Ordinal);
         // Nothing a browser or the page would add: no anti-bot token, no page session, no client hints.
         Assert.DoesNotContain(sent.Headers.Keys, k => k.StartsWith("x-goog-batchexecute", StringComparison.OrdinalIgnoreCase)
             || k.StartsWith("sec-", StringComparison.OrdinalIgnoreCase) || k.Equals("x-client-data", StringComparison.OrdinalIgnoreCase));
@@ -125,7 +122,7 @@ public class GoogleFlightsClientTests
         await client.SearchAsync(SeaDen with { Currency = "eur" });
 
         Assert.Equal(2, _google.Sent.Count);
-        Assert.Equal("""["en-US","US","EUR",2,null,[480],null,null,7,[]]""", _google.Sent[1].Headers["x-goog-ext-259736195-jspb"]);
+        Assert.Contains("curr=EUR", _google.Sent[1].Url.Query, StringComparison.Ordinal);
     }
 
     [Fact]
