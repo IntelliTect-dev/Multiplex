@@ -68,6 +68,24 @@ public class SearchPageTests
     }
 
     [Fact]
+    public async Task A_search_sorted_by_price_asks_the_page_for_that_order_and_keeps_it()
+    {
+        // H6: the page honours the sort in its link (tfu); sorted by price it lists every flight in price order.
+        _google.AnswerPage(SearchPages.Load("one-way-by-price-2026-11-22"));
+        using var client = Client();
+
+        var result = await client.SearchAsync(OneWay with { Sort = FlightSort.Price });
+
+        Assert.Equal(
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&tfu=EgYIAhAAGAA&hl=en-US&gl=US&curr=USD",
+            Assert.Single(_google.Sent).Url.AbsoluteUri);
+        Assert.Empty(result.BestFlights);
+        var prices = result.AllFlights.Select(f => f.Price!.Amount).ToArray();
+        Assert.Equal(14, prices.Length);
+        Assert.Equal(prices.Order(), prices);
+    }
+
+    [Fact]
     public async Task Return_flights_come_from_the_search_page_with_the_chosen_outbound_pinned_in_its_link()
     {
         _google.AnswerPage(SearchPages.Load("return-leg-2026-11-22"));
@@ -149,6 +167,19 @@ public class SearchPageTests
         var again = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
         Assert.Equal(ThrottleReason.CoolingDown, again.Reason);
         Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task A_check_whose_link_mentions_the_unsupported_page_is_still_a_check()
+    {
+        // Only a redirect TO the unsupported page is that refusal; a /sorry/ check is a check, whatever its query says.
+        _google.Answer(HttpStatusCode.Found, "", r => r.Headers.Location =
+            new Uri("https://www.google.com/sorry/index?continue=https://www.google.com/travel/flights/unsupported%3Ftfs%3Dx"));
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
+
+        Assert.Equal(ThrottleReason.Challenge, e.Reason);
     }
 
     [Fact]

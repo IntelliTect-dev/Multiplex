@@ -22,6 +22,9 @@ internal sealed class GoogleFlightsTransport : IDisposable
     private const string BatchUrl =
         "https://www.google.com/_/FlightsFrontendUi/data/batchexecute?rpcids={0}&source-path=%2Ftravel%2Fflights&hl=en-US&soc-app=162&soc-platform=1&soc-device=1&rt=c";
 
+    /// <summary>Where a relative redirect is resolved against.</summary>
+    private static readonly Uri Google = new("https://www.google.com/");
+
     private readonly HttpClient _http;
     private readonly RefusalGate _gate;
     private readonly TimeProvider _time;
@@ -171,8 +174,10 @@ internal sealed class GoogleFlightsTransport : IDisposable
     {
         // How Google turns away a page request from a client it does not serve pages to (P5, P9): a refusal, with a
         // cool-down like any other. Read before the status, which would call it an unexpected redirect.
-        var location = response.Headers.Location?.ToString() ?? "";
-        if ((int)response.StatusCode is >= 300 and < 400 && location.Contains("/travel/flights/unsupported", StringComparison.OrdinalIgnoreCase))
+        // Only a redirect TO that page: a /sorry/ check whose own link mentions it is still a check.
+        if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location
+            && new Uri(Google, location).AbsolutePath
+                .StartsWith("/travel/flights/unsupported", StringComparison.OrdinalIgnoreCase))
         {
             var until = _gate.Refused();
             throw new GoogleFlightsThrottledException(
@@ -194,6 +199,7 @@ internal sealed class GoogleFlightsTransport : IDisposable
 
         throw new GoogleFlightsFormatException("Google Flights' search page did not carry its flight data (no ds:1 block).");
     }
+
     private void CheckStatus(HttpResponseMessage response)
     {
         var status = (int)response.StatusCode;

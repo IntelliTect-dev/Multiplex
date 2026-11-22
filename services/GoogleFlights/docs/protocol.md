@@ -41,6 +41,7 @@ relied on.
 | **H3** | `2026-11-22-124105-probe-booking` | The same, the booking page with DL2759 out and DL1731 back pinned: HTTP 200, 1.6 MB, data blocks `ds:0`-`ds:3` only, none with sellers, fares or prices. The page loads them through its own script (`GetBookingResults`). Not committed. |
 | **H4** | `2026-11-22-124703-probe-multicity` | The same, a multi-city search page (SEA-DEN 2026-12-15, DEN-LAX 2026-12-20): HTTP 200, `ds:1` present but with no flights at indices 2 and 3. The page loads them through its own script. Not committed. |
 | **H5** | `2026-11-22-124404-probe-autocomplete` | The branch's client's airport lookup (batchexecute `H028ib`, "Denv"), Chrome-form User-Agent: answered, 5 places, Denver first. Not committed. |
+| **H6** | `2026-11-22-132228-probe-sort` | The same one-way search page as H1 with `tfu=EgYIAhAAGAA` (sort by price): HTTP 200, `ds:1` carrying no best flights and all 14 others in price order (ties by departure), the one-stop option last. The server-rendered page honours the sort. Fixture `pages/google-flights-search-page-data-one-way-by-price-2026-11-22.html`. |
 | **Q4** | `2026-11-22-125002-direct-p8` | P8 resent once more: refused, gRPC 13 now WITH the `ErrorResponse` detail and a search session id. Not committed. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
@@ -136,6 +137,7 @@ No `at=` token is sent: the page is signed out.
 | 11-22 12:44 (H5) | the client, batchexecute | the airport lookup, Chrome-form User-Agent | **places and airports** |
 | 11-22 12:47 (H4) | the client, search page | a multi-city search page | 200, but **no flights** in `ds:1` |
 | 11-22 12:50 (Q4) | direct HTTP | P8 exactly | `[13]` with the `ErrorResponse` detail |
+| 11-22 13:22 (H6) | the client, search page | H1's search sorted by price (`tfu`) | **200, 14 flights in price order** |
 
 **The refusal follows the network, not the client stack.** On L1-L3's network
 the same search was refused from three client stacks and with both User-Agent
@@ -189,7 +191,7 @@ User-Agent form followed by its own name (the owner's decision):
 
 | What | Over direct HTTPS | Evidence |
 |---|---|---|
-| A one-way or round-trip search's first leg | the search page: **yes** | H1 |
+| A one-way or round-trip search's first leg, in the order asked for | the search page, sort in `tfu`: **yes** | H1, H6 |
 | A round trip's returns | the search page with the outbound pinned in `tfs` (leg field 4): **yes** | H2 |
 | Booking options | the booking page carries **none**; the page loads them with `GetBookingResults` | H3 |
 | A multi-city trip | the search page carries **no flights**; the page loads them with `GetShoppingResults` | H4 |

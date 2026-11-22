@@ -9,6 +9,14 @@ namespace Multiplex.Sites.GoogleFlights.Wire;
 /// Builds the positional requests Google Flights' service RPCs take (protocol.md sections 4 and 5) from a
 /// normalized <see cref="FlightSearchRequest"/>. Everything Google-shaped about a request lives here, so a
 /// change to Google's payloads is a change to this file and its tests.
+/// <para>
+/// Since 2026-11-20 Google answers the service RPCs only with the page's own per-request token (protocol.md
+/// section 2), so the client sends none of them: <see cref="ShoppingResults"/>, <see cref="BookingResults"/>,
+/// <see cref="CalendarGraph"/>, <see cref="CalendarGrid"/> and <see cref="ServiceBody"/> are kept as the recorded
+/// protocol, pinned by their tests against the references. Do not wire them back in: a refused request starts the
+/// cool-down that stops every search. <see cref="Filter"/> feeds the search-page links and <see cref="Autocomplete"/>
+/// the airport lookup.
+/// </para>
 /// </summary>
 internal static class RequestEncoder
 {

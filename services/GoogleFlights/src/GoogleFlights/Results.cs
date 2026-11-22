@@ -63,7 +63,10 @@ public sealed record Layover(TimeSpan Duration, string ArrivalAirport, string De
 /// On the last leg of a round trip or multi-city trip only: whether Google says this choice is sold as separate
 /// tickets. <c>null</c> elsewhere, where Google's flag means something not yet established.
 /// </param>
-/// <param name="Selection">What choosing this option makes: pass it on for the next leg or for booking options.</param>
+/// <param name="Selection">
+/// What choosing this option makes: pass it on for a round trip's return flights. Booking options are not available
+/// (<see cref="GoogleFlightsClient.GetBookingOptionsAsync"/> gives the booking page's link instead).
+/// </param>
 public sealed record FlightOption(
     IReadOnlyList<FlightSegment> Segments,
     IReadOnlyList<Layover> Layovers,
