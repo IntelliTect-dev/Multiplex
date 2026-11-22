@@ -15,6 +15,9 @@ namespace Multiplex.Web.Services.TripIt.SignIn;
 /// Google (<c>/account/signInGoogle</c> → <c>accounts.google.com</c>). Headless Chrome (whose
 /// user agent says "HeadlessChrome") is served TripIt's "Access Denied" page on
 /// <c>/app/trips</c> and <c>/account/signInGoogle</c>, although <c>/account/login</c> loads.
+/// TripIt is Multiplex's example of a site with its own sign-in, so only TripIt's email and
+/// password are offered: Google is not an allowed host (#117), and a person never types a
+/// Google password into a page this server drives.
 /// </summary>
 public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInDefinition
 {
@@ -24,8 +27,8 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
     internal const string AppInfo = "web/0.0.2";
     internal const string ProfileApi = WebOrigin + "/api/v2/get/profile";
 
-    /// <summary>TripIt itself plus the identity provider its login page links to (Google).</summary>
-    public static readonly IReadOnlyList<string> DefaultAllowedHosts = [WebHost, "tripit.com", "accounts.google.com"];
+    /// <summary>TripIt only: its "Sign in with Google" link is refused once it reaches Google (#117).</summary>
+    public static readonly IReadOnlyList<string> DefaultAllowedHosts = [WebHost, "tripit.com"];
 
     // Request headers worth replaying (TripItClient reads these names from spa_headers). Never cookie or CSRF.
     private static readonly string[] s_spaHeaderNames =
@@ -42,7 +45,8 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
 
     public Uri RefreshUrl { get; } = new("https://www.tripit.com/app/trips");
 
-    public string? SignInHint => "Tick “Keep me signed in” on TripIt's page so this server can stay connected.";
+    public string? SignInHint =>
+        "Sign in with your TripIt email and password (Google sign-in is turned off here), and tick “Keep me signed in” so this server can stay connected.";
 
     /// <summary><c>Multiplex:Sites:tripit:AllowedNavigationHosts</c> replaces the defaults when set.</summary>
     public IReadOnlyCollection<string> AllowedNavigationHosts

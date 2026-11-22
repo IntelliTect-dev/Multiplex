@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Multiplex.Web.Services.TripIt.SignIn;
+using Multiplex.Web.SignIn;
 
 namespace Multiplex.Tests.SignIn;
 
@@ -100,7 +101,28 @@ public sealed class TripItSignInDefinitionTests
         Assert.Equal("tripit", definition.Slug);
         Assert.Equal("https://www.tripit.com/account/login?redirect_url=https%3A%2F%2Fwww.tripit.com%2Fapp%2Ftrips", definition.SignInStartUrl.OriginalString);
         Assert.Equal("https://www.tripit.com/app/trips", definition.RefreshUrl.AbsoluteUri);
-        Assert.Equal(["www.tripit.com", "tripit.com", "accounts.google.com"], definition.AllowedNavigationHosts);
+        Assert.Equal(["www.tripit.com", "tripit.com"], definition.AllowedNavigationHosts);
+    }
+
+    [Fact]
+    public void Google_sign_in_is_refused_by_default()
+    {
+        var hosts = new TripItSignInDefinition(new ConfigurationBuilder().Build()).AllowedNavigationHosts;
+
+        // TripIt's "Sign in with Google" starts on TripIt, then hands the page to Google.
+        Assert.True(NavigationLock.IsAllowed("https://www.tripit.com/account/signInGoogle", hosts));
+        Assert.False(NavigationLock.IsAllowed("https://accounts.google.com/o/oauth2/v2/auth?client_id=x", hosts));
+    }
+
+    [Fact]
+    public void Hint_says_to_use_the_tripit_password_not_google()
+    {
+        var hint = new TripItSignInDefinition(new ConfigurationBuilder().Build()).SignInHint;
+
+        Assert.NotNull(hint);
+        Assert.Contains("TripIt email and password", hint, StringComparison.Ordinal);
+        Assert.Contains("Google sign-in is turned off", hint, StringComparison.Ordinal);
+        Assert.Contains("Keep me signed in", hint, StringComparison.Ordinal);
     }
 
     [Fact]
