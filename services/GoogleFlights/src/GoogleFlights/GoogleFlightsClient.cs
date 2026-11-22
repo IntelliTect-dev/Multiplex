@@ -156,16 +156,46 @@ public sealed class GoogleFlightsClient : IDisposable
 
     private Task<FlightSearchResult> FlightsAsync(FlightSearchRequest request, FlightSelection? selection, bool verify, CancellationToken ct)
     {
-        var inner = RequestEncoder.ShoppingResults(request, selection);
         var url = TfsEncoder.PageUrl(request, RequestEncoder.Filter(request, selection?.ChosenLegs), booking: false);
+        if (selection is null)
+        {
+            return CachedPageAsync(url, verify, ct,
+                frames =>
+                {
+                    var parsed = ResponseParser.Flights(frames, request, selection);
+                    return new FlightSearchResult(request, 0, parsed.Best, parsed.Other, parsed.Airlines, url,
+                        _time.GetUtcNow(), FromCache: false);
+                },
+                r => r with { FromCache = true });
+        }
+
+        var inner = RequestEncoder.ShoppingResults(request, selection);
         return CachedAsync("GetShoppingResults", inner, Jspb(request), verify, ct,
             frames =>
             {
                 var parsed = ResponseParser.Flights(frames, request, selection);
-                return new FlightSearchResult(request, selection?.NextLeg ?? 0, parsed.Best, parsed.Other, parsed.Airlines, url,
+                return new FlightSearchResult(request, selection.NextLeg, parsed.Best, parsed.Other, parsed.Airlines, url,
                     _time.GetUtcNow(), FromCache: false);
             },
             r => r with { FromCache = true });
+    }
+
+    private async Task<T> CachedPageAsync<T>(
+        Uri url, bool verify, CancellationToken ct,
+        Func<RpcFrames, T> parse, Func<T, T> markCached) where T : class
+    {
+        var key = url.AbsoluteUri;
+        if (!verify && _cache.TryGet<T>(key, out var cached))
+            return markCached(cached);
+
+        ct.ThrowIfCancellationRequested();
+        return await _cache.SingleFlightAsync(key, async () =>
+        {
+            var frames = await _transport.SearchPageAsync(url, CancellationToken.None).ConfigureAwait(false);
+            var result = parse(frames);
+            _cache.Set(key, result);
+            return result;
+        }, ct).ConfigureAwait(false);
     }
 
     private async Task<T> CachedAsync<T>(
