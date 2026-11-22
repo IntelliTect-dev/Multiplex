@@ -1,9 +1,17 @@
 # Google Flights
 
-Flight search for Multiplex, built from scratch against the endpoints Google
-Flights' own web page calls (`www.google.com/_/FlightsFrontendUi/...`), over
-direct HTTP. No browser, no sign-in, and no third-party flight API or scraping
+Flight search for Multiplex, built from scratch over direct HTTPS against
+Google Flights' own web pages: the client fetches a search page and reads the
+flights it carries in its HTML, and asks the page's airport-lookup endpoint for
+places. No browser, no sign-in, and no third-party flight API or scraping
 service. Read-only: nothing is booked or bought.
+
+Since the evening of 2026-11-20 Google answers its flight data endpoint only
+with a token the page's own script computes for each request (#101). So what
+the page loads only through its script is **not available** here: booking
+options, price calendars and multi-city trips. Those calls send nothing and
+answer with the Google Flights link to open instead (`docs/protocol.md`
+section 2).
 
 - Issue: https://github.com/IntelliTect-dev/Multiplex/issues/89
 - Layout: one folder per provider, `services/<Name>/` (the owner's decision in
@@ -13,10 +21,10 @@ service. Read-only: nothing is booked or bought.
 
 | Operation | C# client | MCP tool | PowerShell |
 |---|---|---|---|
-| Flights for a one-way, round-trip or multi-city search, with filters | `SearchAsync` | `search_flights` | `Find-Flight` |
-| The next leg's flights after a choice (a round trip's returns) | `GetReturnFlightsAsync` | `get_return_flights` | `Get-FlightReturn` |
-| Sellers, fare brands and prices for a fully chosen trip | `GetBookingOptionsAsync` | `get_booking_options` | `Get-FlightBookingOption` |
-| Lowest round-trip price per departure date, or per departure-by-return pair | `GetCalendarAsync` | `get_price_calendar` | `Get-FlightPriceCalendar` |
+| Flights for a one-way or round-trip search, with filters | `SearchAsync` | `search_flights` | `Find-Flight` |
+| A round trip's return flights after its outbound is chosen | `GetReturnFlightsAsync` | `get_return_flights` | `Get-FlightReturn` |
+| **Not available:** sellers and fares for a chosen trip; answers with the booking page's link | `GetBookingOptionsAsync` | `get_booking_options` | `Get-FlightBookingOption` |
+| **Not available:** a price calendar; answers with the search page's link | `GetCalendarAsync` | `get_price_calendar` | `Get-FlightPriceCalendar` |
 | Airports for a place name or code | `LookupAirportsAsync` | `lookup_airport` | `Find-Airport` |
 | Airlines and alliances, from a dated data file | `GoogleFlightsClient.Airlines` | `lookup_airline` | `Get-Airline` |
 
@@ -26,9 +34,9 @@ order. Currency and region per request (default USD and US). Every result says
 when Google answered (`RetrievedAt`) and whether it came from the cache
 (`FromCache`); every call can skip the cache (`verify` / `-Verify`).
 
-**Not available:** emissions data (deliberately not exposed), one-way price
-calendars (no recorded request yet, and the one form tried was refused), and
-anything that books.
+**Not available:** booking options, price calendars and multi-city trips
+(Google provides them only through its page's own script; above), emissions
+data (deliberately not exposed), and anything that books.
 
 The tools, the commands' help and the client's docs share one set of
 descriptions (`src/GoogleFlights/GoogleFlightsDocs.cs`).
@@ -58,21 +66,23 @@ for the process:
 using var flights = new GoogleFlightsClient();
 var outbound = await flights.SearchAsync(FlightSearchRequest.RoundTrip("SEA", "DEN", new(2026, 12, 15), new(2026, 12, 22)));
 var returns = await flights.GetReturnFlightsAsync(outbound.BestFlights[0].Selection);
-var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Selection);
+// Booking options are not available: this fails with a GoogleFlightsUnavailableException whose
+// GoogleFlightsUrl is the booking page for the person to open.
 ```
 
 ## Limits and safety
 
-- **Google throttles this client, and what sets it off is not known yet.** A
-  refusal applies to the whole network. On 2026-11-20 one network stayed
-  refused for at least four hours, while another answered one search every 10
-  minutes for nearly three hours (#101). The client paces itself (4 requests back to back,
-  then one per 20 seconds), caches answers for 12 minutes, never retries a
-  refusal, and after one stops sending anything for 15 minutes (doubling with
-  each refusal in a row, up to 6 hours). See `NOTES.md`.
-- **Identity.** The client says who it is:
-  `Mozilla/5.0 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`. It
-  does not pose as a browser and sends no browser headers or page tokens.
+- **Google can refuse this client.** A refusal applies to the whole network
+  and has lasted hours (#101). The client paces itself (4 requests back to
+  back, then one per 20 seconds), caches answers for 12 minutes, never retries
+  a refusal, and after one stops sending anything for 15 minutes (doubling
+  with each refusal in a row, up to 6 hours). A search page is about 2-3 MB.
+  See `NOTES.md`.
+- **Identity.** Google serves its search pages only to browser User-Agents,
+  so the client sends Chrome's User-Agent form followed by its own name and
+  link: `... Chrome/... Safari/537.36 (compatible;
+  Multiplex-GoogleFlights/<version>; +<url>)` (owner's decision, 2026-11-22).
+  It sends no other browser headers, no cookies of its own and no page tokens.
 - **Not affiliated with Google.** These endpoints are undocumented and may
   change without notice; the contract-drift live test is how a change is
   noticed.
@@ -84,7 +94,7 @@ var booking = await flights.GetBookingOptionsAsync(returns.BestFlights[0].Select
 | Unit (encoding, parsing, cache, pacing, refusals) | `dotnet test services/GoogleFlights/tests/GoogleFlights.Tests` | Nothing: fixtures are the committed references |
 | MCP tools over the real pipeline | `dotnet test tests/Multiplex.Tests --filter GoogleFlights` | Nothing |
 | PowerShell module, including the help-drift check | `Invoke-Pester services/GoogleFlights/tests/GoogleFlights.PowerShell.Tests` | A build first |
-| Live: the client, every MCP tool, the module | the same commands with `MULTIPLEX_LIVE_TESTS=1` | Internet access. About 20 paced requests in all; never run them in a loop |
+| Live: the client, every MCP tool, the module | the same commands with `MULTIPLEX_LIVE_TESTS=1` | Internet access. About 14 paced requests in all; never run them in a loop |
 
 `tests/Invoke-LiveTests.ps1` runs all of the live tests in one go on the
 machine's own connection: build, offline tests, one search first, then the
@@ -116,7 +126,7 @@ own member lists when updating it, and change its `version`.
 |---|---|
 | `NOTES.md` | Decisions and traps: read before changing anything |
 | `docs/protocol.md` | The decoded protocol: endpoints, framing and the field maps (the spec for `src/GoogleFlights/Wire/`) |
-| `references/` | Trimmed, scrubbed HAR extracts, their catalogue, and the re-capture recipe (evidence and test fixtures, not the spec) |
+| `references/` | Trimmed, scrubbed HAR extracts, their catalogue, and the re-capture recipe; `references/pages/`, the flight data of search pages the client fetched (evidence and test fixtures, not the spec) |
 | `src/GoogleFlights/` | The client library (`Multiplex.Sites.GoogleFlights`); `Wire/` is Google's format, nothing else is |
 | `src/GoogleFlights.PowerShell/` | The PowerShell module `GoogleFlights` |
 | `tests/` | Unit and live tests, and the module's Pester tests |

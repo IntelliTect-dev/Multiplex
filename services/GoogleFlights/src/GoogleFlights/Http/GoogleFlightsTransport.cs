@@ -1,8 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 using Microsoft.Extensions.Http.Resilience;
 using Multiplex.Sites.GoogleFlights.Wire;
@@ -13,14 +11,13 @@ using Polly.Timeout;
 namespace Multiplex.Sites.GoogleFlights.Http;
 
 /// <summary>
-/// Sends Google Flights RPCs over direct HTTP and turns each answer into frames or the right exception.
+/// Fetches Google Flights search pages, and sends the airport lookup RPC, over direct HTTPS, and turns each answer
+/// into frames or the right exception.
 /// Retries, back-off, pacing and timeouts come from the shared resilience package
 /// (Microsoft.Extensions.Http.Resilience); refusals go to the <see cref="RefusalGate"/> and are never retried.
 /// </summary>
-internal sealed partial class GoogleFlightsTransport : IDisposable
+internal sealed class GoogleFlightsTransport : IDisposable
 {
-    private const string ServiceUrl =
-        "https://www.google.com/_/FlightsFrontendUi/data/travel.frontend.flights.FlightsFrontendService/{0}?hl=en-US&soc-app=162&soc-platform=1&soc-device=1&rt=c";
 
     private const string BatchUrl =
         "https://www.google.com/_/FlightsFrontendUi/data/batchexecute?rpcids={0}&source-path=%2Ftravel%2Fflights&hl=en-US&soc-app=162&soc-platform=1&soc-device=1&rt=c";
@@ -91,91 +88,69 @@ internal sealed partial class GoogleFlightsTransport : IDisposable
         PooledConnectionLifetime = TimeSpan.FromMinutes(10),
     };
 
-    public Task<RpcFrames> ServiceAsync(string rpc, string inner, string jspb, CancellationToken ct) =>
-        SendAsync(string.Format(System.Globalization.CultureInfo.InvariantCulture, ServiceUrl, rpc), RequestEncoder.ServiceBody(inner), jspb, ct);
-
-    public Task<RpcFrames> BatchAsync(string rpcId, string inner, string jspb, CancellationToken ct) =>
-        SendAsync(string.Format(System.Globalization.CultureInfo.InvariantCulture, BatchUrl, rpcId), RequestEncoder.BatchBody(rpcId, inner), jspb, ct);
-
-    /// <summary>Sends a GET request to a Google Flights search page URL and extracts the framed flight data from the HTML.</summary>
-    public async Task<RpcFrames> SearchPageAsync(Uri pageUrl, CancellationToken ct)
+    /// <summary>
+    /// Fetches a Google Flights search page and returns the first answer its HTML carries (data block <c>ds:1</c>), as
+    /// one payload laid out like a <c>GetShoppingResults</c> answer (protocol.md section 5).
+    /// </summary>
+    public Task<RpcFrames> SearchPageAsync(Uri pageUrl, CancellationToken ct)
     {
-        _gate.ThrowIfCoolingDown();
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, pageUrl);
+        var request = new HttpRequestMessage(HttpMethod.Get, pageUrl);
         request.Headers.TryAddWithoutValidation("User-Agent", GoogleFlightsClientOptions.UserAgent);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xhtml+xml"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*", 0.8));
-
-        HttpResponseMessage response;
-        try
-        {
-            response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-        }
-        catch (RateLimiterRejectedException e)
-        {
-            throw new GoogleFlightsThrottledException(
-                "Too many Google Flights requests are already waiting their turn; the client paces itself to avoid a block. Try again shortly.",
-                ThrottleReason.Paced, _time.GetUtcNow() + (e.RetryAfter ?? _interval));
-        }
-        catch (TimeoutRejectedException e)
-        {
-            throw new GoogleFlightsTransientException("Google Flights did not answer in time.", e);
-        }
-        catch (HttpRequestException e)
-        {
-            throw new GoogleFlightsTransientException($"Could not reach Google Flights: {e.Message}", e);
-        }
-
-        using (response)
-        {
-            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return ClassifyPage(response, text);
-        }
+        return SendAsync(request, ClassifyPage, ct);
     }
 
-    private async Task<RpcFrames> SendAsync(string url, string body, string jspb, CancellationToken ct)
+    /// <summary>A batchexecute RPC (the airport lookup): answered without the page's token (protocol.md section 2).</summary>
+    public Task<RpcFrames> BatchAsync(string rpcId, string inner, string jspb, CancellationToken ct)
     {
-        _gate.ThrowIfCoolingDown();
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        var request = new HttpRequestMessage(HttpMethod.Post, string.Format(System.Globalization.CultureInfo.InvariantCulture, BatchUrl, rpcId));
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(RequestEncoder.BatchBody(rpcId, inner)));
         // Exactly the header Google answered; ByteArrayContent sets none of its own.
         request.Content.Headers.TryAddWithoutValidation("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
         request.Headers.TryAddWithoutValidation("User-Agent", GoogleFlightsClientOptions.UserAgent);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
         request.Headers.TryAddWithoutValidation("x-same-domain", "1");
         request.Headers.TryAddWithoutValidation("x-goog-ext-259736195-jspb", jspb);
+        return SendAsync(request, ClassifyRpc, ct);
+    }
 
-        HttpResponseMessage response;
-        try
+    private async Task<RpcFrames> SendAsync(HttpRequestMessage request, Func<HttpResponseMessage, string, RpcFrames> classify, CancellationToken ct)
+    {
+        using (request)
         {
-            response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-        }
-        catch (RateLimiterRejectedException e)
-        {
-            throw new GoogleFlightsThrottledException(
-                "Too many Google Flights requests are already waiting their turn; the client paces itself to avoid a block. Try again shortly.",
-                ThrottleReason.Paced, _time.GetUtcNow() + (e.RetryAfter ?? _interval));
-        }
-        catch (TimeoutRejectedException e)
-        {
-            throw new GoogleFlightsTransientException("Google Flights did not answer in time.", e);
-        }
-        catch (HttpRequestException e)
-        {
-            throw new GoogleFlightsTransientException($"Could not reach Google Flights: {e.Message}", e);
-        }
+            _gate.ThrowIfCoolingDown();
 
-        using (response)
-        {
-            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return Classify(response, text);
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            }
+            catch (RateLimiterRejectedException e)
+            {
+                throw new GoogleFlightsThrottledException(
+                    "Too many Google Flights requests are already waiting their turn; the client paces itself to avoid a block. Try again shortly.",
+                    ThrottleReason.Paced, _time.GetUtcNow() + (e.RetryAfter ?? _interval));
+            }
+            catch (TimeoutRejectedException e)
+            {
+                throw new GoogleFlightsTransientException("Google Flights did not answer in time.", e);
+            }
+            catch (HttpRequestException e)
+            {
+                throw new GoogleFlightsTransientException($"Could not reach Google Flights: {e.Message}", e);
+            }
+
+            using (response)
+            {
+                var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                return classify(response, text);
+            }
         }
     }
 
-    private RpcFrames Classify(HttpResponseMessage response, string text)
+    private RpcFrames ClassifyRpc(HttpResponseMessage response, string text)
     {
         CheckStatus(response);
 
@@ -194,61 +169,31 @@ internal sealed partial class GoogleFlightsTransport : IDisposable
 
     private RpcFrames ClassifyPage(HttpResponseMessage response, string text)
     {
+        // How Google turns away a page request from a client it does not serve pages to (P5, P9): a refusal, with a
+        // cool-down like any other. Read before the status, which would call it an unexpected redirect.
+        var location = response.Headers.Location?.ToString() ?? "";
+        if ((int)response.StatusCode is >= 300 and < 400 && location.Contains("/travel/flights/unsupported", StringComparison.OrdinalIgnoreCase))
+        {
+            var until = _gate.Refused();
+            throw new GoogleFlightsThrottledException(
+                $"Google Flights redirected the client to its \"unsupported browser\" page: it is not serving its search pages to this client. The client will not ask again until {until:u}.",
+                ThrottleReason.Refused, until);
+        }
+
         CheckStatus(response);
 
-        if (ResponseFrames.TryParse(text, out var frames))
+        // The flights decide first: a page that carries them is an answer, whatever its scripts or help texts say.
+        if (SearchPageData.Read(text) is { } payload)
         {
-            CheckRpcErrors(frames);
             _gate.Answered();
-            return frames;
+            return new RpcFrames([payload], []);
         }
 
-        if (text.Contains("/sorry/", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase))
-        {
+        if (text.Contains("/sorry/", StringComparison.OrdinalIgnoreCase) || text.Contains("unusual traffic", StringComparison.OrdinalIgnoreCase))
             throw Challenge();
-        }
 
-        var match = Ds1CallbackRegex().Match(text);
-        if (!match.Success)
-        {
-            throw new GoogleFlightsFormatException("Google Flights' search page did not contain the expected flight data (key: 'ds:1').");
-        }
-
-        var dataIndex = text.IndexOf("data:", match.Index, StringComparison.Ordinal);
-        if (dataIndex < 0)
-        {
-            throw new GoogleFlightsFormatException("Google Flights' search page did not contain data for key 'ds:1'.");
-        }
-
-        var arrayStart = text.IndexOf('[', dataIndex);
-        if (arrayStart < 0)
-        {
-            throw new GoogleFlightsFormatException("Google Flights' search page did not contain a data array for key 'ds:1'.");
-        }
-
-        var scriptEnd = text.IndexOf("</script>", arrayStart, StringComparison.Ordinal);
-        var searchSlice = scriptEnd >= 0 ? text[arrayStart..scriptEnd] : text[arrayStart..];
-
-        try
-        {
-            var bytes = Encoding.UTF8.GetBytes(searchSlice);
-            var reader = new Utf8JsonReader(bytes);
-            using var doc = JsonDocument.ParseValue(ref reader);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                throw new GoogleFlightsFormatException("Google Flights' search page data for key 'ds:1' was not a JSON array.");
-            }
-
-            _gate.Answered();
-            return new RpcFrames([doc.RootElement.Clone()], []);
-        }
-        catch (JsonException e)
-        {
-            throw new GoogleFlightsFormatException($"Google Flights' search page data for key 'ds:1' was not valid JSON: {e.Message}", e);
-        }
+        throw new GoogleFlightsFormatException("Google Flights' search page did not carry its flight data (no ds:1 block).");
     }
-
     private void CheckStatus(HttpResponseMessage response)
     {
         var status = (int)response.StatusCode;
@@ -320,8 +265,6 @@ internal sealed partial class GoogleFlightsTransport : IDisposable
         }
     }
 
-    [GeneratedRegex(@"AF_initDataCallback\s*\(\s*\{[^}]*?key\s*:\s*['""]ds:1['""]")]
-    private static partial Regex Ds1CallbackRegex();
 
     private GoogleFlightsThrottledException Challenge() => new(
         "Google Flights is asking for a check that a person must clear in a browser (\"unusual traffic\"). The client never clears it; it has stopped sending requests.",

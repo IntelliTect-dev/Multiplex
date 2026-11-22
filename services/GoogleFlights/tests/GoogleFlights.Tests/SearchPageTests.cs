@@ -1,132 +1,223 @@
 using System.Net;
-using System.Text.Json;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Multiplex.Sites.GoogleFlights.Tests;
 
+/// <summary>
+/// Flights from Google Flights' search pages, fetched over plain HTTPS. A search page carries its first answer in
+/// its HTML (data block <c>ds:1</c>). The page fixtures are the <c>ds:1</c> elements of pages the client fetched
+/// live on 2026-11-22 (protocol.md section 2, H1 and H2).
+/// </summary>
 public class SearchPageTests
 {
     private static readonly DateOnly Dec15 = new(2026, 12, 15);
     private static readonly DateOnly Dec22 = new(2026, 12, 22);
+    private static readonly ChosenSegment Dl2759Out = new("SEA", Dec15, "DEN", "DL", "2759");
+    private static readonly ChosenSegment Dl1731Back = new("DEN", Dec22, "SEA", "DL", "1731");
 
-    private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 11, 20, 18, 0, 0, TimeSpan.Zero));
+    private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 11, 22, 20, 0, 0, TimeSpan.Zero));
     private readonly FakeGoogle _google = new();
 
-    private GoogleFlightsClient Client()
-    {
-        var options = new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 0 };
-        return new GoogleFlightsClient(options, _time, _google);
-    }
+    private GoogleFlightsClient Client() =>
+        new(new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 0 }, _time, _google);
 
-    private static FlightSearchRequest SeaDen => FlightSearchRequest.RoundTrip("SEA", "DEN", Dec15, Dec22);
+    private static FlightSearchRequest OneWay => FlightSearchRequest.OneWay("SEA", "DEN", Dec15);
 
-    private static string WrapHtml(string jsonPayload, string key = "ds:1", string? extraHtml = null) =>
-        "<!DOCTYPE html>\n<html>\n<head><title>Google Flights</title></head>\n<body>\n" +
-        (extraHtml ?? "") +
-        $"\n<script>AF_initDataCallback({{key: '{key}', hash: '1', data:{jsonPayload}, sideChannel: {{}}}});</script>\n</body>\n</html>";
+    private static FlightSearchRequest RoundTrip => FlightSearchRequest.RoundTrip("SEA", "DEN", Dec15, Dec22).Normalize("USD", "US");
 
     [Fact]
-    public async Task Search_extracts_flights_from_html_page_response()
+    public async Task A_search_lists_the_flights_its_search_page_carries()
     {
-        // Re-use payload from Flow[0] (which is the JSON array payload for GetShoppingResults)
-        var flow = HarFixture.Load("direct-http-flow-2026-11-20");
-        var rpcText = flow[0].ResponseText;
-        Assert.True(Wire.ResponseFrames.TryParse(rpcText, out var rpcFrames));
-        var rawJson = rpcFrames.Payloads[0].GetRawText();
-
-        var html = WrapHtml(rawJson);
-        _google.Answer(HttpStatusCode.OK, html);
+        _google.AnswerPage(SearchPages.Load("one-way-2026-11-22"));
         using var client = Client();
 
-        var result = await client.SearchAsync(SeaDen);
+        var result = await client.SearchAsync(OneWay);
 
-        Assert.Equal(13, result.AllFlights.Count());
+        var sent = Assert.Single(_google.Sent);
+        // The link H1 fetched live: the one-way search, nothing chosen.
+        Assert.Equal(
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&hl=en-US&gl=US&curr=USD",
+            sent.Url.AbsoluteUri);
+        Assert.Equal(sent.Url, result.GoogleFlightsUrl);
         Assert.Equal(0, result.Leg);
-        Assert.Equal("www.google.com", result.GoogleFlightsUrl.Host);
-        Assert.Contains("tfs=", result.GoogleFlightsUrl.Query, StringComparison.Ordinal);
+        Assert.Equal(4, result.BestFlights.Count);
+        Assert.Equal(10, result.OtherFlights.Count);
+        Assert.All(result.AllFlights, f =>
+        {
+            Assert.Equal("SEA", f.Origin);
+            Assert.Equal("DEN", f.Destination);
+            Assert.Equal("USD", f.Price!.Currency);
+        });
     }
 
     [Fact]
-    public async Task Search_throws_when_ds1_key_is_missing_from_html()
+    public async Task A_search_asks_for_the_page_and_names_the_project_in_its_user_agent()
     {
-        var html = WrapHtml("[]", key: "ds:0");
-        _google.Answer(HttpStatusCode.OK, html);
+        _google.AnswerPage(SearchPages.Load("one-way-2026-11-22"));
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(SeaDen));
-        Assert.Contains("ds:1", ex.Message);
+        await client.SearchAsync(OneWay);
+
+        var sent = Assert.Single(_google.Sent);
+        Assert.Empty(sent.Body);
+        Assert.StartsWith("text/html", sent.Headers["Accept"], StringComparison.Ordinal);
+        Assert.Contains("(compatible; Multiplex-GoogleFlights/", sent.Headers["User-Agent"], StringComparison.Ordinal);
+        // Nothing the page itself would add: no anti-bot token, no page session, no client hints, no cookies of ours.
+        Assert.DoesNotContain(sent.Headers.Keys, k => k.StartsWith("x-goog", StringComparison.OrdinalIgnoreCase)
+            || k.StartsWith("sec-", StringComparison.OrdinalIgnoreCase) || k.Equals("Cookie", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public async Task Search_throws_when_html_data_is_not_valid_json()
+    public async Task Return_flights_come_from_the_search_page_with_the_chosen_outbound_pinned_in_its_link()
     {
-        var html = WrapHtml("[invalid json", key: "ds:1");
-        _google.Answer(HttpStatusCode.OK, html);
+        _google.AnswerPage(SearchPages.Load("return-leg-2026-11-22"));
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(SeaDen));
-        Assert.Contains("not valid JSON", ex.Message);
+        var returns = await client.GetReturnFlightsAsync(new FlightSelection(RoundTrip, [[Dl2759Out]], "token"));
+
+        var sent = Assert.Single(_google.Sent);
+        // The link H2 fetched live: Delta DL2759 pinned on the outbound leg.
+        Assert.Equal(
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhpAEgoyMDI2LTEyLTE1IiAKA1NFQRIKMjAyNi0xMi0xNRoDREVOKgJETDIEMjc1OWoHCAESA1NFQXIHCAESA0RFThoeEgoyMDI2LTEyLTIyagcIARIDREVOcgcIARIDU0VBQAFIAXABggELCP___________wGYAQE&hl=en-US&gl=US&curr=USD",
+            sent.Url.AbsoluteUri);
+        Assert.Equal(1, returns.Leg);
+        Assert.Equal(3, returns.BestFlights.Count);
+        Assert.Equal(14, returns.OtherFlights.Count);
+        Assert.All(returns.AllFlights, f =>
+        {
+            Assert.Equal("DEN", f.Origin);
+            Assert.Equal("SEA", f.Destination);
+        });
+        // A return's selection holds both legs, ready for the booking link.
+        var back = returns.AllFlights.First(f => f.Flights.SequenceEqual(["DL1731"]));
+        Assert.Equal([Dl2759Out], back.Selection.ChosenLegs[0]);
+        Assert.Equal([Dl1731Back], back.Selection.ChosenLegs[1]);
     }
 
     [Fact]
-    public async Task Search_throws_when_html_data_is_not_a_json_array()
+    public async Task Booking_options_are_not_available_and_the_booking_page_link_is_given_instead()
     {
-        var html = WrapHtml("{\"not\": \"array\"}", key: "ds:1");
-        _google.Answer(HttpStatusCode.OK, html);
+        // H3: the booking page carries no sellers or fares; the page loads them through its own script.
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(SeaDen));
-        Assert.Contains("did not contain a data array", ex.Message);
+        var e = await Assert.ThrowsAsync<GoogleFlightsUnavailableException>(() =>
+            client.GetBookingOptionsAsync(new FlightSelection(RoundTrip, [[Dl2759Out], [Dl1731Back]], "token")));
+
+        Assert.Empty(_google.Sent);
+        // The booking link H3 fetched: both Delta flights pinned.
+        Assert.Equal(
+            "https://www.google.com/travel/flights/booking?tfs=CBwQAhpAEgoyMDI2LTEyLTE1IiAKA1NFQRIKMjAyNi0xMi0xNRoDREVOKgJETDIEMjc1OWoHCAESA1NFQXIHCAESA0RFThpAEgoyMDI2LTEyLTIyIiAKA0RFThIKMjAyNi0xMi0yMhoDU0VBKgJETDIEMTczMWoHCAESA0RFTnIHCAESA1NFQUABSAFwAYIBCwj___________8BmAEB&hl=en-US&gl=US&curr=USD",
+            e.GoogleFlightsUrl!.AbsoluteUri);
+        Assert.Contains(e.GoogleFlightsUrl.AbsoluteUri, e.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Search_throws_challenge_when_html_indicates_unusual_traffic()
+    public async Task Price_calendars_are_not_available_and_nothing_is_sent()
     {
-        var html = "<html><body>We detected unusual traffic from your computer network</body></html>";
-        _google.Answer(HttpStatusCode.OK, html);
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
-        Assert.Equal(ThrottleReason.Challenge, ex.Reason);
+        await Assert.ThrowsAsync<GoogleFlightsUnavailableException>(() =>
+            client.GetCalendarAsync(new CalendarRequest(RoundTrip, new DateOnly(2026, 12, 10), new DateOnly(2026, 12, 20))));
+
+        Assert.Empty(_google.Sent);
     }
 
     [Fact]
-    public async Task Search_throws_challenge_on_redirect_to_sorry()
+    public async Task Multi_city_trips_are_not_available_and_nothing_is_sent()
+    {
+        // H4: a multi-city search page carries no flights; the page loads them through its own script.
+        using var client = Client();
+        var multi = FlightSearchRequest.MultiCity(new FlightLeg("SEA", "DEN", Dec15), new FlightLeg("DEN", "LAX", new DateOnly(2026, 12, 20)));
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsUnavailableException>(() => client.SearchAsync(multi));
+
+        Assert.Empty(_google.Sent);
+        Assert.Contains("one way", e.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_redirect_to_the_unsupported_page_is_a_refusal_with_a_cool_down()
+    {
+        // P5, P9: how Google turned away a page request from a User-Agent it does not serve pages to.
+        _google.Answer(HttpStatusCode.Found, "", r => r.Headers.Location = new Uri("https://www.google.com/travel/flights/unsupported?tfs=x&ucpp=y"));
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
+        Assert.Equal(ThrottleReason.Refused, e.Reason);
+        Assert.Contains("unsupported", e.Message, StringComparison.Ordinal);
+
+        var again = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
+        Assert.Equal(ThrottleReason.CoolingDown, again.Reason);
+        Assert.Single(_google.Sent);
+    }
+
+    [Fact]
+    public async Task A_page_that_mentions_unusual_traffic_but_carries_its_flights_is_an_answer()
+    {
+        // Words in a script or a help text are not a check: the flights decide.
+        _google.AnswerPage("<script>var help = 'Unusual traffic? See https://www.google.com/sorry/ for help.';</script>\n"
+            + SearchPages.Load("one-way-2026-11-22"));
+        using var client = Client();
+
+        var result = await client.SearchAsync(OneWay);
+
+        Assert.Equal(14, result.AllFlights.Count());
+    }
+
+    [Fact]
+    public async Task An_unusual_traffic_page_without_flights_is_a_check_for_a_person()
+    {
+        _google.AnswerPage("<html><body>Our systems have detected unusual traffic from your computer network.</body></html>");
+        using var client = Client();
+
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
+
+        Assert.Equal(ThrottleReason.Challenge, e.Reason);
+    }
+
+    [Fact]
+    public async Task A_redirect_to_sorry_is_a_check_for_a_person()
     {
         _google.Answer(HttpStatusCode.Redirect, "", r => r.Headers.Location = new Uri("https://www.google.com/sorry/index"));
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
-        Assert.Equal(ThrottleReason.Challenge, ex.Reason);
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(OneWay));
+
+        Assert.Equal(ThrottleReason.Challenge, e.Reason);
     }
 
     [Fact]
-    public async Task Search_handles_http_429_as_throttled()
+    public async Task A_page_without_its_flight_data_is_a_format_error()
     {
-        _google.Answer(HttpStatusCode.TooManyRequests);
+        _google.AnswerPage("<script>AF_initDataCallback({key: 'ds:0', hash: '1', data:[], sideChannel: {}});</script>");
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
-        Assert.Equal(ThrottleReason.TooManyRequests, ex.Reason);
+        var e = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(OneWay));
+
+        Assert.Contains("ds:1", e.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Search_handles_http_403_as_refused()
+    public async Task A_page_whose_flight_data_is_not_an_array_is_a_format_error()
     {
-        _google.Answer(HttpStatusCode.Forbidden);
+        // The data must open with '[' right after "data:", not at the next '[' anywhere later on the page.
+        _google.AnswerPage("<script>AF_initDataCallback({key: 'ds:1', hash: '9', data:{\"not\": \"an array\"}, sideChannel: {}});</script>"
+            + "<script>var later = [1, 2, 3];</script>");
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
-        Assert.Equal(ThrottleReason.Refused, ex.Reason);
+        var e = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(OneWay));
+
+        Assert.Contains("array", e.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Search_handles_http_500_as_transient()
+    public async Task A_page_whose_flight_data_is_not_valid_json_is_a_format_error()
     {
-        _google.Answer(HttpStatusCode.InternalServerError);
+        _google.AnswerPage("<script>AF_initDataCallback({key: 'ds:1', hash: '9', data:[invalid, sideChannel: {}});</script>");
         using var client = Client();
 
-        var ex = await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.SearchAsync(SeaDen));
-        Assert.Contains("server error", ex.Message);
+        var e = await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(OneWay));
+
+        Assert.Contains("not valid JSON", e.Message, StringComparison.Ordinal);
     }
 }

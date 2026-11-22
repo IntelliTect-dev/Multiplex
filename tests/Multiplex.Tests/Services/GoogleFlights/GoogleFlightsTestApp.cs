@@ -47,17 +47,45 @@ public sealed class RecordedDay : TimeProvider
 /// <summary>Answers each request with the next queued recorded answer, and keeps what was sent.</summary>
 public sealed class RecordedGoogle : HttpMessageHandler
 {
-    private readonly ConcurrentQueue<string> _answers = new();
+    private readonly ConcurrentQueue<Func<HttpResponseMessage>> _answers = new();
 
+    /// <summary>What the client sent, in order: each RPC's inner request, or each page's link.</summary>
     public ConcurrentQueue<string> SentInnerRequests { get; } = new();
 
     /// <summary>Queues entry <paramref name="index"/> of <c>google-flights-&lt;reference&gt;.har</c>.</summary>
     public RecordedGoogle Answer(string reference, int index)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Services", "GoogleFlights", "References", $"google-flights-{reference}.har");
-        using var har = JsonDocument.Parse(File.ReadAllText(path));
-        _answers.Enqueue(har.RootElement.GetProperty("log").GetProperty("entries")[index]
-            .GetProperty("response").GetProperty("content").GetProperty("text").GetString()!);
+        var text = RecordedAnswer(reference, index);
+        _answers.Enqueue(() => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(text, Encoding.UTF8, "application/json") });
+        return this;
+    }
+
+    /// <summary>Queues <c>references/pages/google-flights-search-page-data-&lt;name&gt;.html</c>: a search page the client fetched.</summary>
+    public RecordedGoogle AnswerPage(string name) => Page(File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Services", "GoogleFlights", "References", "Pages", $"google-flights-search-page-data-{name}.html")));
+
+    /// <summary>
+    /// Queues a search page carrying entry <paramref name="index"/>'s recorded <c>GetShoppingResults</c> answer, embedded
+    /// the way a search page embeds its first answer (data block <c>ds:1</c>, the same layout).
+    /// </summary>
+    public RecordedGoogle AnswerPageWith(string reference, int index)
+    {
+        var payload = RecordedAnswer(reference, index).Split('\n')
+            .Where(l => l.StartsWith("[[\"wrb.fr\"", StringComparison.Ordinal))
+            .Select(l => JsonDocument.Parse(l).RootElement[0][2].GetString()!)
+            .Last(p => JsonDocument.Parse(p).RootElement is var e && (e[2].ValueKind == JsonValueKind.Array || e[3].ValueKind == JsonValueKind.Array));
+        return Page($"<script class=\"ds:1\" nonce=\"redacted\">AF_initDataCallback({{key: 'ds:1', hash: '9', data:{payload}, sideChannel: {{}}}});</script>");
+    }
+
+    /// <summary>Queues a redirect, which the client must see and never follow.</summary>
+    public RecordedGoogle AnswerRedirect(string location)
+    {
+        _answers.Enqueue(() =>
+        {
+            var r = new HttpResponseMessage(HttpStatusCode.Found);
+            r.Headers.Location = new Uri(location);
+            return r;
+        });
         return this;
     }
 
@@ -71,10 +99,25 @@ public sealed class RecordedGoogle : HttpMessageHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        SentInnerRequests.Enqueue(Inner(await request.Content!.ReadAsStringAsync(ct)));
+        // A page fetch has no body: it is recorded by its link.
+        SentInnerRequests.Enqueue(request.Content is null ? request.RequestUri!.AbsoluteUri : Inner(await request.Content.ReadAsStringAsync(ct)));
         if (!_answers.TryDequeue(out var answer))
             throw new InvalidOperationException("No recorded answer is queued: the tool sent more requests than the test expected.");
-        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(answer, Encoding.UTF8, "application/json") };
+        return answer();
+    }
+
+    private RecordedGoogle Page(string html)
+    {
+        _answers.Enqueue(() => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html, Encoding.UTF8, "text/html") });
+        return this;
+    }
+
+    private static string RecordedAnswer(string reference, int index)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Services", "GoogleFlights", "References", $"google-flights-{reference}.har");
+        using var har = JsonDocument.Parse(File.ReadAllText(path));
+        return har.RootElement.GetProperty("log").GetProperty("entries")[index]
+            .GetProperty("response").GetProperty("content").GetProperty("text").GetString()!;
     }
 
     private static string Inner(string body)
