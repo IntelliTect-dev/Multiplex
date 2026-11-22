@@ -777,9 +777,9 @@
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 2 --------------------------</maml:title>
-        <dev:code>Find-Flight -Leg SEA-DEN-2026-12-15, DEN-LAX-2026-12-19 -Alliance SkyTeam</dev:code>
+        <dev:code>Find-Flight SEA DEN 2026-12-15 -Alliance SkyTeam</dev:code>
         <dev:remarks>
-          <maml:para>A multi-city trip on SkyTeam airlines; the list is the first leg.</maml:para>
+          <maml:para>One-way flights on SkyTeam airlines.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -927,7 +927,7 @@
         <maml:title>-------------------------- Example 1 --------------------------</maml:title>
         <dev:code>Find-Flight SEA DEN 2026-12-15 | Select-Object -First 1 | Get-FlightBookingOption</dev:code>
         <dev:remarks>
-          <maml:para>Where to buy the first one-way option.</maml:para>
+          <maml:para>Not available: writes an error holding the Google Flights booking page's link for the first one-way option.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -1351,9 +1351,9 @@
     <command:examples>
       <command:example>
         <maml:title>-------------------------- Example 1 --------------------------</maml:title>
-        <dev:code>Get-FlightPriceCalendar SEA DEN 2026-12-01 2026-12-31 -TripLengthDays 7 | Sort-Object { $_.Price.Amount } | Select-Object -First 5</dev:code>
+        <dev:code>Get-FlightPriceCalendar SEA DEN 2026-12-01 2026-12-31 -TripLengthDays 7</dev:code>
         <dev:remarks>
-          <maml:para>The five cheapest week-long trips departing in December.</maml:para>
+          <maml:para>Not available: writes an error holding the Google Flights search page's link, whose Date grid shows the prices.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>

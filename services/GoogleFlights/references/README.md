@@ -51,6 +51,7 @@ selection tokens; nothing personal.
 | File | Evidence | What it is |
 |---|---|---|
 | `pages/google-flights-search-page-data-one-way-2026-11-22.html` | H1 | The one-way SEA-DEN 2026-12-15 search page: 4 best and 10 other flights |
+| `pages/google-flights-search-page-data-one-way-by-price-2026-11-22.html` | H6 | The same search sorted by price (`tfu`): no best flights, all 14 in price order |
 | `pages/google-flights-search-page-data-return-leg-2026-11-22.html` | H2 | The round-trip SEA-DEN 2026-12-15/22 search page with Delta DL2759 pinned on the outbound: 3 best and 14 other returns |
 
 The whole pages, and the booking and multi-city pages that carry no flight

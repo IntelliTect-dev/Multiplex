@@ -54,7 +54,10 @@ public class GoogleFlightsToolTests : IDisposable
 
         var returns = await CallAsync(mcp, "get_return_flights", new { selection = delta.GetProperty("selection").GetString() });
         Assert.Equal(17, returns.GetProperty("flights").GetArrayLength());
-        Assert.Contains("get_booking_options", returns.GetProperty("next_step").GetString());
+        // On the last leg the next step is the person's: booking options are not available here (H3).
+        var lastStep = returns.GetProperty("next_step").GetString();
+        Assert.Contains("google_flights_url", lastStep, StringComparison.Ordinal);
+        Assert.DoesNotContain("Pass a flight's selection to get_booking_options", lastStep, StringComparison.Ordinal);
         var back = returns.GetProperty("flights").EnumerateArray()
             .First(f => f.GetProperty("segments")[0].GetProperty("flight").GetString() == "DL1731");
 

@@ -24,7 +24,7 @@ public static class MamlHelp
         ["Find-Flight"] =
         [
             ("Find-Flight SEA DEN 2026-12-15 -ReturnDate 2026-12-22 -MaxStops Nonstop", "Round-trip nonstop flights; the list is the outbound leg."),
-            ("Find-Flight -Leg SEA-DEN-2026-12-15, DEN-LAX-2026-12-19 -Alliance SkyTeam", "A multi-city trip on SkyTeam airlines; the list is the first leg."),
+            ("Find-Flight SEA DEN 2026-12-15 -Alliance SkyTeam", "One-way flights on SkyTeam airlines."),
         ],
         ["Get-FlightReturn"] =
         [
@@ -32,11 +32,11 @@ public static class MamlHelp
         ],
         ["Get-FlightBookingOption"] =
         [
-            ("Find-Flight SEA DEN 2026-12-15 | Select-Object -First 1 | Get-FlightBookingOption", "Where to buy the first one-way option."),
+            ("Find-Flight SEA DEN 2026-12-15 | Select-Object -First 1 | Get-FlightBookingOption", "Not available: writes an error holding the Google Flights booking page's link for the first one-way option."),
         ],
         ["Get-FlightPriceCalendar"] =
         [
-            ("Get-FlightPriceCalendar SEA DEN 2026-12-01 2026-12-31 -TripLengthDays 7 | Sort-Object { $_.Price.Amount } | Select-Object -First 5", "The five cheapest week-long trips departing in December."),
+            ("Get-FlightPriceCalendar SEA DEN 2026-12-01 2026-12-31 -TripLengthDays 7", "Not available: writes an error holding the Google Flights search page's link, whose Date grid shows the prices."),
         ],
         ["Find-Airport"] = [("Find-Airport Denver", "Airports for Denver.")],
         ["Get-Airline"] = [("Get-Airline 'star alliance'", "The Star Alliance members in the data file.")],
