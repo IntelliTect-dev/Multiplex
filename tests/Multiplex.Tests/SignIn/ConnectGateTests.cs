@@ -69,8 +69,9 @@ public sealed class ConnectGateTests : IAsyncLifetime
 
         var (_, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
 
-        Assert.Contains("""<p class="warning">What you type there, including your password, goes through this Multiplex server on its way to Stub Site.""", html);
-        Assert.DoesNotContain("password is not stored by this server", html);
+        Assert.Contains("""<p class="warning">What you type there, including your password, goes through this Multiplex server on its way to Stub Site. This server never logs it.</p>""", html);
+        // The sign-in browser keeps its profile, and Chrome may keep what was typed into a form there: promise only what the server's code guarantees.
+        Assert.DoesNotContain("not stored", html);
     }
 
     [Fact]
@@ -83,10 +84,13 @@ public sealed class ConnectGateTests : IAsyncLifetime
         var (_, html) = await client.GetAsync(started.Headers.Location!.OriginalString);
 
         // Always shown, never dismissed, in the bar with the text box, and read out with the box each time it is focused.
-        const string warning = """<p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server.""";
+        const string warning = """<p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server. It is never logged.</p>""";
         Assert.Contains(warning, html);
         Assert.InRange(html.IndexOf(warning, StringComparison.Ordinal), html.IndexOf("id=\"txt\"", StringComparison.Ordinal), html.IndexOf("id=\"stage\"", StringComparison.Ordinal));
         Assert.Matches("""<input id="txt"[^>]* aria-describedby="type-warning"[^>]*>""", html);
+        Assert.DoesNotContain("not stored", html);
+        // Once the sign-in ends, the warning goes with the text box it describes.
+        Assert.Contains("querySelectorAll('.row.type, .row.keys, #type-warning')", html);
     }
 
     [Fact]
