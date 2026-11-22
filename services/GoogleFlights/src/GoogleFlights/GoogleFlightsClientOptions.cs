@@ -61,8 +61,10 @@ public sealed class GoogleFlightsClientOptions
     public RateLimiter? RateLimiter { get; set; }
 
     /// <summary>
-    /// The User-Agent the client sends: includes Chrome platform/engine tokens so page GET requests are not redirected
-    /// to /unsupported, while preserving honest project identification.
+    /// The User-Agent the client sends: Chrome's form, followed by this project's name and link in the conventional
+    /// <c>(compatible; ...)</c> comment. Google serves its search pages only to browser User-Agents and redirects
+    /// anything else to its "unsupported browser" page (protocol.md section 2, P5, P9, H1). Owner's decision,
+    /// 2026-11-22: the client may use this form, and must keep naming itself in it.
     /// </summary>
     public static string UserAgent { get; } =
         $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 (compatible; Multiplex-GoogleFlights/{Version}; +{InfoUrl})";

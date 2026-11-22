@@ -22,6 +22,7 @@
   <ItemGroup>
     <!-- Fixtures are the committed, scrubbed references: never hand-written copies. -->
     <None Include="..\..\references\google-flights\*.har" Link="References\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\references\pages\*.html" Link="References\Pages\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

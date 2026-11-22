@@ -4,11 +4,15 @@ using Multiplex.Sites.GoogleFlights.Wire;
 namespace Multiplex.Sites.GoogleFlights;
 
 /// <summary>
-/// Google Flights over the endpoints Google Flights' own page calls, by direct HTTP: no browser, no sign-in,
-/// no third-party service. Answers are cached briefly (<see cref="GoogleFlightsClientOptions.CacheDuration"/>)
-/// and every call can bypass the cache with <c>verify</c>. Requests are paced, and a refusal from Google stops
-/// the client asking for a while: see <see cref="GoogleFlightsThrottledException"/>.
-/// One instance should serve a whole process; it is safe to share between threads.
+/// Google Flights by direct HTTPS: no browser, no sign-in, no third-party service. Flights come from Google Flights'
+/// search pages, which carry their first answer in their HTML; airports from the page's airport-lookup RPC.
+/// What Google provides only through its page's own script (booking options, price calendars, multi-city trips)
+/// is not available: those calls send nothing and raise <see cref="GoogleFlightsUnavailableException"/> with the
+/// Google Flights link instead (protocol.md section 2).
+/// Answers are cached briefly (<see cref="GoogleFlightsClientOptions.CacheDuration"/>) and every call can bypass
+/// the cache with <c>verify</c>. Requests are paced, and a refusal from Google stops the client asking for a while:
+/// see <see cref="GoogleFlightsThrottledException"/>. One instance should serve a whole process; it is safe to share
+/// between threads.
 /// </summary>
 public sealed class GoogleFlightsClient : IDisposable
 {
@@ -40,8 +44,9 @@ public sealed class GoogleFlightsClient : IDisposable
     /// <summary>The airlines and alliances in the client's versioned data file.</summary>
     public static AirlineDirectory Airlines => AirlineDirectory.Default;
 
-    /// <summary>Flights for a search's first leg.</summary>
+    /// <summary>Flights for a one-way or round-trip search's first leg.</summary>
     /// <param name="verify">Ask Google again even when a recent answer is cached.</param>
+    /// <exception cref="GoogleFlightsUnavailableException">A multi-city trip: its search page carries no flights.</exception>
     public Task<FlightSearchResult> SearchAsync(FlightSearchRequest request, bool verify = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -50,8 +55,8 @@ public sealed class GoogleFlightsClient : IDisposable
     }
 
     /// <summary>
-    /// Flights for the next leg after a choice: the return flights of a round trip, or the next flight of a
-    /// multi-city trip. Pass the <see cref="FlightOption.Selection"/> of the option chosen.
+    /// A round trip's return flights after its outbound is chosen: the search page with the chosen flight pinned in
+    /// its link. Pass the <see cref="FlightOption.Selection"/> of the option chosen.
     /// </summary>
     /// <exception cref="ArgumentException">Every leg is already chosen: ask for booking options instead.</exception>
     public Task<FlightSearchResult> GetReturnFlightsAsync(FlightSelection selection, bool verify = false, CancellationToken ct = default)
@@ -69,11 +74,13 @@ public sealed class GoogleFlightsClient : IDisposable
     }
 
     /// <summary>
-    /// Where the chosen trip can be bought: sellers, fares and prices. Always asks Google: booking options are
-    /// never served from the cache.
+    /// Where the chosen trip can be bought: <b>not available</b>. Google Flights' booking page carries no sellers or
+    /// fares; it loads them through its own script, whose request carries a token the client cannot make. Nothing is
+    /// sent; the task fails with a <see cref="GoogleFlightsUnavailableException"/> holding the booking page's link for
+    /// a person to open.
     /// </summary>
     /// <exception cref="ArgumentException">A leg is not chosen yet: get its flights first.</exception>
-    public async Task<BookingOptions> GetBookingOptionsAsync(FlightSelection selection, CancellationToken ct = default)
+    public Task<BookingOptions> GetBookingOptionsAsync(FlightSelection selection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
         var request = Normalize(selection.Request);
@@ -85,20 +92,19 @@ public sealed class GoogleFlightsClient : IDisposable
         selection = selection with { Request = request };
         selection.Validate();
 
-        var frames = await _transport.ServiceAsync("GetBookingResults", RequestEncoder.BookingResults(selection), Jspb(request), ct)
-            .ConfigureAwait(false);
-        var options = ResponseParser.Booking(frames, request);
         var url = TfsEncoder.PageUrl(request, RequestEncoder.Filter(request, selection.ChosenLegs), booking: true);
-        return new BookingOptions(selection, options, url, _time.GetUtcNow());
+        return Task.FromException<BookingOptions>(new GoogleFlightsUnavailableException(
+            "Booking options are not available: Google Flights lists sellers and fares only through its page's own script, " +
+            $"which this client does not run. Open the booking page to see them: {url}", url));
     }
 
     /// <summary>
-    /// The lowest price per date over a range, for a round trip: it keeps its trip length, or, with
-    /// <see cref="CalendarRequest.ReturnFrom"/> and <see cref="CalendarRequest.ReturnTo"/>, prices every
-    /// departure-by-return pair. One-way trips are not supported yet (no recorded request); multi-city trips have
-    /// no calendar.
+    /// The lowest price per date over a range: <b>not available</b>. Google Flights prices dates only through its
+    /// page's own script, whose request carries a token the client cannot make. The request is checked as before (a
+    /// round trip, ranges no wider than the page's own), then nothing is sent; the task fails with a
+    /// <see cref="GoogleFlightsUnavailableException"/> holding the search page's link.
     /// </summary>
-    public async Task<PriceCalendar> GetCalendarAsync(CalendarRequest request, bool verify = false, CancellationToken ct = default)
+    public Task<PriceCalendar> GetCalendarAsync(CalendarRequest request, bool verify = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         var search = Normalize(request.Search ?? throw new ArgumentException("The calendar needs a search.", nameof(request)));
@@ -111,7 +117,6 @@ public sealed class GoogleFlightsClient : IDisposable
             throw new ArgumentException(
                 "The price calendar is available for round trips only: give a trip length or a return date range.", nameof(request));
         }
-        string rpc, inner;
         if (request.ReturnFrom is { } returnFrom && request.ReturnTo is { } returnTo)
         {
             if (search.TripType != TripType.RoundTrip)
@@ -120,8 +125,6 @@ public sealed class GoogleFlightsClient : IDisposable
             CheckCalendarRange(returnFrom, returnTo, MaxGridDays, "return");
             if (returnTo < request.DepartureFrom)
                 throw new ArgumentException("Every return date is before the first departure.", nameof(request));
-            rpc = "GetCalendarGrid";
-            inner = RequestEncoder.CalendarGrid(search, request.DepartureFrom, request.DepartureTo, returnFrom, returnTo);
         }
         else if (request.ReturnFrom is not null || request.ReturnTo is not null)
         {
@@ -130,15 +133,12 @@ public sealed class GoogleFlightsClient : IDisposable
         else
         {
             CheckCalendarRange(request.DepartureFrom, request.DepartureTo, MaxGraphDays, "departure");
-            rpc = "GetCalendarGraph";
-            inner = RequestEncoder.CalendarGraph(search, request.DepartureFrom, request.DepartureTo,
-                search.Legs[1].Date.DayNumber - search.Legs[0].Date.DayNumber);
         }
 
-        var normalized = request with { Search = search };
-        return await CachedAsync(rpc, inner, Jspb(search), verify, ct,
-            frames => new PriceCalendar(normalized, ResponseParser.Calendar(frames, search), _time.GetUtcNow(), FromCache: false),
-            r => r with { FromCache = true }).ConfigureAwait(false);
+        var url = TfsEncoder.PageUrl(search, RequestEncoder.Filter(search), booking: false);
+        return Task.FromException<PriceCalendar>(new GoogleFlightsUnavailableException(
+            "Price calendars are not available: Google Flights prices dates only through its page's own script, which " +
+            $"this client does not run. Search the dates that matter one at a time, or open the search page and its Date grid: {url}", url));
     }
 
     /// <summary>Places and their airports matching what a person typed, e.g. <c>Denver</c> or <c>SEA</c>.</summary>
@@ -149,60 +149,41 @@ public sealed class GoogleFlightsClient : IDisposable
             throw new ArgumentException("Give a place or airport name of 1 to 100 characters.", nameof(query));
 
         var jspb = RequestEncoder.JspbHeader(FlightSearchRequest.NormalizeCurrency(_options.Currency), FlightSearchRequest.NormalizeRegion(_options.Region));
-        return await CachedAsync("H028ib", RequestEncoder.Autocomplete(text), jspb, verify, ct,
+        var inner = RequestEncoder.Autocomplete(text);
+        return await CachedAsync($"H028ib\n{jspb}\n{inner}", verify, ct,
+            () => _transport.BatchAsync("H028ib", inner, jspb, CancellationToken.None),
             frames => new AirportLookup(text, ResponseParser.Places(frames), _time.GetUtcNow(), FromCache: false),
-            r => r with { FromCache = true }, batch: true).ConfigureAwait(false);
+            r => r with { FromCache = true }).ConfigureAwait(false);
     }
 
+    /// <summary>A leg's flights, from the search page whose link pins every flight chosen before it.</summary>
     private Task<FlightSearchResult> FlightsAsync(FlightSearchRequest request, FlightSelection? selection, bool verify, CancellationToken ct)
     {
         var url = TfsEncoder.PageUrl(request, RequestEncoder.Filter(request, selection?.ChosenLegs), booking: false);
-        if (selection is null)
+        if (request.TripType == TripType.MultiCity)
         {
-            return CachedPageAsync(url, verify, ct,
-                frames =>
-                {
-                    var parsed = ResponseParser.Flights(frames, request, selection);
-                    return new FlightSearchResult(request, 0, parsed.Best, parsed.Other, parsed.Airlines, url,
-                        _time.GetUtcNow(), FromCache: false);
-                },
-                r => r with { FromCache = true });
+            // H4: the page loads a multi-city trip's flights only through its own script; its HTML carries none.
+            return Task.FromException<FlightSearchResult>(new GoogleFlightsUnavailableException(
+                "Multi-city trips are not available: Google Flights loads their flights only through its page's own script, " +
+                "which this client does not run. Search each leg as one way instead (those are one-way prices, not the " +
+                $"multi-city price), or open the search page: {url}", url));
         }
 
-        var inner = RequestEncoder.ShoppingResults(request, selection);
-        return CachedAsync("GetShoppingResults", inner, Jspb(request), verify, ct,
+        return CachedAsync(url.AbsoluteUri, verify, ct,
+            () => _transport.SearchPageAsync(url, CancellationToken.None),
             frames =>
             {
                 var parsed = ResponseParser.Flights(frames, request, selection);
-                return new FlightSearchResult(request, selection.NextLeg, parsed.Best, parsed.Other, parsed.Airlines, url,
+                return new FlightSearchResult(request, selection?.NextLeg ?? 0, parsed.Best, parsed.Other, parsed.Airlines, url,
                     _time.GetUtcNow(), FromCache: false);
             },
             r => r with { FromCache = true });
     }
 
-    private async Task<T> CachedPageAsync<T>(
-        Uri url, bool verify, CancellationToken ct,
-        Func<RpcFrames, T> parse, Func<T, T> markCached) where T : class
-    {
-        var key = url.AbsoluteUri;
-        if (!verify && _cache.TryGet<T>(key, out var cached))
-            return markCached(cached);
-
-        ct.ThrowIfCancellationRequested();
-        return await _cache.SingleFlightAsync(key, async () =>
-        {
-            var frames = await _transport.SearchPageAsync(url, CancellationToken.None).ConfigureAwait(false);
-            var result = parse(frames);
-            _cache.Set(key, result);
-            return result;
-        }, ct).ConfigureAwait(false);
-    }
-
     private async Task<T> CachedAsync<T>(
-        string rpc, string inner, string jspb, bool verify, CancellationToken ct,
-        Func<RpcFrames, T> parse, Func<T, T> markCached, bool batch = false) where T : class
+        string key, bool verify, CancellationToken ct,
+        Func<Task<RpcFrames>> fetch, Func<RpcFrames, T> parse, Func<T, T> markCached) where T : class
     {
-        var key = $"{rpc}\n{jspb}\n{inner}";
         if (!verify && _cache.TryGet<T>(key, out var cached))
             return markCached(cached);
 
@@ -210,10 +191,7 @@ public sealed class GoogleFlightsClient : IDisposable
         // The shared request takes no caller's token: the pipeline's total timeout bounds it.
         return await _cache.SingleFlightAsync(key, async () =>
         {
-            var frames = batch
-                ? await _transport.BatchAsync(rpc, inner, jspb, CancellationToken.None).ConfigureAwait(false)
-                : await _transport.ServiceAsync(rpc, inner, jspb, CancellationToken.None).ConfigureAwait(false);
-            var result = parse(frames);
+            var result = parse(await fetch().ConfigureAwait(false));
             _cache.Set(key, result);
             return result;
         }, ct).ConfigureAwait(false);
@@ -255,8 +233,6 @@ public sealed class GoogleFlightsClient : IDisposable
         CheckDate(from, $"The {what} range's first date");
         CheckDate(to, $"The {what} range's last date");
     }
-
-    private static string Jspb(FlightSearchRequest normalized) => RequestEncoder.JspbHeader(normalized.Currency!, normalized.Region!);
 
     public void Dispose() => _transport.Dispose();
 }

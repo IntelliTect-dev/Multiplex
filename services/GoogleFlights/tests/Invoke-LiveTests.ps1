@@ -4,15 +4,15 @@
     Runs every Google Flights live test on this machine's internet connection, stopping at the first failure.
 
 .DESCRIPTION
-    About 21 requests to Google Flights, paced by the client, in about 5 minutes. A refusal can stop the
+    About 14 requests to Google Flights, paced by the client, in about 5 minutes. A refusal can stop the
     client on this connection for hours, for everyone on it (issue #101), so do not run this in a loop.
 
     Stages, each only after the one before passed:
       1. Prerequisites: git, the .NET 10 SDK, Pester 5 or later.
       2. Build, then the offline tests (no requests to Google).
       3. One live search (1 request). If Google refuses it, stop: this connection is refused.
-      4. The client's live suite (12 requests).
-      5. The MCP tools (5 requests) and the PowerShell module (3 requests), live.
+      4. The client's live suite (8 requests).
+      5. The MCP tools (3 requests) and the PowerShell module (2 requests), live.
 
     Every exchange with Google is saved in full under .har-captures/www.google.com/<stamp>-live/ in the
     repository's main checkout (gitignored). If anything was refused, bring those folders back: a refusal is
@@ -72,13 +72,13 @@ try {
     Step 'Live: one search first (1 request; refused means stop)' {
         dotnet test $client --no-build --nologo --filter $knownGood
     }
-    Step 'Live: the client suite (12 requests, about 3 minutes)' {
+    Step 'Live: the client suite (8 requests, about 2 minutes)' {
         dotnet test $client --no-build --nologo --filter "FullyQualifiedName~Live.GoogleFlightsLiveTests&$($knownGood.Replace('~', '!~'))"
     }
-    Step 'Live: the MCP tools (5 requests)' {
+    Step 'Live: the MCP tools (3 requests)' {
         dotnet test (Join-Path $root 'tests/Multiplex.Tests') --no-build --nologo --filter 'FullyQualifiedName~GoogleFlightsMcpLiveTests'
     }
-    Step 'Live: the PowerShell module (3 requests)' {
+    Step 'Live: the PowerShell module (2 requests)' {
         $result = Invoke-Pester (Join-Path $root 'services/GoogleFlights/tests/GoogleFlights.PowerShell.Tests') -PassThru -Output Detailed
         $global:LASTEXITCODE = [int]($result.FailedCount -gt 0 -or $result.Result -ne 'Passed')
     }

@@ -16,6 +16,13 @@ internal sealed class FakeGoogle : HttpMessageHandler
 
     public FakeGoogle Answer(HarEntry recorded) => Answer(() => Response(recorded));
 
+    /// <summary>Answers with a search page: HTTP 200, HTML.</summary>
+    public FakeGoogle AnswerPage(string html) => Answer(() =>
+        new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html, Encoding.UTF8, "text/html") });
+
+    /// <summary>Answers with a search page carrying a recorded <c>GetShoppingResults</c> answer (<see cref="SearchPages.FromRpcAnswer"/>).</summary>
+    public FakeGoogle AnswerPage(HarEntry recordedRpcAnswer) => AnswerPage(SearchPages.FromRpcAnswer(recordedRpcAnswer));
+
     public FakeGoogle Answer(HttpStatusCode status, string body = "", Action<HttpResponseMessage>? configure = null) => Answer(() =>
     {
         var r = new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };

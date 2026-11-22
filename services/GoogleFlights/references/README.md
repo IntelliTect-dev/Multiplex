@@ -38,6 +38,24 @@ generated from it. Edit the JSON, then run `render-har-catalogue.js --dir .`.
 
 <!-- END GENERATED CATALOGUE -->
 
+## Search page data (`pages/`)
+
+Since 2026-11-22 the client reads flights from Google Flights' search pages
+(`../docs/protocol.md` section 2). A page is 2-3 MB of scripts; what the
+client reads is one element, the data block `ds:1`. Each file here is that
+`<script>` element of a page the client fetched live, **verbatim except the
+page's one-time script nonce** (`nonce="redacted"`). It holds route data
+(airports, airlines, flights, prices) and Google's opaque search and
+selection tokens; nothing personal.
+
+| File | Evidence | What it is |
+|---|---|---|
+| `pages/google-flights-search-page-data-one-way-2026-11-22.html` | H1 | The one-way SEA-DEN 2026-12-15 search page: 4 best and 10 other flights |
+| `pages/google-flights-search-page-data-return-leg-2026-11-22.html` | H2 | The round-trip SEA-DEN 2026-12-15/22 search page with Delta DL2759 pinned on the outbound: 3 best and 14 other returns |
+
+The whole pages, and the booking and multi-city pages that carry no flight
+data (H3, H4), stay in the gitignored capture store.
+
 ## Naming
 
 `google-flights/google-flights-<action>-<yyyy-MM-dd>.har`, where `<action>`

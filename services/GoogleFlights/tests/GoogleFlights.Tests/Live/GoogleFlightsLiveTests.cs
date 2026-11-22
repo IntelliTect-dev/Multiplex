@@ -4,7 +4,8 @@ namespace Multiplex.Sites.GoogleFlights.Tests.Live;
 
 /// <summary>
 /// The client against the real Google Flights. Assertions are on structure and meaning, never on prices,
-/// which change by the minute. The suite spends about a dozen requests, paced by the client itself.
+/// which change by the minute. The suite spends about eight requests, paced by the client itself. Booking options,
+/// price calendars and multi-city trips are not available over HTTPS and send nothing (protocol.md section 2).
 /// </summary>
 [Collection(LiveCollection.Name)]
 public class GoogleFlightsLiveTests(LiveClientFixture live)
@@ -32,7 +33,7 @@ public class GoogleFlightsLiveTests(LiveClientFixture live)
     }
 
     [LiveFact]
-    public async Task A_round_trip_goes_from_outbound_to_returns_to_booking_options()
+    public async Task A_round_trip_goes_from_outbound_to_returns_and_booking_gives_the_link()
     {
         var outbound = await live.Client.SearchAsync(FlightSearchRequest.RoundTrip("SEA", "DEN", Departure, Return));
         var first = outbound.AllFlights.First(f => f.Segments.Count == 1);
@@ -49,33 +50,10 @@ public class GoogleFlightsLiveTests(LiveClientFixture live)
             Assert.NotNull(f.SeparateTickets);
         });
 
-        // Prefer a return Google sells with the outbound, as a person would.
+        // Booking options are not available over HTTPS (protocol.md section 2, H3): no request, the booking page's link.
         var back = returns.AllFlights.FirstOrDefault(f => f.SeparateTickets == false) ?? returns.AllFlights.First();
-        var booking = await live.Client.GetBookingOptionsAsync(back.Selection);
-        Assert.NotEmpty(booking.Options);
-        Assert.All(booking.Options, o => Assert.NotEmpty(o.Sellers));
-        Assert.Contains(booking.Options, o => o.Price is { Amount: > 0 });
-        Assert.Equal("/travel/flights/booking", booking.GoogleFlightsUrl.AbsolutePath);
-    }
-
-    [LiveFact]
-    public async Task A_multi_city_trip_lists_each_leg_in_turn()
-    {
-        var request = FlightSearchRequest.MultiCity(
-            new FlightLeg("SEA", "DEN", Departure),
-            new FlightLeg("DEN", "LAX", Departure.AddDays(4)));
-
-        var leg1 = await live.Client.SearchAsync(request);
-        Assert.All(leg1.AllFlights, f => Assert.Equal(("SEA", "DEN"), (f.Origin, f.Destination)));
-        var leg2 = await live.Client.GetReturnFlightsAsync(leg1.AllFlights.First().Selection);
-
-        Assert.Equal(1, leg2.Leg);
-        Assert.NotEmpty(leg2.AllFlights);
-        Assert.All(leg2.AllFlights, f =>
-        {
-            Assert.Equal(("DEN", "LAX"), (f.Origin, f.Destination));
-            Assert.True(f.Selection.IsComplete);
-        });
+        var unavailable = await Assert.ThrowsAsync<GoogleFlightsUnavailableException>(() => live.Client.GetBookingOptionsAsync(back.Selection));
+        Assert.Equal("/travel/flights/booking", unavailable.GoogleFlightsUrl!.AbsolutePath);
     }
 
     [LiveFact]
@@ -104,29 +82,6 @@ public class GoogleFlightsLiveTests(LiveClientFixture live)
 
         Assert.NotEmpty(result.AllFlights);
         Assert.All(result.AllFlights, f => Assert.InRange(f.Stops, 0, 1));
-    }
-
-    [LiveFact]
-    public async Task A_round_trip_price_graph_keeps_the_trip_length_and_the_grid_pairs_dates()
-    {
-        var search = FlightSearchRequest.RoundTrip("SEA", "DEN", Departure, Return);
-
-        var graph = await live.Client.GetCalendarAsync(new CalendarRequest(search, Departure.AddDays(-5), Departure.AddDays(5)));
-        Assert.NotEmpty(graph.Prices);
-        Assert.All(graph.Prices, p =>
-        {
-            Assert.InRange(p.Departure, Departure.AddDays(-5), Departure.AddDays(5));
-            Assert.Equal(7, p.Return!.Value.DayNumber - p.Departure.DayNumber);
-            Assert.True(p.Price.Amount > 0);
-        });
-
-        var grid = await live.Client.GetCalendarAsync(new CalendarRequest(search, Departure.AddDays(-1), Departure.AddDays(1))
-        {
-            ReturnFrom = Return.AddDays(-1),
-            ReturnTo = Return.AddDays(1),
-        });
-        Assert.NotEmpty(grid.Prices);
-        Assert.All(grid.Prices, p => Assert.InRange(p.Return!.Value, Return.AddDays(-1), Return.AddDays(1)));
     }
 
     [LiveFact]

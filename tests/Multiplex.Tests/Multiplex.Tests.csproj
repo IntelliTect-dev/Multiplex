@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -24,6 +24,7 @@
     <Content Include="Services\*\Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
     <!-- Google Flights' fixtures are its committed, scrubbed references, not copies. -->
     <None Include="..\..\services\GoogleFlights\references\google-flights\*.har" Link="Services\GoogleFlights\References\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\services\GoogleFlights\references\pages\*.html" Link="Services\GoogleFlights\References\Pages\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -31,7 +31,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task A_search_identifies_itself_honestly_and_sends_only_what_Google_needs()
     {
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         using var client = Client();
 
         await client.SearchAsync(SeaDen);
@@ -51,7 +51,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task A_search_returns_flights_with_when_and_whether_from_cache()
     {
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         using var client = Client();
 
         var result = await client.SearchAsync(SeaDen);
@@ -67,7 +67,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task The_same_search_again_within_the_cache_duration_is_answered_from_the_cache()
     {
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         using var client = Client();
         var first = await client.SearchAsync(SeaDen);
         _time.Advance(TimeSpan.FromMinutes(11));
@@ -84,7 +84,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task Verify_asks_Google_again_and_refreshes_the_cache()
     {
-        _google.Answer(Flow[0]).Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]).AnswerPage(Flow[0]);
         using var client = Client();
         await client.SearchAsync(SeaDen);
         _time.Advance(TimeSpan.FromMinutes(1));
@@ -101,7 +101,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task An_answer_older_than_the_cache_duration_is_fetched_again()
     {
-        _google.Answer(Flow[0]).Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]).AnswerPage(Flow[0]);
         using var client = Client(o => o.CacheDuration = TimeSpan.FromMinutes(12));
         await client.SearchAsync(SeaDen);
         _time.Advance(TimeSpan.FromMinutes(12));
@@ -115,7 +115,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task A_different_currency_is_a_different_request_and_a_different_cache_entry()
     {
-        _google.Answer(Flow[0]).Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]).AnswerPage(Flow[0]);
         using var client = Client();
         await client.SearchAsync(SeaDen);
 
@@ -123,40 +123,6 @@ public class GoogleFlightsClientTests
 
         Assert.Equal(2, _google.Sent.Count);
         Assert.Contains("curr=EUR", _google.Sent[1].Url.Query, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task The_return_step_and_booking_follow_the_chosen_selection()
-    {
-        _google.Answer(Flow[0]).Answer(Flow[1]).Answer(Flow[2]);
-        using var client = Client();
-
-        var outbound = (await client.SearchAsync(SeaDen)).AllFlights.First(o => o.Flights.SequenceEqual(["DL1358"]));
-        var returns = await client.GetReturnFlightsAsync(outbound.Selection);
-        var back = returns.AllFlights.First(o => o.Flights.SequenceEqual(["DL1731"]));
-        var booking = await client.GetBookingOptionsAsync(back.Selection);
-
-        Assert.Equal(1, returns.Leg);
-        // Byte for byte what F2 and F3 sent, and Google answered.
-        Assert.Equal(Flow[1].InnerRequest, _google.Sent[1].InnerRequest);
-        Assert.Equal("GetBookingResults", _google.Sent[2].Rpc);
-        Assert.Equal(Flow[2].InnerRequest, _google.Sent[2].InnerRequest);
-        Assert.Equal(7, booking.Options.Count);
-        Assert.Equal("/travel/flights/booking", booking.GoogleFlightsUrl.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task Booking_options_are_never_served_from_the_cache()
-    {
-        _google.Answer(Flow[0]).Answer(Flow[2]).Answer(Flow[2]);
-        using var client = Client();
-        var oneWay = await client.SearchAsync(FlightSearchRequest.OneWay("SEA", "DEN", Dec15));
-        var chosen = oneWay.AllFlights.First().Selection;
-
-        await client.GetBookingOptionsAsync(chosen);
-        await client.GetBookingOptionsAsync(chosen);
-
-        Assert.Equal(2, _google.Sent.Count(s => s.Rpc == "GetBookingResults"));
     }
 
     [Fact]
@@ -184,10 +150,14 @@ public class GoogleFlightsClientTests
         Assert.Empty(_google.Sent);
     }
 
+    /// <summary>How Google turns away a page request from a client it does not serve pages to (P5, P9).</summary>
+    private static void Unsupported(HttpResponseMessage r) =>
+        r.Headers.Location = new Uri("https://www.google.com/travel/flights/unsupported?tfs=x&ucpp=y");
+
     [Fact]
     public async Task A_refusal_stops_every_request_until_the_cool_down_ends()
     {
-        _google.Answer(HarFixture.Load("direct-search-refused-2026-11-19")[0]).Answer(Flow[0]);
+        _google.Answer(HttpStatusCode.Found, "", Unsupported).AnswerPage(Flow[0]);
         using var client = Client(o => o.RefusalCooldown = TimeSpan.FromMinutes(15));
 
         var refused = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
@@ -208,15 +178,33 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task Refusals_in_a_row_double_the_cool_down()
     {
+        // A data-endpoint refusal (gRPC 13 with Google's ErrorResponse), as the airport lookup could get one.
         var refusal = HarFixture.Load("round-trip-search-refused-2026-11-19")[0];
         _google.Answer(refusal).Answer(refusal);
         using var client = Client(o => o.RefusalCooldown = TimeSpan.FromMinutes(15));
 
-        await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        var first = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.LookupAirportsAsync("Denv"));
+        Assert.Equal(ThrottleReason.Refused, first.Reason);
         _time.Advance(TimeSpan.FromMinutes(15));
-        var second = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        var second = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.LookupAirportsAsync("Denv"));
 
         Assert.Equal(_time.GetUtcNow() + TimeSpan.FromMinutes(30), second.RetryAfter);
+    }
+
+    [Fact]
+    public async Task A_refused_page_and_a_refused_lookup_share_one_cool_down()
+    {
+        _google.Answer(HttpStatusCode.Found, "", Unsupported).Answer(HttpStatusCode.Found, "", Unsupported);
+        using var client = Client(o => o.RefusalCooldown = TimeSpan.FromMinutes(15));
+
+        await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        _time.Advance(TimeSpan.FromMinutes(15));
+        var second = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(FlightSearchRequest.OneWay("SEA", "LAX", Dec15)));
+
+        Assert.Equal(_time.GetUtcNow() + TimeSpan.FromMinutes(30), second.RetryAfter);
+        var cooling = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.LookupAirportsAsync("Denv"));
+        Assert.Equal(ThrottleReason.CoolingDown, cooling.Reason);
+        Assert.Equal(2, _google.Sent.Count);
     }
 
     [Fact]
@@ -260,7 +248,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task A_server_error_then_an_answer_succeeds()
     {
-        _google.Answer(HttpStatusCode.BadGateway).Answer(Flow[0]);
+        _google.Answer(HttpStatusCode.BadGateway).AnswerPage(Flow[0]);
         using var client = new GoogleFlightsClient(
             new GoogleFlightsClientOptions { BurstRequests = 100, MaxRetries = 2, RetryDelay = TimeSpan.FromMilliseconds(1) },
             TimeProvider.System, _google);
@@ -276,13 +264,13 @@ public class GoogleFlightsClientTests
         _google.Answer(HttpStatusCode.OK, ")]}'\n\n39\n[[\"wrb.fr\",null,null,null,null,[3]]]\n");
         using var client = Client();
 
-        await Assert.ThrowsAsync<GoogleFlightsRequestException>(() => client.SearchAsync(SeaDen));
+        await Assert.ThrowsAsync<GoogleFlightsRequestException>(() => client.LookupAirportsAsync("Denv"));
     }
 
     [Fact]
     public async Task Requests_beyond_the_pacing_budget_are_held_back_without_reaching_Google()
     {
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         using var limiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
         {
             TokenLimit = 1, TokensPerPeriod = 1, ReplenishmentPeriod = TimeSpan.FromHours(1), QueueLimit = 0, AutoReplenishment = false,
@@ -300,7 +288,7 @@ public class GoogleFlightsClientTests
     [Fact]
     public async Task Identical_searches_at_the_same_time_share_one_request()
     {
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         _google.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var client = Client();
 
@@ -316,7 +304,7 @@ public class GoogleFlightsClientTests
     public async Task A_request_waiting_its_turn_when_Google_refuses_is_never_sent()
     {
         // Review finding I1: the cool-down is checked again after the pacing wait, not only on entry.
-        _google.Answer(HarFixture.Load("direct-search-refused-2026-11-19")[0]).Answer(Flow[0]);
+        _google.Answer(HttpStatusCode.Found, "", Unsupported).AnswerPage(Flow[0]);
         _google.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var limiter = new TokenBucketRateLimiter(new TokenBucketRateLimiterOptions
         {
@@ -342,7 +330,7 @@ public class GoogleFlightsClientTests
     public async Task One_caller_giving_up_does_not_fail_another_caller_sharing_the_request()
     {
         // Review finding I2.
-        _google.Answer(Flow[0]);
+        _google.AnswerPage(Flow[0]);
         _google.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var client = Client();
         using var giveUp = new CancellationTokenSource();
@@ -390,7 +378,7 @@ public class GoogleFlightsClientTests
         _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[8]]]\n");
         using var client = Client();
 
-        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.SearchAsync(SeaDen));
+        var e = await Assert.ThrowsAsync<GoogleFlightsThrottledException>(() => client.LookupAirportsAsync("Denv"));
         Assert.Equal(ThrottleReason.Refused, e.Reason);
         Assert.Contains("gRPC 8", e.Message, StringComparison.Ordinal);
 
@@ -404,10 +392,10 @@ public class GoogleFlightsClientTests
     {
         // 2026-11-20: gRPC 9 came once from a network Google was refusing and once from a network it was answering,
         // where the next search ten minutes later was answered. It says nothing about a block.
-        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[9]]]\n").Answer(Flow[0]);
+        _google.Answer(HttpStatusCode.OK, ")]}'\n\n38\n[[\"wrb.fr\",null,null,null,null,[9]]]\n").AnswerPage(Flow[0]);
         using var client = Client();
 
-        var e = await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.SearchAsync(SeaDen));
+        var e = await Assert.ThrowsAsync<GoogleFlightsTransientException>(() => client.LookupAirportsAsync("Denv"));
         Assert.Contains("gRPC 9", e.Message, StringComparison.Ordinal);
 
         Assert.Equal(13, (await client.SearchAsync(SeaDen)).AllFlights.Count());
@@ -443,7 +431,7 @@ public class GoogleFlightsClientTests
         _google.Answer(HttpStatusCode.OK, ")]}'\n\n30\n[[\"wrb.fr\",null,\"[1,2,\",null]]\n");
         using var client = Client();
 
-        await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.SearchAsync(SeaDen));
+        await Assert.ThrowsAsync<GoogleFlightsFormatException>(() => client.LookupAirportsAsync("Denv"));
     }
 
     [Theory]
@@ -501,20 +489,6 @@ public class GoogleFlightsClientTests
         for (var i = 0; i < 500 && !condition(); i++)
             await Task.Delay(10);
         Assert.True(condition(), "The condition was not reached in time.");
-    }
-
-    [Fact]
-    public async Task A_round_trip_price_graph_keeps_the_trip_length()
-    {
-        _google.Answer(Flow[3]);
-        using var client = Client();
-
-        var calendar = await client.GetCalendarAsync(new CalendarRequest(SeaDen, new DateOnly(2026, 12, 10), new DateOnly(2026, 12, 20)));
-
-        Assert.Equal(Flow[3].InnerRequest, _google.Sent[0].InnerRequest);
-        Assert.Equal(11, calendar.Prices.Count);
-        // Google shows 163; the cell's token carries the exact fare.
-        Assert.Equal(new Money(162.96m, "USD"), calendar.Cheapest!.Price);
     }
 
     [Fact]

@@ -10,13 +10,13 @@ public sealed class GoogleFlightsLiveFactAttribute : FactAttribute
     public GoogleFlightsLiveFactAttribute()
     {
         if (Environment.GetEnvironmentVariable("MULTIPLEX_LIVE_TESTS") != "1")
-            Skip = "Live test against Google Flights. Set MULTIPLEX_LIVE_TESTS=1 to run it (five paced requests).";
+            Skip = "Live test against Google Flights. Set MULTIPLEX_LIVE_TESTS=1 to run it (three paced requests).";
     }
 }
 
 /// <summary>
-/// Every Google Flights tool over the real MCP pipeline against the real Google Flights: five requests, paced by
-/// the client. Assertions are on structure, never on prices.
+/// Every Google Flights tool over the real MCP pipeline against the real Google Flights: three requests (the airport
+/// lookup and two search pages), paced by the client. Assertions are on structure, never on prices.
 /// </summary>
 public class GoogleFlightsMcpLiveTests(WebApplicationFactory<Program> factory) : IClassFixture<WebApplicationFactory<Program>>
 {
@@ -39,15 +39,19 @@ public class GoogleFlightsMcpLiveTests(WebApplicationFactory<Program> factory) :
         var home = returns.GetProperty("flights")[0];
         Assert.Equal("DEN", home.GetProperty("from").GetString());
 
-        var booking = await CallAsync(mcp, "get_booking_options", new { selection = home.GetProperty("selection").GetString() });
-        Assert.NotEqual(0, booking.GetProperty("options").GetArrayLength());
+        // Not available over HTTPS (protocol.md section 2): each answers with an error holding the Google Flights link,
+        // and sends nothing.
+        var (bookingIsError, booking) = await mcp.CallAsync("get_booking_options", new { selection = home.GetProperty("selection").GetString() });
+        Assert.True(bookingIsError);
+        Assert.Contains("https://www.google.com/travel/flights/booking?tfs=", booking, StringComparison.Ordinal);
 
-        var calendar = await CallAsync(mcp, "get_price_calendar", new
+        var (calendarIsError, calendar) = await mcp.CallAsync("get_price_calendar", new
         {
             origin = "SEA", destination = "DEN", departure_date_from = departure, departure_date_to = DateTime.Today.AddDays(50).ToString("yyyy-MM-dd"),
             trip_length_days = 7,
         });
-        Assert.NotEqual(0, calendar.GetProperty("prices").GetArrayLength());
+        Assert.True(calendarIsError);
+        Assert.Contains("not available", calendar, StringComparison.Ordinal);
 
         var airlines = await CallAsync(mcp, "lookup_airline", new { query = "DL" });
         Assert.Equal("Delta", airlines.GetProperty("airlines")[0].GetProperty("name").GetString());

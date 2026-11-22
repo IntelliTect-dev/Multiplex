@@ -10,26 +10,25 @@ public static class GoogleFlightsDocs
         " Answers are cached for about 12 minutes; set verify to true when the user asks to verify, confirm, double-check or refresh.";
 
     public const string SearchFlights =
-        "Searches Google Flights for one-way, round-trip or multi-city flights and lists the options for the first leg, " +
-        "with prices, times, stops, layovers and airlines. A round trip's or multi-city trip's prices are for the whole trip. " +
-        "Each option has a selection: pass it to get_return_flights (Get-FlightReturn) for the next leg, or, once every leg is " +
-        "chosen, to get_booking_options (Get-FlightBookingOption). Airports are three-letter IATA codes; look them up first " +
-        "with lookup_airport (Find-Airport)." + VerifyNote;
+        "Searches Google Flights for one-way or round-trip flights and lists the options for the first leg, with prices, " +
+        "times, stops, layovers and airlines. A round trip's prices are for the whole trip. Each option has a selection: " +
+        "pass a round trip's outbound choice to get_return_flights (Get-FlightReturn). Multi-city trips are not available: " +
+        "Google loads them only through its page's own script; search each leg as one way instead (one-way prices). " +
+        "Airports are three-letter IATA codes; look them up first with lookup_airport (Find-Airport)." + VerifyNote;
 
     public const string GetReturnFlights =
-        "Lists the flights for the next leg after one is chosen: a round trip's return flights, or the next flight of a " +
-        "multi-city trip. Pass the selection of the option chosen. On the last leg, separate_tickets says when Google sells " +
-        "that choice as separate tickets." + VerifyNote;
+        "Lists a round trip's return flights after its outbound is chosen, with round-trip prices. Pass the selection of " +
+        "the outbound chosen. separate_tickets says when Google sells that pair as separate tickets." + VerifyNote;
 
     public const string GetBookingOptions =
-        "Lists where a fully chosen trip can be bought: each seller (the airline or an agency), fare brand and price, and " +
-        "a Google Flights link to the booking page for the person to open. Pass the selection of the last leg chosen. " +
-        "Booking options are always fetched fresh, never from the cache; verify changes nothing here. Nothing is booked.";
+        "Not available: Google Flights lists sellers and fares only through its booking page's own script. Given the " +
+        "selection of a return flight, this answers with an error that holds the Google Flights booking page's link, for " +
+        "the person to open and buy from there. Nothing is sent to Google and nothing is booked; verify changes nothing here.";
 
     public const string GetPriceCalendar =
-        "Lists the lowest round-trip price for each departure date in a range: with trip_length_days fixed, or, given " +
-        "return_date_from and return_date_to, for every departure-by-return pair. Use it to find the cheapest dates " +
-        "before searching. One-way calendars are not available yet." + VerifyNote;
+        "Not available: Google Flights prices dates only through its page's own script. This answers with an error that " +
+        "holds the Google Flights search page's link, whose Date grid the person can open; to compare dates here, search " +
+        "each date with search_flights (Find-Flight). Nothing is sent to Google." + VerifyNote;
 
     public const string LookupAirport =
         "Finds airports for a place name, city or code, as Google Flights' own airport box does, e.g. 'Denver', 'Paris' or " +
@@ -54,8 +53,8 @@ public static class GoogleFlightsDocs
     public const string ReturnDate = "Return date for a round trip, yyyy-MM-dd. Omit for one way.";
 
     public const string Legs =
-        "Multi-city legs, in order, each 'ORIGIN-DESTINATION-yyyy-MM-dd' (e.g. 'SEA-DEN-2026-12-15'). Use instead of origin, " +
-        "destination and the dates.";
+        "Multi-city legs, in order, each 'ORIGIN-DESTINATION-yyyy-MM-dd' (e.g. 'SEA-DEN-2026-12-15'). Multi-city trips are " +
+        "not available: a search with legs answers with an error holding the Google Flights link.";
 
     public const string MaxStops = "Most stops allowed: any (default), nonstop, one or two.";
 
