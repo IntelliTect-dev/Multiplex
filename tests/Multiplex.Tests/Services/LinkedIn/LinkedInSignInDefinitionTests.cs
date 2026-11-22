@@ -37,6 +37,16 @@ public sealed class LinkedInSignInDefinitionTests
     });
 
     [Fact]
+    public void Hint_warns_that_a_google_or_microsoft_password_goes_through_this_server_too()
+    {
+        var hint = s_definition.SignInHint;
+
+        Assert.NotNull(hint);
+        Assert.Contains("If you sign in with Google or Microsoft here, that password goes through this server too.", hint, StringComparison.Ordinal);
+        Assert.Contains("approve it there", hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_signed_in_member_is_their_profile_id_and_name()
     {
         var account = LinkedInSignInDefinition.ParseAccount(Me());

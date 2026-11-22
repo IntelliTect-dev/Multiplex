@@ -63,6 +63,33 @@ public sealed class ConnectGateTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sign_in_page_warns_that_the_password_goes_through_this_server()
+    {
+        _host.Completer.Add("p1", "stub");
+
+        var (_, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
+
+        Assert.Contains("""<p class="warning">What you type there, including your password, goes through this Multiplex server on its way to Stub Site.""", html);
+        Assert.DoesNotContain("password is not stored by this server", html);
+    }
+
+    [Fact]
+    public async Task Live_page_warns_beside_the_text_box_every_time_something_is_sent()
+    {
+        _host.Completer.Add("p1", "stub");
+        var client = await SignedInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+
+        var (_, html) = await client.GetAsync(started.Headers.Location!.OriginalString);
+
+        // Always shown, never dismissed, in the bar with the text box, and read out with the box each time it is focused.
+        const string warning = """<p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server.""";
+        Assert.Contains(warning, html);
+        Assert.InRange(html.IndexOf(warning, StringComparison.Ordinal), html.IndexOf("id=\"txt\"", StringComparison.Ordinal), html.IndexOf("id=\"stage\"", StringComparison.Ordinal));
+        Assert.Matches("""<input id="txt"[^>]* aria-describedby="type-warning"[^>]*>""", html);
+    }
+
+    [Fact]
     public async Task Client_name_is_html_encoded()
     {
         _host.Completer.Add("p1", "stub", clientName: "<script>alert(1)</script>");
