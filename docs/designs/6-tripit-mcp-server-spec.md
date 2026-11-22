@@ -529,8 +529,11 @@ lock, timeouts and the refresher's signed-out path.
   per character, 50 ms apart, with line breaks and tabs dropped (Enter and Tab have their own
   buttons). Nothing is disguised: the browser is what it is, a person signing in. Whether
   TripIt accepts the sign-in now is not verified yet.
-- TripIt's only third-party sign-in is Google; allowed navigation hosts default to
-  `www.tripit.com`, `tripit.com`, `accounts.google.com`.
+- TripIt's only third-party sign-in is Google, and it is not offered (#117): TripIt is
+  Multiplex's example of a site with its own sign-in, and a Google password must never be typed
+  into a page this server drives. Allowed navigation hosts default to `www.tripit.com` and
+  `tripit.com`, so "Sign in with Google" is blocked when it reaches `accounts.google.com`; the
+  connect page says to use the TripIt email and password.
 - Only email addresses TripIt marks confirmed are kept on an account.
 - "Keep me signed in" must be ticked during the mirrored sign-in, or the session ends when
   the browser closes; the page says so.
