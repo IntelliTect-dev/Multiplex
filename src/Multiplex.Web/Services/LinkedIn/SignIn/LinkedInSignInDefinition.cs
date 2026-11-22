@@ -21,7 +21,11 @@ public sealed class LinkedInSignInDefinition(IConfiguration config) : ISiteSignI
     internal const string WebOrigin = "https://www.linkedin.com";
     internal const string WebHost = "www.linkedin.com";
 
-    /// <summary>LinkedIn plus the identity providers its sign-in page offers (Google and Microsoft).</summary>
+    /// <summary>
+    /// LinkedIn plus the identity providers its sign-in page offers (Google and Microsoft). They stay
+    /// allowed; instead the hint warns that a Google or Microsoft password typed here goes through
+    /// this server too (#119).
+    /// </summary>
     public static readonly IReadOnlyList<string> DefaultAllowedHosts =
         [WebHost, "linkedin.com", "accounts.google.com", "login.microsoftonline.com", "login.live.com"];
 
@@ -37,7 +41,9 @@ public sealed class LinkedInSignInDefinition(IConfiguration config) : ISiteSignI
 
     public Uri RefreshUrl { get; } = new(WebOrigin + "/feed/");
 
-    public string? SignInHint => "If LinkedIn asks you to approve the sign-in in its app, approve it there; this page carries on by itself.";
+    public string? SignInHint =>
+        "If you sign in with Google or Microsoft here, that password goes through this server too. "
+        + "If LinkedIn asks you to approve the sign-in in its app, approve it there; this page carries on by itself.";
 
     /// <summary><c>Multiplex:Sites:linkedin:AllowedNavigationHosts</c> replaces the defaults when set.</summary>
     public IReadOnlyCollection<string> AllowedNavigationHosts
