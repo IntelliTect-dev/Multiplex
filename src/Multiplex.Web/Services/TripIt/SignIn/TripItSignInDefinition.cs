@@ -12,7 +12,8 @@ namespace Multiplex.Web.Services.TripIt.SignIn;
 /// How TripIt's sign-in looks to the generic connect machinery. Observed 2026-11-17 with a
 /// fresh, signed-out profile: <c>/app/trips</c> sends a signed-out visitor to
 /// <c>/account/login?redirect_url=…/app/trips</c>, and that page's only other sign-in method is
-/// Google (<c>/account/signInGoogle</c> → <c>accounts.google.com</c>). Headless Chrome (whose
+/// Google (<c>/account/signInGoogle</c> → <c>accounts.google.com</c>), which Multiplex
+/// deliberately does not offer (see below). Headless Chrome (whose
 /// user agent says "HeadlessChrome") is served TripIt's "Access Denied" page on
 /// <c>/app/trips</c> and <c>/account/signInGoogle</c>, although <c>/account/login</c> loads.
 /// TripIt is Multiplex's example of a site with its own sign-in, so only TripIt's email and
@@ -46,7 +47,7 @@ public sealed class TripItSignInDefinition(IConfiguration config) : ISiteSignInD
     public Uri RefreshUrl { get; } = new("https://www.tripit.com/app/trips");
 
     public string? SignInHint =>
-        "Sign in with your TripIt email and password (Google sign-in is turned off here), and tick “Keep me signed in” so this server can stay connected.";
+        "Sign in with your TripIt email and password; Google sign-in is turned off here. Tick “Keep me signed in” so this server can stay connected.";
 
     /// <summary><c>Multiplex:Sites:tripit:AllowedNavigationHosts</c> replaces the defaults when set.</summary>
     public IReadOnlyCollection<string> AllowedNavigationHosts
