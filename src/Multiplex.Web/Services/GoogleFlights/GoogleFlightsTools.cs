@@ -230,7 +230,7 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
             from_cache = result.FromCache,
             google_flights_url = result.GoogleFlightsUrl,
             next_step = lastLeg
-                ? "Pass a flight's selection to get_booking_options to see where to buy it."
+                ? "Booking options are not available here: the person opens google_flights_url and buys from the seller there."
                 : $"Pass a flight's selection to get_return_flights for leg {result.Leg + 2}.",
             flights = result.BestFlights.Select(f => Flight(f, best: true)).Concat(result.OtherFlights.Select(f => Flight(f, best: false))),
             airlines_in_results = result.Airlines.Select(a => new { a.Code, a.Name }),

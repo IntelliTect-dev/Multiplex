@@ -82,7 +82,8 @@ var returns = await flights.GetReturnFlightsAsync(outbound.BestFlights[0].Select
   so the client sends Chrome's User-Agent form followed by its own name and
   link: `... Chrome/... Safari/537.36 (compatible;
   Multiplex-GoogleFlights/<version>; +<url>)` (owner's decision, 2026-11-22).
-  It sends no other browser headers, no cookies of its own and no page tokens.
+  It sends no other browser headers and no page tokens; the only cookie it
+  sends back is the `NID` Google itself sets, as any HTTP client would.
 - **Not affiliated with Google.** These endpoints are undocumented and may
   change without notice; the contract-drift live test is how a change is
   noticed.
