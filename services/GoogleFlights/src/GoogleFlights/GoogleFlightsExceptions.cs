@@ -54,4 +54,4 @@ public sealed class GoogleFlightsRequestException(string message) : GoogleFlight
 /// Google's answer was not in the shape the client knows. Google has most likely changed its payloads; the
 /// field maps in <c>docs/protocol.md</c> need re-deriving from a fresh capture.
 /// </summary>
-public sealed class GoogleFlightsFormatException(string message) : GoogleFlightsException(message);
+public sealed class GoogleFlightsFormatException(string message, Exception? inner = null) : GoogleFlightsException(message, inner);

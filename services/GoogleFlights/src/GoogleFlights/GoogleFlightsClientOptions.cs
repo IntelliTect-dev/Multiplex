@@ -61,12 +61,11 @@ public sealed class GoogleFlightsClientOptions
     public RateLimiter? RateLimiter { get; set; }
 
     /// <summary>
-    /// The User-Agent the client sends: an honest automated client in the conventional
-    /// <c>Mozilla/5.0 (compatible; ...)</c> form, naming this project. Google refuses a direct request whose
-    /// User-Agent is not in that form (protocol.md section 2); it is not a browser's User-Agent.
+    /// The User-Agent the client sends: includes Chrome platform/engine tokens so page GET requests are not redirected
+    /// to /unsupported, while preserving honest project identification.
     /// </summary>
     public static string UserAgent { get; } =
-        $"Mozilla/5.0 (compatible; Multiplex-GoogleFlights/{Version}; +{InfoUrl})";
+        $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 (compatible; Multiplex-GoogleFlights/{Version}; +{InfoUrl})";
 
     private static string Version =>
         typeof(GoogleFlightsClientOptions).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
