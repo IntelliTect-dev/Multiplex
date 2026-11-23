@@ -55,7 +55,8 @@ internal static partial class AmazonSearch
     /// </summary>
     public const int WeightedRatingPrior = 100;
     /// <summary>
-    /// The stars a product starts from before its own ratings count: the lowest rating ever returned.
+    /// The stars a product starts from before its own ratings count: the lowest stars a rated product
+    /// can have and still be returned.
     /// It is fixed, not the average of the results in the answer, because Amazon's best-rated page is
     /// all 4.8 to 5.0 stars and an average that high lets 5.0 from 40 ratings outrank 4.8 from 35,000 (#131).
     /// </summary>

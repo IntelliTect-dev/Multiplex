@@ -298,6 +298,17 @@ public class AmazonSearchCombineTests
     }
 
     [Fact]
+    public void SortByPrice_AtTheSamePrice_PutsManyRatingsAheadOfAFewPerfectOnes()
+    {
+        // (5000 x 4.5 + 100 x 3) / 5100 = 4.471 beats (47 x 5.0 + 100 x 3) / 147 = 3.639.
+        var outcome = Combine(new AmazonSearchRequest("cable", AmazonSort.Price),
+            Page(Item("AAAAAAAAA1", price: 5, rating: 5.0, count: 47), Item("AAAAAAAAA2", price: 5, rating: 4.5, count: 5_000)));
+
+        Assert.Equal([("AAAAAAAAA2", 4.471), ("AAAAAAAAA1", 3.639)],
+            outcome.Results.Select(r => (r.Asin, r.WeightedRating!.Value)));
+    }
+
+    [Fact]
     public void SortByRating_TiesGoToCountThenStarsThenAmazonRank()
     {
         // Identical ratings and counts weigh the same, so Amazon's order decides.
