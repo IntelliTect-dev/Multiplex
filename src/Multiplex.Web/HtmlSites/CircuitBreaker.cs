@@ -8,6 +8,7 @@ namespace Multiplex.Web.HtmlSites;
 public sealed class CircuitBreaker(TimeProvider time, TimeSpan first, TimeSpan longest)
 {
     private readonly object _lock = new();
+    private readonly TimeSpan _first = first;
     private TimeSpan _next = first;
     private DateTimeOffset? _until;
     private string? _reason;
@@ -41,7 +42,7 @@ public sealed class CircuitBreaker(TimeProvider time, TimeSpan first, TimeSpan l
     {
         lock (_lock)
         {
-            _next = first;
+            _next = _first;
             _until = null;
         }
     }

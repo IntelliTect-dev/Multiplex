@@ -217,7 +217,10 @@ if v=$(docker compose version --short 2>&1); then echo "compose=$v"; else echo "
     Write-Host 'Building the server on this PC...'
     $staging = Join-Path ([IO.Path]::GetTempPath()) "multiplex-linux-$([guid]::NewGuid().ToString('N'))"
     try {
-        & $Publish (Join-Path $staging 'app')
+        # Whatever the build prints (a compiler warning shows even at -v quiet) is for the person to
+        # read, not part of what this function returns: left in the output, it reaches the caller
+        # as extra results beside the address and image (#129).
+        & $Publish (Join-Path $staging 'app') | Out-Host
         Copy-Item -Path (Join-Path $DeployFolder '*') -Destination $staging -Recurse
         $bundle = "$staging.tgz"
         & (Get-MultiplexTool tar) -czf $bundle -C $staging .
