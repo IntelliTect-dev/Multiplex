@@ -74,7 +74,9 @@ public static class GoogleFlightsDocs
 
     public const string Cabin = "Cabin: economy (default), premium_economy, business or first.";
 
-    public const string ExcludeBasicEconomy = "Economy without Basic Economy fares.";
+    public const string ExcludeBasicEconomy =
+        "Leave out Basic Economy fares (such as Delta Main Basic): on by default, so prices are for the lowest fare " +
+        "that is not Basic. Set false (-ExcludeBasicEconomy:$false) to include them.";
 
     public const string Adults = "Adults (default 1). At most 9 travelers in all.";
 
