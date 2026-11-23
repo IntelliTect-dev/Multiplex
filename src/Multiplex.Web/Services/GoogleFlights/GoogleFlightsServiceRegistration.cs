@@ -24,8 +24,9 @@ public static class GoogleFlightsServiceRegistration
     /// <summary>
     /// Registers the one <see cref="GoogleFlightsClient"/> every request shares, so its cache, pacing and refusal
     /// cool-down cover the whole server. Its tools are discovered by <c>WithToolsFromAssembly</c> and served at
-    /// <c>/google-flights/mcp</c>. The endpoint needs no sign-in, so like every open endpoint it answers only
-    /// requests from this PC unless <c>Multiplex:PublicOpenEndpoints</c> lists it.
+    /// <c>/google-flights/mcp</c>, which <c>RequireAuthFor("google-flights", ..., needsSiteAccount: false)</c> in
+    /// <c>Program.cs</c> puts behind Multiplex's sign-in: like Time it acts for no one's site account, so it needs a
+    /// token from anywhere but the machine Multiplex runs on, and connecting it is a consent page.
     /// </summary>
     public static IServiceCollection AddGoogleFlightsService(this IServiceCollection services, IConfiguration configuration)
     {

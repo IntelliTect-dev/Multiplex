@@ -17,12 +17,13 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 // Every service needs sign-in (#80). The ones that act on a person's site account connect by signing
-// in to that site; Time and Amazon act for no one, so connecting them is a consent page.
+// in to that site; Time, Amazon and Google Flights act for no one, so connecting them is a consent page.
 builder.Services.AddMultiplexAuth(builder.Configuration)
     .RequireAuthFor("tripit", "TripIt")
     .RequireAuthFor("linkedin", "LinkedIn")
     .RequireAuthFor("time", "Time", needsSiteAccount: false)
-    .RequireAuthFor("amazon", "Amazon", needsSiteAccount: false);
+    .RequireAuthFor("amazon", "Amazon", needsSiteAccount: false)
+    .RequireAuthFor("google-flights", "Google Flights", needsSiteAccount: false);
 builder.Services.AddTripItService(builder.Configuration);
 builder.Services.AddLinkedInService(builder.Configuration);
 builder.Services.AddAmazonService();
