@@ -378,7 +378,7 @@ Filter options, index 7:
 | 13 | Layovers: `[[minutes, arrive airport, depart airport, null, arrive airport name, arrive city, depart airport name, depart city], ...]`. The two airports differ when the connection changes airport | D (`[867, "LAS", "LAS", ...]`: the page's "14 hr 27 min layover at Harry Reid International Airport"), X |
 | 22 | Emissions. **Not read: the client exposes no emissions data** | A |
 
-`itinerary[6]`: **on the list for the last leg** (every earlier leg already
+`itinerary[6]` (written `true`/`false` by the data endpoint, `1`/`0` by a search page's `ds:1`; live run, 2026-11-23): **on the list for the last leg** (every earlier leg already
 chosen), it is the page's **"Separate tickets"** label. In D's return list,
 after a Delta outbound, it is `false` on every Delta return and `true` on
 every Alaska, United, Southwest and Frontier return, exactly the returns the
