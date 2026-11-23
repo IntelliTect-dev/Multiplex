@@ -113,6 +113,19 @@ public class SearchPageTests
     }
 
     [Fact]
+    public async Task A_return_on_the_page_says_whether_it_is_sold_with_the_outbound()
+    {
+        // The page writes the flag as 0 or 1 where the data endpoint wrote false or true (live run, 2026-11-23):
+        // the Delta returns are sold with the Delta outbound, every other airline's as separate tickets.
+        _google.AnswerPage(SearchPages.Load("return-leg-2026-11-22"));
+        using var client = Client();
+
+        var returns = await client.GetReturnFlightsAsync(new FlightSelection(RoundTrip, [[Dl2759Out]], "token"));
+
+        Assert.All(returns.AllFlights, f => Assert.Equal(f.Airlines.Single() != "Delta", f.SeparateTickets));
+    }
+
+    [Fact]
     public async Task Booking_options_are_not_available_and_the_booking_page_link_is_given_instead()
     {
         // H3: the booking page carries no sellers or fares; the page loads them through its own script.

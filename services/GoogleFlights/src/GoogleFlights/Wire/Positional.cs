@@ -42,6 +42,19 @@ internal static class Positional
     public static bool? Bool(this JsonElement element, params ReadOnlySpan<int> path) =>
         element.At(path) is { } b && b.ValueKind is JsonValueKind.True or JsonValueKind.False ? b.GetBoolean() : null;
 
+    /// <summary>
+    /// A flag Google writes as <c>true</c>/<c>false</c> in one answer and <c>1</c>/<c>0</c> in another (a search
+    /// page's <c>ds:1</c> writes numbers where the data endpoint wrote booleans). Anything else is <c>null</c>.
+    /// </summary>
+    public static bool? Flag(this JsonElement element, params ReadOnlySpan<int> path) =>
+        element.At(path) switch
+        {
+            { ValueKind: JsonValueKind.True } => true,
+            { ValueKind: JsonValueKind.False } => false,
+            { ValueKind: JsonValueKind.Number } n when n.TryGetInt32(out var v) && v is 0 or 1 => v == 1,
+            _ => null,
+        };
+
     /// <summary>The items of the array at <paramref name="path"/>; empty when it is missing or not an array.</summary>
     public static IEnumerable<JsonElement> Items(this JsonElement element, params ReadOnlySpan<int> path) =>
         element.At(path) is { ValueKind: JsonValueKind.Array } array ? array.EnumerateArray() : [];
