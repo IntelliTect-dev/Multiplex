@@ -207,7 +207,7 @@ Describe 'deploying' {
         $result.BaseUrl | Should -Be 'https://multiplex.tail1234.ts.net'
     }
 
-    It 'returns only the address and image, whatever the build on this PC prints (a compiler warning, #129)' {
+    It 'returns only the address and image, whatever the build and the upload print (a compiler warning, #129)' {
         $server = New-FakeServer
         $noisyPublish = {
             param([string] $Folder)
@@ -215,8 +215,14 @@ Describe 'deploying' {
             # What dotnet publish writes for a compiler warning, even at -v quiet.
             'D:\src\CircuitBreaker.cs(11,30): warning CS9124: Parameter ''TimeSpan first'' is captured into the state of the enclosing type'
         }
+        # An upload that prints, as scp does without -q.
+        $noisyUpload = {
+            param([string] $LocalFile, [string] $RemotePath)
+            & $server.Upload $LocalFile $RemotePath
+            'incoming.tgz    100%   48MB  11.2MB/s   00:04'
+        }.GetNewClosure()
         # No "6>&1" here: this is the function's own output, as Deploy-MultiplexLinux.ps1 receives it.
-        $result = Invoke-MultiplexLinuxDeploy -Remote $server.Remote -Upload $server.Upload -Publish $noisyPublish `
+        $result = Invoke-MultiplexLinuxDeploy -Remote $server.Remote -Upload $noisyUpload -Publish $noisyPublish `
             -Tag '20261120-1200-abc1234' -PollInterval ([TimeSpan]::Zero) `
             -LoginTimeout ([TimeSpan]::FromSeconds(1)) -HealthTimeout ([TimeSpan]::FromSeconds(1)) 6>$null
         @($result).Count | Should -Be 1
