@@ -34,6 +34,18 @@ public sealed class LiveTheoryAttribute : TheoryAttribute
     public LiveTheoryAttribute() => Skip = LiveSkipReason.Get();
 }
 
+/// <summary>
+/// A fact that hits a real website over plain HTTP, with no browser; opt in with MULTIPLEX_LIVE_TESTS=1.
+/// </summary>
+public sealed class LiveHttpFactAttribute : FactAttribute
+{
+    public LiveHttpFactAttribute()
+    {
+        if (Environment.GetEnvironmentVariable("MULTIPLEX_LIVE_TESTS") != "1")
+            Skip = "Live test. Set MULTIPLEX_LIVE_TESTS=1 to run against the real website.";
+    }
+}
+
 internal static class LiveSkipReason
 {
     public static string? Get() =>

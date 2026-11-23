@@ -1,6 +1,8 @@
 using Multiplex.Web.Auth;
+using Multiplex.Web.HtmlSites;
 using Multiplex.Web.Identity;
 using Multiplex.Web.Mcp;
+using Multiplex.Web.Services.Amazon;
 using Multiplex.Web.Services.GoogleFlights;
 using Multiplex.Web.Services.LinkedIn;
 using Multiplex.Web.Services.LinkedIn.SignIn;
@@ -15,14 +17,16 @@ builder.Services.AddHealthChecks();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 // Every service needs sign-in (#80). The ones that act on a person's site account connect by signing
-// in to that site; Time and Google Flights act for no one, so connecting them is a consent page.
+// in to that site; Time, Amazon and Google Flights act for no one, so connecting them is a consent page.
 builder.Services.AddMultiplexAuth(builder.Configuration)
     .RequireAuthFor("tripit", "TripIt")
     .RequireAuthFor("linkedin", "LinkedIn")
     .RequireAuthFor("time", "Time", needsSiteAccount: false)
+    .RequireAuthFor("amazon", "Amazon", needsSiteAccount: false)
     .RequireAuthFor("google-flights", "Google Flights", needsSiteAccount: false);
 builder.Services.AddTripItService(builder.Configuration);
 builder.Services.AddLinkedInService(builder.Configuration);
+builder.Services.AddAmazonService();
 builder.Services.AddGoogleFlightsService(builder.Configuration);
 builder.Services.AddSiteSignIn(builder.Configuration)
     .AddSite<TripItSignInDefinition>()
@@ -66,6 +70,7 @@ app.MapMultiplexAuth();
 app.MapMultiplexSignOut();
 app.MapMcpEndpoints();
 app.MapConnectPages();
+app.MapSiteHandOverPages();
 
 app.Run();
 
