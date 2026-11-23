@@ -207,6 +207,23 @@ Describe 'deploying' {
         $result.BaseUrl | Should -Be 'https://multiplex.tail1234.ts.net'
     }
 
+    It 'returns only the address and image, whatever the build on this PC prints (a compiler warning, #129)' {
+        $server = New-FakeServer
+        $noisyPublish = {
+            param([string] $Folder)
+            & $script:GoodPublish $Folder
+            # What dotnet publish writes for a compiler warning, even at -v quiet.
+            'D:\src\CircuitBreaker.cs(11,30): warning CS9124: Parameter ''TimeSpan first'' is captured into the state of the enclosing type'
+        }
+        # No "6>&1" here: this is the function's own output, as Deploy-MultiplexLinux.ps1 receives it.
+        $result = Invoke-MultiplexLinuxDeploy -Remote $server.Remote -Upload $server.Upload -Publish $noisyPublish `
+            -Tag '20261120-1200-abc1234' -PollInterval ([TimeSpan]::Zero) `
+            -LoginTimeout ([TimeSpan]::FromSeconds(1)) -HealthTimeout ([TimeSpan]::FromSeconds(1)) 6>$null
+        @($result).Count | Should -Be 1
+        $result.BaseUrl | Should -Be 'https://multiplex.tail1234.ts.net'
+        $result.Image | Should -Be 'multiplex-server:20261120-1200-abc1234'
+    }
+
     It 'gives the server its tailnet address, in a file only its owner can read, and never writes identity.env' {
         $server = New-FakeServer
         Invoke-Deploy $server | Out-Null
