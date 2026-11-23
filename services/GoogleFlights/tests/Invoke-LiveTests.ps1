@@ -9,7 +9,8 @@
 
     Stages, each only after the one before passed:
       1. Prerequisites: git, the .NET 10 SDK, Pester 5 or later.
-      2. Build, then the offline tests (no requests to Google).
+      2. Build, then every offline test (no requests to Google): the client's, all of Multiplex's (the branch
+         carries main's sign-in rules, which Google Flights must pass), and the PowerShell module's.
       3. One live search (1 request). If Google refuses it, stop: this connection is refused.
       4. The client's live suite (8 requests).
       5. The MCP tools (3 requests) and the PowerShell module (2 requests), live.
@@ -62,9 +63,14 @@ Step 'Prerequisites' {
 
 Step 'Build' { dotnet build (Join-Path $root 'Multiplex.slnx') --nologo -v quiet }
 
-Step 'Offline tests (no requests to Google)' {
-    dotnet test $client --no-build --nologo
-    if ($LASTEXITCODE -eq 0) { dotnet test (Join-Path $root 'tests/Multiplex.Tests') --no-build --nologo --filter 'FullyQualifiedName~GoogleFlights' }
+Remove-Item Env:MULTIPLEX_LIVE_TESTS -ErrorAction SilentlyContinue
+Step 'Offline tests: the client (no requests to Google)' { dotnet test $client --no-build --nologo }
+Step 'Offline tests: all of Multiplex, sign-in rules included (no requests to Google)' {
+    dotnet test (Join-Path $root 'tests/Multiplex.Tests') --no-build --nologo
+}
+Step 'Offline tests: the PowerShell module (no requests to Google)' {
+    $result = Invoke-Pester (Join-Path $root 'services/GoogleFlights/tests/GoogleFlights.PowerShell.Tests') -PassThru -Output Normal
+    $global:LASTEXITCODE = [int]($result.FailedCount -gt 0 -or $result.Result -ne 'Passed')
 }
 
 $env:MULTIPLEX_LIVE_TESTS = '1'
