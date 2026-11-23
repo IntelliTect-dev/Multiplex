@@ -44,7 +44,7 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
         [Description(Docs.ArriveBeforeHour)] int? arrive_before_hour = null,
         [Description(Docs.MaxDurationHours)] double? max_duration_hours = null,
         [Description(Docs.Cabin)] string? cabin = null,
-        [Description(Docs.ExcludeBasicEconomy)] bool exclude_basic_economy = false,
+        [Description(Docs.ExcludeBasicEconomy)] bool exclude_basic_economy = true,
         [Description(Docs.Adults)] int adults = 1,
         [Description(Docs.Children)] int children = 0,
         [Description(Docs.InfantsOnLap)] int infants_on_lap = 0,

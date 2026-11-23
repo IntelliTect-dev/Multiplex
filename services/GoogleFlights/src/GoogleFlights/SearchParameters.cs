@@ -25,7 +25,8 @@ public sealed record SearchParameters
     public int? ArriveBeforeHour { get; init; }
     public double? MaxDurationHours { get; init; }
     public CabinClass Cabin { get; init; } = CabinClass.Economy;
-    public bool ExcludeBasicEconomy { get; init; }
+    /// <summary>Leave out Basic Economy fares such as Delta Main Basic: on unless asked otherwise (owner's decision, 2026-11-22).</summary>
+    public bool ExcludeBasicEconomy { get; init; } = true;
     public int Adults { get; init; } = 1;
     public int Children { get; init; }
     public int InfantsOnLap { get; init; }

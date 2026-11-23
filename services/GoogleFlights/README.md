@@ -29,8 +29,10 @@ section 2).
 | Airlines and alliances, from a dated data file | `GoogleFlightsClient.Airlines` | `lookup_airline` | `Get-Airline` |
 
 Filters: stops, airlines, alliances, departure and arrival hours, maximum
-price, maximum duration, cabin (and economy without Basic), passengers, sort
-order. Currency and region per request (default USD and US). Every result says
+price, maximum duration, cabin, passengers, sort order. **Basic Economy fares
+(such as Delta Main Basic) are left out by default** in the MCP tools and the
+PowerShell commands (owner's decision, 2026-11-22): `exclude_basic_economy`
+false, or `-ExcludeBasicEconomy:$false`, includes them. Currency and region per request (default USD and US). Every result says
 when Google answered (`RetrievedAt`) and whether it came from the cache
 (`FromCache`); every call can skip the cache (`verify` / `-Verify`).
 

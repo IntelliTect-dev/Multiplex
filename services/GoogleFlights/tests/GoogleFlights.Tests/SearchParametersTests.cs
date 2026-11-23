@@ -28,6 +28,17 @@ public class SearchParametersTests
     }
 
     [Fact]
+    public void Basic_Economy_is_left_out_unless_asked_for()
+    {
+        // Owner's decision, 2026-11-22: fares such as Delta Main Basic are excluded by default.
+        var byDefault = new SearchParameters { Origin = "SEA", Destination = "DEN", DepartureDate = Dec15 }.ToRequest();
+        var included = new SearchParameters { Origin = "SEA", Destination = "DEN", DepartureDate = Dec15, ExcludeBasicEconomy = false }.ToRequest();
+
+        Assert.True(byDefault.ExcludeBasicEconomy);
+        Assert.False(included.ExcludeBasicEconomy);
+    }
+
+    [Fact]
     public void A_return_date_makes_a_round_trip_and_legs_make_a_multi_city_trip()
     {
         var roundTrip = new SearchParameters { Origin = "SEA", Destination = "DEN", DepartureDate = Dec15, ReturnDate = Dec15.AddDays(7) }.ToRequest();
