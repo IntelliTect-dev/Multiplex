@@ -552,3 +552,7 @@ raw.snapshot.ndjson
 *.storage-state.json
 
 testResults.xml
+
+# Whole recorded pages from a website: test input a developer keeps locally, never committed
+# (they carry the site's prose and per-visitor ids). Trimmed copies live in Fixtures/.
+tests/Multiplex.Tests/Services/*/Recorded/
