@@ -152,10 +152,18 @@ public sealed partial class AmazonClient : ISiteHandOver
 
     private async Task<HandOverPicture?> FetchCheckPictureAsync(Uri address)
     {
-        var (image, _) = await FetchImageAsync(address, _time.GetUtcNow() + CallDeadline, ThrowIfPaused, CancellationToken.None).ConfigureAwait(false);
-        return image is not null && PictureTypes.Contains(image.MimeType, StringComparer.OrdinalIgnoreCase)
-            ? new HandOverPicture(image.Data, image.MimeType.ToLowerInvariant())
-            : null;
+        try
+        {
+            var (image, _) = await FetchImageAsync(address, _time.GetUtcNow() + CallDeadline, ThrowIfPaused, CancellationToken.None).ConfigureAwait(false);
+            return image is not null && PictureTypes.Contains(image.MimeType, StringComparer.OrdinalIgnoreCase)
+                ? new HandOverPicture(image.Data, image.MimeType.ToLowerInvariant())
+                : null;
+        }
+        catch (SiteException)
+        {
+            // Paused or refused while the check is open: there is no picture to show, which is not an error of the page's.
+            return null;
+        }
     }
 
     async Task<HandOverResult> ISiteHandOver.AnswerAsync(string id, string? typed, CancellationToken ct)
