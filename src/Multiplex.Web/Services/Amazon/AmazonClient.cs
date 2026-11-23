@@ -131,7 +131,6 @@ public sealed partial class AmazonClient
             plan.Request.Query,
             plan.Request.Sort,
             plan.Minimums,
-            outcome.RatingBaseline,
             "USD",
             read.Select(r => r.Page).ToList(),
             nextPage,

@@ -269,16 +269,18 @@ So:
   back if wanted.
 
 **`weightedRating`** is on every rated result, and the `rating` sort uses it. It is
-(n / (n + m)) x R + (m / (n + m)) x C:
+(n x R + m x C) / (n + m):
 - R is the product's stars and n its rating count;
-- C is the average stars of the results that have a rating, counted after duplicates, ads
-  and our own filters are dropped;
+- C is 3, the lowest rating the service ever returns;
 - m is 100.
 
-A 4.8-star product with 12 ratings ranks below a 4.7-star product with 90,000, which is what
-most people mean by "best rated". With one rated result, C is its own rating, so its score is
-too. C depends on which results this answer holds, so it is given at the top as
-`ratingBaseline`. A `weightedRating` compares results within one answer, not across calls.
+Put plainly: every product starts as if 100 people had rated it 3 stars, and its real
+ratings are added to those. A 4.8-star product with 12 ratings ranks below a 4.7-star
+product with 90,000, which is what most people mean by "best rated". A product's score
+depends only on its own stars and count, so it is the same in every answer.
+
+C was first the average stars of the results in the answer, given as `ratingBaseline`.
+Section 13 says why that was dropped.
 
 **Ties.** For `price`, ties go to the higher `weightedRating`, then `amazonRank`. For
 `rating`, ties go to the higher count, then the higher stars, then `amazonRank`. Results
@@ -313,7 +315,6 @@ Output (field names final; values from the 2026-11-22 pages):
   "query": "usb c charging cable",
   "sort": "rating",
   "appliedMinimums": { "minRating": 3, "minRatingsCount": 20 },
-  "ratingBaseline": 4.52,
   "currency": "USD",
   "pagesRead": [1, 2, 3],
   "nextPage": 4,
@@ -332,7 +333,7 @@ Output (field names final; values from the 2026-11-22 pages):
       "unitPrice": "$4.00/count",
       "rating": 4.7,
       "ratingsCount": 91951,
-      "weightedRating": 4.699,
+      "weightedRating": 4.698,
       "boughtInPastMonth": 10000,
       "boughtInPastMonthText": "10K+",
       "badges": ["Black Friday Deal"],
@@ -959,9 +960,12 @@ without the network:
 20. `OurFilters_DropResultsOutsideThePriceRange_BelowMinRating_OrBelowMinRatingsCount`,
     `AnUnratedResult_FailsAnyMinRatingTheCallerGave`, and `filteredOut_CountsThem`.
 21. `SortByRating_PutsMany4Point7StarsAboveAFew4Point8Stars`. It uses three results worked
-    by hand: 4.7 stars from 90,000 ratings, 4.8 from 12, 4.0 from 300, so C is 4.5. The
-    `weightedRating` values are about 4.700, 4.532 and 4.125. Also
-    `WeightedRating_WithOneRatedResult_IsItsOwnRating`.
+    by hand: 4.7 stars from 90,000 ratings, 4.0 from 300, 4.8 from 12. The `weightedRating`
+    values are 4.698, 3.750 and 3.193, in that order. Also
+    `SortByRating_OnAmazonsOwnRatingPage_PutsThousandsOfRatingsAheadOfAFewDozen` (the stars
+    and counts of eight products from the real page, section 13),
+    `AProductWithFewRatings_StartsNearThreeStars_HoweverManyStarsItHas`, and
+    `AProductsWeightedRating_IsTheSame_WhateverElseIsInTheAnswer`.
 22. `SortByPrice_PutsTheCheapestFirst_TiesByWeightedRatingThenAmazonRank`,
     `SortByRating_TiesGoToCountThenStarsThenAmazonRank`,
     `MissingValues_GoLast_InAmazonsOrder`, and
@@ -986,7 +990,6 @@ without the network:
 27. `EachSort_AddsItsMinimums_UnlessTheCallerGaveTheirOwn`, with `appliedMinimums` giving the
     values used. A default `price` search sends `p_72:1248879011` and reports `minRating` 4.
     A `price` search with `minRating` 3 sends no `p_72` and reports 3.
-    `RatingBaseline_IsTheAverageOfTheRatedResultsInTheAnswer`.
 28. `SortableValues_ArePlainNumbers`: `price`, `listPrice`, `rating`, `ratingsCount`,
     `weightedRating`, `boughtInPastMonth` and `amazonRank` serialise as JSON numbers, and
     `currency` once at the top. It reads the serialised answer with `JsonDocument` and
@@ -1335,3 +1338,44 @@ Where this section and section 5.7 disagree, this section is right.
   tested through the real host with a fake Amazon behind it, in `AmazonHandOverPageTests`,
   which covers the same loop without a phone. The first real check remains the real test.
 
+
+## 13. What the first live searches changed (#131, 2026-11-23)
+
+The first `sort: rating` search on the deployed service put the wrong products on top.
+
+- **What happened.** The design weighed each product's stars against the average stars of
+  the results in the answer. Amazon's "Avg. Customer Review" page holds only products rated
+  4.8 to 5.0, so that average was about 4.86. Pulling a product toward 4.86 barely moves
+  it: 5.0 stars from 47 ratings scored 4.906 and ranked first, above 4.8 stars from 35,896
+  ratings at 4.800.
+- **What changed.** The baseline is now a fixed 3 stars, the lowest rating the service
+  returns (section 4.1). The same two products now score 3.639 and 4.795, and the products
+  with thousands of ratings lead.
+
+| Stars | Ratings | Score before | Place before | Score now | Place now |
+|---|---|---|---|---|---|
+| 5.0 | 47 | 4.906 | 1 | 3.639 | 13 |
+| 5.0 | 45 | 4.905 | 2 | 3.621 | 14 |
+| 5.0 | 43 | 4.904 | 3 | 3.601 | 15 |
+| 4.9 | 3,627 | 4.899 | 4 | 4.849 | 1 |
+| 5.0 | 35 | 4.898 | 5 | 3.519 | 16 |
+| 4.9 | 75 | 4.879 | 6 | 3.814 | 12 |
+| 4.8 | 965 | 4.806 | 7 | 4.631 | 11 |
+| 4.8 | 1,705 | 4.803 | 8 | 4.700 | 10 |
+| 4.8 | 3,078 | 4.802 | 9 | 4.743 | 8 |
+| 4.8 | 2,477 | 4.802 | 10 | 4.730 | 9 |
+| 4.8 | 6,817 | 4.801 | 11 | 4.774 | 3 |
+| 4.8 | 5,320 | 4.801 | 12 | 4.767 | 4 |
+| 4.8 | 5,284 | 4.801 | 13 | 4.767 | 5 |
+| 4.8 | 5,147 | 4.801 | 14 | 4.766 | 6 |
+| 4.8 | 5,037 | 4.801 | 15 | 4.765 | 7 |
+| 4.8 | 35,896 | 4.800 | 16 | 4.795 | 2 |
+
+  These are the 16 unpaid products with at least 20 ratings on that page ("usb c charging
+  cable", 2026-11-22). The most-rated product on the page was last before and is second now.
+- **`ratingBaseline` is gone from the answer.** It reported the per-answer average. With a
+  fixed baseline there is nothing per-answer to report.
+- **The cost.** A product needs several hundred ratings before its score is close to its
+  stars: 4.9 stars from 200 ratings scores 4.267, below 4.3 stars from 50,000 at 4.297. A
+  well-liked product with few ratings ranks low under `sort: rating`. `rating` and
+  `ratingsCount` are still on every result, so a caller can sort its own way.

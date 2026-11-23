@@ -218,25 +218,59 @@ public class AmazonSearchCombineTests
     [Fact]
     public void SortByRating_PutsMany4Point7StarsAboveAFew4Point8Stars()
     {
-        // Worked by hand: the baseline is (4.7 + 4.8 + 4.0) / 3 = 4.5, and the prior weighs 100 ratings.
-        //   4.7 from 90,000: 90000/90100 x 4.7 + 100/90100 x 4.5 = 4.700
-        //   4.8 from 12:        12/112  x 4.8 + 100/112  x 4.5 = 4.532
-        //   4.0 from 300:      300/400  x 4.0 + 100/400  x 4.5 = 4.125
+        // Worked by hand. Every product starts as if 100 people had rated it 3 stars; its real ratings are added to those.
+        //   4.7 from 90,000: (90000 x 4.7 + 100 x 3) / 90100 = 4.698
+        //   4.0 from 300:    (  300 x 4.0 + 100 x 3) /   400 = 3.750
+        //   4.8 from 12:     (   12 x 4.8 + 100 x 3) /   112 = 3.193
         var outcome = Combine(new AmazonSearchRequest("cable", AmazonSort.Rating, MinRatingsCount: 0),
             Page(Item("AAAAAAAAA1", rating: 4.8, count: 12), Item("AAAAAAAAA2", rating: 4.0, count: 300), Item("AAAAAAAAA3", rating: 4.7, count: 90_000)));
 
-        Assert.Equal(4.5, outcome.RatingBaseline);
-        Assert.Equal([("AAAAAAAAA3", 4.7), ("AAAAAAAAA1", 4.532), ("AAAAAAAAA2", 4.125)],
+        Assert.Equal([("AAAAAAAAA3", 4.698), ("AAAAAAAAA2", 3.75), ("AAAAAAAAA1", 3.193)],
             outcome.Results.Select(r => (r.Asin, r.WeightedRating!.Value)));
     }
 
     [Fact]
-    public void WeightedRating_WithOneRatedResult_IsItsOwnRating()
+    public void SortByRating_OnAmazonsOwnRatingPage_PutsThousandsOfRatingsAheadOfAFewDozen()
     {
-        var outcome = Combine(new AmazonSearchRequest("cable"), Page(Item("AAAAAAAAA1", rating: 4.2, count: 7)));
+        // The stars and rating counts of eight of the sixteen products on Amazon's "Avg. Customer Review"
+        // page for "usb c charging cable" (2026-11-22). Every product there is rated 4.8 to 5.0, so weighing
+        // them against the page's own average (4.86) left the three with 43 to 47 ratings on top (#131).
+        var outcome = Combine(new AmazonSearchRequest("usb c charging cable", AmazonSort.Rating),
+            Page(
+                Item("AAAAAAAAA1", rating: 4.9, count: 3_627),
+                Item("AAAAAAAAA2", rating: 5.0, count: 47),
+                Item("AAAAAAAAA3", rating: 5.0, count: 45),
+                Item("AAAAAAAAA4", rating: 5.0, count: 43),
+                Item("AAAAAAAAA5", rating: 4.9, count: 75),
+                Item("AAAAAAAAA6", rating: 4.8, count: 35_896),
+                Item("AAAAAAAAA7", rating: 4.8, count: 6_817),
+                Item("AAAAAAAAA8", rating: 5.0, count: 35)));
 
-        Assert.Equal(4.2, outcome.Results[0].WeightedRating);
-        Assert.Equal(4.2, outcome.RatingBaseline);
+        Assert.Equal(
+            [
+                (4.9, 3_627, 4.849), (4.8, 35_896, 4.795), (4.8, 6_817, 4.774),
+                (4.9, 75, 3.814), (5.0, 47, 3.639), (5.0, 45, 3.621), (5.0, 43, 3.601), (5.0, 35, 3.519),
+            ],
+            outcome.Results.Select(r => (r.Rating!.Value, r.RatingsCount!.Value, r.WeightedRating!.Value)));
+    }
+
+    [Fact]
+    public void AProductWithFewRatings_StartsNearThreeStars_HoweverManyStarsItHas()
+    {
+        // (7 x 5.0 + 100 x 3) / 107 = 3.131
+        var outcome = Combine(new AmazonSearchRequest("cable"), Page(Item("AAAAAAAAA1", rating: 5.0, count: 7)));
+
+        Assert.Equal(3.131, outcome.Results[0].WeightedRating);
+    }
+
+    [Fact]
+    public void AProductsWeightedRating_IsTheSame_WhateverElseIsInTheAnswer()
+    {
+        var alone = Combine(new AmazonSearchRequest("cable"), Page(Item("AAAAAAAAA1", rating: 4.6, count: 250)));
+        var amongOthers = Combine(new AmazonSearchRequest("cable"),
+            Page(Item("AAAAAAAAA1", rating: 4.6, count: 250), Item("AAAAAAAAA2", rating: 3.0, count: 9_000), Item("AAAAAAAAA3", rating: 5.0, count: 4)));
+
+        Assert.Equal(alone.Results[0].WeightedRating, amongOthers.Results.Single(r => r.Asin == "AAAAAAAAA1").WeightedRating);
     }
 
     [Fact]
@@ -300,7 +334,6 @@ public class AmazonSearchCombineTests
         Assert.Empty(outcome.Results);
         Assert.Equal(2, outcome.FilteredOut);
         Assert.Equal("All 2 results were dropped by the minimums asked for: at least 3 stars, at least 500 ratings.", outcome.Note);
-        Assert.Null(outcome.RatingBaseline);
     }
 
     [Fact]
