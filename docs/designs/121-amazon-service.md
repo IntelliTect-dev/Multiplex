@@ -1,7 +1,8 @@
 # Amazon service: design
 
-Issue: #121. Status: proposed 2026-11-22, waiting on the owner's go-ahead (section 2).
-Nothing is built yet.
+Issue: #121. Status: proposed 2026-11-22. The owner decided D1, D2 and D2b the same day.
+D3, a browser for script checks, is open but not needed to start (section 2). Nothing is
+built yet.
 
 ## 1. What we are building
 
@@ -38,17 +39,27 @@ used an honest user agent, with no cookies, no browser headers and no browser:
 | `GET /dp/B088NRLMPV` | the same | `200`, 2.8 MB of HTML (476 KB compressed). Title, price, list price, unit price, 4.7 stars, 91,951 ratings, star breakdown, "Customers say" (eight aspects with counts and quotes), 19 images, details table, Best Sellers Rank |
 | `GET /s?k=usb+c+charging+cable` | `Multiplex-Amazon/0.1`, the identity this design ships (section 3) | `200`, 1.3 MB of HTML, 22 results, no robot check |
 
-So **Amazon needs no browser**. The service reads Amazon's pages over plain HTTP and parses
-the HTML. Because there is no browser, the #96 rule asks for no approval, and #59 loses its
-first use.
+So **Amazon needs no browser to read**. The service reads Amazon's pages over plain HTTP and
+parses the HTML, and #59 loses its first use.
 
 That reverses part of #28's conclusion. One quiet day from one home IP is not a guarantee.
-The design therefore treats a block as something that will happen (section 5.3).
+The design therefore treats a block as something that will happen (section 5.3). When the
+block is Amazon's "type the characters" robot check, a person answers it through a link to
+a Multiplex page, still with no browser (section 5.7). Only a check that needs a script run
+would need a browser, and that is D3.
 
-## 2. Decisions the owner makes before anything is built
+## 2. The owner's decisions
 
-**D1. Go ahead at all, given Amazon's terms.** Amazon's Conditions of Use forbid automated
-access. The owner knew this when choosing to go ahead in #28. Two newer facts bear on it:
+**D1. Go ahead at all, given Amazon's terms. Decided 2026-11-22: go ahead.** The owner's
+answer:
+
+> I'm human checks are okay, we just pass back a link to AI, the users clicks the links and
+> does the captcha, before continuing
+
+The hand-over this asks for is section 5.7. What the owner weighed follows.
+
+Amazon's Conditions of Use forbid automated access. The owner knew this when choosing to go
+ahead in #28. Two newer facts bear on it:
 
 - **robots.txt.** Amazon's `robots.txt` allows `/s` and `/dp/` for `User-agent: *`. However,
   it blocks the user-facing AI fetchers by name with `Disallow: /`: `Claude-User`,
@@ -69,24 +80,52 @@ This design is the most cautious form of the idea:
   turn it away with one line;
 - it stays signed out and only reads, with no account, cart or purchase;
 - it is paced and personal, behind Multiplex's own sign-in allowlist;
-- it stops at the first sign of a block and never works around one.
+- it never answers a robot check itself, and stops at any other block.
+
+Said plainly, the hand-over the owner chose (5.7) **is a way past Amazon's robot check**. A
+person answers the check, but afterwards Multiplex's automated requests carry on in the
+session that passed. That is close to what Amazon objects to, so it belongs in this
+decision.
 
 It still breaks the Conditions of Use.
 
 There is one more risk, and it falls on the owner. DAKAR and the Linux host share the
 household's public IP address. If Amazon flags that address, the owner's own shopping can
-start to hit "I am human" checks too.
+start to hit "I am human" checks too. The owner accepted this in the answer above.
 
-**D2. Reviews stay a summary.** Signed out, Amazon's product page says "Sign in to see
-customer reviews". It shows no review text, only the stars, the count, the breakdown and
-the AI "Customers say" block. That block has each aspect's counts and a few short quotes
-from reviews. Individual reviews need an Amazon sign-in, which #59 rules out. This design
-returns the summary only.
+**D2. Reviews stay a summary, to start. Decided 2026-11-22.** The owner: "If we can skip the
+signin to start, we should."
+
+Signed out, Amazon's product page says "Sign in to see customer reviews". It shows no review
+text, only the stars, the count, the breakdown and the AI "Customers say" block. That block
+has each aspect's counts and a few short quotes from reviews. Individual reviews need an
+Amazon sign-in, so this design returns the summary only. An Amazon sign-in for full
+reviews can come later (section 8).
+
+**D2b. Pages and images, not with a browser. Decided 2026-11-22.** The owner: "my thinking is
+we download the HTML and product images... but not with a browser." The service reads pages
+and fetches the main product image over plain HTTP (4.2, 5.1), and the robot-check hand-over
+uses no browser either (5.7). #59's browser reader is not needed for Amazon.
+
+**D3. A browser for script checks? Open; not needed to start.** Amazon has two kinds of
+robot check:
+
+- **The "type the characters" check.** It is a picture and a form, and a person can answer
+  it through Multiplex with no browser (5.7). Amazon is known to serve this kind to clients
+  that run no scripts, such as this service, though this service has not met one yet.
+- **The "I am human" checkbox or puzzle** (#28 met it in a real browser). It needs Amazon's
+  script to run in a browser.
+
+This service runs no scripts, so it should only ever meet the first kind. If it meets the
+second, the service pauses and says so (5.3). Answering the second kind would need a browser
+on the server, mirrored to the person the way TripIt's sign-in is, and the #96 rule needs the
+owner's approval for that provider and use case. Recommendation: don't approve it now. If
+script checks ever appear in the log, decide then.
 
 ## 3. Boundaries (carried from #28 and #59, plus #96)
 
-- No browser. Plain HTTP only, so no #96 approval is needed. A browser hand-over for checks
-  would be a separate use case that needs its own approval (section 8).
+- No browser: plain HTTP for pages, images and the robot-check hand-over (D2b). A browser
+  would come in only for script checks, and only with the owner's #96 approval (D3).
 - An honest identity:
   - The user agent is `Multiplex-Amazon/<version>`.
   - No `sec-ch-ua*` client hints and no copied browser headers.
@@ -96,11 +135,16 @@ returns the summary only.
     is the owner's choice.
 - It obeys robots.txt: the `*` rules, and any group that names `Multiplex-Amazon` or
   `Multiplex` (5.1).
-- Nothing answers, solves or gets around a robot check. A check pauses the service (5.3).
+- Nothing in Multiplex answers or solves a robot check. A person answers it, through the
+  link in 5.7. Until then, every call fails at once with that link and contacts nothing.
+- Every address read from Amazon's pages is checked before it is used. The check form must
+  post to `https://www.amazon.com/errors/validateCaptcha`. Images must come from a named
+  Amazon image host (`m.media-amazon.com`, `images-na.ssl-images-amazon.com`). Anything
+  else is refused and counted as a changed layout.
 - Signed out, read only. No sign-in, account, cart, wish list, address or purchase pages.
   The client follows no redirect outside `/s`, `/dp/` and `/gp/product/`.
-- Human-scale pacing: one request in flight to Amazon from the whole host, a few seconds
-  apart (5.2).
+- Human-scale pacing: one request in flight to Amazon from the whole host, pages, images
+  and all, a few seconds apart (5.2).
 - `amazon.com` only, in US dollars.
 
 ## 4. The tools
@@ -224,6 +268,13 @@ Output:
   price is later work (section 8).
 - `fetchedAt` is on every answer. Prices and deals change by the hour, so the AI can say
   "as of".
+- **The main image comes back as an image, not just a link.** The tool result carries the
+  JSON above plus one MCP image content block: the first gallery image in the page's
+  `large` size, a 25 KB JPEG for `B088NRLMPV`. With it, the AI can see the product (the
+  connector, the colour, what is in the box), and the person sees it in the tool result. A
+  chat client may not show an image from an outside link at all. All other images stay links
+  in `images`, because each image sent costs the AI's context. If the image can't be
+  fetched, the product still comes back, with a warning and no image block.
 
 ### 4.3 Where each field comes from
 
@@ -246,7 +297,7 @@ the rest are on the 2026-11-22 popular product (`B088NRLMPV`).
 | Bought in past month | text "... bought in past month" | `#social-proofing-faceout-title-tk_bought` |
 | Badges | `.a-badge-text`, `[data-cy="s-pc-faceout-badge"]` | `#acBadge_feature_div`, `#zeitgeistBadge_feature_div` ("#1 Best Seller in ...") |
 | Sponsored | `h2[aria-label^="Sponsored Ad"]`, `.puis-sponsored-label-text` | |
-| Image | `img.s-image[src]` | `'colorImages': { 'initial': A.$.parseJSON('[...]') }` in the `ImageBlockATF` script, each item's `hiRes` |
+| Image | `img.s-image[src]` | `'colorImages': { 'initial': A.$.parseJSON('[...]') }` in the `ImageBlockATF` script: each item's `hiRes` for `images`, and the first item's `large` for the image block |
 | Features, description | | `#feature-bullets li`; `#productDescription`, else `#aplus_feature_div` |
 | Details | | `#productOverview_feature_div tr`, `table.prodDetTable tr` (th/td), `#detailBullets_feature_div li` *(few-ratings page)* |
 | Availability, seller | | first text of `#availability` (the element also holds inline JSON); `#merchantInfoFeature_feature_div` ("Sold by AnkerDirect", or "Shipper / Seller Amazon.com") |
@@ -268,23 +319,25 @@ Traps found in the real pages; each becomes a test (T1):
 
 ## 5. How a call works
 
-A simplified flow. The one retry, redirects and the second check at the front of the queue
-are in 5.2 and 5.3.
+A simplified flow, as of PR 2 (section 10). The one retry, redirects, the image fetch and
+the second check at the front of the queue are in 5.2 and 5.3.
 
 ```mermaid
 flowchart LR
     AI[Claude / ChatGPT] -->|tools/call| Tool[AmazonTools]
     Tool --> Cache{cached < 10 min?}
     Cache -- yes --> Tool
-    Cache -- no --> Breaker{paused after a block?}
-    Breaker -- yes --> Err[tool error: paused until hh:mm]
+    Cache -- no --> Breaker{paused, or a check open?}
+    Breaker -- paused --> Err[tool error: paused until hh:mm]
+    Breaker -- check open --> Link[tool error: the hand-over link]
     Breaker -- no --> Robots{robots.txt allows it?}
     Robots -- no --> Err3[tool error: robots.txt refuses it]
     Robots -- yes --> Pacer[gate: one at a time, 3-5 s apart, no retries]
-    Pacer --> Http[HttpClient, honest UA, no cookies]
+    Pacer --> Http[HttpClient: honest UA; cookies only after a check]
     Http --> Classify{classify answer}
     Classify -- page --> Parse[AmazonSearchPage / AmazonProductPage]
-    Classify -- robot check --> Pause[open breaker] --> Err2[tool error: Amazon refused]
+    Classify -- robot check --> Open[open a hand-over] --> Link
+    Classify -- refusal --> Pause[open the pause] --> Err2[tool error: Amazon refused]
     Classify -- 404 --> NF[tool error: no such product]
     Parse -- anchors missing --> LC[tool error: layout changed]
     Parse -- ok --> Tool
@@ -293,17 +346,30 @@ flowchart LR
 ### 5.1 The request
 
 - A named `HttpClient` ("amazon") on `SocketsHttpHandler`, like LinkedIn and TripIt:
-  `UseCookies = false`, `AllowAutoRedirect = false`, gzip and Brotli on, and a 30-second
-  timeout.
+  `AllowAutoRedirect = false`, gzip and Brotli on, and a 30-second timeout. Cookies are
+  handled by the client, not the handler (next bullet but two).
 - Headers: `User-Agent: Multiplex-Amazon/<assembly version>`, `Accept: text/html`,
   `Accept-Language: en-US`. Nothing else.
 - Redirects are read, not followed blindly. A redirect to a `/dp/` or `/gp/product/` page is
-  followed once. A redirect to `/ap/signin`, `/errors/validateCaptcha` or anywhere else
-  counts as a block (5.3).
-- No cookies are kept. Every request looks like a new, signed-out visitor, which is what the
-  service is. Keeping Amazon's `session-id` cookie would make requests linkable, and the
-  stateless-server rule argues against holding it anyway. The live tests will show whether
-  Amazon minds. If it does, that becomes its own decision.
+  followed once. A redirect to `/errors/validateCaptcha` is a robot check (5.7). A redirect to
+  `/ap/signin` or anywhere else counts as a block (5.3).
+- **Cookies: none until a person answers a robot check.** Until then, every request looks
+  like a new, signed-out visitor, which is what the service is.
+  - When Amazon shows a check, the client drops any cookies it held. It keeps the ones
+    Amazon set with that check page, because the answer has to come back in the same session
+    (5.7). Once the check is passed, it keeps the cookies Amazon sets in reply.
+  - The cookies go with every later request to `www.amazon.com` (pages, robots.txt, the
+    answer), and never to any other host.
+  - They are kept in memory only. After a restart, the next check simply starts again.
+  - They are an anonymous visitor's cookies, never an account's.
+- **Images** come from Amazon's image hosts: `m.media-amazon.com` for products, and
+  `images-na.ssl-images-amazon.com`, where Amazon's check pictures have been served from.
+  That second host is not yet confirmed (section 9).
+  - They use the same honest headers, with `Accept: image/*`, and no cookies.
+  - An answer counts only if it is an `image/*` type under 2 MB.
+  - Each host's robots.txt is obeyed the same way. On 2026-11-22, `m.media-amazon.com`'s
+    file had no `*` group and named only a few crawlers, none of them this service.
+  - Image requests go through the same gate as pages (5.2) and count toward its caps.
 - **robots.txt is obeyed for the service's own name.** The client fetches `/robots.txt` at
   most once a day, through the same gate, and keeps the parsed rules in memory. Before every
   request it checks the path against:
@@ -330,8 +396,8 @@ flowchart LR
   For a `5xx` or a timeout, the last copy is used; with no copy, the call fails.
 
   That makes "Amazon can turn it away with one line" true, not just stated. The service does
-  **not** apply the groups for other agents (`Claude-User` and the rest). Whether those
-  should bind it is D1.
+  **not** apply the groups for other agents (`Claude-User` and the rest). The owner weighed
+  that in D1 and chose to go ahead.
 
 ### 5.2 Pacing: a gate of its own, with no retries inside it
 
@@ -344,11 +410,13 @@ long a call waits in its queue.
 So the service gets a small gate of its own. It is new code, under 100 lines, in
 `HtmlSites/SiteGate.cs`, and has an injected `TimeProvider` and random source for tests.
 
-- **One at a time for the whole host:** one request in flight to Amazon, the robots.txt
-  fetch included. Amazon sees one IP, however many people use Multiplex.
-- **Spacing:** at least 3 seconds after the previous answer finished, plus up to 2 seconds
-  of random jitter, so at most about 15 a minute. That is close to web-api-discovery's human
-  pace of 12.
+- **One at a time for the whole host:** one request in flight to Amazon, whatever the host.
+  That covers pages, images, robots.txt fetches and a hand-over's answer. Amazon sees one IP,
+  however many people use Multiplex.
+- **Spacing:** at least 3 seconds after a page finished, plus up to 2 seconds of random
+  jitter, so at most about 15 pages a minute. That is close to web-api-discovery's human
+  pace of 12. After an image, 1 second, the way a browser fetches a page's pictures soon
+  after the page.
 - **Queue limit:** a call that would wait more than 30 seconds for its turn fails at once:
   "Amazon requests are queued; try again in a moment". An AI that fires ten product lookups
   in parallel gets fast errors, not a ten-minute hang.
@@ -357,8 +425,9 @@ So the service gets a small gate of its own. It is new code, under 100 lines, in
   followed redirects. Over a cap, a call fails at once and says when the window frees up.
   The caps turn "low volume" in D1 and section 9 into a limit rather than a hope.
 - **Checked again at the front of the queue.** When a call's turn comes, the gate hands it
-  back to `AmazonClient`. The client checks the pause (5.3) and robots.txt again before
-  sending, because a call can sit in the queue while the one ahead of it meets a robot check.
+  back to `AmazonClient`. The client checks the pause (5.3), an open hand-over (5.7) and
+  robots.txt again before sending, because a call can sit in the queue while the one ahead
+  of it meets a robot check. A call that finds a check open fails with its link.
 - **No retries in the gate.** Every answer goes to the classifier (5.3) first.
   `AmazonClient` then retries **once**, through the gate again, and only when:
   - the answer was a `429` carrying a `Retry-After` of 60 seconds or less; or
@@ -377,15 +446,16 @@ So the service gets a small gate of its own. It is new code, under 100 lines, in
 ### 5.3 Blocks: recognise, stop, say so
 
 `AmazonPageClassifier.Classify(status, headers, requestUrl, location, body)` is a pure
-function with one of these results:
+function with one of these results. The table is the end state after PR 2. In PR 1, a
+`RobotCheck` pauses like any block (section 10).
 
 | Result | Recognised by | What happens |
 |---|---|---|
 | `Page` | `200` and none of the markers below | Parse |
 | `NotFound` | `404`, or Amazon's "Sorry! We couldn't find that page" | Tool error naming the ASIN |
-| `RobotCheck` | Any status with a form posting to `/errors/validateCaptcha`, or the text "Enter the characters you see below" / "make sure you're not a robot" | **Pause**, tool error |
+| `RobotCheck` | Any status with a form posting to `/errors/validateCaptcha`, or the text "Enter the characters you see below" / "make sure you're not a robot" | **Hand to a person** (5.7), tool error with the link |
 | `AutomatedAccessRefused` | The page that says "To discuss automated access to Amazon data please contact api-services-support@amazon.com" (usually `503`) | **Pause**, tool error |
-| `Challenge` | `202` with `x-amzn-waf-action`, the firewall's script check that only a browser can pass | **Pause**, tool error |
+| `Challenge` | `202` with `x-amzn-waf-action`, the firewall's script check that only a browser can pass; or a check page with no character image (the checkbox or puzzle kind) | **Pause**, tool error saying a script check needs a browser (D3) |
 | `SignInWall` | A redirect to `/ap/signin` | **Pause**, tool error |
 | `Redirect` | A redirect to another `/dp/` or `/gp/product/` page on `www.amazon.com` | Followed once; a second redirect is a tool error |
 | `Blocked` (other) | A redirect anywhere else, on Amazon or off it | **Pause**, tool error; never followed |
@@ -400,14 +470,14 @@ reads time from an injected `TimeProvider`. The first block pauses every Amazon 
 15 minutes. Each later block doubles the pause, up to 2 hours. A success resets it. While
 paused, calls fail at once, without contacting Amazon:
 
-> Amazon refused this kind of request (it showed a robot check at 14:05 UTC). Multiplex does
-> not answer those checks. Amazon requests are paused until 14:20 UTC.
+> Amazon refused this kind of request (it said automated access needs its permission, at
+> 14:05 UTC). Amazon requests are paused until 14:20 UTC.
 
 The pause lives in the process, not in any MCP session, so the stateless-server rule holds.
 A second instance would keep its own pause, which only makes it more cautious.
 
-Nothing ever answers the check. Letting a person answer one in a browser is the #59 idea. It
-needs a browser, so it needs its own #96 approval (section 8).
+A robot check is not a pause. It holds Amazon requests until a person answers it (5.7). Only
+an unanswered check falls back to the pause.
 
 ### 5.4 Layout changes: a named error, never a guess
 
@@ -439,15 +509,104 @@ while the results list itself still parses.
 Parsed answers are cached in memory for 10 minutes, keyed by request URL, up to 200 entries,
 with the oldest evicted first. The cache reads time from the same injected `TimeProvider`,
 so tests can expire it. Calls for the same URL at the same time share one fetch: the second
-waits for the first's answer rather than queueing a second request. An AI often looks up the same product more than once in one conversation.
-Every request saved is less load on Amazon and less risk of a block. `fetchedAt` keeps the
-time of the real fetch, so a cached answer never claims to be newer than it is.
+waits for the first's answer rather than queueing a second request. An AI often looks up the
+same product more than once in one conversation. Every request saved is less load on Amazon
+and less risk of a block. `fetchedAt` keeps the time of the real fetch, so a cached answer
+never claims to be newer than it is. The main image is cached with its product.
+
+Cached answers are still served while the service is paused or a check is open, because
+they contact nothing. Calls sharing a fetch share its outcome too: if the fetch meets a
+check, they all get the same link.
 
 ### 5.6 Logging
 
 The log records the outcome, the HTTP status, the classification, the ASIN, the elapsed time
-and the time spent waiting for the pacer. It never records page bodies or search text,
-because what someone searches for can be personal.
+and the time spent waiting for the pacer. It never records page bodies, search text or a
+person's answer to a robot check, because what someone searches for can be personal.
+
+### 5.7 When Amazon asks for a person: the hand-over, with no browser
+
+The owner's decision (D1): when Amazon shows a robot check, the tool passes a link back to
+the AI, the person opens it and answers the check, and the work goes on.
+
+**Why the link can't simply go to Amazon.** Amazon records a passed check in the cookies of
+the session that passed it. A person who answers the check on amazon.com in their own
+browser clears their own browser, not Multiplex. Multiplex's requests come from the server,
+in a session of their own. So the answer has to be given *in Multiplex's session*.
+
+**How, for the "type the characters" check, with no browser:**
+
+1. A call gets a `RobotCheck`. Today's check is a page with a picture of characters and a
+   form: a `GET` to `/errors/validateCaptcha` with hidden fields and one text box. That shape
+   is from Amazon's known check page. It has not yet been seen over plain HTTP, so the first
+   real one confirms it (section 9).
+   - `AmazonRobotCheckPage` reads the picture's address and the form's fields.
+   - Both addresses are checked (section 3). The form must post to
+     `https://www.amazon.com/errors/validateCaptcha`, and the picture must be on a named
+     Amazon image host. A page that fails the check is not a hand-over; it is a changed
+     layout (5.4).
+   - The client keeps the cookies that came with the page (5.1).
+   - It opens a **hand-over**: one at a time for the whole host, with an unguessable id,
+     lasting 10 minutes.
+   - Nothing is held or waits. The call fails at once with:
+
+   > Amazon wants a person to prove they're human before it answers more requests. Open
+   > https://&lt;host&gt;/check/amazon/&lt;id&gt; and type the characters shown, then ask me
+   > to try again. The link works until 14:20 UTC.
+
+   The AI passes the link on. Every later call fails the same way, with the same link and
+   without contacting Amazon, until the check is passed or closed. The tool descriptions say
+   that a call refused this way is not retried by itself, so the AI knows to wait for the
+   person and then call again.
+2. The person opens the link: a plain Multiplex page. Like every Multiplex page it needs
+   Multiplex sign-in (#80); a person who connected the service is usually still signed in.
+   - The page shows Amazon's picture and a text box. The server fetches the picture (5.1:
+     no cookies, an allowed image host, an image type) and serves it from Multiplex with
+     its image type and `X-Content-Type-Options: nosniff`.
+   - A link that has expired, or whose check is already passed, says so and offers nothing
+     to answer.
+3. The person types the characters and sends them.
+   - The form is protected against cross-site forgery, with ASP.NET's antiforgery token.
+   - One answer is in flight at a time: a second send while the first is out is refused.
+   - The server submits the answer on Amazon's form from the plain client, through the gate
+     (5.2), with that session's cookies, its honest user agent and the form's own fields.
+   - Nothing in Multiplex reads, guesses or fills in the characters; the person does.
+4. The server classifies the answer with a rule of its own, not the 5.3 redirect rule. A
+   correct answer most likely comes back as a redirect to the page the visitor was after,
+   which the form carries in a return-path field. That shape is unconfirmed until the first
+   real check (section 9).
+   - A normal page counts as a pass. So does a redirect to an allowed `www.amazon.com` path
+     (`/`, `/s`, `/dp/`, `/gp/product/`), which is followed once, through the gate and the
+     robots.txt check.
+   - A redirect to another check, to `/ap/signin` or off Amazon is not a pass.
+   - **A pass:** the check is passed. The client keeps Amazon's new cookies (5.1),
+     reopens Amazon requests, resets the pause's doubling (a success, 5.3) and closes the
+     hand-over. The page says "Done. Go back to your chat and carry on."
+   - **Another check:** the answer was wrong. The page shows the new picture. After three
+     wrong answers, the hand-over closes into the timed pause (5.3).
+   - **Anything else** is handled as in 5.3.
+5. The person, or the AI, calls the tool again. It is answered from Amazon in the passed
+   session.
+
+**What stays as it was.**
+- Every check is answered by a person.
+- The plain client keeps its honest user agent throughout.
+- There is no browser anywhere.
+
+**Limits.**
+- **An unanswered hand-over** expires after 10 minutes. The service then falls back to the
+  timed pause in 5.3, and the next check opens a new link.
+- **A check right after a pass** means the pass did not hold: two checks within 15 minutes.
+  The client stops offering links, pauses, and says so. It does not send the person round in
+  circles.
+- **A script check** (`Challenge`, or a check page with no character picture) can't be
+  answered this way. It pauses and says a script check needs a browser (D3).
+
+**State.** The open hand-over and the session's cookies live in the process, like the pause:
+one instance, no MCP session state. The hand-over page and its answer endpoint know nothing
+about Amazon except a small definition: how to read the check page, how to submit the
+answer, and what "passed" means (the classifier says `Page`). The next site with a
+character check can reuse it.
 
 ## 6. Code layout
 
@@ -458,6 +617,8 @@ because what someone searches for can be personal.
 | `.../Amazon/AmazonSearchPage.cs` | Search-page knowledge: anchors, selectors, parsing to `AmazonSearchResults` |
 | `.../Amazon/AmazonProductPage.cs` | Product-page knowledge, parsing to `AmazonProduct` |
 | `.../Amazon/AmazonPageClassifier.cs` | The table in 5.3 |
+| `.../Amazon/AmazonRobotCheckPage.cs` | Reading the "type the characters" page (picture address, form fields) and building the answer request (5.7) |
+| `src/Multiplex.Web/HtmlSites/HandOver/` | The hand-over in 5.7: the registry (one open check per site, its id, expiry, wrong-answer count and whether an answer is in flight), the `/check/{slug}/{id}` page and its antiforgery-protected answer endpoint, behind Multiplex sign-in. No browser |
 | `.../Amazon/AmazonModels.cs` | The output records (section 4) |
 | `.../Amazon/AmazonServiceRegistration.cs` | `AddAmazonService()`: the named client, the gate, the cache |
 | `.../Amazon/README.md` | The service README, laid out like Time's |
@@ -529,7 +690,9 @@ They live in `tests/Multiplex.Tests/Services/Amazon/Fixtures/`. The csproj alrea
 | `product-unavailable.html` | to record | "Currently unavailable" gives a `null` price and the availability text |
 | `product-no-ratings.html` | to record | a new product with no ratings gives a `null` rating and count, not an error |
 | `product-book.html` | to record | a book's layout (author byline, formats): at least title, price, rating and description |
-| `blocked-robot-check.html` | made by hand from Amazon's known check form, because it can't be triggered on purpose | `RobotCheck` |
+| `blocked-robot-check.html` | made by hand from Amazon's known check form, because it can't be triggered on purpose; replaced by the first real one | `RobotCheck`; its picture address and form fields are read |
+| `blocked-script-check.html` | made by hand: a check page with no character picture | `Challenge`, so no hand-over link |
+| `check-answer-redirect.txt` | made by hand: a `302` answer from `/errors/validateCaptcha` back to a search | an answer that redirects is read as a pass (5.7 step 4) |
 | `blocked-automated-access.html` | made by hand, the same way | `AutomatedAccessRefused` |
 | `not-found.html` | to record | `NotFound` |
 | `robots.txt` | Amazon's 2026-11-22 file, cut to its `*` group and a few named AI groups | the real rules allow `/s?k=` and `/dp/`, and the wildcard and `$` rules parse |
@@ -598,15 +761,17 @@ Input checks are in this layer too:
 source, shared by the gate, the breaker and the cache, so no test waits in real time:
 
 1. `SendsAnHonestIdentity`: the user agent starts with `Multiplex-Amazon/` and has no
-   `Mozilla`, and there is no `sec-ch-ua*`, no `Cookie` and no `Referer`. Copying a browser's
-   headers in later fails this test. That is the boundary in section 3, written as a test.
+   `Mozilla`, and there is no `sec-ch-ua*` and no `Referer`. There is no `Cookie` before a
+   check, and never one to a host other than `www.amazon.com`. Copying a browser's headers
+   in later fails this test. That is the boundary in section 3, written as a test.
 2. `SpacesRequests_OneAtATime`: two calls at once reach the handler at least 3 seconds
    apart.
 3. `ACallThatWouldWaitOver30Seconds_FailsAtOnce`, without reaching the handler.
 4. `TheAutomatedAccess503_IsFetchedOnce_AndNeverRetried`, the review finding that ruled out
    reusing `PacingHandler`. The same holds for each block kind.
-5. `ARobotCheckPausesTheService_WithoutContactingAmazonAgain`: after one blocked answer, the
-   next call fails without reaching the handler. After 15 minutes, one call goes through.
+5. `ARefusalPausesTheService_WithoutContactingAmazonAgain`: after one
+   `AutomatedAccessRefused`, the next call fails without reaching the handler. After 15
+   minutes, one call goes through.
 6. `ACallQueuedBehindABlock_FailsWithoutReachingAmazon`: two calls queue, the first meets a
    robot check, and the handler is never called for the second.
 7. `RepeatedBlocksDoubleThePause_UpTo2Hours`, then `ASuccessResetsIt`.
@@ -629,6 +794,35 @@ source, shared by the gate, the breaker and the cache, so no test waits in real 
     retries and redirects.
 16. `TheLogNeverHoldsSearchTextOrPageBodies`: a capturing logger runs a search for a
     distinctive phrase, and nothing logged contains it or any page markup.
+17. `AProductCall_FetchesItsMainImage_FromTheImageHost_WithTheHonestIdentityAndNoCookies`;
+    `AFailedImageFetch_StillReturnsTheProduct_WithAWarning`;
+    `AnImageOnAnUnlistedHost_IsNotFetched`; `AnAnswerThatIsNotAnImage_IsDropped`; and
+    `ImageRequests_GoThroughTheGate_ObeyTheImageHostsRobotsTxt_AndCountTowardTheCaps`.
+
+**The hand-over** (5.7) is tested in the same layer, with the same fake Amazon:
+
+18. `ARobotCheck_FailsAtOnceWithALink_AndLaterCallsContactNothing`: the tool error carries
+    `/check/amazon/<id>`, and the handler sees nothing more.
+19. `CallsDuringAnOpenCheck_GetTheSameLink`, including calls that shared the fetch (5.5) and
+    a call that reaches the front of the queue after the check opened.
+20. `TheAnswer_IsSubmittedInTheChecksOwnSession`: the request to `/errors/validateCaptcha`
+    carries the form's hidden fields, the typed characters, the cookies from the check page
+    and the honest user agent, through the gate.
+21. `APassedCheck_ReopensAmazonRequests_ResetsThePause_AndLaterRequestsCarryItsCookies`.
+22. `AWrongAnswer_ShowsANewPicture`, and `ThreeWrongAnswers_CloseIntoTheTimedPause`.
+23. `AnUnansweredCheck_ExpiresAfter10Minutes_IntoTheTimedPause`.
+24. `ACheckWithin15MinutesOfAPass_StopsOfferingLinks_AndSaysThePassDidNotHold`.
+25. `AScriptCheck_PausesWithoutALink_AndNamesD3`.
+26. `TheAnswerIsNeverLogged`.
+27. `ACheckFormPostingOffAmazon_IsALayoutChange_NotAHandOver`, and
+    `ACheckPictureOnAForeignHost_IsNotFetched`.
+28. `ANewCheck_DropsTheOldCookies_AndKeepsTheChecksOwn`.
+29. `AnExpiredOrPassedLink_OffersNothingToAnswer`.
+30. `ASecondAnswerWhileTheFirstIsOut_IsRefused`.
+31. `AnAnswerWithoutTheAntiforgeryToken_IsRefused` (in T4, through the real endpoint).
+32. `CachedAnswers_AreStillServed_WhileACheckIsOpen`.
+33. `ACorrectAnswerThatRedirects_IsAPass_NotABlock` (to `/s?k=` and to `/`), and
+    `AnAnswerRedirectingToSignInOrOffAmazon_IsNotAPass`.
 
 **T4. Through MCP.** This uses `WebApplicationFactory<Program>`, with the fake handler serving
 fixtures, and the JSON-RPC client the TripIt host tests use:
@@ -636,7 +830,10 @@ fixtures, and the JSON-RPC client the TripIt host tests use:
 - `tools/list` on `/amazon/mcp` lists exactly `amazon_search` and `amazon_get_product`, and
   neither appears on any other endpoint;
 - `tools/call amazon_search` returns the section 4.1 shape;
-- a robot-check fixture gives `isError: true` with the pause message;
+- `tools/call amazon_get_product` returns the 4.2 JSON plus one image content block;
+- `/check/amazon/<id>` refuses anyone not signed in to Multiplex, shows the picture to
+  someone who is, and an answer posted there completes the hand-over;
+- a robot-check fixture gives `isError: true` with the hand-over link;
 - an unknown ASIN gives a tool error naming it;
 - `UsesNoBrowser`: the Amazon tool methods take no `BrowserService` or `SiteBrowserManager`.
   It is a small reflection test that keeps the #96 rule true for this service.
@@ -685,13 +882,23 @@ Then ask, and check the answers against amazon.com in a normal browser:
 3. "Look up Amazon product B000000000." Expect a clear not-found message.
 4. Ask the same product question twice. The second answer comes from the cache, with the
    same `fetchedAt`.
+5. Check that the product answer shows the main image, and that the AI can describe it.
 
 Then repeat 1 from claude.ai through the Linux host, once the service is deployed there.
 DAKAR's copy stays on its pinned build, so it is not the place for this.
 
+**The hand-over can't be rehearsed against Amazon**, because a check can't be asked for. It
+is rehearsed instead, on a phone, against a fake Amazon. That is a hand-run test in the
+test project: it starts the host on Kestrel with the T4 fake Amazon plugged into the
+`amazon` client (the same way T4 does), so a phone on the same network can reach it. The
+product gains no setting for this. The phone run covers the whole loop: get the link in the chat, sign in, type the
+characters, go back, carry on. The **first real check is the real acceptance test**: what
+happened gets recorded on #121, above all whether the pass held for the requests after it.
+
 ## 8. Not in this design (later, each its own issue if wanted)
 
-- **Individual reviews:** needs an Amazon sign-in (D2).
+- **Individual reviews:** needs an Amazon sign-in, which the owner chose to skip to start
+  (D2).
 - **All offers and other sellers:** Amazon loads these separately (`aodAjaxMain`).
 - **Search filters:** price range, minimum stars, Prime, department. Amazon's `rh=` filter
   ids vary by category. Each one would need a recording to confirm before adding a tool
@@ -700,9 +907,11 @@ DAKAR's copy stays on its pinned build, so it is not the place for this.
 - **Search-as-you-type suggestions.** This is Amazon's one clean JSON call (#28). It is
   little use to an AI, which writes its own queries.
 - **Other marketplaces** (`.co.uk`, `.de`, ...).
-- **A person answering a robot check in a browser** (#59, using the TripIt mirror). It would
-  need the owner's #96 approval for "Amazon: answer a robot check". The mirror code is
-  private to sign-in today, so it would first need pulling out.
+- **A browser for script checks** (D3): mirroring a server browser to the person, as TripIt's
+  sign-in does. It needs the owner's #96 approval for "Amazon: a person answers a script
+  check". The mirror code is private to sign-in today, so it would first need pulling out.
+- **More than the main image as image content**, or images in search results. Each image
+  costs the AI context, so this waits until someone asks for it.
 - **Generated HTML extractors from web-api-discovery** (#69). This design's hand-written page
   classes are the "hand-written extension point" answer #69 asked about.
 
@@ -716,14 +925,28 @@ DAKAR's copy stays on its pinned build, so it is not the place for this.
 | Answers reflect the host's location (delivery dates, sometimes prices) and a signed-out view (no Prime pricing, no personalisation) | Delivery is returned as Amazon's own text; README says whose view it is |
 | Prices change hourly | `fetchedAt` on every answer; a 10-minute cache |
 | Sponsored results mislead | `sponsored: true` on each one |
+| The check Amazon shows this service is not the "type the characters" kind 5.7 expects, its form differs from the known one, or a correct answer comes back in a shape 5.7 step 4 does not expect | The classifier sends anything without a character picture to the pause (never a guess); the first real check replaces the hand-made fixture |
+| A pass doesn't hold for the requests after it | Detected (two checks within 15 minutes): the service stops offering links and says so. The choices then are living with pauses, or D3 |
+| A hand-over link leaks from the chat | It needs Multiplex sign-in, expires after 10 minutes, and only lets someone type into Amazon's check |
 
-## 10. Build order (test-first, one PR)
+## 10. Build order (test-first, two PRs)
+
+**PR 1, the service.** Robot checks pause, like any block.
 
 1. The classifier, its table, and the robots.txt rules (T2), with hand-made block fixtures.
 2. `AmazonSearchPage`, with the `search-results.html` fixture (T1 1-6, 13-14).
 3. `AmazonProductPage`, with both product fixtures, then the recorded ones (T1 7-12, 15-17).
 4. `SiteGate`, then `AmazonClient`: identity, gate, robots check, pause, the one retry,
    cache, redirects, logging (T3).
-5. The tools, registration, catalog row, README and instruction note (T4).
-6. Live tests (T5), the hand acceptance (7.3), the independent review by a non-author
-   model, then the PR that closes #121.
+5. The main image fetch (T3.17).
+6. The tools, registration, catalog row, README and instruction note (T4).
+7. Live tests (T5), the hand acceptance (7.3, steps 1-5), and the independent review by a
+   non-author model.
+
+**PR 2, the hand-over** (5.7). It is split out because it adds pages and endpoints, and
+because PR 1 is useful without it.
+
+1. `AmazonRobotCheckPage`, with the hand-made check fixtures (T2).
+2. The hand-over registry, then the `/check/{slug}/{id}` page and answer endpoint
+   (T3.18-33, T4).
+3. The phone rehearsal (7.3), the independent review, then the PR that closes #121.
