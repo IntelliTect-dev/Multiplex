@@ -161,7 +161,7 @@ internal static class ResponseParser
             duration,
             airlines,
             Price(itinerary.At(1), request.Currency!),
-            isLastLeg && request.Legs.Count > 1 ? itinerary.Bool(6) : null,
+            isLastLeg && request.Legs.Count > 1 ? itinerary.Flag(6) : null,
             selection);
     }
 
