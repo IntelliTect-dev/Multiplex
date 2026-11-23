@@ -1,6 +1,7 @@
 # Amazon service: design
 
-Issue: #121. Status: proposed 2026-11-22. The owner decided D1, D2 and D2b the same day.
+Issue: #121. Status: proposed 2026-11-22. The owner decided D1, D2, D2b and D4-D6 the same
+day.
 D3, a browser for script checks, is open but not needed to start (section 2). Nothing is
 built yet.
 
@@ -14,7 +15,7 @@ It has two tools:
 
 | Tool | Input | Returns |
 |---|---|---|
-| `amazon_search` | a query, a page number, a sort order | One results page: for each product its ASIN, title, link, image, price, list and unit price, stars, number of ratings, "bought in past month", badges, delivery text, and whether it is a sponsored ad |
+| `amazon_search` | a query; Amazon's sort; 1 to 5 pages; price range, minimum stars, minimum number of ratings, and any of Amazon's own filters for that search; our own ranking | Up to 5 pages of results, ads dropped, duplicates merged and ranked. For each product: ASIN, title, link, image, price, list and unit price, stars, number of ratings, "bought in past month", badges, delivery text. Also Amazon's filter menu for the search, for the next call |
 | `amazon_get_product` | an ASIN or an Amazon product link | Everything on the product page that helps a person choose (section 4.2): prices and deal, availability and seller, stars, number of ratings, the star breakdown, Amazon's "Customers say" summary with each aspect's positive and negative counts and quotes, feature bullets, description, details table, Best Sellers Rank, categories, variations, images and returns |
 
 ### 1.1 How we got here
@@ -38,6 +39,11 @@ used an honest user agent, with no cookies, no browser headers and no browser:
 | `GET /s?k=usb+c+charging+cable` | the same | `200`, 1.6 MB of HTML (291 KB compressed), 22 results. The markup matches the page the browser got in #28 (same `data-component-type`, `data-cy` and `aria-label` hooks) |
 | `GET /dp/B088NRLMPV` | the same | `200`, 2.8 MB of HTML (476 KB compressed). Title, price, list price, unit price, 4.7 stars, 91,951 ratings, star breakdown, "Customers say" (eight aspects with counts and quotes), 19 images, details table, Best Sellers Rank |
 | `GET /s?k=usb+c+charging+cable` | `Multiplex-Amazon/0.1`, the identity this design ships (section 3) | `200`, 1.3 MB of HTML, 22 results, no robot check |
+| `GET /s?k=...&rh=p_36:500-1000,p_72:1248879011` | the same | `200`; all 16 unpaid results between $5.00 and $9.99, and 4.5 stars or more (4.1) |
+| `GET /s?k=...&low-price=5&high-price=10` | the same | `200`; the same range honoured |
+| `GET /s?k=...&rh=p_36:1500-,p_123:3271\|234478` | the same | `200`; a minimum alone is accepted but applied loosely (4 of 16 under $15); "Anker or Amazon Basics" gave only Anker |
+| `GET /s?k=...&rh=p_123:3271\|234478` | the same | `200`; only Anker (16 of 16), so `\|` does not mean "either" (4.1) |
+| an image from `m.media-amazon.com` | the same | `200`, a 25 KB JPEG; that host's robots.txt has no `*` group |
 
 So **Amazon needs no browser to read**. The service reads Amazon's pages over plain HTTP and
 parses the HTML, and #59 loses its first use.
@@ -107,6 +113,21 @@ we download the HTML and product images... but not with a browser." The service 
 and fetches the main product image over plain HTTP (4.2, 5.1), and the robot-check hand-over
 uses no browser either (5.7). #59's browser reader is not needed for Amazon.
 
+**D4. Filters in the first build. Decided 2026-11-22.** The owner: "first build... this is
+key functionality." See 4.1: price range, minimum stars and Amazon's own per-search
+filters, all tested live, plus a minimum number of ratings.
+
+**D5. Several pages per call. Decided 2026-11-22.** The owner: "several I'd say. one key
+would be trying to determine the sort order." `amazon_search` reads up to 5 pages in one
+call. It ranks everything it read by a measure the AI picks (`rankBy`), not only Amazon's
+order. One reading of "determine the sort order" was taken here, and the owner should
+confirm it: the point is to rank across pages ourselves, for example by a rating weighted by
+how many people gave it.
+
+**D6. Sponsored results dropped. Decided 2026-11-22.** The owner: "we should filter out
+sponsored items by default... if not entirely." They are dropped entirely, with no input to
+keep them. The answer says how many were dropped.
+
 **D3. A browser for script checks? Open; not needed to start.** Amazon has two kinds of
 robot check:
 
@@ -151,26 +172,97 @@ script checks ever appear in the log, decide then.
 
 ### 4.1 `amazon_search`
 
+Search is the heart of the service. Three owner decisions (D4, D5, D6) shape it:
+- Amazon's own filters are in the first build.
+- One call can read several pages and rank them by our own measure.
+- Sponsored results are dropped.
+
 | Input | Type | Default | Notes |
 |---|---|---|---|
 | `query` | string, required | | What a person would type into Amazon's search box |
-| `page` | int, 1-20 | 1 | Amazon shows about 16 to 22 results per page and stops at page 20 |
-| `sort` | `relevance`, `price_low_to_high`, `price_high_to_low`, `avg_customer_review`, `newest`, `best_sellers` | `relevance` | Maps to `s=` `relevanceblender`, `price-asc-rank`, `price-desc-rank`, `review-rank`, `date-desc-rank`, `exact-aware-popularity-rank`, all read from the live sort menu on 2026-11-22 |
+| `sort` | `relevance`, `price_low_to_high`, `price_high_to_low`, `avg_customer_review`, `newest`, `best_sellers` | `relevance` | **Amazon's** order. It decides *which* products come back first. Maps to `s=` `relevanceblender`, `price-asc-rank`, `price-desc-rank`, `review-rank`, `date-desc-rank`, `exact-aware-popularity-rank`, all read from the live sort menu on 2026-11-22 |
+| `pages` | int, 1-5 | 1 | How many result pages to read in this call, from `startPage` on. Each page is one request, 3 to 5 seconds apart, so 5 pages usually take about 20 seconds. The search stops early at Amazon's last page (no "Next" link) or page 20, or at the call's 45-second deadline (5.2) |
+| `startPage` | int, 1-20 | 1 | Where to start. Amazon offered 20 pages for the test search, and fewer when filtered. `nextPage` in the answer says where to carry on, or is `null` at the end |
+| `minPrice`, `maxPrice` | number, US dollars, 0-100,000 | none | Sent to Amazon as `rh=p_36:<min cents>-<max cents>`, the form Amazon's own price links use. Cents are the dollars times 100, rounded to the nearest cent. One bound alone gives `p_36:1500-` or `p_36:-1000`, both seen working. A minimum above the maximum is an input error. Amazon applies this loosely: in a minimum-only test, 4 of 16 results were under the minimum. So every result is also checked, and one with no price is dropped |
+| `minRating` | number, 1-5 | none | At 4 or more, it is also sent to Amazon as `p_72:1248879011` ("4 Stars & Up", the only star filter Amazon offered). At any value it is checked on every result; a result with no rating is dropped |
+| `minRatingsCount` | int | none | Our own filter: drops products with fewer ratings than this. Amazon has no such filter |
+| `filters` | list of codes, at most 10 | none | Amazon's filters for this search, taken from `availableFilters` in an earlier answer: brand, length, connector type, condition, delivery day and so on (`p_123:3271` is Anker). The rules are below the table |
+| `rankBy` | `amazon`, `best_rated`, `rating`, `ratings_count`, `price`, `bought_in_past_month` | `amazon` | **Our** order, applied to everything the call read (below) |
 
-Request: `GET https://www.amazon.com/s?k=<query>&page=<n>&s=<sort>`.
+Request, once per page: `GET https://www.amazon.com/s?k=<query>&s=<sort>&page=<n>&rh=<codes>`.
+Every filter goes in the one `rh=`, comma-separated, as Amazon's own links do. The `rh`
+value is URL-encoded as a whole.
 
-Output (field names final; values from the 2026-11-22 page):
+**Rules for `filters`.** A code goes into Amazon's address, so it is checked strictly:
+- It must match `^p_[A-Za-z0-9_-]{1,64}:[A-Za-z0-9]{1,32}$`. Group names in the wild carry
+  hyphens and digits (`p_n_g-101014941094111`, `p_n_condition-type`). Values are digits,
+  or letters and digits for sellers (`p_6:A30XRGG45X0IFD`). That pattern lets no `,`, `&`,
+  `%`, `|` or space through.
+- `p_36` and `p_72` are refused here, because `minPrice`, `maxPrice` and `minRating` set
+  them.
+- **One code per group.** Amazon offers no "either" within a group. `p_123:3271|234478`
+  (Anker or Amazon Basics) returned only Anker on 2026-11-22, and two codes in one group
+  joined by a comma would mean "both at once". A second code from the same group is an
+  input error that says so. To compare brands, the AI runs one search per brand.
+
+A refused input is a tool error naming the code, and no request is made.
+
+**Filters were tested live on 2026-11-22:**
+- `rh=p_36:500-1000,p_72:1248879011` returned 16 unpaid results, all between $5.00 and
+  $9.99 and all 4.5 stars or more.
+- `low-price=5&high-price=10` (Amazon's price slider) returned the same. The design uses
+  `p_36`, because it combines with the other codes in one `rh=`.
+- The one result under 4.5 stars on that page was an ad, because ads ignore filters.
+  That is one more reason to drop them, and to check prices and stars ourselves.
+
+**Ranking: `sort` and `rankBy` do different jobs.**
+- `sort` asks Amazon for a different set of products: `price_low_to_high` brings back the
+  cheapest matches, not the first page re-ordered.
+- `rankBy` re-orders what came back, across every page read. That makes it worth reading
+  several pages.
+  - `best_rated` ranks by a weighted rating, (n / (n + m)) x R + (m / (n + m)) x C:
+    - R is the product's stars and n its rating count;
+    - C is the average stars of the results that have a rating, counted after duplicates,
+      ads and our own filters are dropped;
+    - m is 100.
+
+    A 4.8-star product with 12 ratings ranks below a 4.7-star product with 90,000, which is
+    what most people mean by "best rated". Amazon's own `avg_customer_review` order does not
+    do this. With one rated result, C is its own rating, so its score is too.
+  - `rating`: highest stars first.
+  - `ratings_count`: most ratings first.
+  - `price`: cheapest first.
+  - `bought_in_past_month`: by the lower bound of Amazon's label ("500+" is 500, "10K+" is
+    10,000, "1M+" is 1,000,000).
+  - **Ties** go to the higher rating count, then the higher rating, then `amazonRank`. For
+    `ratings_count`, the higher rating comes first.
+  - Results missing the value being ranked on go last, in `amazonRank` order.
+
+**What every search does to the results:**
+- **Sponsored results are dropped** (D6), with their count in `sponsoredRemoved`. On the
+  test pages, 6 of 22 were ads. When an advertised product also appears unpaid, the unpaid
+  entry stays.
+- **Duplicates across pages are dropped.** Amazon repeats products; each ASIN appears once,
+  where it first appeared.
+- **Our own filters** (`minPrice`, `maxPrice`, `minRating`, `minRatingsCount`) drop
+  results. Their count is in `filteredOut`. They can drop every result. `results` is then
+  empty, and `note` says why: "All 16 results had fewer than 500 ratings."
+
+Output (field names final; values from the 2026-11-22 pages):
 
 ```json
 {
   "query": "usb c charging cable",
-  "page": 1,
   "sort": "relevance",
+  "rankBy": "best_rated",
+  "pagesRead": [1, 2, 3],
+  "nextPage": 4,
   "totalResults": "over 60,000",
-  "hasMorePages": true,
+  "sponsoredRemoved": 17,
+  "filteredOut": 3,
   "results": [
     {
-      "position": 3,
+      "amazonRank": 3,
       "asin": "B088NRLMPV",
       "title": "Anker USB C to USB C Cable, 60W Fast Charging Cable (2-Pack, 6 ft, Black)",
       "url": "https://www.amazon.com/dp/B088NRLMPV",
@@ -182,20 +274,48 @@ Output (field names final; values from the 2026-11-22 page):
       "ratingsCount": 91951,
       "boughtInPastMonth": "10K+",
       "badges": ["Black Friday Deal"],
-      "sponsored": false,
       "delivery": "FREE delivery Fri, Nov 27 on $35 of items shipped by Amazon"
     }
   ],
+  "availableFilters": [
+    { "name": "Brands", "options": [ { "label": "Anker", "code": "p_123:3271" }, { "label": "Amazon Basics", "code": "p_123:234478" } ] },
+    { "name": "Length", "options": [ { "label": "5 to 5.9 ft", "code": "p_n_g-101014941094111:119746484011" } ] },
+    { "name": "Condition", "options": [ { "label": "New", "code": "p_n_condition-type:2224371011" } ] }
+  ],
   "warnings": [],
-  "source": "https://www.amazon.com/s?k=usb+c+charging+cable",
+  "sources": ["https://www.amazon.com/s?k=usb+c+charging+cable&page=1"],
   "fetchedAt": "2026-11-22T23:52:47Z"
 }
 ```
 
-- **Sponsored results are kept and flagged.** Hiding them would change what the person
-  would see on Amazon. The AI can drop them.
-- **`url` is built from the ASIN.** Sponsored links go through Amazon's `/sspa/click`
-  redirect, and organic links carry tracking. `https://www.amazon.com/dp/{asin}` is stable.
+- **`amazonRank`** is the product's place in Amazon's own order, counting across pages
+  without the ads: page 2's first unpaid result follows page 1's last. It shows what the
+  re-ranking changed.
+- **`availableFilters`** is Amazon's filter menu for this search, read from the first page
+  (each option is an `li` whose `id` is `p_123/3271`; the code is `p_123:3271`). The AI
+  passes chosen codes back in `filters`. That gives every category's own filters without
+  this service knowing or guessing a single code. It is trimmed to 10 options per group and
+  15 groups, because each one costs the AI context. Price and stars are left out, because
+  they have their own inputs.
+- **A failure ends the search, but keeps what was read.** The causes are:
+  - a robot check, the pause, or an open hand-over;
+  - a cap, the queue limit, or the call's deadline;
+  - robots.txt refusing the page;
+  - a `429` or `5xx` after its retry;
+  - a changed layout.
+
+  On the first page, the failure is the tool error it would be for one page. On a later
+  page:
+  - the answer holds the pages already read;
+  - a warning names the page that failed and why;
+  - `nextPage` points at that page.
+
+  If the cause was a robot check, the answer also carries
+  `"handOver": { "url": ..., "expiresAt": ... }` at the top. The tool description tells the
+  AI to give that link to the person, so it is not buried in a warning.
+- **`url` is built from the ASIN.** Organic links carry tracking (and ad links, before they
+  are dropped, go through Amazon's `/sspa/click` redirect). `https://www.amazon.com/dp/{asin}`
+  is stable.
 - **A field that can't be read exactly is `null`, never a guess.** One example: `ratingsCount`
   comes from the exact `aria-label` ("91,951 ratings"), never from the shortened "(91.9K)".
 
@@ -303,6 +423,7 @@ the rest are on the 2026-11-22 popular product (`B088NRLMPV`).
 | Availability, seller | | first text of `#availability` (the element also holds inline JSON); `#merchantInfoFeature_feature_div` ("Sold by AnkerDirect", or "Shipper / Seller Amazon.com") |
 | Categories | | `#wayfinding-breadcrumbs_feature_div li a` |
 | Totals, paging | `[data-component-type="s-result-info-bar"]`, `a.s-pagination-next` | |
+| Filter menu | `#s-refinements`: each group's heading (`span.a-text-bold`) and its options, `li[id^="p_"]`, where the `id` `p_123/3271` gives the code `p_123:3271` and the link text gives the label. 184 options on the 2026-11-22 page | |
 
 Traps found in the real pages; each becomes a test (T1):
 
@@ -420,6 +541,16 @@ So the service gets a small gate of its own. It is new code, under 100 lines, in
 - **Queue limit:** a call that would wait more than 30 seconds for its turn fails at once:
   "Amazon requests are queued; try again in a moment". An AI that fires ten product lookups
   in parallel gets fast errors, not a ten-minute hang.
+- **A search over several pages** takes one turn per page, in order, so other calls can
+  slip in between. Five pages usually take about 20 seconds.
+- **A deadline for the whole call:** 45 seconds from when it started, below the 60 seconds
+  after which many chat apps give up on a tool.
+  - No new page starts after the deadline.
+  - A page's wait for its turn is limited to whichever is shorter: the 30-second queue
+    limit, or the time left before the deadline.
+  - A search that hits the deadline ends with what was read so far, a warning and
+    `nextPage` (4.1).
+  - Product lookups, one page and one image, finish well inside it.
 - **Volume caps:** at most 100 requests to Amazon in any hour and 500 in any day, counted
   over a rolling window. Every request counts, including robots.txt fetches, retries and
   followed redirects. Over a cap, a call fails at once and says when the window frees up.
@@ -506,8 +637,10 @@ while the results list itself still parses.
 
 ### 5.5 Cache
 
-Parsed answers are cached in memory for 10 minutes, keyed by request URL, up to 200 entries,
-with the oldest evicted first. The cache reads time from the same injected `TimeProvider`,
+Parsed pages are cached in memory for 10 minutes, keyed by request URL, up to 200 entries,
+so a search for pages 1-3 that follows one for page 1 reads page 1 from the cache. The
+checks of our own filters and the ranking are applied after the cache, so changing `rankBy`
+or `minRatingsCount` costs no request. The oldest entries are evicted first. The cache reads time from the same injected `TimeProvider`,
 so tests can expire it. Calls for the same URL at the same time share one fetch: the second
 waits for the first's answer rather than queueing a second request. An AI often looks up the
 same product more than once in one conversation. Every request saved is less load on Amazon
@@ -683,7 +816,10 @@ They live in `tests/Multiplex.Tests/Services/Amazon/Fixtures/`. The csproj alrea
 
 | Fixture | From | Proves |
 |---|---|---|
-| `search-results.html` | the 2026-11-22 plain-HTTP search | organic and sponsored results, badges, list versus unit price, shortened counts, paging |
+| `search-results.html` | the 2026-11-22 plain-HTTP search | organic and sponsored results, badges, list versus unit price, shortened counts, paging, the filter menu |
+| `search-filtered.html` | the 2026-11-22 search with `p_36:500-1000,p_72:1248879011` | a filtered page parses the same way, and its prices and stars fall in range |
+| `search-page-2.html` | to record | a second page: `amazonRank` carries on from page 1, and repeated ASINs are dropped |
+| `search-filtered-no-results.html` | to record: a filtered search with no matches | "No results for" on a filtered search is an empty list, not a changed layout |
 | `search-no-results.html` | to record | "No results for" gives an empty list, not a layout error |
 | `product-popular.html` | the 2026-11-22 `B088NRLMPV` page | Customers say with 8 aspects, histogram, deal, list and unit price, variations, details table, Best Sellers Rank, 19 images |
 | `product-few-ratings.html` | the #28 capture of `B0FFK2WQJH` | no Customers say gives `null`; "Brand: Amazon" byline; details as a bulleted list |
@@ -706,7 +842,8 @@ while the service is being built.
 say the behaviour:
 
 1. `Search_ReadsAsinTitlePriceStarsAndCount_ForEachResult`
-2. `Search_FlagsSponsoredResults_AndStripsTheSponsoredPrefixFromTitles`
+2. `Search_DropsSponsoredResults_AndCountsThem` (6 of 22 on the fixture), and
+   `Search_KeepsTheUnpaidEntry_OfAProductThatIsAlsoAdvertised`
 3. `Search_TakesTheExactRatingsCount_NotTheShortenedText` (91951, not 91.9K)
 4. `Search_ReadsListPriceFromTheStruckThroughPrice_NotTheUnitPrice`
 5. `Search_BuildsProductUrlsFromTheAsin_NotFromTrackingLinks`
@@ -725,6 +862,31 @@ say the behaviour:
 15. `Product_WhoseHistogramDoesNotAddUp_AddsAWarning`
 16. `Product_DropsTheDealBadgesTemplateText` ("NO_OF_HOURS")
 17. `Product_BuildsItsUrlFromTheAsin_NotTheClpCanonical`
+18. `Search_ReadsTheFilterMenu_AsGroupsOfLabelsAndCodes` (`Brands` holds `Anker` with
+    `p_123:3271`), and `Search_TrimsTheFilterMenu_To15GroupsOf10_WithoutPriceOrStars`
+
+**Search across pages, filters and ranking** are pure functions over parsed pages, tested
+without the network:
+
+19. `Merge_DropsRepeatedAsins_KeepingTheFirst`, and
+    `Merge_NumbersAmazonRank_AcrossPages_WithoutAds`.
+20. `OurFilters_DropResultsOutsideThePriceRange_BelowMinRating_OrBelowMinRatingsCount`,
+    `AResultWithNoRating_FailsMinRating`, and `filteredOut_CountsThem`.
+21. `RankBy_BestRated_PutsMany4Point7StarsAboveAFew4Point8Stars`. It uses three results
+    worked by hand: 4.7 stars from 90,000 ratings, 4.8 from 12, 4.0 from 300, so C is 4.5.
+    The scores are about 4.700, 4.532 and 4.125. Also `BestRated_WithOneRatedResult_ScoresItsOwnRating`.
+22. `RankBy_EachMeasure_PutsMissingValuesLast_InAmazonsOrder`,
+    `RankBy_TiesGoToCountThenRatingThenAmazonRank`, and
+    `RankBy_BoughtInPastMonth_ReadsTheLowerBound` ("500+", "10K+", "1M+").
+23. `TheRequestUrl_PutsPriceStarsAndFilterCodes_InOneEncodedRh`:
+    - `minPrice` 5 and `maxPrice` 10 give `p_36:500-1000`;
+    - `minPrice` 15 alone gives `p_36:1500-`;
+    - `9.995` rounds to 1000 cents;
+    - `minRating` 4.5 adds `p_72:1248879011`, and 3.5 adds nothing.
+24. `FilterCodes_AreRefusedWithoutARequest_When`, a theory over: a `,`, `&`, `%`, `|` or
+    space in a code; a code longer than the pattern allows; more than 10 codes; `p_36` or
+    `p_72` in `filters`; two codes from one group; a minimum price above the maximum.
+25. `WhenOurFiltersDropEveryResult_ResultsIsEmpty_AndNoteSaysWhy`.
 
 **T2. Classifier.** Table-driven over status, headers, location and body:
 
@@ -824,6 +986,20 @@ source, shared by the gate, the breaker and the cache, so no test waits in real 
 33. `ACorrectAnswerThatRedirects_IsAPass_NotABlock` (to `/s?k=` and to `/`), and
     `AnAnswerRedirectingToSignInOrOffAmazon_IsNotAPass`.
 
+**Several pages in one call**, with the fake Amazon:
+
+34. `ASearchOf3Pages_MakesThreeRequests_InOrder_EachThroughTheGate`.
+35. `ARobotCheckOnPage3_ReturnsPages1And2_WithAWarning_AndATopLevelHandOver`, with
+    `nextPage` 3, and the same for a cap reached on page 3 (with no hand-over).
+    `AFailureOnPage1_IsAToolError`.
+36. `ASearchAfterAnEarlierOne_ReadsSharedPagesFromTheCache`, and
+    `ChangingRankBy_MakesNoRequest`.
+37. `AmazonsLastPage_EndsTheSearch`: no request past the page with no "Next" link, or past
+    page 20, and `nextPage` is `null`.
+38. `ASearchThatReachesItsDeadline_StartsNoNewPage_AndReturnsWhatItRead`: with a slow fake
+    Amazon and the fake clock, page 4 is never requested once 45 seconds have passed. A
+    page's wait for its turn is cut to the time left.
+
 **T4. Through MCP.** This uses `WebApplicationFactory<Program>`, with the fake handler serving
 fixtures, and the JSON-RPC client the TripIt host tests use:
 
@@ -841,8 +1017,10 @@ fixtures, and the JSON-RPC client the TripIt host tests use:
 **T5. Live.** Opt-in with `MULTIPLEX_LIVE_TESTS=1`, against the real amazon.com. It uses the
 new `[LiveHttpFact]`, which does not require Chromium, since this service uses none.
 
-- **At most four requests a run, paced:** robots.txt, one search ("usb c cable"), the
-  popular product, one book.
+- **At most six requests a run, paced:** robots.txt, a two-page search ("usb c cable"), a
+  filtered search (`maxPrice` 10, `minRating` 4), the popular product, one book.
+- The filtered search checks that every result is in range, and that `availableFilters`
+  holds a `Brands` group with codes shaped like `p_123:<number>`.
 - **It checks invariants, not values:**
   - at least 10 results;
   - at least 80% of results with a price, stars and an exact count;
@@ -875,14 +1053,20 @@ claude mcp add --transport http amazon http://localhost:5190/amazon/mcp
 Then ask, and check the answers against amazon.com in a normal browser:
 
 1. "Find a USB-C to USB-C cable under $10 with at least 4.5 stars, and tell me what
-   customers complain about." Expect `amazon_search`, then `amazon_get_product` on one or two
-   results, with an answer citing price, stars, count and the negative aspects.
-2. "Compare B088NRLMPV and B09LCJPZ1P." Expect two product calls, with the second spaced from
+   customers complain about."
+   - Expect `amazon_search` with `maxPrice` 10 and `minRating` 4.5, then
+     `amazon_get_product` on one or two results.
+   - Expect an answer citing price, stars, count and the negative aspects.
+   - Expect no sponsored products among the results.
+2. "Which of the best-rated 6-foot Anker USB-C cables is cheapest? Look past the first
+   page." Expect a first search, then a second that uses Anker's and 6-foot's codes from
+   `availableFilters`, with `pages` above 1 and `rankBy` `best_rated`.
+3. "Compare B088NRLMPV and B09LCJPZ1P." Expect two product calls, with the second spaced from
    the first.
-3. "Look up Amazon product B000000000." Expect a clear not-found message.
-4. Ask the same product question twice. The second answer comes from the cache, with the
+4. "Look up Amazon product B000000000." Expect a clear not-found message.
+5. Ask the same product question twice. The second answer comes from the cache, with the
    same `fetchedAt`.
-5. Check that the product answer shows the main image, and that the AI can describe it.
+6. Check that the product answer shows the main image, and that the AI can describe it.
 
 Then repeat 1 from claude.ai through the Linux host, once the service is deployed there.
 DAKAR's copy stays on its pinned build, so it is not the place for this.
@@ -900,9 +1084,13 @@ happened gets recorded on #121, above all whether the pass held for the requests
 - **Individual reviews:** needs an Amazon sign-in, which the owner chose to skip to start
   (D2).
 - **All offers and other sellers:** Amazon loads these separately (`aodAjaxMain`).
-- **Search filters:** price range, minimum stars, Prime, department. Amazon's `rh=` filter
-  ids vary by category. Each one would need a recording to confirm before adding a tool
-  input. The AI can filter by the price and stars it gets back meanwhile.
+- **Filters by name** ("brand: Anker" without first reading its code). Today the AI reads
+  the code from `availableFilters` in one search and uses it in the next. A name lookup
+  would save that first call, at the cost of guessing at Amazon's ids.
+- **Prime-only results.** Amazon's signed-out filter menu offered no Prime filter on
+  2026-11-22. It offered only delivery-day filters, which `filters` already covers.
+- **Star filters below 4.** Amazon offered only "4 Stars & Up". Lower values of `minRating`
+  are checked by the service alone, which is exact but reads Amazon's unfiltered pages.
 - **Every variation option with its price.**
 - **Search-as-you-type suggestions.** This is Amazon's one clean JSON call (#28). It is
   little use to an AI, which writes its own queries.
@@ -924,7 +1112,8 @@ happened gets recorded on #121, above all whether the pass held for the requests
 | Markup changes | Named layout errors, bulk-loss warnings, live tests that save the failing page |
 | Answers reflect the host's location (delivery dates, sometimes prices) and a signed-out view (no Prime pricing, no personalisation) | Delivery is returned as Amazon's own text; README says whose view it is |
 | Prices change hourly | `fetchedAt` on every answer; a 10-minute cache |
-| Sponsored results mislead | `sponsored: true` on each one |
+| Sponsored results mislead | Dropped entirely (D6); `sponsoredRemoved` says how many |
+| Amazon's filter codes change, or a code from one search is used in another | Codes are never hard-coded except `p_36` (price) and `p_72:1248879011` (4 stars & up), both tested live; every other code comes from the search's own menu. The service also checks price and stars itself, so a stale code can't let wrong results through |
 | The check Amazon shows this service is not the "type the characters" kind 5.7 expects, its form differs from the known one, or a correct answer comes back in a shape 5.7 step 4 does not expect | The classifier sends anything without a character picture to the pause (never a guess); the first real check replaces the hand-made fixture |
 | A pass doesn't hold for the requests after it | Detected (two checks within 15 minutes): the service stops offering links and says so. The choices then are living with pauses, or D3 |
 | A hand-over link leaks from the chat | It needs Multiplex sign-in, expires after 10 minutes, and only lets someone type into Amazon's check |
@@ -934,13 +1123,14 @@ happened gets recorded on #121, above all whether the pass held for the requests
 **PR 1, the service.** Robot checks pause, like any block.
 
 1. The classifier, its table, and the robots.txt rules (T2), with hand-made block fixtures.
-2. `AmazonSearchPage`, with the `search-results.html` fixture (T1 1-6, 13-14).
-3. `AmazonProductPage`, with both product fixtures, then the recorded ones (T1 7-12, 15-17).
-4. `SiteGate`, then `AmazonClient`: identity, gate, robots check, pause, the one retry,
-   cache, redirects, logging (T3).
-5. The main image fetch (T3.17).
-6. The tools, registration, catalog row, README and instruction note (T4).
-7. Live tests (T5), the hand acceptance (7.3, steps 1-5), and the independent review by a
+2. `AmazonSearchPage`, with the search fixtures (T1 1-6, 13-14, 18).
+3. Merging, our filters, ranking, input rules and the request URL (T1 19-25).
+4. `AmazonProductPage`, with both product fixtures, then the recorded ones (T1 7-12, 15-17).
+5. `SiteGate`, then `AmazonClient`: identity, gate, robots check, pause, the one retry,
+   cache, redirects, logging, several pages per call and the deadline (T3, T3.34-38).
+6. The main image fetch (T3.17).
+7. The tools, registration, catalog row, README and instruction note (T4).
+8. Live tests (T5), the hand acceptance (7.3, steps 1-6), and the independent review by a
    non-author model.
 
 **PR 2, the hand-over** (5.7). It is split out because it adds pages and endpoints, and
