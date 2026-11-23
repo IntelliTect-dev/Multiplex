@@ -45,11 +45,13 @@ descriptions (`src/GoogleFlights/GoogleFlightsDocs.cs`).
 
 ## Use it
 
-**From an AI client:** Multiplex serves the tools at `/google-flights/mcp`.
-The endpoint needs no sign-in, so, like every open Multiplex endpoint, it
-answers only requests from the PC Multiplex runs on unless
-`Multiplex:PublicOpenEndpoints` lists `google-flights`. Listing it lets anyone
-who finds the address spend this network's Google Flights requests.
+**From an AI client:** Multiplex serves the tools at `/google-flights/mcp`,
+behind Multiplex's sign-in like every service (#80). Google Flights acts for no
+one's site account, so, like Time, connecting it is a consent page after the
+Microsoft sign-in: add `https://<your Multiplex host>/google-flights/mcp` as a
+connector in Claude or ChatGPT, as for TripIt and LinkedIn. On the machine
+Multiplex runs on, it needs no token (for example a command-line client on
+that machine pointing at `http://localhost:5190/google-flights/mcp`).
 
 **From PowerShell:**
 
