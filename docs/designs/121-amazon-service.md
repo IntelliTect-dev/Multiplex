@@ -1174,7 +1174,8 @@ Then ask, and check the answers against amazon.com in a normal browser:
    confirms the 50-second deadline holds for Claude, and ChatGPT is checked the same way.
 3. "Compare B088NRLMPV and B09LCJPZ1P." Expect two product calls, with the second spaced from
    the first.
-4. "Look up Amazon product B000000000." Expect a clear not-found message.
+4. "Look up Amazon product B0ZZZZZZZ9." Expect a clear not-found message. (`B000000000` turned
+   out to be a real product.)
 5. Ask the same product question twice. The second answer comes from the cache, with the
    same `fetchedAt`.
 6. Check that the product answer shows the main image, and that the AI can describe it.
@@ -1254,3 +1255,57 @@ because PR 1 is useful without it.
 2. The hand-over registry, then the `/check/{slug}/{id}` page and answer endpoint
    (T3.18-33, T4).
 3. The phone rehearsal (7.3), the independent review, then the PR that closes #121.
+
+## 11. What building it changed (PR 1, 2026-11-23)
+
+Building the service against the real site corrected the design in these places. Where this
+section and an earlier one disagree, this section is right.
+
+**Amazon's first real robot check was not the kind section 5.7 expected.** On 2026-11-23,
+after about 40 requests that day, Amazon answered one product request with a `200` page
+that says "Click the button below to continue shopping".
+- It is a form that sends a `GET` to `/errors_page/validateCaptcha` (not
+  `/errors/validateCaptcha`), with three hidden fields: `amzn`, `amzn-r` and
+  `field-keywords`. The last is already filled in.
+- It has one button, "Continue shopping", and no picture of characters. There is nothing
+  to type.
+- The request after it, sent without answering, went through normally.
+- A trimmed copy, with its token replaced, is the fixture `blocked-continue-shopping.html`.
+
+For PR 2 this means the hand-over's first case is a page with one button, and "type the
+characters" is the second, still unseen, case. D3 (a browser for script checks) is unchanged.
+
+**The "automated access" comment is on more pages than the refusal.** Amazon's check pages
+and its `404` page both carry "To discuss automated access to Amazon data please contact
+api-services-support@amazon.com" in a comment. So the classifier (5.3) decides in this
+order:
+1. a redirect, by its target;
+2. a check form (`validateCaptcha` in the page), which is a `RobotCheck` whatever the status;
+3. a `404`, which is `NotFound`;
+4. the "automated access" comment, which is a refusal;
+5. check wording with no form, or the firewall's header, which is a `Challenge`;
+6. the status.
+
+A check page with no character picture is therefore a `RobotCheck` when it has the form,
+not a `Challenge` as 5.3 said.
+
+**A search with no matches has no "No results for" message.** The page holds a few
+sponsored results and nothing else: no unpaid results, no total, no "Next" link. Dropping
+the ads leaves an empty list, which is the right answer. The parser still accepts the
+message as an anchor, but no page has shown it.
+
+**Smaller differences from sections 5 and 6:**
+- **The queue limit** (5.2): a call waits up to 30 seconds for its turn and then fails. It
+  does not fail "at once", because how long the queue will take can't be known ahead.
+- **Spacing around a picture** (5.2): a picture is fetched 1 second after the request before
+  it. The page after a picture still waits its full gap, measured from the last page.
+- **A web page where robots.txt should be** counts as "could not be read", never as "no
+  rules" (5.1).
+- **Files** (6): there is no `PageAnchors.cs`; each page class checks its own anchors.
+  `AmazonSearch.cs` holds the search logic, and `AmazonText.cs` the reading of numbers.
+- **The fixture trimmer** takes its keep-list from `FixtureRoots` and `FixtureProse` in each
+  page class, and the class names it keeps from that class's selector constants.
+- **`boughtInPastMonth` on a product** is a number with `boughtInPastMonthText`, as on a
+  search result (4.2 showed text only).
+- **Books**: the description is read from `#bookDescription_feature_div`. A book has no
+  brand; its author is not returned yet.

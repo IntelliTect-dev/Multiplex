@@ -341,6 +341,8 @@ public sealed partial class AmazonClient
 
         var shared = _inFlight.GetOrAdd("robots:" + host, key => new Lazy<Task<object>>(async () =>
         {
+            // Yield first: a caller that shares this fetch must never wait on the Lazy while the first is still sending.
+            await Task.Yield();
             try
             {
                 return await FetchRobotsAsync(host, deadline).ConfigureAwait(false);
@@ -423,6 +425,7 @@ public sealed partial class AmazonClient
         }
         var shared = _inFlight.GetOrAdd(key, k => new Lazy<Task<object>>(async () =>
         {
+            await Task.Yield();
             try
             {
                 // Not the first caller's token: the callers sharing this fetch must not lose it when that one leaves.

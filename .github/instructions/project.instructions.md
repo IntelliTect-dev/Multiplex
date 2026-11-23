@@ -11,8 +11,9 @@ Multiplex is an ASP.NET Core web app that hosts several **services**, one per
 website, each a Model Context Protocol (MCP) server at its own `/{slug}/mcp`
 endpoint. A service calls its website's own (undocumented) API, found with the
 `web-api-discovery` skill; a browser is only for what the API can't do, such as
-signing in. Time is the exception today: it reads time.now's pages in a shared
-headless Chromium. The repository also carries the self-contained
+signing in. Two services read pages instead: Time reads time.now's pages in a shared
+headless Chromium, and Amazon, which has no data calls for search or product details,
+reads Amazon's pages over plain HTTPS with no browser. The repository also carries the self-contained
 `web-api-discovery` skill under `web-api-discovery/`. The product overview,
 with the catalog of services, is `spec/product.md`.
 
@@ -45,6 +46,7 @@ with the catalog of services, is `spec/product.md`.
 | Web framework | ASP.NET Core, Razor Pages |
 | MCP | `ModelContextProtocol.AspNetCore` |
 | Browser automation | PuppeteerSharp (Chromium) |
+| HTML parsing | AngleSharp |
 | Testing | xUnit, `Microsoft.AspNetCore.Mvc.Testing` |
 | Skill tooling | PowerShell 7 + Pester, Node.js 20 (`web-api-discovery/`) |
 
@@ -83,6 +85,12 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 - **Call the site's API, not its pages.** Find the API with the
   `web-api-discovery` skill first; use the browser only for what the API can't
   do (such as signing in).
+- **No browser without the owner's approval.** No service uses a browser by default. Any
+  browser use needs the owner's approval for that provider and that use case. The rule and
+  the approvals given so far are on issue #96.
+- **A site with pages but no API** is read over plain HTTP: an honest user agent, the site's
+  robots.txt obeyed, every request through a `SiteGate`, and a stop at any block. The
+  shared pieces are in `src/Multiplex.Web/HtmlSites/`; `Services/Amazon/` is the example.
 - **New service = new folder.** A static class with `[McpServerToolType]` and
   `[McpEndpoint("<slug>")]` in `src/Multiplex.Web/Services/<Name>/`, with a
   README there. No other registration. A tool class without `[McpEndpoint]` is
@@ -113,6 +121,7 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 ## External Dependencies & Secrets
 
 - time.now (public, no credentials) for `get_local_time`.
+- amazon.com and its image host (public, signed out, no credentials) for the Amazon service.
 - Chromium: a system install via `Browser:ExecutablePath`, else Puppeteer
   downloads one on first use (needs network).
 - No secrets are configured today.
