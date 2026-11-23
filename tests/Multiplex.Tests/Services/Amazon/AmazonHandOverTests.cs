@@ -384,6 +384,142 @@ public class AmazonHandOverTests
     }
 
     [Fact]
+    public async Task AnAnswerOnItsWayWhenTheLinkExpires_StillCounts()
+    {
+        var check = await MeetACheck();
+        _h.Amazon.On(u => u.AbsolutePath.EndsWith("/validateCaptcha"), _ =>
+        {
+            // The link's ten minutes run out while Amazon is still answering, and another call comes in.
+            _h.Time.Advance(AmazonClient.CheckLifetime + TimeSpan.FromMinutes(1));
+            var other = Assert.Throws<AggregateException>(() => _h.Search("something else").Wait());
+            Assert.IsType<SiteHandOverException>(other.InnerException);
+            return FakeAmazon.Redirect("/").WithCookie("x-amz-captcha-1=passed; Path=/");
+        });
+
+        var result = await HandOver.AnswerAsync(IdOf(check), null, CancellationToken.None);
+
+        Assert.Equal(HandOverOutcome.Passed, result.Outcome);
+        AmazonAnswersNormallyAgain();
+        await _h.Product();
+        Assert.Equal("session-id=check-session; x-amz-captcha-1=passed", _h.Amazon.Requests.Last(r => r.Url.AbsolutePath == "/dp/B088NRLMPV").Headers["Cookie"]);
+    }
+
+    [Fact]
+    public async Task APersonClosingThePageMidAnswer_DoesNotLoseWhatAmazonSaid()
+    {
+        var check = await MeetACheck();
+        using var browser = new CancellationTokenSource();
+        _h.Amazon.On(u => u.AbsolutePath.EndsWith("/validateCaptcha"), _ =>
+        {
+            browser.Cancel();
+            return FakeAmazon.Redirect("/");
+        });
+
+        var result = await HandOver.AnswerAsync(IdOf(check), null, browser.Token);
+
+        Assert.Equal(HandOverOutcome.Passed, result.Outcome);
+        Assert.Null(HandOver.Find(IdOf(check)));
+    }
+
+    [Fact]
+    public async Task APictureThatWillNotCome_IsNotAskedForAgainOnEveryReload()
+    {
+        var check = await MeetACheck("blocked-robot-check.html");
+        _h.Amazon.On(u => u.AbsolutePath.Contains("/captcha/"), _ => FakeAmazon.Status(503));
+        int Asked() => _h.Amazon.Requests.Count(r => r.Url.AbsolutePath.Contains("/captcha/"));
+
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+        Assert.Equal(1, Asked());
+
+        _h.Time.Advance(AmazonClient.PictureRetryAfterFailure);
+        _h.Amazon.On(u => u.AbsolutePath.Contains("/captcha/"), _ => FakeAmazon.Image());
+        Assert.NotNull(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+        Assert.Equal(2, Asked());
+    }
+
+    [Fact]
+    public async Task ManyRequestsForThePictureAtOnce_ShareOneFetch()
+    {
+        var check = await MeetACheck("blocked-robot-check.html");
+
+        var pictures = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => HandOver.PictureAsync(IdOf(check), CancellationToken.None)));
+
+        Assert.All(pictures, Assert.NotNull);
+        Assert.Single(_h.Amazon.Requests, r => r.Url.AbsolutePath.Contains("/captcha/"));
+    }
+
+    [Theory]
+    [InlineData("image/svg+xml")]
+    [InlineData("image/webp")]
+    public async Task APictureOfATypeThatCouldCarryMoreThanAPicture_IsNotPassedOn(string type)
+    {
+        var check = await MeetACheck("blocked-robot-check.html");
+        _h.Amazon.On(u => u.AbsolutePath.Contains("/captcha/"), _ => FakeAmazon.Image(type));
+
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AfterAPass_TheSessionFollowsTheCookiesAmazonSetsLater_AndDropsTheOnesItClears()
+    {
+        var check = await MeetACheck();
+        AmazonAcceptsTheAnswer();
+        await HandOver.AnswerAsync(IdOf(check), null, CancellationToken.None);
+        _h.Amazon.On(u => u.AbsolutePath == "/dp/B09LCJPZ1P", _ => FakeAmazon.Fixture("product-popular.html")
+            .WithCookie("session-id=rotated; Path=/")
+            .WithCookie("x-amz-captcha-1=; Max-Age=0; Path=/")
+            .WithCookie("i18n-prefs=USD; Expires=Tue, 23 Nov 2027 07:47:28 GMT; Path=/")
+            .WithCookie("old=gone; Expires=Thu, 01 Jan 1970 00:00:00 GMT"));
+        await _h.Product("B09LCJPZ1P");
+        AmazonAnswersNormallyAgain();
+
+        await _h.Search("after");
+
+        Assert.Equal("session-id=rotated; i18n-prefs=USD", _h.Amazon.Requests[^1].Headers["Cookie"]);
+    }
+
+    [Fact]
+    public async Task BeforeAnyCheck_CookiesAmazonSetsAreNotKept()
+    {
+        _h.Amazon.On(u => u.AbsolutePath == "/s", _ => FakeAmazon.Fixture("search-results.html").WithCookie("session-id=visitor; Path=/"));
+
+        await _h.Search("one");
+        await _h.Search("two");
+
+        Assert.All(_h.Amazon.Requests, r => Assert.DoesNotContain("Cookie", r.Headers.Keys));
+    }
+
+    [Fact]
+    public async Task APause_EndsTheSessionAPassHadOpened()
+    {
+        var check = await MeetACheck();
+        AmazonAcceptsTheAnswer();
+        await HandOver.AnswerAsync(IdOf(check), null, CancellationToken.None);
+        _h.Amazon.On(u => u.AbsolutePath == "/dp/B09LCJPZ1P", _ => FakeAmazon.Fixture("blocked-automated-access.html", 503));
+        await Assert.ThrowsAsync<SiteBlockedException>(() => _h.Product("B09LCJPZ1P"));
+        _h.Time.Advance(AmazonClient.FirstPause);
+
+        await _h.Search("after the pause");
+
+        Assert.DoesNotContain("Cookie", _h.Amazon.Requests[^1].Headers.Keys);
+    }
+
+    [Fact]
+    public async Task ARefusedAnswerWhoseNewPageCannotBeRead_ClosesIntoAPause()
+    {
+        var check = await MeetACheck("blocked-robot-check.html");
+        _h.Amazon.On(u => u.AbsolutePath.EndsWith("/validateCaptcha"), _ => FakeAmazon.Html(
+            AmazonFixture.Read("blocked-robot-check.html").Replace("method=\"get\"", "method=\"post\"")));
+
+        var result = await HandOver.AnswerAsync(IdOf(check), "aaaa", CancellationToken.None);
+
+        Assert.Equal(HandOverOutcome.Closed, result.Outcome);
+        Assert.Null(HandOver.Find(IdOf(check)));
+    }
+
+    [Fact]
     public async Task AnAnswerThatCouldNotBeSent_LeavesTheCheckOpen()
     {
         var check = await MeetACheck();

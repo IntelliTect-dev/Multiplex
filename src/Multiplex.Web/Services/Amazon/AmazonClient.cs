@@ -223,9 +223,11 @@ public sealed partial class AmazonClient
                 ? (null, "The main image was too large to include; the image links are in images.")
                 : (new AmazonImage(data, type), null);
         }
-        catch (Exception ex) when (ex is SiteException or HttpRequestException or IOException
+        catch (Exception ex) when (ex is (SiteException and not (SiteBlockedException or SiteHandOverException))
+                                       or HttpRequestException or IOException
                                    || (ex is OperationCanceledException && !ct.IsCancellationRequested))
         {
+            // A pause or an open robot check is not caught here: a stop is the call's answer, never a warning.
             _log.LogInformation("Amazon image fetch failed ({Reason}); carrying on without it.", ex.GetType().Name);
             return (null, "The main image could not be fetched; the image links are in images.");
         }
@@ -263,6 +265,7 @@ public sealed partial class AmazonClient
             {
                 case AmazonAnswer.Page:
                     _breaker.Succeeded();
+                    KeepSessionCookies(cookiesSet);
                     return body;
                 case AmazonAnswer.NotFound:
                     throw new SiteNotFoundException("Amazon has no such page.");
@@ -309,6 +312,8 @@ public sealed partial class AmazonClient
     private SiteBlockedException Pause(string reason)
     {
         var until = _breaker.Trip(reason);
+        // Whatever session a person's answer had opened is over: after a pause the service starts as a new visitor.
+        lock (_checkLock) _cookies = [];
         _log.LogWarning("Amazon requests are paused until {Until:HH:mm} UTC: {Reason}.", until, reason);
         return new SiteBlockedException(PausedMessage(_breaker.Pause!.Value.Reason, until));
     }
@@ -353,7 +358,7 @@ public sealed partial class AmazonClient
     }
 
     /// <summary>Sends one page request and reads the whole answer, with the cookies Amazon set in it.</summary>
-    private async Task<(HttpStatusCode Status, List<string> Headers, Uri? Location, TimeSpan? RetryAfter, string Body, Dictionary<string, string> CookiesSet)>
+    private async Task<(HttpStatusCode Status, List<string> Headers, Uri? Location, TimeSpan? RetryAfter, string Body, Dictionary<string, string?> CookiesSet)>
         SendPageAsync(Uri url, string what, IReadOnlyDictionary<string, string>? cookies, CancellationToken ct)
     {
         try
@@ -372,21 +377,31 @@ public sealed partial class AmazonClient
         }
     }
 
-    /// <summary>The name and value of each cookie an answer set; their attributes are not needed.</summary>
-    private static Dictionary<string, string> CookiesSet(HttpResponseMessage response)
+    /// <summary>
+    /// The name and value of each cookie an answer set. One that Amazon cleared (an empty value,
+    /// <c>Max-Age=0</c>, or an expiry in the past) comes back as null.
+    /// </summary>
+    private Dictionary<string, string?> CookiesSet(HttpResponseMessage response)
     {
-        var cookies = new Dictionary<string, string>(StringComparer.Ordinal);
+        var cookies = new Dictionary<string, string?>(StringComparer.Ordinal);
         if (!response.Headers.TryGetValues("Set-Cookie", out var lines)) return cookies;
         foreach (var line in lines)
         {
-            var pair = line.Split(';', 2)[0];
-            var equals = pair.IndexOf('=');
+            var parts = line.Split(';');
+            var equals = parts[0].IndexOf('=');
             if (equals <= 0) continue;
-            var name = pair[..equals].Trim();
-            var value = pair[(equals + 1)..].Trim();
-            // A cookie header is one line: nothing with a line break, a semicolon or a comma is kept.
+            var name = parts[0][..equals].Trim();
+            var value = parts[0][(equals + 1)..].Trim();
+            // A cookie header is one line: nothing with a line break, a semicolon, a comma or a space is kept.
             if (name.Length is 0 or > 128 || value.Length > 2048 || (name + value).Any(c => c is ';' or ',' or '\r' or '\n' or ' ')) continue;
-            cookies[name] = value;
+            var cleared = value.Length == 0 || parts.Skip(1).Select(p => p.Trim()).Any(attribute =>
+                attribute.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase)
+                    ? int.TryParse(attribute["max-age=".Length..], out var seconds) && seconds <= 0
+                    : attribute.StartsWith("expires=", StringComparison.OrdinalIgnoreCase)
+                      && DateTimeOffset.TryParse(attribute["expires=".Length..], System.Globalization.CultureInfo.InvariantCulture,
+                          System.Globalization.DateTimeStyles.AssumeUniversal, out var expires)
+                      && expires <= _time.GetUtcNow());
+            cookies[name] = cleared ? null : value;
         }
         return cookies;
     }

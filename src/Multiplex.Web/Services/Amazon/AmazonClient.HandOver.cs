@@ -29,8 +29,15 @@ public sealed partial class AmazonClient : ISiteHandOver
         public required Dictionary<string, string> Cookies { get; init; }
         public int WrongAnswers { get; set; }
         public bool Answering { get; set; }
-        public HandOverPicture? Picture { get; set; }
+        /// <summary>The one fetch of this check's picture, shared by every request for it, and when it was started.</summary>
+        public Task<HandOverPicture?>? PictureFetch { get; set; }
+        public DateTimeOffset PictureFetchStarted { get; set; }
     }
+
+    /// <summary>How long a picture that would not come is remembered, so reloading the page does not ask Amazon again and again.</summary>
+    public static readonly TimeSpan PictureRetryAfterFailure = TimeSpan.FromSeconds(30);
+    /// <summary>The only picture types passed on to a person's browser: none of them can carry script.</summary>
+    private static readonly string[] PictureTypes = ["image/jpeg", "image/png", "image/gif"];
 
     private readonly object _checkLock = new();
     private OpenCheck? _check;
@@ -55,7 +62,9 @@ public sealed partial class AmazonClient : ISiteHandOver
         {
             if (_check is { } check)
             {
-                if (_time.GetUtcNow() < check.ExpiresAt) throw HandOver(check);
+                // While a person's answer is on its way to Amazon the check stays open, even past its time:
+                // closing it now would throw away an answer Amazon may be accepting.
+                if (_time.GetUtcNow() < check.ExpiresAt || check.Answering) throw HandOver(check);
                 _check = null;
                 lapsed = check.ExpiresAt;
             }
@@ -67,15 +76,14 @@ public sealed partial class AmazonClient : ISiteHandOver
     }
 
     /// <summary>What to throw for a robot check Amazon just showed: a hand-over when a person can answer it, else a pause.</summary>
-    private SiteException OpenCheckFor(string body, Uri pageUrl, IReadOnlyDictionary<string, string> cookiesSet)
+    private SiteException OpenCheckFor(string body, Uri pageUrl, IReadOnlyDictionary<string, string?> cookiesSet)
     {
         lock (_checkLock)
         {
-            if (_check is { } open && _time.GetUtcNow() < open.ExpiresAt) return HandOver(open);
+            if (_check is { } open && (_time.GetUtcNow() < open.ExpiresAt || open.Answering)) return HandOver(open);
             if (_lastPassAt is { } passed && _time.GetUtcNow() - passed < PassMustHold)
             {
                 // Sending the person round again would get the same result.
-                _cookies = [];
                 return Pause("it showed another robot check straight after a person answered one, so the answer is not holding");
             }
             if (AmazonRobotCheckPage.TryParse(body, pageUrl) is not { } form)
@@ -88,7 +96,7 @@ public sealed partial class AmazonClient : ISiteHandOver
                 Id = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant(),
                 ExpiresAt = _time.GetUtcNow() + CheckLifetime,
                 Form = form,
-                Cookies = new Dictionary<string, string>(cookiesSet),
+                Cookies = Merge([], cookiesSet),
             };
             _log.LogWarning("Amazon showed a robot check ({Kind}); waiting for a person until {Until:HH:mm} UTC.",
                 form.NeedsTyping ? "type the characters" : "continue shopping", _check.ExpiresAt);
@@ -125,22 +133,29 @@ public sealed partial class AmazonClient : ISiteHandOver
 
     async Task<HandOverPicture?> ISiteHandOver.PictureAsync(string id, CancellationToken ct)
     {
-        Uri address;
+        Task<HandOverPicture?> fetch;
         lock (_checkLock)
         {
-            if (Current(id) is not { } check || check.Form.Picture is not { } picture) return null;
-            if (check.Picture is not null) return check.Picture;
-            address = picture;
+            if (Current(id) is not { } check || check.Form.Picture is not { } address) return null;
+            // One fetch per check, shared by every request for it; a failed one is tried again only after a while.
+            var failed = check.PictureFetch is { IsCompleted: true } done && (done.IsFaulted || done.Result is null);
+            if (check.PictureFetch is null || (failed && _time.GetUtcNow() - check.PictureFetchStarted >= PictureRetryAfterFailure))
+            {
+                check.PictureFetchStarted = _time.GetUtcNow();
+                // Started off this thread: nothing is sent while the lock is held.
+                check.PictureFetch = Task.Run(() => FetchCheckPictureAsync(address));
+            }
+            fetch = check.PictureFetch;
         }
-        var (image, _) = await FetchImageAsync(address, _time.GetUtcNow() + CallDeadline, ThrowIfPaused, ct).ConfigureAwait(false);
-        if (image is null) return null;
-        var fetched = new HandOverPicture(image.Data, image.MimeType);
-        lock (_checkLock)
-        {
-            // Kept with the check, so reloading the page does not ask Amazon for it again.
-            if (Current(id) is { } check && check.Form.Picture == address) check.Picture = fetched;
-        }
-        return fetched;
+        return await fetch.WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    private async Task<HandOverPicture?> FetchCheckPictureAsync(Uri address)
+    {
+        var (image, _) = await FetchImageAsync(address, _time.GetUtcNow() + CallDeadline, ThrowIfPaused, CancellationToken.None).ConfigureAwait(false);
+        return image is not null && PictureTypes.Contains(image.MimeType, StringComparer.OrdinalIgnoreCase)
+            ? new HandOverPicture(image.Data, image.MimeType.ToLowerInvariant())
+            : null;
     }
 
     async Task<HandOverResult> ISiteHandOver.AnswerAsync(string id, string? typed, CancellationToken ct)
@@ -160,6 +175,9 @@ public sealed partial class AmazonClient : ISiteHandOver
             cookies = new Dictionary<string, string>(current.Cookies);
             check.Answering = true;
         }
+        // From here the caller's token is not used: if the person closes the page while the answer is on its
+        // way, it is still sent and what Amazon said is still recorded.
+        ct = CancellationToken.None;
         try
         {
             var url = form.AnswerUrl(form.NeedsTyping ? typed : null);
@@ -170,7 +188,7 @@ public sealed partial class AmazonClient : ISiteHandOver
             var (status, headers, location, _, body, cookiesSet) = await _gate.RunAsync(SiteRequestKind.Page, null, deadline,
                 () => { ThrowIfPaused(); ThrowIfDisallowed(url); },
                 token => SendPageAsync(url, "the robot check's answer", cookies, token), ct).ConfigureAwait(false);
-            foreach (var (name, value) in cookiesSet) cookies[name] = value;
+            Merge(cookies, cookiesSet);
 
             var answer = (int)status is >= 300 and < 400 && location is not null
                 ? (IsPassTarget(AmazonPageClassifier.Resolve(url, location)) ? AmazonAnswer.Page : AmazonAnswer.Blocked)
@@ -192,8 +210,8 @@ public sealed partial class AmazonClient : ISiteHandOver
                                                       && check.WrongAnswers + 1 < MaxWrongAnswers:
                         check.WrongAnswers++;
                         check.Form = again;
-                        check.Picture = null;
-                        foreach (var (name, value) in cookiesSet) check.Cookies[name] = value;
+                        check.PictureFetch = null;
+                        Merge(check.Cookies, cookiesSet);
                         return new(HandOverOutcome.WrongAnswer, "Amazon did not accept that. Try again.");
                     default:
                         _check = null;
@@ -223,6 +241,27 @@ public sealed partial class AmazonClient : ISiteHandOver
         target.Scheme == Uri.UriSchemeHttps && target.IsDefaultPort && target.UserInfo.Length == 0
         && target.Host.Equals(Host, StringComparison.OrdinalIgnoreCase)
         && (target.AbsolutePath is "/" or "/s" || AmazonPageClassifier.IsProductPath(target.AbsolutePath));
+
+    /// <summary>Applies the cookies an answer set: a new value replaces the old, and one Amazon cleared (a null) is dropped.</summary>
+    private static Dictionary<string, string> Merge(Dictionary<string, string> cookies, IReadOnlyDictionary<string, string?> set)
+    {
+        foreach (var (name, value) in set)
+        {
+            if (value is null) cookies.Remove(name);
+            else cookies[name] = value;
+        }
+        return cookies;
+    }
+
+    /// <summary>After a pass, the session's cookies follow what Amazon sets on later pages, as a browser's would.</summary>
+    private void KeepSessionCookies(IReadOnlyDictionary<string, string?> set)
+    {
+        if (set.Count == 0) return;
+        lock (_checkLock)
+        {
+            if (_cookies.Count > 0) Merge(_cookies, set);
+        }
+    }
 
     /// <summary>The cookies to send with a request to www.amazon.com: none until a person has answered a check.</summary>
     private Dictionary<string, string> SessionCookies()

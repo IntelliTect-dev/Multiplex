@@ -89,6 +89,7 @@ public partial class AmazonHandOverPageTests : IDisposable
         var done = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("<h1>Done</h1>", done);
         Assert.Contains("Amazon accepted it. Go back to your chat and ask it to try again.", done);
         var answer = Assert.Single(_amazon.Requests, r => r.Url.AbsolutePath == "/errors_page/validateCaptcha");
         Assert.Equal("session-id=check-session", answer.Headers["Cookie"]);
@@ -127,7 +128,12 @@ public partial class AmazonHandOverPageTests : IDisposable
         post.Headers.Add("X-Forwarded-For", "203.0.113.9");
         var answer = await _browser.SendAsync(post);
 
+        using var image = new HttpRequestMessage(HttpMethod.Get, path + "/picture");
+        image.Headers.Add("X-Forwarded-For", "203.0.113.9");
+        var picture = await _browser.SendAsync(image);
+
         Assert.NotEqual(HttpStatusCode.OK, page.StatusCode);
+        Assert.NotEqual(HttpStatusCode.OK, picture.StatusCode);
         Assert.DoesNotContain("carry on", await page.Content.ReadAsStringAsync());
         Assert.NotEqual(HttpStatusCode.OK, answer.StatusCode);
         Assert.Equal(sent, _amazon.Requests.Count);
@@ -157,6 +163,7 @@ public partial class AmazonHandOverPageTests : IDisposable
         var picture = await _browser.GetAsync(path + "/picture");
         Assert.Equal("image/jpeg", picture.Content.Headers.ContentType?.MediaType);
         Assert.Equal("nosniff", picture.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.Equal("default-src 'none'; sandbox", picture.Headers.GetValues("Content-Security-Policy").Single());
         Assert.Equal(FakeAmazon.Jpeg, await picture.Content.ReadAsByteArrayAsync());
 
         // A wrong answer comes back with a note and a new form; a right one is done.

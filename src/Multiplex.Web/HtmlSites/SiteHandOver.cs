@@ -84,7 +84,9 @@ public static class SiteHandOverEndpoints
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
+        // Served as a picture and nothing else: no sniffing, and no script even if someone opens it directly.
         context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Response.Headers.ContentSecurityPolicy = "default-src 'none'; sandbox";
         context.Response.Headers.CacheControl = "no-store";
         context.Response.ContentType = picture.MimeType;
         await context.Response.Body.WriteAsync(picture.Data, context.RequestAborted);
@@ -100,7 +102,8 @@ public static class SiteHandOverEndpoints
         if (!await ConnectEndpoints.ValidAntiforgeryAsync(context)) return;
 
         var form = await context.Request.ReadFormAsync(context.RequestAborted);
-        var result = await service.AnswerAsync(id, form["answer"].ToString(), context.RequestAborted);
+        // Not the request's token: once a person has answered, closing the page must not lose what the site says.
+        var result = await service.AnswerAsync(id, form["answer"].ToString(), CancellationToken.None);
         switch (result.Outcome)
         {
             case HandOverOutcome.Passed:
