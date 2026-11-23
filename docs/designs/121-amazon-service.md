@@ -268,10 +268,10 @@ So:
 - Amazon's newest, best-sellers and price-high-to-low orders are left out. They can come
   back if wanted.
 
-**`weightedRating`** is on every rated result, and the `rating` sort uses it. It is
-(n x R + m x C) / (n + m):
+**`weightedRating`** is on every result that has stars and an exact rating count, and the
+`rating` sort uses it. It is (n x R + m x C) / (n + m):
 - R is the product's stars and n its rating count;
-- C is 3, the lowest rating the service ever returns;
+- C is 3, the lowest stars a rated product can have and still be returned;
 - m is 100.
 
 Put plainly: every product starts as if 100 people had rated it 3 stars, and its real
@@ -1348,8 +1348,8 @@ The first `sort: rating` search on the deployed service put the wrong products o
   4.8 to 5.0, so that average was about 4.86. Pulling a product toward 4.86 barely moves
   it: 5.0 stars from 47 ratings scored 4.906 and ranked first, above 4.8 stars from 35,896
   ratings at 4.800.
-- **What changed.** The baseline is now a fixed 3 stars, the lowest rating the service
-  returns (section 4.1). The same two products now score 3.639 and 4.795, and the products
+- **What changed.** The baseline is now a fixed 3 stars, the lowest stars a rated product
+  can have and still be returned (section 4.1). The same two products now score 3.639 and 4.795, and the products
   with thousands of ratings lead.
 
 | Stars | Ratings | Score before | Place before | Score now | Place now |
@@ -1379,3 +1379,9 @@ The first `sort: rating` search on the deployed service put the wrong products o
   stars: 4.9 stars from 200 ratings scores 4.267, below 4.3 stars from 50,000 at 4.297. A
   well-liked product with few ratings ranks low under `sort: rating`. `rating` and
   `ratingsCount` are still on every result, so a caller can sort its own way.
+- **`price` ties changed too.** Two products at the same price are ordered by
+  `weightedRating`, so the one with many ratings now comes first: at the same price, 4.5
+  stars from 5,000 ratings (4.471) is ahead of 5.0 stars from 47 (3.639). Before, the 5.0
+  was ahead.
+- **The baseline stays 3 whatever `minRating` the caller gives.** A search with `minRating`
+  4.5 still starts every product at 3 stars, so a score means the same in every search.

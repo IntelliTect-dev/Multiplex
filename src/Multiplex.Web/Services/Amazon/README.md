@@ -54,7 +54,8 @@ owner's own shopping can start to meet "prove you're human" checks.
 
 `weightedRating` weighs stars by how many people gave them, so 4.7 stars from 90,000 ratings
 ranks above 4.8 stars from 12. Every product starts as if 100 people had rated it 3 stars
-(the lowest rating ever returned), and its real ratings are added to those:
+(the lowest stars a rated product can have and still be returned), and its real ratings are
+added to those:
 (n x stars + 100 x 3) / (n + 100), where n is the rating count.
 
 | Stars | Ratings | `weightedRating` |
@@ -66,7 +67,9 @@ ranks above 4.8 stars from 12. Every product starts as if 100 people had rated i
 
 A product's score depends only on its own stars and count, so it is the same in every
 answer. A product needs several hundred ratings before its score is close to its stars:
-that is the point, and it also means a well-liked product with few ratings ranks low.
+that is the point, and it also means a well-liked product with few ratings ranks low. The
+same score breaks ties in the `price` sort, so at one price the product with many ratings
+comes first.
 
 **What every search does:**
 
