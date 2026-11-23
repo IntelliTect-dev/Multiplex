@@ -30,7 +30,10 @@ public static class AmazonServiceRegistration
                 AllowAutoRedirect = false,
                 AutomaticDecompression = DecompressionMethods.All,
             });
+        // The link a person opens to answer a robot check is on this server's public address.
+        services.TryAddSingleton(sp => new AmazonLinks(() => sp.GetRequiredService<Auth.AuthIssuer>().Issuer));
         services.TryAddSingleton<AmazonClient>();
+        services.AddSingleton<ISiteHandOver>(sp => sp.GetRequiredService<AmazonClient>());
         return services;
     }
 }

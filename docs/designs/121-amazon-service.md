@@ -1309,3 +1309,29 @@ message as an anchor, but no page has shown it.
   search result (4.2 showed text only).
 - **Books**: the description is read from `#bookDescription_feature_div`. A book has no
   brand; its author is not returned yet.
+
+## 12. What building the hand-over changed (PR 2, 2026-11-23)
+
+Where this section and section 5.7 disagree, this section is right.
+
+- **Two kinds of check are handed over.** The "continue shopping" check (the one seen) shows
+  the person one button. The "type the characters" check (not yet seen) shows Amazon's
+  picture and a text box. `AmazonRobotCheckPage` tells them apart by whether the form has a
+  field to type in.
+- **A correct answer's redirect is the pass, and it is not followed.** 5.7 step 4 said to
+  follow it once. The redirect leads back to a page nobody asked for, so following it would
+  spend a request on nothing. The next real call is the proof, and a check within 15 minutes
+  of a pass is caught as "the pass did not hold".
+- **A check page this service can't hand over pauses the service.** 5.7 called that a
+  changed layout. A pause is safer: it stops the requests, and the message says why.
+- **A redirect to a check address** has no form to read, so it pauses too.
+- **A check nobody answered** becomes a pause only if less than 15 minutes have passed since
+  its link expired. After that, the pause it stood for has already been served.
+- **What a person types** must be 1 to 12 letters and digits. Anything else is not sent.
+- **The link's address** is built from `Multiplex:PublicBaseUrl`, the address the server is
+  reached at from the internet. Without it the link points at localhost, as the OAuth issuer
+  does.
+- **Not built: the phone rehearsal against a fake Amazon** (7.3). The hand-over page is
+  tested through the real host with a fake Amazon behind it, in `AmazonHandOverPageTests`,
+  which covers the same loop without a phone. The first real check remains the real test.
+

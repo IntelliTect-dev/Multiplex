@@ -248,7 +248,7 @@ public static class ConnectEndpoints
         return attempt;
     }
 
-    private static async Task<bool> ValidAntiforgeryAsync(HttpContext context)
+    internal static async Task<bool> ValidAntiforgeryAsync(HttpContext context)
     {
         try
         {
@@ -263,7 +263,7 @@ public static class ConnectEndpoints
         }
     }
 
-    private static FormToken Token(HttpContext context)
+    internal static FormToken Token(HttpContext context)
     {
         var tokens = context.RequestServices.GetRequiredService<IAntiforgery>().GetAndStoreTokens(context);
         return new FormToken(tokens.FormFieldName, tokens.RequestToken ?? "");

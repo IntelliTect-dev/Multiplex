@@ -48,15 +48,17 @@ public sealed partial class AmazonClient
     private readonly TimeProvider _time;
     private readonly ILogger<AmazonClient> _log;
     private readonly CircuitBreaker _breaker;
+    private readonly AmazonLinks _links;
     private readonly object _cacheLock = new();
     private readonly Dictionary<string, (DateTimeOffset At, object Value)> _cache = [];
     private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _inFlight = new();
     private readonly ConcurrentDictionary<string, (DateTimeOffset At, RobotsRules Rules)> _robots = new();
     private long _sequence;
 
-    public AmazonClient(IHttpClientFactory http, AmazonGate gate, TimeProvider time, ILogger<AmazonClient> log)
+    public AmazonClient(IHttpClientFactory http, AmazonGate gate, AmazonLinks links, TimeProvider time, ILogger<AmazonClient> log)
     {
         _http = http;
+        _links = links;
         _gate = gate.Gate;
         _time = time;
         _log = log;
@@ -177,27 +179,41 @@ public sealed partial class AmazonClient
         return value;
     }
 
-    private async Task<(AmazonImage? Image, string? Warning)> FetchMainImageAsync(string? address, DateTimeOffset deadline, CancellationToken ct)
+    private Task<(AmazonImage? Image, string? Warning)> FetchMainImageAsync(string? address, DateTimeOffset deadline, CancellationToken ct)
     {
-        if (address is null) return (null, null);
-        if (!Uri.TryCreate(address, UriKind.Absolute, out var url) || url.Scheme != Uri.UriSchemeHttps
-            || !url.IsDefaultPort || url.UserInfo.Length > 0
-            || !ImageHosts.Contains(url.Host, StringComparer.OrdinalIgnoreCase))
+        if (address is null) return Task.FromResult<(AmazonImage?, string?)>((null, null));
+        if (!Uri.TryCreate(address, UriKind.Absolute, out var url) || !IsAmazonImage(url))
         {
             _log.LogWarning("Amazon named a product picture on a host that is not one of its image hosts; it was not fetched.");
-            return (null, "The main image was not fetched: its address is not on one of Amazon's image hosts.");
+            return Task.FromResult<(AmazonImage?, string?)>((null, "The main image was not fetched: its address is not on one of Amazon's image hosts."));
         }
+        return FetchImageAsync(url, deadline, ThrowIfStopped, ct);
+    }
+
+    /// <summary>Whether <paramref name="url"/> is a picture this service may fetch: HTTPS, on one of Amazon's image hosts, nothing odd in the address.</summary>
+    internal static bool IsAmazonImage(Uri url) =>
+        url.Scheme == Uri.UriSchemeHttps && url.IsDefaultPort && url.UserInfo.Length == 0
+        && ImageHosts.Contains(url.Host, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Fetches one picture from an Amazon image host: through the gate, under that host's
+    /// robots.txt, without cookies, and only if what comes back is an image of a sensible size.
+    /// A picture that will not come is a warning, never a block.
+    /// </summary>
+    private async Task<(AmazonImage? Image, string? Warning)> FetchImageAsync(Uri url, DateTimeOffset deadline, Action beforeSend, CancellationToken ct)
+    {
+        if (!IsAmazonImage(url)) return (null, "The image was not fetched: its address is not on one of Amazon's image hosts.");
         try
         {
             await EnsureRobotsAsync(url, deadline, ct).ConfigureAwait(false);
             ThrowIfDisallowed(url);
             using var response = await _gate.RunAsync(SiteRequestKind.Image, null, deadline,
-                () => { ThrowIfPaused(); ThrowIfDisallowed(url); },
-                token => SendAsync(url, "image/*", token), ct).ConfigureAwait(false);
+                () => { beforeSend(); ThrowIfDisallowed(url); },
+                token => SendAsync(url, "image/*", cookies: null, token), ct).ConfigureAwait(false);
             var type = response.Content.Headers.ContentType?.MediaType;
             if (response.StatusCode != HttpStatusCode.OK || type is null || !type.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
             {
-                _log.LogInformation("Amazon image fetch answered {Status} {Type}; the product is returned without it.", (int)response.StatusCode, type);
+                _log.LogInformation("Amazon image fetch answered {Status} {Type}; carrying on without it.", (int)response.StatusCode, type);
                 return (null, "The main image could not be fetched; the image links are in images.");
             }
             if (response.Content.Headers.ContentLength is > MaxImageBytes)
@@ -210,7 +226,7 @@ public sealed partial class AmazonClient
         catch (Exception ex) when (ex is SiteException or HttpRequestException or IOException
                                    || (ex is OperationCanceledException && !ct.IsCancellationRequested))
         {
-            _log.LogInformation("Amazon image fetch failed ({Reason}); the product is returned without it.", ex.GetType().Name);
+            _log.LogInformation("Amazon image fetch failed ({Reason}); carrying on without it.", ex.GetType().Name);
             return (null, "The main image could not be fetched; the image links are in images.");
         }
     }
@@ -228,31 +244,16 @@ public sealed partial class AmazonClient
         while (true)
         {
             RequireAmazonHttps(url);
-            ThrowIfPaused();
+            ThrowIfStopped();
             await EnsureRobotsAsync(url, deadline, ct).ConfigureAwait(false);
             ThrowIfDisallowed(url);
 
             var started = Stopwatch.GetTimestamp();
             var target = url;
-            var (status, headers, location, retryAfter, body) = await _gate.RunAsync(SiteRequestKind.Page, sequence, deadline,
-                () => { ThrowIfPaused(); ThrowIfDisallowed(target); },
-                async token =>
-                {
-                    try
-                    {
-                        using var response = await SendAsync(target, "text/html", token).ConfigureAwait(false);
-                        var text = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                        return (response.StatusCode, response.Headers.Select(h => h.Key).ToList(), response.Headers.Location,
-                            RetryAfter(response), text);
-                    }
-                    catch (Exception ex) when (ex is HttpRequestException or IOException
-                                               || (ex is OperationCanceledException && !token.IsCancellationRequested))
-                    {
-                        // No answer at all (the network, a timeout, a page too large to hold): an error, not a block.
-                        _log.LogWarning("Amazon {What}: no answer ({Reason}).", what, ex.GetType().Name);
-                        throw new SiteUnavailableException("Amazon could not be reached; try again in a few minutes.");
-                    }
-                }, ct).ConfigureAwait(false);
+            var (status, headers, location, retryAfter, body, cookiesSet) = await _gate.RunAsync(SiteRequestKind.Page, sequence, deadline,
+                // Checked again at the front of the queue: the call ahead may have met a block or a robot check.
+                () => { ThrowIfStopped(); ThrowIfDisallowed(target); },
+                token => SendPageAsync(target, what, SessionCookies(), token), ct).ConfigureAwait(false);
 
             var answer = AmazonPageClassifier.Classify(status, headers, url, location, body);
             _log.LogInformation("Amazon {What}: {Status} {Answer} in {Elapsed} ms.", what, (int)status, answer,
@@ -289,6 +290,9 @@ public sealed partial class AmazonClient
                     retried = true;
                     await _gate.DelayAsync(wait, ct).ConfigureAwait(false);
                     continue;
+                case AmazonAnswer.RobotCheck when (int)status is < 300 or >= 400:
+                    // A check with a page to read: a person can answer it (a redirect to one has no form to hand over).
+                    throw OpenCheckFor(body, url, cookiesSet);
                 default:
                     throw Pause(answer switch
                     {
@@ -336,13 +340,55 @@ public sealed partial class AmazonClient
         return null;
     }
 
-    private async Task<HttpResponseMessage> SendAsync(Uri url, string accept, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendAsync(Uri url, string accept, IReadOnlyDictionary<string, string>? cookies, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         request.Headers.TryAddWithoutValidation("Accept", accept);
         request.Headers.TryAddWithoutValidation("Accept-Language", "en-US");
+        // Cookies only ever go to www.amazon.com, and only the ones a person's answered check left behind.
+        if (cookies is { Count: > 0 } && url.Host.Equals(Host, StringComparison.OrdinalIgnoreCase))
+            request.Headers.TryAddWithoutValidation("Cookie", string.Join("; ", cookies.Select(c => $"{c.Key}={c.Value}")));
         return await _http.CreateClient(HttpClientName).SendAsync(request, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Sends one page request and reads the whole answer, with the cookies Amazon set in it.</summary>
+    private async Task<(HttpStatusCode Status, List<string> Headers, Uri? Location, TimeSpan? RetryAfter, string Body, Dictionary<string, string> CookiesSet)>
+        SendPageAsync(Uri url, string what, IReadOnlyDictionary<string, string>? cookies, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await SendAsync(url, "text/html", cookies, ct).ConfigureAwait(false);
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return (response.StatusCode, response.Headers.Select(h => h.Key).ToList(), response.Headers.Location,
+                RetryAfter(response), text, CookiesSet(response));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException
+                                   || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+        {
+            // No answer at all (the network, a timeout, a page too large to hold): an error, not a block.
+            _log.LogWarning("Amazon {What}: no answer ({Reason}).", what, ex.GetType().Name);
+            throw new SiteUnavailableException("Amazon could not be reached; try again in a few minutes.");
+        }
+    }
+
+    /// <summary>The name and value of each cookie an answer set; their attributes are not needed.</summary>
+    private static Dictionary<string, string> CookiesSet(HttpResponseMessage response)
+    {
+        var cookies = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (!response.Headers.TryGetValues("Set-Cookie", out var lines)) return cookies;
+        foreach (var line in lines)
+        {
+            var pair = line.Split(';', 2)[0];
+            var equals = pair.IndexOf('=');
+            if (equals <= 0) continue;
+            var name = pair[..equals].Trim();
+            var value = pair[(equals + 1)..].Trim();
+            // A cookie header is one line: nothing with a line break, a semicolon or a comma is kept.
+            if (name.Length is 0 or > 128 || value.Length > 2048 || (name + value).Any(c => c is ';' or ',' or '\r' or '\n' or ' ')) continue;
+            cookies[name] = value;
+        }
+        return cookies;
     }
 
     // ---- robots.txt --------------------------------------------------------------------------
@@ -382,7 +428,7 @@ public sealed partial class AmazonClient
             var (status, headers, location, body) = await _gate.RunAsync(SiteRequestKind.Page, null, deadline, ThrowIfPaused,
                 async token =>
                 {
-                    using var response = await SendAsync(url, "text/plain", token).ConfigureAwait(false);
+                    using var response = await SendAsync(url, "text/plain", SessionCookies(), token).ConfigureAwait(false);
                     var text = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
                     return (response.StatusCode, response.Headers.Select(h => h.Key).ToList(), response.Headers.Location, text);
                 }, CancellationToken.None).ConfigureAwait(false);

@@ -150,8 +150,6 @@ public class AmazonClientTests
     // ---- blocks and the pause ----------------------------------------------------------------
 
     [Theory]
-    [InlineData("blocked-continue-shopping.html", 200, "it showed a robot check")]
-    [InlineData("blocked-robot-check.html", 200, "it showed a robot check")]
     [InlineData("blocked-automated-access.html", 503, "automated access needs its permission")]
     [InlineData("blocked-script-check.html", 200, "only a browser can pass")]
     public async Task ABlock_IsFetchedOnce_NeverRetried_AndPausesTheService(string fixture, int status, string reason)
@@ -231,20 +229,6 @@ public class AmazonClientTests
         await Assert.ThrowsAsync<SiteBlockedException>(() => first);
         await Assert.ThrowsAsync<SiteBlockedException>(() => second);
         Assert.DoesNotContain(_h.Amazon.Requests, r => r.Url.AbsolutePath == "/dp/B09LCJPZ1P");
-    }
-
-    [Fact]
-    public async Task ARobotCheckOnPage3_ReturnsPages1And2_WithAWarning()
-    {
-        _h.Amazon.On(u => u.Query.Contains("page=3"), _ => FakeAmazon.Fixture("blocked-continue-shopping.html"));
-
-        var answer = await _h.Search(pages: 5);
-
-        Assert.Equal([1, 2], answer.PagesRead);
-        Assert.Equal(3, answer.NextPage);
-        Assert.Contains(answer.Warnings, w => w.StartsWith("Page 3 was not read") && w.Contains("robot check"));
-        Assert.NotEmpty(answer.Results);
-        Assert.Equal(3, _h.Amazon.Fetches.Count);
     }
 
     // ---- throttling and errors ---------------------------------------------------------------
@@ -693,6 +677,13 @@ public class AmazonClientTests
 
 internal static class FakeAmazonResponses
 {
+    /// <summary>The same answer, setting a cookie the way Amazon does.</summary>
+    public static HttpResponseMessage WithCookie(this HttpResponseMessage response, string setCookie)
+    {
+        response.Headers.TryAddWithoutValidation("Set-Cookie", setCookie);
+        return response;
+    }
+
     /// <summary>The same body served as <c>text/plain</c>, the way a robots.txt is.</summary>
     public static HttpResponseMessage AsPlainText(this HttpResponseMessage response)
     {

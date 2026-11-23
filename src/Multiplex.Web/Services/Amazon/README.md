@@ -18,7 +18,8 @@ service is the most cautious form of the idea, and it still breaks those terms:
 - It obeys any robots.txt rule that names it, and the rules for everyone.
 - It stays signed out and only reads. It never opens a sign-in, cart or account page.
 - It sends one request at a time, a few seconds apart, at most 100 an hour and 500 a day.
-- It stops at any block and pauses itself.
+- It stops at any block and pauses itself. A robot check is answered by a person, never by
+  the service.
 
 DAKAR and the Linux host share the household's public address. If Amazon flags it, the
 owner's own shopping can start to meet "prove you're human" checks.
@@ -116,7 +117,7 @@ was read; prices change by the hour.
 
 | Amazon's answer | What happens |
 |---|---|
-| A robot check ("click to continue shopping", or "type the characters") | The service pauses |
+| A robot check a person can answer ("click to continue shopping", or "type the characters") | A person is asked, through a link (below) |
 | Its "automated access" refusal, a sign-in page, an unexpected redirect, a check only a browser can pass | The service pauses |
 | `429` with no wait named | The service pauses |
 | `429` or a server error with a wait of 60 seconds or less | One retry, then an error |
@@ -124,12 +125,50 @@ was read; prices change by the hour.
 | A page without the parts the service reads | "Amazon's page layout has changed: ... was not found" |
 
 A pause stops every Amazon request for 15 minutes; each further block doubles it, up to 2
-hours, and a success resets it. While paused, calls fail at once and say until when. Nothing
-in the service answers a robot check.
+hours, and a success resets it. While paused, calls fail at once and say until when.
 
-On 2026-11-23 Amazon showed this service its first real check: a "Click the button below to
-continue shopping" page, served with a `200`. The request after it went through normally.
-Handing such a check to a person through a link is the next piece of work on #121.
+## When Amazon asks for a person
+
+Nothing in the service answers a robot check. A person does, and the service only passes on
+what they press or type (`AmazonClient.HandOver.cs`, `AmazonRobotCheckPage.cs`,
+`../../HtmlSites/SiteHandOver.cs`).
+
+1. Amazon answers a request with a check. The tool fails at once with a message for the AI
+   to pass on: "Amazon wants a person to prove they're human ... Open
+   `https://<this server>/check/amazon/<id>` ...". Every call after it fails the same way,
+   with the same link, and asks Amazon nothing. Answers already cached are still served.
+2. The person opens the link. It is a Multiplex page, so it needs Multiplex sign-in. For the
+   "continue shopping" check it shows one button. For the "type the characters" check it
+   shows Amazon's picture, fetched by the server, and a box to type in.
+3. The server sends that answer to Amazon on Amazon's own form, from the session the check
+   was shown to, with the service's honest user agent.
+4. When Amazon accepts it, requests are open again, and they carry the cookies that pass
+   left behind, to `www.amazon.com` only.
+
+**Why the link is not to Amazon itself.** Amazon records a passed check in the cookies of
+the session that passed it. Answering on amazon.com in your own browser would clear your
+browser, not this server.
+
+**Limits:**
+
+- The link works for 10 minutes. An unanswered check becomes a pause.
+- Three answers Amazon does not accept close the check into a pause.
+- Another check within 15 minutes of a passed one means the pass did not hold: the service
+  pauses and offers no new link.
+- Every address on the check page is checked first. The answer only ever goes to
+  `https://www.amazon.com/errors/validateCaptcha` or `/errors_page/validateCaptcha`, as a
+  GET, and the picture only comes from Amazon's image hosts. Anything else is not handed
+  over; the service pauses.
+- A check that needs Amazon's script to run in a browser can't be answered this way. The
+  service pauses. A browser for that case would need the owner's approval (#96).
+
+**This is a way past Amazon's robot check**, chosen by the owner (#121): a person answers,
+and automated requests then carry on in that session.
+
+What has been seen: on 2026-11-23 Amazon showed this service the "continue shopping" check
+once, and the request after it went through unanswered. The "type the characters" check has
+not been seen; its fixture is made by hand. The first real hand-over is the real test:
+record on #121 whether the pass held for the requests after it.
 
 ## Files
 
@@ -140,8 +179,9 @@ Handing such a check to a person through a link is the next piece of work on #12
 | `AmazonSearch.cs` | Input rules, the request address, merging pages, our filters, the three sorts |
 | `AmazonSearchPage.cs`, `AmazonProductPage.cs` | Everything the service knows about Amazon's markup |
 | `AmazonPageClassifier.cs` | What an answer is |
+| `AmazonClient.HandOver.cs`, `AmazonRobotCheckPage.cs` | The open robot check, its session's cookies, reading Amazon's check form, sending a person's answer |
 | `AmazonText.cs`, `AmazonModels.cs` | Reading numbers out of text; the answer shapes |
-| `../../HtmlSites/` | The gate, robots.txt rules, the pause and the errors, which know nothing about Amazon |
+| `../../HtmlSites/` | The gate, robots.txt rules, the pause, the errors and the hand-over pages, which know nothing about Amazon |
 
 ## Tests
 
@@ -153,6 +193,7 @@ They are in `tests/Multiplex.Tests/Services/Amazon/` and `tests/Multiplex.Tests/
 | Search logic | nothing | Input rules, the request address, merging, filters, the sorts (with numbers worked by hand) |
 | Classifier, robots.txt, gate | nothing | Every kind of answer; robots.txt rules; spacing, queue, caps and deadline on a fake clock |
 | Client | nothing | Against a fake Amazon: the honest identity, blocks and the pause, retries, redirects, the cache, the picture, the log |
+| Hand-over | nothing | The link, the wait, the answer in the check's own session, a pass, wrong answers, expiry, and the page itself on the real host (sign-in, the antiforgery token) |
 | Through MCP | nothing | The real host with a fake Amazon behind it: the tool list, both tools, tool errors |
 | Recorded pages | pages in `Recorded/` | Whole real pages parse, and trim to the same facts |
 | Live | `MULTIPLEX_LIVE_TESTS=1` | The real amazon.com, at most eight requests a run, checking invariants |

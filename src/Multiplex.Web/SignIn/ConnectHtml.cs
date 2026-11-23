@@ -106,6 +106,37 @@ public static class ConnectHtml
             """, LiveScript, bodyClass: "live");
     }
 
+    /// <summary>
+    /// A website's robot check, handed to a person: the one thing to do (press a button, or type
+    /// the characters in the site's picture), and nothing that answers for them.
+    /// </summary>
+    public static string RobotCheck(string nonce, string slug, string site, HtmlSites.HandOverView check, FormToken token, string? note)
+    {
+        var action = $"/check/{E(slug)}/{E(check.Id)}";
+        var noteHtml = note is null ? "" : $"""<p class="warning">{E(note)}</p>""";
+        var ask = check.NeedsTyping
+            ? $"""
+               <p>Type the characters you see in {E(site)}'s picture.</p>
+               <p><img src="{action}/picture" alt="{E(site)}'s picture of the characters to type" width="300"></p>
+               <input type="text" name="answer" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="12" required aria-label="The characters in the picture">
+               <button type="submit">Send to {E(site)}</button>
+               """
+            : $"""
+               <p>{E(site)} asks only that a person presses a button to carry on.</p>
+               <button type="submit">I'm a person: carry on</button>
+               """;
+        return Page(nonce, $"{site} wants to know you're a person", $"""
+            <h1>{E(site)} wants to know you're a person</h1>
+            <p>{E(site)} stopped answering Multiplex and asked for a person. Multiplex does not answer that for you: it passes on what you do here, and nothing else.</p>
+            {noteHtml}
+            <form method="post" action="{action}" data-busy="Sending to {E(site)}…">
+              {token.Html}
+              {ask}
+            </form>
+            <p class="muted">What you send here goes through this Multiplex server to {E(site)}. This link works until {check.ExpiresAt:HH:mm} UTC.</p>
+            """, BusyScript);
+    }
+
     public static string Message(string nonce, string title, string message, string? linkUrl = null, string? linkText = null)
     {
         var link = linkUrl is null ? "" : $"""<a class="button" href="{E(linkUrl)}">{E(linkText ?? "Return to the app")}</a>""";

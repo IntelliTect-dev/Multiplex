@@ -138,14 +138,14 @@ public class AmazonMcpTests : IDisposable
     }
 
     [Fact]
-    public async Task ARobotCheck_IsAToolError_ThatSaysAmazonRequestsArePaused()
+    public async Task ARefusal_IsAToolError_ThatSaysAmazonRequestsArePaused()
     {
-        _amazon.On("/s", () => FakeAmazon.Fixture("blocked-continue-shopping.html"));
+        _amazon.On("/s", () => FakeAmazon.Fixture("blocked-automated-access.html", 503));
 
         var (isError, text) = await _mcp.CallAsync("amazon_search", new { query = "cable" });
 
         Assert.True(isError);
-        Assert.Contains("it showed a robot check", text);
+        Assert.Contains("automated access needs its permission", text);
         Assert.Contains("Amazon requests are paused until", text);
     }
 

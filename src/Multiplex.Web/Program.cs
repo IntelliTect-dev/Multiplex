@@ -1,4 +1,5 @@
 using Multiplex.Web.Auth;
+using Multiplex.Web.HtmlSites;
 using Multiplex.Web.Identity;
 using Multiplex.Web.Mcp;
 using Multiplex.Web.Services.Amazon;
@@ -66,6 +67,7 @@ app.MapMultiplexAuth();
 app.MapMultiplexSignOut();
 app.MapMcpEndpoints();
 app.MapConnectPages();
+app.MapSiteHandOverPages();
 
 app.Run();
 

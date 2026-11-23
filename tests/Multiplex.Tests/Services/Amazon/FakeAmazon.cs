@@ -95,6 +95,7 @@ public sealed class AmazonHarness
     public FakeAmazon Amazon { get; } = new();
     public CapturingLogger Log { get; } = new();
     public List<TimeSpan> Waits { get; } = [];
+    public const string PublicUrl = "https://mcp.example.test";
     public AmazonClient Client { get; }
 
     public AmazonHarness(SiteGateOptions? options = null)
@@ -106,7 +107,7 @@ public sealed class AmazonHarness
             Time.Advance(wait);
             return Task.CompletedTask;
         });
-        Client = new AmazonClient(new SingleHandlerFactory(Amazon), new AmazonGate(gate), Time, Log);
+        Client = new AmazonClient(new SingleHandlerFactory(Amazon), new AmazonGate(gate), new AmazonLinks(() => PublicUrl), Time, Log);
     }
 
     public Task<AmazonSearchAnswer> Search(string query = "usb c charging cable", AmazonSort sort = AmazonSort.Relevance, int pages = 1,
