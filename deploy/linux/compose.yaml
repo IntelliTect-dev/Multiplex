@@ -1,0 +1,58 @@
+# Multiplex on a Linux host (issue #97), reachable from your tailnet and, through Tailscale Funnel, from
+# the internet, where Claude's and ChatGPT's connectors call from (#108). Every page needs a Microsoft
+# sign-in and every MCP call a token (#80).
+# scripts/Deploy-MultiplexLinux.ps1 copies this file and serve.json to ~/multiplex on the server and
+# writes .env (which image runs) and multiplex.env (the server's address) beside them.
+name: multiplex
+
+services:
+  tailscale:
+    # A tailnet device of its own, named "multiplex": the address belongs to Multiplex, not to this box,
+    # and the box's own Tailscale (if any) is left alone. serve.json proxies HTTPS on 443 to the server
+    # and opens 443 to the internet with Funnel. The device does not see a change to this one-file
+    # mount until it is recreated, which every deploy does.
+    image: tailscale/tailscale:stable
+    hostname: multiplex
+    environment:
+      TS_HOSTNAME: multiplex
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+      # A first start waits this long for the owner to open the sign-in link (the default, 60 s, restarts
+      # with a new link every minute). Longer than Deploy-MultiplexLinux.ps1's 15-minute wait.
+      TS_BOOT_TIMEOUT: "20m"
+      # Once signed in, a restart reuses the sign-in instead of asking for a new one.
+      TS_AUTH_ONCE: "true"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    restart: unless-stopped
+
+  multiplex:
+    image: ${MULTIPLEX_IMAGE:?Deploy-MultiplexLinux.ps1 sets it in .env}
+    # The Tailscale device's network: Serve and Funnel reach the server on loopback and add
+    # X-Forwarded-For, which is how the server tells any caller from this host itself (RequestOrigin.cs).
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+    env_file:
+      # Written by the deploy: the server's address.
+      - multiplex.env
+      # Written by the owner on the server, mode 0600, never by the deploy: the Microsoft sign-in's
+      # client ID and secret and the allowed emails (#80). Optional, so the server starts without it.
+      - path: identity.env
+        required: false
+    volumes:
+      - multiplex-data:/data
+    # Docker's default system-call filter plus the namespace calls Chrome's sandbox needs; without them
+    # Chrome cannot start sandboxed. Compose reads the file from ~/multiplex, where the deploy puts it.
+    security_opt:
+      - seccomp=chrome-seccomp.json
+    # Reaps the browsers' child processes; Chrome needs more shared memory than Docker's 64 MB default.
+    init: true
+    shm_size: 1gb
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  multiplex-data:

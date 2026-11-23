@@ -11,12 +11,39 @@ using Multiplex.Web.Sites;
 
 namespace Multiplex.Tests.Auth;
 
-/// <summary>Plays the part of an MCP client (Claude, ChatGPT) and of the connect pages.</summary>
-public sealed class OAuthDriver(AuthTestApp app)
+/// <summary>
+/// Plays the part of an MCP client (Claude, ChatGPT), of the person's browser (signed in to Multiplex as
+/// <paramref name="person"/> before the first authorize), and of the connect pages.
+/// </summary>
+public sealed class OAuthDriver(AuthTestApp app, string person = Identity.TestPeople.Owner)
 {
     public const string ClaudeRedirect = "https://claude.ai/api/mcp/auth_callback";
 
+    private string? _owner;
+
     public HttpClient Http { get; } = app.Client();
+
+    /// <summary>The Multiplex user the driver's browser is signed in as (signs in on first use).</summary>
+    public async Task<string> OwnerAsync()
+    {
+        if (_owner is null)
+        {
+            var (signedIn, cookie) = await Identity.TestPeople.SignInAsync(app.Services, person);
+            Identity.TestPeople.WithCookie(Http, cookie);
+            _owner = signedIn.Owner;
+        }
+        return _owner;
+    }
+
+    /// <summary>
+    /// Signs the driver's browser in to Multiplex again, as the person must once their sign-in has lapsed
+    /// (it lasts <see cref="Multiplex.Web.Identity.MultiplexIdentity.SessionLifetime"/>, by the app's clock).
+    /// </summary>
+    public async Task SignInAgainAsync()
+    {
+        _owner = null;
+        await OwnerAsync();
+    }
 
     public IAuthorizationCompleter Completer => app.Services.GetRequiredService<IAuthorizationCompleter>();
 
@@ -65,8 +92,12 @@ public sealed class OAuthDriver(AuthTestApp app)
         ["scope"] = "tripit",
     };
 
-    public Task<HttpResponseMessage> AuthorizeAsync(IDictionary<string, string?> parameters) =>
-        Http.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize", parameters.Where(p => p.Value is not null)));
+    /// <summary>Authorizes as the signed-in person (signing in first if needed).</summary>
+    public async Task<HttpResponseMessage> AuthorizeAsync(IDictionary<string, string?> parameters)
+    {
+        await OwnerAsync();
+        return await Http.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize", parameters.Where(p => p.Value is not null)));
+    }
 
     /// <summary>Authorizes and returns the pending id from the redirect to the connect page.</summary>
     public async Task<string> StartAsync(IDictionary<string, string?> parameters, string slug = "tripit")
@@ -78,10 +109,10 @@ public sealed class OAuthDriver(AuthTestApp app)
         return QueryHelpers.ParseQuery(new Uri("http://x" + location).Query)["p"].ToString();
     }
 
-    public async Task<string> CodeAsync(IDictionary<string, string?> parameters, SiteAccount account, string slug = "tripit")
+    public async Task<string> CodeAsync(IDictionary<string, string?> parameters, SiteAccount? account, string slug = "tripit")
     {
         var pending = await StartAsync(parameters, slug);
-        var redirect = await Completer.CompleteAsync(pending, account, CancellationToken.None);
+        var redirect = await Completer.CompleteAsync(pending, await OwnerAsync(), account, CancellationToken.None);
         return Query(redirect)["code"]!;
     }
 

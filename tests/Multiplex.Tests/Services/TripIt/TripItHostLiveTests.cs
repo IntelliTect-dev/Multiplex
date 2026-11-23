@@ -89,7 +89,7 @@ public sealed class TripItHostLiveTests(ITestOutputHelper output)
     private static TripItTestHost SignedInHost()
     {
         var host = new TripItTestHost(fakeTripIt: false);
-        host.Store.Data[Account] = File.ReadAllText(Environment.GetEnvironmentVariable(TripItLiveFactAttribute.SessionFileVariable)!);
+        host.Store.Data[FakeSessionStore.Key(Multiplex.Tests.Identity.TestPeople.OwnerOf(), Account)] = File.ReadAllText(Environment.GetEnvironmentVariable(TripItLiveFactAttribute.SessionFileVariable)!);
         return host;
     }
 

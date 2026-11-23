@@ -1,15 +1,42 @@
 ﻿@page
 @model IndexModel
-@using Multiplex.Web.Mcp
+@using Multiplex.Web.Identity
 @{
     ViewData["Title"] = "Hello World";
+    var person = MultiplexIdentity.PersonOf(User);
 }
 
 <h1>Hello, World!</h1>
-<p>Multiplex is up. Each service's MCP address:</p>
-<ul>
-    @foreach (var path in McpEndpointRouting.EndpointPaths)
+@if (person is not null)
+{
+    <form method="post" action="@MultiplexIdentity.SignOutPath">
+        <p>Signed in as <strong>@person.Email</strong>. <button type="submit">Sign out</button></p>
+    </form>
+}
+else
+{
+    <p>Opened on the Multiplex host itself, so no sign-in is needed here.</p>
+}
+<p>Multiplex is up. Add a service to your assistant:</p>
+<ul class="services">
+    @foreach (var service in Model.Services)
     {
-        <li><code>@path</code></li>
+        var nameId = $"service-{service.Slug}";
+        <li data-service="@service.Slug">
+            <strong id="@nameId">@service.DisplayName</strong> <code>@service.Resource</code>
+            @* Each action is described by its service's name, so a screen reader tells the rows apart. *@
+            <span class="actions">
+                <a class="button" href="@IndexModel.ClaudeAddLink(service)" target="_blank" rel="noopener noreferrer" aria-describedby="@nameId">Add to Claude</a>
+                <a class="button" href="@IndexModel.ChatGptAddPage" target="_blank" rel="noopener noreferrer" aria-describedby="@nameId" data-copy="@service.Resource">Add to ChatGPT</a>
+                <button type="button" aria-describedby="@nameId" data-copy="@service.Resource">Copy address</button>
+            </span>
+        </li>
     }
 </ul>
+<p class="muted"><strong>Claude</strong> opens its own dialog with the name and address filled in: check them, click Continue, then sign in. Claude refuses an address it already has.</p>
+<p class="muted"><strong>ChatGPT</strong> opens its page, and the address is copied: click Add, choose a custom MCP server, paste the address, choose OAuth, then sign in.</p>
+<p class="muted">A connector added on your account also appears in the phone apps.</p>
+
+@section Scripts {
+    <script src="~/js/home.js" asp-append-version="true"></script>
+}

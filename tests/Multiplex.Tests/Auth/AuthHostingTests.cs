@@ -97,12 +97,16 @@ public class AuthHostingTests
         var driver = new OAuthDriver(app);
         var clientId = await driver.RegisterAsync();
 
+        // A sign-in to Multiplex lasts hours, not days: the person signs in again each time.
         app.Clock.Advance(TimeSpan.FromDays(89));
+        await driver.SignInAgainAsync();
         await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
         app.Clock.Advance(TimeSpan.FromDays(89));
+        await driver.SignInAgainAsync();
         await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
 
         app.Clock.Advance(TimeSpan.FromDays(91));
+        await driver.SignInAgainAsync();
         var response = await driver.AuthorizeAsync(OAuthDriver.AuthorizeParameters(clientId, OAuthDriver.NewPkce()));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -120,8 +124,9 @@ public class AuthHostingTests
         app.Clock.Advance(TimeSpan.FromMinutes(10));
 
         Assert.Null(await driver.Completer.FindAsync(pendingId, CancellationToken.None));
+        var owner = await driver.OwnerAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            driver.Completer.CompleteAsync(pendingId, OAuthDriver.Account(), CancellationToken.None));
+            driver.Completer.CompleteAsync(pendingId, owner, OAuthDriver.Account(), CancellationToken.None));
         var redirect = await driver.Completer.FailAsync(pendingId, "access_denied", "Timed out.", CancellationToken.None);
         Assert.Equal("access_denied", OAuthDriver.Query(redirect)["error"]);
     }

@@ -35,7 +35,7 @@ Two consequences shape everything below:
 |---|---|
 | Hosting | Runs on the owner's PC now, reachable over HTTPS through a tunnel; a real host later. Base URL is configuration, never derived from the request. |
 | Tunnel | Tailscale Funnel preferred (stable `https://<machine>.<tailnet>.ts.net`, already installed); Cloudflare quick tunnel for overnight testing because Funnel is not yet enabled on the tailnet. |
-| Who may connect | Owner passcode on the connect page (stored as a salted hash), checked before any browser launches; it only gates reaching the sign-in. Every connection then proves its TripIt account by signing in live, and is bound to that account. There is no list of accounts and no account is offered from what the host holds (#52, which replaced the original allowlist and removed "Continue as"). |
+| Who may connect | Since #80: a person signs in to Multiplex itself with Microsoft inside `/oauth/authorize`, and only an email on the owner's allowlist, verified by Microsoft, gets in (the shared owner passcode is retired). Every connection then proves its TripIt account by signing in live, and is bound to that person and that account. There is no list of site accounts and no account is offered from what the host holds (#52, which replaced the original allowlist and removed "Continue as"). |
 | TripIt sign-in UX | Live mirrored TripIt page in the connect flow. No Multiplex password form. TripIt password never stored. |
 | Tools | All read and write tools; deletes, merges, participant removal and invitations (which email people) need an explicit confirm step. |
 | Clients | Claude Desktop chat, claude.ai web and mobile, ChatGPT web and mobile. Claude Code also works (it reaches localhost directly). |
@@ -98,7 +98,7 @@ Claude / ChatGPT (phone, web, desktop)            the person's own browser (phon
    │  /.well-known/oauth-protected-resource/tripit/mcp   (resource metadata)        │
    │  /.well-known/oauth-authorization-server            (AS metadata)              │
    │  /oauth/register  /oauth/authorize  /oauth/token  /oauth/revoke                │
-   │  /connect/{slug}/...   gate (passcode) → live sign-in page ↔ WebSocket mirror  │
+   │  /signin-microsoft   Multiplex sign-in (#80) → /connect/{slug}/... live page   │
    │  /tripit/mcp   (requires a token whose audience is this URL)                   │
    │      └─ TripIt tools ─ TripItClient (per request) ─ session snapshot for the   │
    │                                                     token's TripIt account     │
@@ -215,9 +215,11 @@ metadata and the 401 challenge).
 
 1. In Claude or ChatGPT they add the connector (or tap **Connect** on a 401 card). Their
    browser opens `<base>/oauth/authorize?...`.
-2. **Gate page:** "Multiplex passcode". Wrong passcode → retry with back-off; five failures
-   lock the gate for 15 minutes. No browser launches before the gate passes. The passcode
-   leads straight to the live sign-in: no account the server already holds is offered.
+2. **Multiplex sign-in (#80):** unless the browser is already signed in to Multiplex, the
+   server sends it to Microsoft from inside `/oauth/authorize`; only an allowlisted email that
+   Microsoft vouches for gets back in. The connect page then shows who is connecting, for
+   whom, and one **Sign in to TripIt** button. No browser launches before that, and no account
+   the server already holds is offered.
 3. **Live TripIt page:** the server starts Chrome on a fresh, empty profile for this sign-in
    at a phone-sized viewport, opens TripIt's sign-in page, and streams it (CDP screencast frames
    over a WebSocket) into the page. Chrome is started as a person starts it, with no automation
@@ -236,28 +238,37 @@ human (re-sign-in, a challenge), the person is sent to it.
 
 ### 5.4 Gate and abuse limits
 
-- Passcode: set by the owner, stored as PBKDF2-SHA256 (≥ 210 000 iterations) with salt in
-  user secrets / the encrypted store; compared in constant time. Generated at install if
-  absent, and its location (never its value) printed.
-- **Trust model (#52).** The passcode only gates reaching the connect page's sign-in. Every
-  connection proves its TripIt account by signing in live with that account's own
-  credentials, and is bound to the account it signed in as. No account is ever offered from
-  what the host holds, and no request can name one: a passcode holder cannot reach another
-  person's saved TripIt session. Sessions stay one per account; a new sign-in as an account
-  the server already holds replaces that account's session and profile.
+- **Who gets in (#80).** People sign in to Multiplex with Microsoft (personal and work or
+  school accounts). Only an address on `Multiplex:Identity:AllowedEmails` gets in, and only a
+  verified one: for a work or school account, the ID token's `xms_edov` claim must be true;
+  a personal account's address counts as verified, since Microsoft proves it at sign-up and
+  never sends `xms_edov` for personal accounts (owner, #80 N2). An entry may also be a domain
+  (`example.com`, `*@example.com`); a domain entry lets in work or school accounts only, and a
+  personal account needs its exact address (owner, #80 N3). The first sign-in binds the
+  address to Microsoft's tenant ID plus object ID; after that the address admits only that
+  account. Taking an address off the list shuts its person out at once (their sign-in cookie
+  and their tokens stop working). The shared owner passcode is retired.
+- **Trust model (#52, #80).** Every grant and every saved site session belongs to the person
+  who made it. Every connection proves its TripIt account by signing in live with that
+  account's own credentials, and is bound to that person and that account. No account is
+  ever offered from what the host holds, and no request can name one: one person can never
+  reach another person's saved TripIt session, even for the same TripIt account. A new sign-in
+  replaces that person's session and profile for the account.
 - No account list (#52). A `Multiplex:Sites:{slug}:AllowedAccounts` left by an earlier
   install is ignored, with one log line when the server starts. Only addresses TripIt marks
   `is_confirmed` exactly true are kept on the account; a missing or odd flag does not count.
-- Passcode tries are reserved before they are checked, so a burst of concurrent guesses
-  never gets more than the limit; a right passcode clears that caller's count.
 - Sign-in browser profiles left behind by a crash (`temp-*`, `*.old-*`) are deleted when the
   server starts, and a signed-out account's profile is deleted with its session.
 - The OAuth store is written only when a request changed it, and holds at most 200
   registered clients and 100 pending authorizations (10 per caller); beyond that, new ones
   are refused rather than old ones evicted.
-- An open (no-sign-in) MCP endpoint also counts a browser request from a non-local page
-  (an `Origin` header that is not a loopback origin) as outside this PC.
-- One live browser at a time per gate session; at most two concurrent sign-in browsers.
+- **Every page and every MCP endpoint needs sign-in (#80).** Open: `/healthz`,
+  `/.well-known/*`, `/oauth/register`, `/oauth/token`, `/oauth/revoke`. A request from the
+  host itself, judged only by `RequestOrigin.IsFromOutsideThisPc`, needs no sign-in for a
+  page, nor a token for a service that acts for no one (Time); a browser request from a
+  non-local page (an `Origin` that is not a loopback origin) counts as outside. Connecting a
+  service always needs a signed-in person, and TripIt and LinkedIn always need a token.
+- One live browser at a time per connection being added; at most two concurrent sign-in browsers.
 - Every authorization, token issue, refresh failure and destructive tool call is logged with
   client id, account id and tool name, never token, cookie or request body.
 
@@ -299,8 +310,9 @@ still part of it.
 `Install-Multiplex.ps1` (repo root, idempotent, `-WhatIf` aware):
 
 1. Builds and publishes `Multiplex.Web` to `%USERPROFILE%\.multiplex\app`.
-2. Ensures configuration: public base URL, passcode (generated if absent; location printed),
-   Data Protection key folder. No TripIt account is asked for (#52).
+2. Ensures configuration: public base URL, Data Protection key folder. No TripIt account is
+   asked for (#52). The Microsoft sign-in (#80) is set by the owner for their Windows account;
+   the installer only prints the redirect URI to register and warns while it is not set.
 3. Registers a per-user scheduled task "Multiplex" that starts the server at logon and
    restarts it on failure (no admin rights needed).
 4. Optionally starts the tunnel: `tailscale funnel --bg 5190` (when Funnel is enabled), else
@@ -517,8 +529,14 @@ lock, timeouts and the refresher's signed-out path.
   per character, 50 ms apart, with line breaks and tabs dropped (Enter and Tab have their own
   buttons). Nothing is disguised: the browser is what it is, a person signing in. Whether
   TripIt accepts the sign-in now is not verified yet.
-- TripIt's only third-party sign-in is Google; allowed navigation hosts default to
-  `www.tripit.com`, `tripit.com`, `accounts.google.com`.
+- TripIt's only third-party sign-in is Google, and it is not offered (#117): TripIt is
+  Multiplex's example of a site with its own sign-in, and a Google password must never be typed
+  into a page this server drives. Allowed navigation hosts default to `www.tripit.com` and
+  `tripit.com`, so "Sign in with Google" is blocked when it reaches `accounts.google.com`
+  (as a top-level page or a popup; frames may still load from anywhere, as for every site);
+  the connect page says to use the TripIt email and password. Setting
+  `Multiplex:Sites:tripit:AllowedNavigationHosts` replaces the defaults, so an operator who
+  lists `accounts.google.com` there brings Google back.
 - Only email addresses TripIt marks confirmed are kept on an account.
 - "Keep me signed in" must be ticked during the mirrored sign-in, or the session ends when
   the browser closes; the page says so.
@@ -537,12 +555,14 @@ lock, timeouts and the refresher's signed-out path.
 - Behind a local tunnel every request arrives from loopback, so lockouts and rate limits key
   on the tunnel's last `X-Forwarded-For` entry, and MCP endpoints without sign-in (e.g.
   `/time/mcp`, which drives a browser on this PC) answer 404 to any request from outside the
-  PC unless listed in `Multiplex:PublicOpenEndpoints`.
-- The passcode page names where the browser goes afterwards (the client's redirect host), so
+  PC unless listed in `Multiplex:PublicOpenEndpoints`. (Superseded by #80: every endpoint
+  needs sign-in, and that setting is gone.)
+- The connect page names where the browser goes afterwards (the client's redirect host), so
   the owner can spot a connect request that did not come from their own Claude or ChatGPT.
 
 **Not verified yet (needs the owner):** the internet-facing address (Tailscale Funnel not yet
 enabled; the Cloudflare tool's install is waiting on an administrator prompt); adding the
 connector in Claude and ChatGPT, on the web and on a phone; a real TripIt password sign-in
-through the mirrored page on a phone (including Google sign-in and CAPTCHAs); ChatGPT plan
+through the mirrored page on a phone (including CAPTCHAs, and that "Sign in with Google" is
+refused there); ChatGPT plan
 limits for write tools.

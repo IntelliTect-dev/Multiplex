@@ -1,4 +1,5 @@
 #Requires -Version 7.2
+
 <#
 .SYNOPSIS
     Runs the installed Multiplex server, and its public tunnel when one is configured.
@@ -7,7 +8,9 @@
     "Multiplex" scheduled task. Reads multiplex.config.json, starts the tunnel first when the
     public address depends on it (a Cloudflare quick tunnel gets a new address on every
     start), then runs the server in the foreground with its configuration in environment
-    variables. Stopping the server stops the tunnel. Each step, and any failure with the step
+    variables. Microsoft sign-in (Multiplex__Identity__*) is not among them: the owner sets it
+    for their Windows account and the server inherits it from there, untouched by this script.
+    Stopping the server stops the tunnel. Each step, and any failure with the step
     it happened in, is written to logs\start.log: the task runs hidden, so nothing else shows it.
     Where Tailscale runs unattended for another Windows account, it refuses this one; a Funnel
     set up outside Multiplex is then used if a request through this PC's Tailscale name reaches

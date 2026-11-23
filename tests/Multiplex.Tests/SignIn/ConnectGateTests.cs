@@ -1,33 +1,96 @@
 using System.Net;
+using Multiplex.Tests.Identity;
+using Multiplex.Web.SignIn;
 
 namespace Multiplex.Tests.SignIn;
 
-/// <summary>The passcode gate in front of every connect flow. No browser is involved.</summary>
+/// <summary>
+/// Who may go on with a connection: only the person, signed in to Multiplex, who started it at
+/// <c>/oauth/authorize</c>. No browser is involved.
+/// </summary>
 public sealed class ConnectGateTests : IAsyncLifetime
 {
     private SignInTestHost _host = null!;
 
     public Task InitializeAsync()
     {
-        // No browser: a sign-in started by a passed gate fails at launch, which these tests do not mind.
+        // No browser: a sign-in that is started fails at launch, which these tests do not mind.
         _host = new SignInTestHost(new SignInTestOptions { ExecutablePath = Path.Combine(Path.GetTempPath(), "no-such-chrome.exe") });
         return Task.CompletedTask;
     }
 
     public async Task DisposeAsync() => await _host.DisposeAsync();
 
+    private async Task<ConnectClient> SignedInAsync(string email = TestPeople.Owner)
+    {
+        var client = _host.NewClient();
+        await client.SignInAsync(email);
+        return client;
+    }
+
+    /// <summary>
+    /// The friend's own connect page: a page they may open, so their posts carry a valid antiforgery
+    /// token and are refused only for whose connection it is.
+    /// </summary>
+    private async Task<(ConnectClient Friend, string Page)> FriendWithAPageAsync()
+    {
+        _host.Completer.Add("p-friend", "stub", owner: TestPeople.OwnerOf(TestPeople.Friend));
+        var friend = await SignedInAsync(TestPeople.Friend);
+        var (response, page) = await friend.GetAsync("/connect/stub?p=p-friend");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(ConnectClient.TokenOf(page));
+        return (friend, page);
+    }
+
+    private static void AssertNotAllowed(HttpResponseMessage response, string html)
+    {
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("Not allowed", html);
+    }
+
     [Fact]
-    public async Task Gate_page_names_the_client_and_the_site()
+    public async Task Connect_page_names_the_client_the_site_and_the_person()
     {
         _host.Completer.Add("p1", "stub", clientName: "Claude");
 
-        var (response, html) = await _host.NewClient().GetAsync("/connect/stub?p=p1");
+        var (response, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("<strong>Claude</strong> wants to connect to your <strong>Stub Site</strong> account", html);
-        Assert.Contains("name=\"passcode\"", html);
+        Assert.Contains("<strong>Claude</strong> wants to use your <strong>Stub Site</strong> account, for <strong>owner@example.test</strong>", html);
+        Assert.Contains("action=\"/connect/stub/start?p=p1\"", html);
         Assert.Equal("DENY", response.Headers.GetValues("X-Frame-Options").Single());
         Assert.Contains("frame-ancestors 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
+    }
+
+    [Fact]
+    public async Task Sign_in_page_warns_that_the_password_goes_through_this_server()
+    {
+        _host.Completer.Add("p1", "stub");
+
+        var (_, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
+
+        Assert.Contains("""<p class="warning">What you type there, including your password, goes through this Multiplex server on its way to Stub Site. This server never logs it.</p>""", html);
+        // The sign-in browser keeps its profile, and Chrome may keep what was typed into a form there: promise only what the server's code guarantees.
+        Assert.DoesNotContain("not stored", html);
+    }
+
+    [Fact]
+    public async Task Live_page_warns_beside_the_text_box_every_time_something_is_sent()
+    {
+        _host.Completer.Add("p1", "stub");
+        var client = await SignedInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
+
+        var (_, html) = await client.GetAsync(started.Headers.Location!.OriginalString);
+
+        // Always shown, never dismissed, in the bar with the text box, and read out with the box each time it is focused.
+        const string warning = """<p id="type-warning" class="warning">Anything you send here, passwords included, goes through this Multiplex server. It is never logged.</p>""";
+        Assert.Contains(warning, html);
+        Assert.InRange(html.IndexOf(warning, StringComparison.Ordinal), html.IndexOf("id=\"txt\"", StringComparison.Ordinal), html.IndexOf("id=\"stage\"", StringComparison.Ordinal));
+        Assert.Matches("""<input id="txt"[^>]* aria-describedby="type-warning"[^>]*>""", html);
+        Assert.DoesNotContain("not stored", html);
+        // Once the sign-in ends, the warning goes with the text box it describes.
+        Assert.Contains("querySelectorAll('.row.type, .row.keys, #type-warning')", html);
     }
 
     [Fact]
@@ -35,7 +98,7 @@ public sealed class ConnectGateTests : IAsyncLifetime
     {
         _host.Completer.Add("p1", "stub", clientName: "<script>alert(1)</script>");
 
-        var (_, html) = await _host.NewClient().GetAsync("/connect/stub?p=p1");
+        var (_, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
 
         Assert.DoesNotContain("<script>alert(1)</script>", html);
         Assert.Contains("&lt;script&gt;alert(1)&lt;/script&gt;", html);
@@ -46,11 +109,11 @@ public sealed class ConnectGateTests : IAsyncLifetime
     [InlineData("/connect/stub")]
     public async Task Unknown_or_missing_pending_id_shows_a_friendly_error(string path)
     {
-        var (response, html) = await _host.NewClient().GetAsync(path);
+        var (response, html) = await (await SignedInAsync()).GetAsync(path);
 
         Assert.True(response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest);
         Assert.Contains("Go back to the app", html);
-        Assert.DoesNotContain("name=\"passcode\"", html);
+        Assert.DoesNotContain("/connect/stub/start", html);
     }
 
     [Fact]
@@ -58,7 +121,7 @@ public sealed class ConnectGateTests : IAsyncLifetime
     {
         _host.Completer.Add("old", "stub", lifetime: TimeSpan.FromSeconds(-1));
 
-        var (response, html) = await _host.NewClient().GetAsync("/connect/stub?p=old");
+        var (response, html) = await (await SignedInAsync()).GetAsync("/connect/stub?p=old");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Contains("expired", html);
@@ -69,96 +132,133 @@ public sealed class ConnectGateTests : IAsyncLifetime
     {
         _host.Completer.Add("p1", "tripit");
 
-        var (response, _) = await _host.NewClient().GetAsync("/connect/stub?p=p1");
+        var (response, _) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task Wrong_passcode_is_refused_and_the_form_shown_again()
-    {
-        _host.Completer.Add("p1", "stub");
-
-        var (response, html) = await _host.NewClient().PassGateAsync("p1", "not-the-passcode");
-
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Contains("That passcode is not right", html);
-        Assert.Contains("name=\"passcode\"", html);
-        Assert.Empty(_host.TempProfiles());
-    }
-
-    [Fact]
-    public async Task Five_wrong_passcodes_lock_the_gate_even_for_the_right_one()
-    {
-        _host.Completer.Add("p1", "stub");
-        var client = _host.NewClient();
-
-        for (var i = 0; i < 4; i++)
-            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PassGateAsync("p1", "wrong-" + i)).Response.StatusCode);
-        var (fifth, _) = await client.PassGateAsync("p1", "wrong-5");
-        var (afterLock, html) = await client.PassGateAsync("p1");
-
-        Assert.Equal((HttpStatusCode)429, fifth.StatusCode);
-        Assert.Equal((HttpStatusCode)429, afterLock.StatusCode);
-        Assert.Contains("15 minutes", html);
-        Assert.Empty(_host.Completer.Completed);
-    }
-
-    [Fact]
-    public async Task Lockout_also_applies_per_client_address_across_pending_ids()
-    {
-        var client = _host.NewClient();
-        for (var i = 0; i < 5; i++)
-        {
-            _host.Completer.Add("p" + i, "stub");
-            await client.PassGateAsync("p" + i, "wrong");
-        }
-        _host.Completer.Add("fresh", "stub");
-
-        var (response, _) = await client.PassGateAsync("fresh");
-
-        Assert.Equal((HttpStatusCode)429, response.StatusCode);
     }
 
     [Fact]
     public async Task Post_without_antiforgery_token_is_refused()
     {
         _host.Completer.Add("p1", "stub");
-        var client = _host.NewClient();
+        var client = await SignedInAsync();
 
-        var response = await client.Http.PostAsync("/connect/stub?p=p1",
-            new FormUrlEncodedContent([new("passcode", SignInTestHost.Passcode)]));
+        var response = await client.Http.PostAsync("/connect/stub/start?p=p1", new FormUrlEncodedContent([]));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(_host.Get<LiveSignInRegistry>().FindForPending("p1"));
     }
 
     [Fact]
-    public async Task Right_passcode_sets_an_httponly_strict_gate_cookie()
+    public async Task Signed_in_owner_sees_the_sign_in_page_and_starting_it_opens_the_live_page()
     {
         _host.Completer.Add("p1", "stub");
+        var client = await SignedInAsync();
 
-        var (response, _) = await _host.NewClient().PassGateAsync("p1");
+        var (page, html) = await client.GetAsync("/connect/stub?p=p1");
+        var (started, _) = await client.StartSignInAsync("p1");
 
-        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
-        var cookie = response.Headers.GetValues("Set-Cookie").Single(c => c.StartsWith("mx_gate_stub=", StringComparison.Ordinal));
-        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("samesite=strict", cookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("path=/connect/stub", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("Sign in to Stub Site", html);
+        Assert.Equal(HttpStatusCode.SeeOther, started.StatusCode);
+        Assert.StartsWith("/connect/stub/live?a=", started.Headers.Location!.OriginalString);
+        Assert.Equal("no-store", started.Headers.CacheControl?.ToString());
+        var attempt = LiveMirrorTests.Attempt(_host, started);
+        Assert.Equal("p1", attempt.PendingId);
+        Assert.Equal(TestPeople.OwnerOf(), attempt.Owner);
+        var (live, _) = await client.GetAsync(started.Headers.Location!.OriginalString);
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
     }
 
     [Fact]
-    public async Task Live_page_and_websocket_need_the_gate_cookie_of_that_pending_authorization()
+    public async Task Another_person_cannot_view_start_or_cancel_a_pending_authorization()
+    {
+        _host.Completer.Add("p1", "stub", clientName: "Claude");
+        var (friend, friendPage) = await FriendWithAPageAsync();
+
+        var (view, viewHtml) = await friend.GetAsync("/connect/stub?p=p1");
+        var (start, startHtml) = await friend.PostAsync("/connect/stub/start?p=p1", friendPage);
+        var (cancel, cancelHtml) = await friend.PostAsync("/connect/stub/cancel?p=p1", friendPage);
+
+        AssertNotAllowed(view, viewHtml);
+        Assert.DoesNotContain("Claude", viewHtml);
+        AssertNotAllowed(start, startHtml);
+        AssertNotAllowed(cancel, cancelHtml);
+        Assert.Null(_host.Get<LiveSignInRegistry>().FindForPending("p1"));
+        Assert.Empty(_host.TempProfiles());
+        Assert.Empty(_host.Completer.Failed);
+        Assert.NotNull(await _host.Completer.FindAsync("p1", CancellationToken.None));
+
+        // The person who started it still can.
+        var (owners, _) = await (await SignedInAsync()).GetAsync("/connect/stub?p=p1");
+        Assert.Equal(HttpStatusCode.OK, owners.StatusCode);
+    }
+
+    [Fact]
+    public async Task Another_person_cannot_open_the_live_page_websocket_or_done_of_a_sign_in()
     {
         _host.Completer.Add("p1", "stub");
-        var owner = _host.NewClient();
-        var (passed, _) = await owner.PassGateAsync("p1");
-        var live = passed.Headers.Location!;
+        var owner = await SignedInAsync();
+        var (started, _) = await owner.StartSignInAsync("p1");
+        var live = started.Headers.Location!.OriginalString;
+        var attemptId = ConnectClient.AttemptIdOf(started.Headers.Location!);
+        var (friend, friendPage) = await FriendWithAPageAsync();
 
-        var stranger = _host.NewClient();
-        var (page, _) = await stranger.GetAsync(live.OriginalString);
-        var socket = await Record.ExceptionAsync(() => stranger.OpenMirrorAsync(ConnectClient.AttemptIdOf(live)));
+        var (page, pageHtml) = await friend.GetAsync(live);
+        var socket = await Record.ExceptionAsync(() => friend.OpenMirrorAsync(attemptId));
+        var (done, doneHtml) = await friend.GetAsync($"/connect/stub/done?a={attemptId}");
+        var (cancel, cancelHtml) = await friend.PostAsync($"/connect/stub/cancel?a={attemptId}", friendPage);
 
-        Assert.Equal(HttpStatusCode.Forbidden, page.StatusCode);
+        AssertNotAllowed(page, pageHtml);
+        Assert.NotNull(socket);
+        AssertNotAllowed(done, doneHtml);
+        AssertNotAllowed(cancel, cancelHtml);
+        Assert.Empty(_host.Completer.Completed);
+        Assert.Empty(_host.Completer.Failed);
+        Assert.NotEqual(AttemptState.Cancelled, LiveMirrorTests.Attempt(_host, started).State);
+
+        // The person who started it still can.
+        var (owners, _) = await owner.GetAsync(live);
+        Assert.Equal(HttpStatusCode.OK, owners.StatusCode);
+        await using var mirror = await owner.OpenMirrorAsync(attemptId);
+    }
+
+    /// <summary>
+    /// Every connection belongs to a signed-in person, so the connect pages never let a request without
+    /// one through, not even from this PC (the test server counts as this PC). Microsoft is not
+    /// configured in the test host, so the answer is the "not set up" page rather than a redirect to it.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "/connect/stub?p=p1")]
+    [InlineData("GET", "/connect/stub/live?a=some-attempt")]
+    [InlineData("GET", "/connect/stub/done?a=some-attempt")]
+    [InlineData("POST", "/connect/stub/start?p=p1")]
+    [InlineData("POST", "/connect/stub/cancel?p=p1")]
+    public async Task Without_a_sign_in_to_Multiplex_no_connect_page_is_let_through(string method, string path)
+    {
+        _host.Completer.Add("p1", "stub", clientName: "Claude");
+        var client = _host.NewClient();
+
+        var (response, html) = method == "GET"
+            ? await client.GetAsync(path)
+            : await client.PostAsync(path, "");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("Sign-in is not set up", html);
+        Assert.DoesNotContain("Claude", html);
+        Assert.Null(_host.Get<LiveSignInRegistry>().FindForPending("p1"));
+        Assert.Empty(_host.Completer.Failed);
+        Assert.NotNull(await _host.Completer.FindAsync("p1", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Without_a_sign_in_to_Multiplex_the_live_websocket_is_refused()
+    {
+        _host.Completer.Add("p1", "stub");
+        var (started, _) = await (await SignedInAsync()).StartSignInAsync("p1");
+
+        var socket = await Record.ExceptionAsync(() => _host.NewClient().OpenMirrorAsync(ConnectClient.AttemptIdOf(started.Headers.Location!)));
+
         Assert.NotNull(socket);
     }
 }
@@ -181,54 +281,21 @@ public sealed class LiveSocketOriginTests : IAsyncLifetime
     [Theory]
     [InlineData("http://localhost", true)]           // the page's own origin (Host)
     [InlineData("https://mx.example.ts.net", true)]  // the public URL behind a tunnel that rewrites Host
-    [InlineData(null, true)]                         // not a browser; the gate cookie still applies
+    [InlineData(null, true)]                         // not a browser; the sign-in cookie and owner check still apply
     [InlineData("https://evil.example", false)]
     [InlineData("http://localhost.evil.example", false)]
     public async Task Origin_must_be_this_server(string? origin, bool accepted)
     {
         _host.Completer.Add("p1", "stub");
         var client = _host.NewClient();
-        var (gate, _) = await client.PassGateAsync("p1");
+        await client.SignInAsync();
+        var (started, _) = await client.StartSignInAsync("p1");
 
         var error = await Record.ExceptionAsync(async () =>
         {
-            await using var mirror = await client.OpenMirrorAsync(ConnectClient.AttemptIdOf(gate.Headers.Location!), origin: origin);
+            await using var mirror = await client.OpenMirrorAsync(ConnectClient.AttemptIdOf(started.Headers.Location!), origin: origin);
         });
 
         Assert.Equal(accepted, error is null);
-    }
-}
-
-/// <summary>Without a configured passcode hash the gate fails closed.</summary>
-public sealed class ConnectGateNotConfiguredTests : IAsyncLifetime
-{
-    private SignInTestHost _host = null!;
-
-    public Task InitializeAsync()
-    {
-        _host = new SignInTestHost(new SignInTestOptions
-        {
-            WithPasscode = false,
-            ExecutablePath = Path.Combine(Path.GetTempPath(), "no-such-chrome.exe"),
-        });
-        return Task.CompletedTask;
-    }
-
-    public async Task DisposeAsync() => await _host.DisposeAsync();
-
-    [Fact]
-    public async Task Without_a_passcode_hash_nobody_can_connect()
-    {
-        _host.Completer.Add("p1", "stub");
-        var client = _host.NewClient();
-
-        var (page, html) = await client.GetAsync("/connect/stub?p=p1");
-        var (post, _) = await client.PassGateAsync("p1", "");
-
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, page.StatusCode);
-        Assert.Contains("install script", html);
-        Assert.DoesNotContain("name=\"passcode\"", html);
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, post.StatusCode);
-        Assert.Empty(_host.TempProfiles());
     }
 }

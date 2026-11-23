@@ -67,13 +67,14 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     private Task _run = Task.CompletedTask;
     private bool _profileKept;
 
-    internal LiveSignInAttempt(ISiteSignInDefinition definition, string pendingId, LiveSignInServices services)
+    internal LiveSignInAttempt(ISiteSignInDefinition definition, string pendingId, string owner, LiveSignInServices services)
     {
         Definition = definition;
         PendingId = pendingId;
+        Owner = SignInPaths.CheckOwner(owner);
         _services = services;
         Id = Base64Url(RandomNumberGenerator.GetBytes(32));
-        TempProfile = services.Manager.Paths.NewTempProfile(definition.Slug);
+        TempProfile = services.Manager.Paths.NewTempProfile(owner, definition.Slug);
         _viewportWidth = services.Options.ViewportWidth;
         _viewportHeight = services.Options.ViewportHeight;
         _frameCssWidth = _viewportWidth;
@@ -85,6 +86,9 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
     public string Id { get; }
 
     public string PendingId { get; }
+
+    /// <summary>The person signing in; the session and profile are kept under them, and only they may drive or finish it.</summary>
+    public string Owner { get; }
 
     public ISiteSignInDefinition Definition { get; }
 
@@ -207,12 +211,12 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         var snapshot = await Definition.CaptureSnapshotAsync(page, ct);
         await CloseBrowserAsync();
 
-        using (await _services.Manager.LockAccountAsync(Slug, account.AccountId, ct))
+        using (await _services.Manager.LockAccountAsync(Owner, Slug, account.AccountId, ct))
         {
-            await _services.Manager.PromoteProfileAsync(Slug, TempProfile, account.AccountId, ct);
+            await _services.Manager.PromoteProfileAsync(Owner, Slug, TempProfile, account.AccountId, ct);
             _profileKept = true;
-            await _services.Store.SetAsync(Slug, account.AccountId, snapshot, ct);
-            await _services.Index.UpsertAsync(account, ct);
+            await _services.Store.SetAsync(Owner, Slug, account.AccountId, snapshot, ct);
+            await _services.Index.UpsertAsync(Owner, account, ct);
         }
 
         Account = account;
@@ -231,7 +235,7 @@ public sealed class LiveSignInAttempt : IAsyncDisposable
         {
             if (State == AttemptState.Completed) return _completedUrl;
             if (State != AttemptState.Ready || Account is null) return null;
-            _completedUrl = await completer.CompleteAsync(PendingId, Account, ct);
+            _completedUrl = await completer.CompleteAsync(PendingId, Owner, Account, ct);
             SetState(AttemptState.Completed, StatusMessage);
             return _completedUrl;
         }

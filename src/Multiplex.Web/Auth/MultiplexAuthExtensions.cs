@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Multiplex.Web.Auth.Clients;
 using Multiplex.Web.Auth.Store;
+using Multiplex.Web.Identity;
 using Multiplex.Web.Sites;
 
 namespace Multiplex.Web.Auth;
@@ -18,15 +19,20 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
     /// <summary>
     /// Requires a bearer token for every request to <c>/{slug}/mcp</c>, and makes the slug an OAuth
     /// scope and resource (<c>&lt;PublicBaseUrl&gt;/{slug}/mcp</c>). The first slug added is the one the
-    /// root protected resource metadata describes.
+    /// root protected resource metadata describes. Every MCP endpoint must be added; one that is not is
+    /// refused (404).
     /// </summary>
-    public MultiplexAuthBuilder RequireAuthFor(string slug, string? displayName = null)
+    /// <param name="needsSiteAccount">True (the default) when the service's tools act on a person's site
+    /// account, so connecting it signs in to the site and every call needs a token, even from this host.
+    /// False for a service that acts for no one (e.g. <c>time</c>): connecting it is a consent page, and
+    /// a call from this host may come without a token.</param>
+    public MultiplexAuthBuilder RequireAuthFor(string slug, string? displayName = null, bool needsSiteAccount = true)
     {
         if (!SlugPattern().IsMatch(slug))
         {
             throw new ArgumentException("A slug is lower-case letters, digits and hyphens, e.g. 'tripit'.", nameof(slug));
         }
-        Services.Configure<AuthenticatedEndpointOptions>(o => o.Endpoints.Add((slug, displayName ?? slug)));
+        Services.Configure<AuthenticatedEndpointOptions>(o => o.Endpoints.Add((slug, displayName ?? slug, needsSiteAccount)));
         return this;
     }
 
@@ -37,14 +43,17 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
 public static class MultiplexAuthExtensions
 {
     /// <summary>
-    /// Registers the OAuth 2.1 authorization server, MCP bearer protection and the encrypted auth store
-    /// (under <c>Multiplex:DataPath</c>, key ring in its <c>keys</c> folder). Configuration is read lazily,
-    /// so later configuration sources (tests, user secrets) apply.
+    /// Registers the OAuth 2.1 authorization server, the sign-in to Multiplex itself
+    /// (<see cref="Identity.MultiplexIdentity"/>), the access gate and the encrypted auth store (under
+    /// <c>Multiplex:DataPath</c>, key ring in its <c>keys</c> folder). Configuration is read lazily, so
+    /// later configuration sources (tests, user secrets) apply.
     /// </summary>
     public static MultiplexAuthBuilder AddMultiplexAuth(this IServiceCollection services, IConfiguration configuration)
     {
         var builder = new MultiplexAuthBuilder(services);
         if (services.Any(d => d.ServiceType == typeof(AuthIssuer))) return builder;
+
+        services.AddMultiplexIdentity();
 
         services.AddOptions<MultiplexAuthOptions>().Bind(configuration.GetSection("Multiplex"));
         services.AddOptions<AuthenticatedEndpointOptions>();
@@ -79,15 +88,17 @@ public static class MultiplexAuthExtensions
     }
 
     /// <summary>
-    /// Adds the rate limiter and MCP bearer protection. Call after <c>UseRouting</c> and before
-    /// <c>UseAuthorization</c> and the MCP endpoints. Fails at startup outside Development when an
-    /// endpoint requires sign-in and <c>Multiplex:PublicBaseUrl</c> is not set.
+    /// Adds the sign-in cookie and Microsoft callback, the rate limiter and the access gate
+    /// (<see cref="AccessGate"/>). Call after <c>UseRouting</c> and before <c>UseAuthorization</c> and the
+    /// endpoints. Fails at startup outside Development when an endpoint requires sign-in and
+    /// <c>Multiplex:PublicBaseUrl</c> is not set.
     /// </summary>
     public static IApplicationBuilder UseMultiplexAuth(this IApplicationBuilder app)
     {
         _ = app.ApplicationServices.GetRequiredService<AuthIssuer>().Issuer;
+        app.UseAuthentication();
         app.UseRateLimiter();
-        app.UseMiddleware<McpBearerMiddleware>();
+        app.UseMiddleware<AccessGate>();
         return app;
     }
 

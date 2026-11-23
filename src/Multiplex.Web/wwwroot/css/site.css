@@ -4,3 +4,39 @@ body {
   max-width: 48rem;
   padding: 0 1rem;
 }
+
+.services {
+  list-style: none;
+  padding: 0;
+}
+
+.services li {
+  margin: 0 0 1rem;
+}
+
+.services code {
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.actions .button,
+.actions button {
+  border: 1px solid #888;
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.muted {
+  color: #666;
+}

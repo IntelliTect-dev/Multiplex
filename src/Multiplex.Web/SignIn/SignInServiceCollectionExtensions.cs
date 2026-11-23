@@ -11,7 +11,7 @@ namespace Multiplex.Web.SignIn;
 public static class SignInServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the connect pages' services: passcode gate, live sign-in browsers, encrypted
+    /// Registers the connect pages' services: live sign-in browsers, encrypted per-person
     /// site sessions (<see cref="ISiteSessionStore"/>) and their refresher
     /// (<see cref="ISiteSessionRefresher"/>). Add each site with <see cref="SiteSignInBuilder.AddSite{T}"/>.
     /// Needs <see cref="IAuthorizationCompleter"/> and <see cref="IGrantRevoker"/> from Auth/ at run
@@ -29,12 +29,10 @@ public static class SignInServiceCollectionExtensions
         services.TryAddSingleton<SiteSessionStore>();
         services.TryAddSingleton<ISiteSessionStore>(sp => sp.GetRequiredService<SiteSessionStore>());
         services.TryAddSingleton<SiteAccountIndex>();
-        services.TryAddSingleton<PasscodeGate>();
-        services.TryAddSingleton<GateCookie>();
         services.TryAddSingleton<LiveSignInRegistry>();
         services.TryAddSingleton<SiteSessionRefresher>();
         services.TryAddSingleton<ISiteSessionRefresher>(sp => sp.GetRequiredService<SiteSessionRefresher>());
-        services.TryAddSingleton<SiteProfileAdopter>();
+        services.AddHostedService<UnownedSiteDataSweeper>();
         services.AddHostedService<StaleProfileSweeper>();
         services.AddHostedService<RetiredAccountListNotice>();
         return new SiteSignInBuilder(services);

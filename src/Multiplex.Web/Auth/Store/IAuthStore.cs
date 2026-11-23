@@ -39,12 +39,23 @@ public abstract class AuthStoreBase(TimeProvider time) : IAuthStore, IDisposable
 
     protected TimeProvider Time { get; } = time;
 
+    /// <summary>
+    /// The persisted state with everything that belongs to no Multiplex user already dropped, so no
+    /// read or write ever sees it. The drop is persisted by the next write that changes something.
+    /// </summary>
+    private async Task<AuthState> LoadOwnedAsync(CancellationToken ct)
+    {
+        var state = await LoadAsync(ct);
+        state.DropUnowned();
+        return state;
+    }
+
     public async Task<T> ReadAsync<T>(Func<AuthState, T> read, CancellationToken ct)
     {
         await _gate.WaitAsync(ct);
         try
         {
-            _state ??= await LoadAsync(ct);
+            _state ??= await LoadOwnedAsync(ct);
             return read(_state);
         }
         finally
@@ -58,7 +69,7 @@ public abstract class AuthStoreBase(TimeProvider time) : IAuthStore, IDisposable
         await _gate.WaitAsync(ct);
         try
         {
-            _state ??= await LoadAsync(ct);
+            _state ??= await LoadOwnedAsync(ct);
             try
             {
                 // Pruning alone is not saved: expired entries are dropped again after a reload.

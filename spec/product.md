@@ -46,9 +46,11 @@ Each service lives in its own folder, with its code, its tests and a README. The
 
 On the owner's PC for now, reachable from the internet over HTTPS through a tunnel, and on a real host later. It has to be reachable from the internet because Claude and ChatGPT call it from their own clouds, even when the person is at the same PC. (Decided with the TripIt work, issue #6.)
 
+It can also run on a Linux server, deployed from a PC over SSH, as its own device on the owner's tailnet (issue #97). That host is also open to the internet through Tailscale Funnel, so Claude's and ChatGPT's own connectors reach it as well as clients on tailnet devices. Funnel needs no incoming port on the server's network. (Issue #108, reversing #97's tailnet-only choice.)
+
 ## Constraints and risks
 
-- **No authentication yet.** Anyone who can reach the host can call every service's tools. The TripIt work adds it: MCP clients sign in through OAuth. The owner passcode only gates reaching the sign-in: every connection proves its site account by signing in to the site live, and uses only that account. No account is offered from what the host already holds (#52).
+- **Sign-in to Multiplex itself (#80).** Every page and every service needs sign-in. A person signs in with Microsoft (personal or work account), and only an email on the owner's allowlist that Microsoft verified gets in. Claude and ChatGPT still connect through Multiplex's own OAuth server; each connector is a grant that belongs to the person who added it. Every connection proves its site account by signing in to the site live and uses only that person's session for that account; no account is offered from what the host already holds (#52). Requests from the host itself need no sign-in for pages and for services that act for no one.
 - **No limit on concurrent calls.** For a service that reads pages, each call that arrives while the others are busy opens another tab.
 - **Chromium runs with its sandbox turned off** (`--no-sandbox`).
 - **Websites change without notice.** An undocumented API can change or disappear, and page layouts tend to change more often than the API behind them (one reason services call the API). Each service's live tests are what notice.

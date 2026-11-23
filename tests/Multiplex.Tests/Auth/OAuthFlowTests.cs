@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Multiplex.Web.Auth;
+using Multiplex.Web.Identity;
 using Multiplex.Web.Sites;
 using static Multiplex.Tests.Auth.OAuthDriver;
 
@@ -37,11 +38,20 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     }
 
     [Fact]
-    public async Task ProtectedResourceMetadata_IsNotServedForOpenEndpoints()
+    public async Task ProtectedResourceMetadata_IsNotServedForUnregisteredEndpoints()
     {
-        var response = await _driver.Http.GetAsync("/.well-known/oauth-protected-resource/time/mcp");
+        var response = await _driver.Http.GetAsync("/.well-known/oauth-protected-resource/nosuch/mcp");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ProtectedResourceMetadata_DescribesTime_NowThatItNeedsSignIn()
+    {
+        var json = await _driver.Http.GetFromJsonAsync<JsonElement>("/.well-known/oauth-protected-resource/time/mcp");
+
+        Assert.Equal(AuthTestApp.BaseUrl + "/time/mcp", json.GetProperty("resource").GetString());
+        Assert.Equal("Time", json.GetProperty("resource_name").GetString());
     }
 
     [Theory]
@@ -62,7 +72,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         Assert.Equal(["none"], Strings(json, "token_endpoint_auth_methods_supported"));
         Assert.True(json.GetProperty("client_id_metadata_document_supported").GetBoolean());
         Assert.True(json.GetProperty("authorization_response_iss_parameter_supported").GetBoolean());
-        Assert.Equal(["tripit", "linkedin", "other"], Strings(json, "scopes_supported"));
+        Assert.Equal(["tripit", "linkedin", "time", "other"], Strings(json, "scopes_supported"));
     }
 
     // ---- Happy path ----
@@ -80,7 +90,9 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         Assert.Equal("Claude", pending.ClientName);
         Assert.True(pending.ExpiresAt > app.Clock.GetUtcNow());
 
-        var redirect = await _driver.Completer.CompleteAsync(pendingId, Account(), CancellationToken.None);
+        Assert.Equal(await _driver.OwnerAsync(), pending.Owner);
+
+        var redirect = await _driver.Completer.CompleteAsync(pendingId, await _driver.OwnerAsync(), Account(), CancellationToken.None);
         Assert.StartsWith(ClaudeRedirect + "?", redirect.AbsoluteUri);
         var query = Query(redirect);
         Assert.Equal("state-123", query["state"]);
@@ -122,7 +134,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         var revoked = await _driver.ConnectAsync(Account("acct-revoke"));
         var kept = await _driver.ConnectAsync(Account("acct-keep"));
 
-        await _driver.Revoker.RevokeAccountAsync("tripit", "acct-revoke", CancellationToken.None);
+        await _driver.Revoker.RevokeAccountAsync(await _driver.OwnerAsync(), "tripit", "acct-revoke", CancellationToken.None);
 
         var response = await _driver.InitializeAsync("/tripit/mcp", revoked.AccessToken);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -137,12 +149,12 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     {
         var tokens = await _driver.ConnectAsync(Account("acct-claims"));
         ClaimsPrincipal? seen = null;
-        var middleware = new McpBearerMiddleware(
+        var middleware = new AccessGate(
             context => { seen = context.User; return Task.CompletedTask; },
             app.Services.GetRequiredService<AuthenticatedEndpoints>(),
             app.Services.GetRequiredService<TokenService>(),
-            app.Services.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>(),
-            NullLogger<McpBearerMiddleware>.Instance);
+            app.Services.GetRequiredService<MicrosoftSignInSettings>(),
+            NullLogger<AccessGate>.Instance);
         var context = new DefaultHttpContext();
         context.Request.Method = "POST";
         context.Request.Path = "/tripit/mcp";
@@ -152,7 +164,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
 
         Assert.NotNull(seen);
         Assert.True(seen.Identity?.IsAuthenticated);
-        Assert.Equal(("tripit", "acct-claims"), SiteClaims.AccountOf(seen)!.Value);
+        Assert.Equal((await _driver.OwnerAsync(), "tripit", "acct-claims"), SiteClaims.AccountOf(seen)!.Value);
         Assert.Equal(tokens.ClientId, seen.FindFirst(SiteClaims.ClientId)?.Value);
     }
 
@@ -196,7 +208,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     }
 
     [Fact]
-    public async Task TimeMcp_StaysOpenWithoutToken()
+    public async Task TimeMcp_FromThisPc_WorksWithoutToken()
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/time/mcp")
         {
@@ -241,7 +253,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     [InlineData("code_challenge", null, "invalid_request")]
     [InlineData("code_challenge", "short", "invalid_request")]
     [InlineData("response_type", "token", "unsupported_response_type")]
-    [InlineData("resource", AuthTestApp.BaseUrl + "/time/mcp", "invalid_target")]
+    [InlineData("resource", AuthTestApp.BaseUrl + "/nosuch/mcp", "invalid_target")]
     [InlineData("resource", "https://elsewhere.example/tripit/mcp", "invalid_target")]
     [InlineData("resource", null, "invalid_target")]
     public async Task Authorize_InvalidRequest_RedirectsWithErrorStateAndIss(string parameter, string? value, string error)
@@ -288,10 +300,12 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         var clientId = await _driver.RegisterAsync();
         var pendingId = await _driver.StartAsync(AuthorizeParameters(clientId, NewPkce()));
 
+        var owner = await _driver.OwnerAsync();
+
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            _driver.Completer.CompleteAsync("no-such-pending", Account(), CancellationToken.None));
+            _driver.Completer.CompleteAsync("no-such-pending", owner, Account(), CancellationToken.None));
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            _driver.Completer.CompleteAsync(pendingId, Account(site: "other"), CancellationToken.None));
+            _driver.Completer.CompleteAsync(pendingId, owner, Account(site: "other"), CancellationToken.None));
     }
 
     // ---- Token endpoint ----
@@ -476,7 +490,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
 
         var pendingId = await _driver.StartAsync(AuthorizeParameters(clientId, pkce, redirect));
         Assert.Equal("ChatGPT", (await _driver.Completer.FindAsync(pendingId, CancellationToken.None))!.ClientName);
-        var code = Query(await _driver.Completer.CompleteAsync(pendingId, Account(), CancellationToken.None))["code"]!;
+        var code = Query(await _driver.Completer.CompleteAsync(pendingId, await _driver.OwnerAsync(), Account(), CancellationToken.None))["code"]!;
         var (status, body, _) = await _driver.TokenAsync(CodeExchange(clientId, code, pkce, redirect));
 
         Assert.Equal(HttpStatusCode.OK, status);

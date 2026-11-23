@@ -46,11 +46,12 @@ public sealed class AuthStoreWriteTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, revoke.StatusCode);
 
         // Connect pages finishing an authorization that does not exist, and an account with nothing to revoke.
+        var owner = await driver.OwnerAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            driver.Completer.CompleteAsync("no-such-pending", Account(), CancellationToken.None));
+            driver.Completer.CompleteAsync("no-such-pending", owner, Account(), CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             driver.Completer.FailAsync("no-such-pending", "access_denied", "Cancelled.", CancellationToken.None));
-        await driver.Revoker.RevokeAccountAsync("tripit", "nobody", CancellationToken.None);
+        await driver.Revoker.RevokeAccountAsync(owner, "tripit", "nobody", CancellationToken.None);
 
         // Data Protection output is randomized, so any rewrite would change the bytes.
         Assert.Equal(before, await File.ReadAllBytesAsync(StoreFile));

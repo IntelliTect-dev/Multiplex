@@ -24,12 +24,33 @@ public sealed class AuthState
     /// <summary>Refresh tokens (used ones are kept until expiry to detect reuse), by token hash.</summary>
     public Dictionary<string, RefreshTokenRecord> RefreshTokens { get; init; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The people who may sign in, by their email address in lower case: each allowlisted address,
+    /// once its first sign-in bound it to that sign-in's immutable account identifiers.
+    /// </summary>
+    public Dictionary<string, PersonBinding> People { get; init; } = new(StringComparer.Ordinal);
+
     /// <summary>Removes a grant family and every token issued in it.</summary>
     public void RevokeGrant(string grantId)
     {
         Grants.Remove(grantId);
         RemoveWhere(AccessTokens, t => t.GrantId == grantId);
         RemoveWhere(RefreshTokens, t => t.GrantId == grantId);
+    }
+
+    /// <summary>
+    /// Drops every authorization, code, grant and token that belongs to no Multiplex user: those
+    /// saved before people signed in to Multiplex. Nothing adopts them; their clients reconnect.
+    /// Returns how many entries were dropped.
+    /// </summary>
+    public int DropUnowned()
+    {
+        var grants = Grants.Values.Where(g => g.Owner is null).Select(g => g.Id).ToList();
+        foreach (var id in grants) RevokeGrant(id);
+        return grants.Count
+               + RemoveWhere(AccessTokens, t => t.Owner is null)
+               + RemoveWhere(AuthorizationCodes, c => c.Owner is null)
+               + RemoveWhere(PendingAuthorizations, p => p.Owner is null);
     }
 
     /// <summary>Drops expired entries, empty grants and clients unused for <see cref="AuthLifetimes.UnusedClient"/>.</summary>
@@ -56,12 +77,14 @@ public sealed class AuthState
             ? client
             : null;
 
-    private static void RemoveWhere<T>(Dictionary<string, T> items, Func<T, bool> predicate)
+    private static int RemoveWhere<T>(Dictionary<string, T> items, Func<T, bool> predicate)
     {
-        foreach (var key in items.Where(kv => predicate(kv.Value)).Select(kv => kv.Key).ToList())
+        var keys = items.Where(kv => predicate(kv.Value)).Select(kv => kv.Key).ToList();
+        foreach (var key in keys)
         {
             items.Remove(key);
         }
+        return keys.Count;
     }
 }
 
@@ -71,6 +94,22 @@ public sealed record RegisteredClient(
     IReadOnlyList<string> RedirectUris,
     DateTimeOffset CreatedAt,
     DateTimeOffset LastUsedAt);
+
+/// <summary>
+/// An allowlisted email address bound, on its first sign-in, to that sign-in's immutable account
+/// identifiers. After that, only the same account gets in with that address, so an address that
+/// changes hands at the email provider admits no one new.
+/// </summary>
+/// <param name="Email">The allowlisted address, lower case.</param>
+/// <param name="Provider">Who vouched for the address, e.g. <c>microsoft</c>.</param>
+/// <param name="Subject">The provider's immutable account key; for Microsoft <c>{tid}/{oid}</c>.</param>
+/// <param name="Owner">The Multiplex user id derived from provider and subject; grants and site sessions are kept under it.</param>
+/// <param name="PersonalAccount">Whether the account is a personal one, which a domain entry never admits. A binding saved
+/// without it counts as personal, so a domain entry admits it only after its next sign-in records what it is.</param>
+public sealed record PersonBinding(string Email, string Provider, string Subject, string Owner, DateTimeOffset BoundAt, bool PersonalAccount = true);
+
+// Owner (on the records below) is the Multiplex user the entry belongs to. It is null only in
+// entries saved before people signed in to Multiplex; AuthState.DropUnowned removes those.
 
 /// <param name="CallerKey">A short keyed hash of the caller's rate-limit key, never the address itself; null for records saved before it existed.</param>
 public sealed record PendingAuthorizationRecord(
@@ -84,8 +123,10 @@ public sealed record PendingAuthorizationRecord(
     string Resource,
     string Scope,
     DateTimeOffset ExpiresAt,
-    string? CallerKey = null);
+    string? CallerKey = null,
+    string? Owner = null);
 
+/// <param name="AccountId">The site account the code is for; null for a service that uses no site account.</param>
 public sealed record AuthorizationCodeRecord(
     string ClientId,
     string RedirectUri,
@@ -93,27 +134,30 @@ public sealed record AuthorizationCodeRecord(
     string Resource,
     string Scope,
     string Site,
-    string AccountId,
+    string? AccountId,
     DateTimeOffset ExpiresAt,
-    string? RedeemedGrantId = null);
+    string? RedeemedGrantId = null,
+    string? Owner = null);
 
 public sealed record GrantRecord(
     string Id,
     string ClientId,
     string Site,
-    string AccountId,
+    string? AccountId,
     string Resource,
     string Scope,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? Owner = null);
 
 public sealed record AccessTokenRecord(
     string GrantId,
     string ClientId,
     string Site,
-    string AccountId,
+    string? AccountId,
     string Audience,
     string Scope,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string? Owner = null);
 
 public sealed record RefreshTokenRecord(
     string GrantId,

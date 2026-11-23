@@ -55,6 +55,99 @@ Services that read a website's pages share one Chromium. Set these in
 | `Browser:Headless` | `true` | `false` shows the browser window |
 | `Browser:StepDelayMs` | `0` | Pause between tool steps, so a headed run can be followed by eye |
 
+### Signing in to Multiplex
+
+Every page and every service needs sign-in, except `/healthz`, the OAuth
+discovery and protocol endpoints, and requests made on the host itself
+(pages, and services that act for no one, such as Time). People sign in with
+Microsoft, personal or work account; only an email on the allowlist, verified
+by Microsoft, gets in. Its first sign-in binds the address to that Microsoft
+account. Claude and ChatGPT still connect through Multiplex's own OAuth
+server; each connector belongs to the person who added it.
+
+| Key | Description |
+|---|---|
+| `Multiplex:Identity:Microsoft:ClientId` | The Microsoft Entra app registration's Application (client) ID |
+| `Multiplex:Identity:Microsoft:ClientSecret` | Its client secret. Set it on the host only; never commit it |
+| `Multiplex:Identity:AllowedEmails` | Who may sign in, separated by `;` (or a JSON array): addresses (`pat@example.com`), or domains (`example.com` or `*@example.com`), which let in work or school accounts only; a personal account needs its exact address. Empty lets no one in |
+
+Set them on the host, never in the repository: on Windows as User
+environment variables (`Multiplex__Identity__Microsoft__ClientId` and so on;
+the installer shows the lines), then run the installer again; on a Linux
+server in `~/multiplex/identity.env` (see below).
+
+The app registration, once, in the Microsoft Entra admin center:
+
+1. **Supported account types:** accounts in any organizational directory and
+   personal Microsoft accounts.
+2. **Authentication > Web:** a redirect URI `<public address>/signin-microsoft`
+   for each address the host uses (the installer prints it), and
+   `http://localhost:5190/signin-microsoft` for testing on the host.
+3. **Token configuration > Add optional claim > ID:** `email` and `xms_edov`.
+   A work or school account gets in only when `xms_edov` says its tenant
+   verified the address. A personal account's address counts as verified
+   (Microsoft proves it at sign-up and never sends `xms_edov` for them).
+4. **Certificates & secrets:** a client secret. Note when it expires.
+
+## Running it on a Linux server
+
+`scripts/Deploy-MultiplexLinux.ps1` deploys Multiplex from this PC to a Linux
+server over SSH, where it runs as two Docker containers (`deploy/linux`): the
+server, with Google Chrome and a virtual display for the sign-in browsers, and
+a Tailscale device named `multiplex` that serves it over HTTPS at
+`https://multiplex.<your-tailnet>.ts.net`, to your tailnet and, through
+Tailscale Funnel, to the internet.
+
+```powershell
+./scripts/Deploy-MultiplexLinux.ps1 -Target me@192.168.1.20
+```
+
+- **The server** needs an x64 processor (Google Chrome is built for x64 only on
+  Linux), Docker with the Compose plugin, and an SSH user that may run `docker`.
+  It must accept this PC's SSH key; if it asks for a password, add the key once:
+
+  ```powershell
+  Get-Content $HOME\.ssh\id_ed25519.pub | ssh me@192.168.1.20 "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+  ```
+
+- **The first deploy** prints a Tailscale link: open it and sign in to add the
+  `multiplex` device to your tailnet. The tailnet must issue HTTPS certificates
+  (Tailscale admin console, DNS page) and let the device use Funnel: the
+  `funnel` node attribute, which Tailscale's default access controls give every
+  member's devices. The deploy stops and says so when either is missing.
+- **Sign-in** ([Signing in to Multiplex](#signing-in-to-multiplex)) is kept on
+  the server in `~/multiplex/identity.env`, which you write yourself, mode 0600:
+  `Multiplex__Identity__Microsoft__ClientId=...`,
+  `Multiplex__Identity__Microsoft__ClientSecret=...` and
+  `Multiplex__Identity__AllowedEmails=...`. The deploy never writes, reads or
+  uploads it. After editing it, run `cd ~/multiplex && docker compose up -d` on
+  the server (`docker compose up -d --force-recreate multiplex` if it does not
+  restart). Register `https://multiplex.<your-tailnet>.ts.net/signin-microsoft`
+  as a redirect URI. It is a plain file on disk, protected by its mode only.
+- **Updating** is running the script again. Until the new image has built and the
+  Tailscale device is up, the running server is left as it was. The server keeps
+  the last three images (`docker image ls multiplex-server`); to go back to one of
+  them, set `MULTIPLEX_IMAGE` in `~/multiplex/.env` on the server and run
+  `docker compose up -d` in `~/multiplex`.
+- **Chrome** is checked at the end of every deploy, started the way the TripIt
+  sign-in starts it: as the server's own user, sandboxed, with a window on the
+  virtual display (`deploy/linux/check-chrome.sh`). If it cannot start, the deploy
+  says so, and how to go back to an earlier image: every site sign-in would fail.
+- **Open to the internet, through Funnel.** Claude's web, phone and Desktop
+  connectors and ChatGPT call from their own clouds, off your tailnet, so the
+  device opens port 443, and only 443, with Tailscale Funnel. Funnel needs no
+  incoming port on your network: Tailscale's relays hand each request to the
+  device over its own outgoing connection, and the device ends the TLS. Add
+  `https://multiplex.<your-tailnet>.ts.net/tripit/mcp` as a custom connector, or
+  in Claude Code
+  (`claude mcp add --transport http tripit https://multiplex.<your-tailnet>.ts.net/tripit/mcp`).
+  On the tailnet or not, a web page sends you to the Microsoft sign-in, and an
+  MCP call without a token gets 401.
+- **Data** lives in the `multiplex_multiplex-data` Docker volume, readable by the
+  container's own user only. Nothing moves over from a Windows install: its keys
+  and browser sign-ins are encrypted to that Windows account, so connectors are
+  added and sites signed in to again.
+
 ## Adding a service
 
 1. Find the website's API first, with the
@@ -63,9 +156,11 @@ Services that read a website's pages share one Chromium. Set these in
 2. Give the service its own folder, `src/Multiplex.Web/Services/<Name>/`, with
    its tests in `tests/Multiplex.Tests/Services/<Name>/`.
 3. Mark its tool class with `[McpServerToolType]` and `[McpEndpoint("<name>")]`.
-   The host then serves that class's tools, and only those, at `/<name>/mcp`,
-   with no other registration. A tool class without `[McpEndpoint]` is not
-   served at all.
+   The host then serves that class's tools, and only those, at `/<name>/mcp`.
+   A tool class without `[McpEndpoint]` is not served at all. Register the
+   address for sign-in in `Program.cs` with `RequireAuthFor("<name>", ...)`
+   (pass `needsSiteAccount: false` when its tools act for no one); the server
+   refuses to start while an address is not registered.
 4. Write a README in its folder covering its tools, their inputs and outputs,
    how it reaches the site (its API, or the browser and why), its quirks, its
    risks and its tests.

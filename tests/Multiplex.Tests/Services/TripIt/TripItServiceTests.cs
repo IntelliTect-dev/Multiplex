@@ -144,7 +144,7 @@ public sealed class TripItServiceTests : IDisposable
         Assert.Contains("user-new", text, StringComparison.Ordinal);
         Assert.Equal(1, _host.Refresher.Calls["acct-a"]);
         Assert.Equal(["old", "new"], _host.TripIt.Requests.Select(r => r.Cookie));
-        Assert.Contains("\"new\"", _host.Store.Data["acct-a"], StringComparison.Ordinal);
+        Assert.Contains("\"new\"", _host.Store["acct-a"], StringComparison.Ordinal);
 
         // The next request starts from the stored, refreshed snapshot: no second refresh.
         Assert.False((await _host.McpFor("acct-a").CallAsync("tripit_get_profile")).IsError);
