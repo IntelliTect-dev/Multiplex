@@ -228,7 +228,8 @@ if v=$(docker compose version --short 2>&1); then echo "compose=$v"; else echo "
 
         Write-Host 'Uploading...'
         Invoke-MultiplexLinuxStep $Remote 'prepare' "mkdir -p '$root'" 'Could not create ~/multiplex on the server.' | Out-Null
-        & $Upload $bundle "$root/incoming.tgz"
+        # The same goes for whatever the upload prints.
+        & $Upload $bundle "$root/incoming.tgz" | Out-Host
     }
     finally {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
