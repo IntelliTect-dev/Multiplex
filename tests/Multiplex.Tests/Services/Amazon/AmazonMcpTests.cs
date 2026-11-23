@@ -77,7 +77,8 @@ public class AmazonMcpTests : IDisposable
         Assert.Equal("USD", answer.GetProperty("currency").GetString());
         Assert.Equal(3, answer.GetProperty("appliedMinimums").GetProperty("minRating").GetDouble());
         Assert.Equal(20, answer.GetProperty("appliedMinimums").GetProperty("minRatingsCount").GetInt32());
-        Assert.Equal(JsonValueKind.Number, answer.GetProperty("ratingBaseline").ValueKind);
+        // The weighing starts from a fixed 3 stars, so there is no per-answer baseline to report (#131).
+        Assert.False(answer.TryGetProperty("ratingBaseline", out _));
         Assert.Equal([1, 2], answer.GetProperty("pagesRead").EnumerateArray().Select(p => p.GetInt32()));
         Assert.Equal(3, answer.GetProperty("nextPage").GetInt32());
         Assert.Equal(12, answer.GetProperty("sponsoredRemoved").GetInt32());

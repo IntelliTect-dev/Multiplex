@@ -53,9 +53,20 @@ owner's own shopping can start to meet "prove you're human" checks.
 | `rating` | Avg. customer review | highest `weightedRating` first | 20 ratings |
 
 `weightedRating` weighs stars by how many people gave them, so 4.7 stars from 90,000 ratings
-ranks above 4.8 stars from 12. It is (n / (n + 100)) x stars + (100 / (n + 100)) x
-`ratingBaseline`, where n is the rating count and `ratingBaseline` is the average stars of
-the results in that answer. It compares results within one answer, not across calls.
+ranks above 4.8 stars from 12. Every product starts as if 100 people had rated it 3 stars
+(the lowest rating ever returned), and its real ratings are added to those:
+(n x stars + 100 x 3) / (n + 100), where n is the rating count.
+
+| Stars | Ratings | `weightedRating` |
+|---|---|---|
+| 5.0 | 47 | 3.639 |
+| 4.9 | 200 | 4.267 |
+| 4.9 | 3,627 | 4.849 |
+| 4.8 | 35,896 | 4.795 |
+
+A product's score depends only on its own stars and count, so it is the same in every
+answer. A product needs several hundred ratings before its score is close to its stars:
+that is the point, and it also means a well-liked product with few ratings ranks low.
 
 **What every search does:**
 

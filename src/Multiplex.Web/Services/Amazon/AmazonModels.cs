@@ -66,7 +66,6 @@ public sealed record AmazonSearchAnswer(
     string Query,
     AmazonSort Sort,
     AmazonAppliedMinimums AppliedMinimums,
-    double? RatingBaseline,
     string Currency,
     IReadOnlyList<int> PagesRead,
     int? NextPage,

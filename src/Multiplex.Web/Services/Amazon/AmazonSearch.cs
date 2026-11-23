@@ -49,8 +49,17 @@ internal static partial class AmazonSearch
     public const int SortMinRatingsCount = 20;
     public const int MaxPages = 10;
     public const int MaxFilters = 10;
-    /// <summary>The weight of the baseline in a weighted rating: a product needs about this many ratings to stand on its own.</summary>
+    /// <summary>
+    /// A weighted rating starts every product at <see cref="WeightedRatingBaseline"/> stars from this many
+    /// made-up ratings, then adds its real ones: a product needs about this many ratings to stand on its own.
+    /// </summary>
     public const int WeightedRatingPrior = 100;
+    /// <summary>
+    /// The stars a product starts from before its own ratings count: the lowest rating ever returned.
+    /// It is fixed, not the average of the results in the answer, because Amazon's best-rated page is
+    /// all 4.8 to 5.0 stars and an average that high lets 5.0 from 40 ratings outrank 4.8 from 35,000 (#131).
+    /// </summary>
+    public const double WeightedRatingBaseline = RatingFloor;
     public const string FourStarsAndUp = "p_72:1248879011";
 
     [GeneratedRegex("^p_[A-Za-z0-9_-]{1,64}:[A-Za-z0-9]{1,32}$")]
@@ -116,7 +125,6 @@ internal static partial class AmazonSearch
         IReadOnlyList<AmazonSearchResult> Results,
         int SponsoredRemoved,
         int FilteredOut,
-        double? RatingBaseline,
         string? Note);
 
     public static Outcome Combine(AmazonSearchPlan plan, IEnumerable<AmazonSearchPageData> pages)
@@ -140,13 +148,10 @@ internal static partial class AmazonSearch
         }
         var filteredOut = unpaid.Count - kept.Count;
 
-        var rated = kept.Where(k => k.Item.Rating is not null).ToList();
-        double? baseline = rated.Count > 0 ? rated.Average(k => k.Item.Rating!.Value) : null;
-
         var results = kept.Select(k => new AmazonSearchResult(
             k.Rank, k.Item.Asin, k.Item.Title, $"https://www.amazon.com/dp/{k.Item.Asin}", k.Item.ImageUrl,
             k.Item.Price, k.Item.ListPrice, k.Item.UnitPrice, k.Item.Rating, k.Item.RatingsCount,
-            Weighted(k.Item, baseline), k.Item.BoughtInPastMonth, k.Item.BoughtInPastMonthText, k.Item.Badges,
+            Weighted(k.Item), k.Item.BoughtInPastMonth, k.Item.BoughtInPastMonthText, k.Item.Badges,
             k.Item.Delivery));
 
         IEnumerable<AmazonSearchResult> sorted = request.Sort switch
@@ -174,7 +179,7 @@ internal static partial class AmazonSearch
             if (request.MinPrice is not null || request.MaxPrice is not null) reasons.Add("the price range");
             note = $"All {filteredOut} results were dropped by the minimums asked for: {string.Join(", ", reasons)}.";
         }
-        return new Outcome(list, sponsoredRemoved, filteredOut, baseline is { } b ? Math.Round(b, 2) : null, note);
+        return new Outcome(list, sponsoredRemoved, filteredOut, note);
     }
 
     private static bool Passes(AmazonSearchPlan plan, AmazonSearchItem item)
@@ -198,11 +203,11 @@ internal static partial class AmazonSearch
         return true;
     }
 
-    private static double? Weighted(AmazonSearchItem item, double? baseline)
+    private static double? Weighted(AmazonSearchItem item)
     {
         // Without an exact count there is nothing to weigh the stars by: null, never a guess.
-        if (item.Rating is not { } rating || baseline is not { } c || item.RatingsCount is not { } count) return null;
+        if (item.Rating is not { } rating || item.RatingsCount is not { } count) return null;
         double n = count;
-        return Math.Round(n / (n + WeightedRatingPrior) * rating + WeightedRatingPrior / (n + WeightedRatingPrior) * c, 3);
+        return Math.Round((n * rating + WeightedRatingPrior * WeightedRatingBaseline) / (n + WeightedRatingPrior), 3);
     }
 }
