@@ -222,7 +222,7 @@
         <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
           <maml:name>ExcludeBasicEconomy</maml:name>
           <maml:description>
-            <maml:para>Economy without Basic Economy fares.</maml:para>
+            <maml:para>Leave out Basic Economy fares (such as Delta Main Basic): on by default, so prices are for the lowest fare that is not Basic. Set false (-ExcludeBasicEconomy:$false) to include them.</maml:para>
           </maml:description>
           <dev:type>
             <maml:name>System.Management.Automation.SwitchParameter</maml:name>
@@ -423,7 +423,7 @@
         <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
           <maml:name>ExcludeBasicEconomy</maml:name>
           <maml:description>
-            <maml:para>Economy without Basic Economy fares.</maml:para>
+            <maml:para>Leave out Basic Economy fares (such as Delta Main Basic): on by default, so prices are for the lowest fare that is not Basic. Set false (-ExcludeBasicEconomy:$false) to include them.</maml:para>
           </maml:description>
           <dev:type>
             <maml:name>System.Management.Automation.SwitchParameter</maml:name>
@@ -664,7 +664,7 @@
       <command:parameter required="false" globbing="false" pipelineInput="False" position="named">
         <maml:name>ExcludeBasicEconomy</maml:name>
         <maml:description>
-          <maml:para>Economy without Basic Economy fares.</maml:para>
+          <maml:para>Leave out Basic Economy fares (such as Delta Main Basic): on by default, so prices are for the lowest fare that is not Basic. Set false (-ExcludeBasicEconomy:$false) to include them.</maml:para>
         </maml:description>
         <dev:type>
           <maml:name>System.Management.Automation.SwitchParameter</maml:name>

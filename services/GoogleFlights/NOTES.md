@@ -25,6 +25,11 @@ to its RPC, which needs no token (H5).
   (`... Chrome/... Safari/537.36 (compatible; Multiplex-GoogleFlights/<version>; +<url>)`):
   Google serves its pages only to a browser User-Agent (P5, P9). The project's
   name stays in it.
+- Basic Economy fares (such as Delta Main Basic) are left out by default in
+  the MCP tools and the PowerShell commands (`SearchParameters`), using
+  Google's own "economy excluding Basic" filter (`tfs` field 25). The C#
+  `FlightSearchRequest` keeps Google's own default (included), so recorded
+  requests still compare byte for byte.
 
 **Not available, by design.** What the page loads only through its own
 script: booking options (the booking page carries none, H3), multi-city trips

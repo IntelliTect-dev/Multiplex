@@ -122,8 +122,9 @@ public sealed class FindFlightCommand : GoogleFlightsCmdlet
     [Parameter(HelpMessage = Docs.Cabin)]
     public CabinClass Cabin { get; set; } = CabinClass.Economy;
 
+    /// <summary>On unless turned off with <c>-ExcludeBasicEconomy:$false</c> (owner's decision, 2026-11-22).</summary>
     [Parameter(HelpMessage = Docs.ExcludeBasicEconomy)]
-    public SwitchParameter ExcludeBasicEconomy { get; set; }
+    public SwitchParameter ExcludeBasicEconomy { get; set; } = true;
 
     [Parameter(HelpMessage = Docs.Adults)]
     public int Adults { get; set; } = 1;

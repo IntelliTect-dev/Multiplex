@@ -42,7 +42,11 @@ public class GoogleFlightsToolTests : IDisposable
         _app.Google.AnswerPageWith("direct-http-flow-2026-11-20", 0).AnswerPage("return-leg-2026-11-22");
         var mcp = _app.Mcp();
 
-        var search = await CallAsync(mcp, "search_flights", new { origin = "SEA", destination = "DEN", departure_date = "2026-12-15", return_date = "2026-12-22" });
+        // Basic Economy included, as when H2 was fetched, so the links compare with the recorded one.
+        var search = await CallAsync(mcp, "search_flights", new
+        {
+            origin = "SEA", destination = "DEN", departure_date = "2026-12-15", return_date = "2026-12-22", exclude_basic_economy = false,
+        });
         Assert.Equal(1, search.GetProperty("leg").GetInt32());
         Assert.Equal(2, search.GetProperty("of_legs").GetInt32());
         Assert.Contains("get_return_flights", search.GetProperty("next_step").GetString());
@@ -73,6 +77,22 @@ public class GoogleFlightsToolTests : IDisposable
         Assert.Equal(
             "https://www.google.com/travel/flights/search?tfs=CBwQAhpAEgoyMDI2LTEyLTE1IiAKA1NFQRIKMjAyNi0xMi0xNRoDREVOKgJETDIEMjc1OWoHCAESA1NFQXIHCAESA0RFThoeEgoyMDI2LTEyLTIyagcIARIDREVOcgcIARIDU0VBQAFIAXABggELCP___________wGYAQE&hl=en-US&gl=US&curr=USD",
             sent[1]);
+    }
+
+    [Fact]
+    public async Task A_search_leaves_out_Basic_Economy_unless_asked_for()
+    {
+        // Owner's decision, 2026-11-22: fares such as Delta Main Basic are excluded by default (tfs field 25 = 1).
+        _app.Google.AnswerPage("one-way-2026-11-22").AnswerPage("one-way-2026-11-22");
+        var mcp = _app.Mcp();
+
+        await CallAsync(mcp, "search_flights", new { origin = "SEA", destination = "DEN", departure_date = "2026-12-15" });
+        await CallAsync(mcp, "search_flights", new { origin = "SEA", destination = "DEN", departure_date = "2026-12-15", exclude_basic_economy = false });
+
+        Assert.Equal(
+            ["https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQLIAQE&hl=en-US&gl=US&curr=USD",
+             "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&hl=en-US&gl=US&curr=USD"],
+            _app.Google.SentInnerRequests.ToArray());
     }
 
     [Fact]
