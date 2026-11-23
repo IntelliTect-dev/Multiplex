@@ -440,6 +440,17 @@ public class AmazonHandOverTests
     }
 
     [Fact]
+    public async Task WhenTheServiceIsRefusedWhileFetchingThePicture_ThereIsNoPicture_NotAnError()
+    {
+        var check = await MeetACheck("blocked-robot-check.html");
+        _h.Amazon.On(u => u.Host == "images-na.ssl-images-amazon.com" && u.AbsolutePath == "/robots.txt",
+            _ => FakeAmazon.Fixture("blocked-automated-access.html", 503));
+
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+        Assert.Null(await HandOver.PictureAsync(IdOf(check), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ManyRequestsForThePictureAtOnce_ShareOneFetch()
     {
         var check = await MeetACheck("blocked-robot-check.html");

@@ -137,8 +137,9 @@ what they press or type (`AmazonClient.HandOver.cs`, `AmazonRobotCheckPage.cs`,
    to pass on: "Amazon wants a person to prove they're human ... Open
    `https://<this server>/check/amazon/<id>` ...". Every call after it fails the same way,
    with the same link, and asks Amazon nothing. Answers already cached are still served.
-   Until the check is answered, the only requests to Amazon are the person's own answer
-   and, for the "type the characters" check, one fetch of its picture.
+   Until the check is answered, the only requests to Amazon are the person's own answer,
+   for the "type the characters" check one fetch of its picture, and a refresh of
+   robots.txt if the copy held is over a day old.
 2. The person opens the link. It is a Multiplex page, so it needs Multiplex sign-in. For the
    "continue shopping" check it shows one button. For the "type the characters" check it
    shows Amazon's picture, fetched by the server, and a box to type in.
