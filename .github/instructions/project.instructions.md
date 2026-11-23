@@ -127,10 +127,10 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 - time.now (public, no credentials) for `get_local_time`.
 - amazon.com and its image host (public, signed out, no credentials) for the Amazon service.
-- Google Flights' own web endpoints on `www.google.com` (public, no
-  credentials, direct HTTP) for `/google-flights/mcp`. Google throttles a whole
-  network for hours: keep the client's pacing and refusal cool-down, and run its
-  live tests sparingly (`services/GoogleFlights/NOTES.md`).
+- Google Flights' search pages and airport lookup on `www.google.com` (public,
+  no credentials, direct HTTPS) for `/google-flights/mcp`. Google can refuse a
+  whole network for hours: keep the client's pacing and refusal cool-down, and run
+  its live tests sparingly (`services/GoogleFlights/NOTES.md`).
 - Chromium: a system install via `Browser:ExecutablePath`, else Puppeteer
   downloads one on first use (needs network).
 - No secrets are configured today.
