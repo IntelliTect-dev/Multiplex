@@ -137,6 +137,8 @@ what they press or type (`AmazonClient.HandOver.cs`, `AmazonRobotCheckPage.cs`,
    to pass on: "Amazon wants a person to prove they're human ... Open
    `https://<this server>/check/amazon/<id>` ...". Every call after it fails the same way,
    with the same link, and asks Amazon nothing. Answers already cached are still served.
+   Until the check is answered, the only requests to Amazon are the person's own answer
+   and, for the "type the characters" check, one fetch of its picture.
 2. The person opens the link. It is a Multiplex page, so it needs Multiplex sign-in. For the
    "continue shopping" check it shows one button. For the "type the characters" check it
    shows Amazon's picture, fetched by the server, and a box to type in.
@@ -152,7 +154,10 @@ browser, not this server.
 **Limits:**
 
 - The link works for 10 minutes. An unanswered check becomes a pause.
-- Three answers Amazon does not accept close the check into a pause.
+- Three answers Amazon does not accept close the check into a pause. So does a refused
+  answer whose new check page the service can't read.
+- Every pause ends the session a passed check had opened: afterwards the service is a new
+  visitor again, with no cookies.
 - Another check within 15 minutes of a passed one means the pass did not hold: the service
   pauses and offers no new link.
 - Every address on the check page is checked first. The answer only ever goes to

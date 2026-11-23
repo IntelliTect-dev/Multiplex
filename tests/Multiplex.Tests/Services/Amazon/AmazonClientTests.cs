@@ -630,6 +630,17 @@ public class AmazonClientTests
     }
 
     [Fact]
+    public async Task ARefusalMetWhileFetchingTheImage_IsTheCallsAnswer_NotAWarning()
+    {
+        _h.Amazon.On(u => u.Host == "m.media-amazon.com" && u.AbsolutePath == "/robots.txt",
+            _ => FakeAmazon.Fixture("blocked-automated-access.html", 503));
+
+        var blocked = await Assert.ThrowsAsync<SiteBlockedException>(() => _h.Product());
+
+        Assert.Contains("paused until", blocked.Message);
+    }
+
+    [Fact]
     public async Task AnImageTheImageHostsRobotsTxtDisallows_IsNotFetched()
     {
         _h.Amazon.On(u => u.Host == "m.media-amazon.com" && u.AbsolutePath == "/robots.txt",
