@@ -58,8 +58,8 @@ link for a person to open.
   not to fill. Not seen so far; if it is, stop caching empty page answers.
 - **A page without View more flights is a short list.** Without `tfu` field
   2.2 = 1 a search page carries only its first flights: 14 of 98 for SEA-DEN
-  (H1 against H7), 3 of 16 for a one-airline search. Nothing on the short page
-  says more exist. Never drop the field to save bytes.
+  (H1 against H7), 17 of 21 returns (H9). Nothing on the short page says more
+  exist. Never drop the field to save bytes.
 - **Pages are heavy.** About 2-3 MB a search without the full list, up to
   about 8 MB with it on a busy route (H7), against about 55 KB for the old RPC:
   keep the pacing. The MCP tools list at most 30 flights an answer (owner's
