@@ -48,7 +48,7 @@ public sealed class TripItServiceTests : IDisposable
         var names = tools.Select(t => t.GetProperty("name").GetString()!).ToList();
 
         Assert.DoesNotContain("tripit_raw_get", names);
-        Assert.DoesNotContain("get_local_time", names);
+        Assert.DoesNotContain("amazon_search", names);
         Assert.Equal(29, names.Count); // spec section 6: 14 read, 9 write, 6 write-with-confirm
         foreach (var tool in tools)
         {

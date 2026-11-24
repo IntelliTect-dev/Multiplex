@@ -47,7 +47,7 @@ descriptions (`src/GoogleFlights/GoogleFlightsDocs.cs`).
 
 **From an AI client:** Multiplex serves the tools at `/google-flights/mcp`,
 behind Multiplex's sign-in like every service (#80). Google Flights acts for no
-one's site account, so, like Time, connecting it is a consent page after the
+one's site account, so, like Amazon, connecting it is a consent page after the
 Microsoft sign-in: add `https://<your Multiplex host>/google-flights/mcp` as a
 connector in Claude or ChatGPT, as for TripIt and LinkedIn. On the machine
 Multiplex runs on, it needs no token (for example a command-line client on

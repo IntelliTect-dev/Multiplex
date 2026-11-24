@@ -13,9 +13,8 @@ to, so one deployment serves several separately addressable services, and an
 MCP client connects only to the ones it needs.
 
 A service calls the website's own API: the requests the site's pages send to
-its server. A browser is only for what the API can't do, such as signing in.
-Services that read a site's pages (only Time, today) rent a page from one
-shared headless Chromium (PuppeteerSharp).
+its server. A browser is only for what the API can't do, such as signing in,
+which runs in Chromium (PuppeteerSharp).
 
 The repository also carries the **web-api-discovery** skill, which records a
 site's traffic and turns it into an API reference and, optionally, a .NET
@@ -40,26 +39,23 @@ dotnet run --project src/Multiplex.Web --launch-profile http
 ```
 
 Point an MCP client at a service's address, for example
-`http://localhost:5190/time/mcp`. The first call that needs a browser
-downloads a Puppeteer-managed Chromium unless `Browser:ExecutablePath` is set.
+`http://localhost:5190/amazon/mcp`. The first sign-in to a site downloads a
+Puppeteer-managed Chromium unless `Browser:ExecutablePath` is set.
 
 ## Configuration
 
-Services that read a website's pages share one Chromium. Set these in
-`appsettings.json`, or as environment variables (for example,
-`Browser__Headless=false`).
+Signing in to a site runs in Chromium. Set this in `appsettings.json`, or as an
+environment variable (`Browser__ExecutablePath`).
 
 | Key | Default | Description |
 |---|---|---|
 | `Browser:ExecutablePath` | unset | A system Chrome/Chromium to drive. Unset downloads one managed by Puppeteer on first use |
-| `Browser:Headless` | `true` | `false` shows the browser window |
-| `Browser:StepDelayMs` | `0` | Pause between tool steps, so a headed run can be followed by eye |
 
 ### Signing in to Multiplex
 
 Every page and every service needs sign-in, except `/healthz`, the OAuth
 discovery and protocol endpoints, and requests made on the host itself
-(pages, and services that act for no one, such as Time). People sign in with
+(pages, and services that act for no one, such as Amazon). People sign in with
 Microsoft, personal or work account; only an email on the allowlist, verified
 by Microsoft, gets in. Its first sign-in binds the address to that Microsoft
 account. Claude and ChatGPT still connect through Multiplex's own OAuth

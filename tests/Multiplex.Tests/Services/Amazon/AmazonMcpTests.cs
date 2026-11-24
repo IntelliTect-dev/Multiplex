@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Multiplex.Tests.Services.TripIt;
-using Multiplex.Web.Browser;
 using Multiplex.Web.HtmlSites;
 using Multiplex.Web.Services.Amazon;
 using Multiplex.Web.SignIn;
@@ -45,9 +44,9 @@ public class AmazonMcpTests : IDisposable
     [Fact]
     public async Task NoOtherAddress_ListsTheAmazonTools()
     {
-        var time = new McpTestClient(_factory.CreateClient(), token: null, path: "/time/mcp");
+        var flights = new McpTestClient(_factory.CreateClient(), token: null, path: "/google-flights/mcp");
 
-        var tools = await time.ListToolsAsync();
+        var tools = await flights.ListToolsAsync();
 
         Assert.DoesNotContain(tools, t => t.GetProperty("name").GetString()!.StartsWith("amazon_"));
     }
@@ -190,7 +189,7 @@ public class AmazonMcpTests : IDisposable
     {
         // The owner's rule (#96): no provider uses a browser without approval. This service reads
         // over plain HTTP, so neither its tools nor its client may take a browser.
-        var browserTypes = new[] { typeof(BrowserService), typeof(SiteBrowserManager) };
+        var browserTypes = new[] { typeof(SiteBrowserManager) };
         var parameters = typeof(AmazonTools).GetMethods(BindingFlags.Public | BindingFlags.Static).SelectMany(m => m.GetParameters())
             .Concat(typeof(AmazonClient).GetConstructors().SelectMany(c => c.GetParameters()));
 

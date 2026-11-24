@@ -46,12 +46,12 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     }
 
     [Fact]
-    public async Task ProtectedResourceMetadata_DescribesTime_NowThatItNeedsSignIn()
+    public async Task ProtectedResourceMetadata_DescribesAServiceThatActsForNoOne()
     {
-        var json = await _driver.Http.GetFromJsonAsync<JsonElement>("/.well-known/oauth-protected-resource/time/mcp");
+        var json = await _driver.Http.GetFromJsonAsync<JsonElement>("/.well-known/oauth-protected-resource/amazon/mcp");
 
-        Assert.Equal(AuthTestApp.BaseUrl + "/time/mcp", json.GetProperty("resource").GetString());
-        Assert.Equal("Time", json.GetProperty("resource_name").GetString());
+        Assert.Equal(AuthTestApp.BaseUrl + "/amazon/mcp", json.GetProperty("resource").GetString());
+        Assert.Equal("Amazon", json.GetProperty("resource_name").GetString());
     }
 
     [Theory]
@@ -72,7 +72,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         Assert.Equal(["none"], Strings(json, "token_endpoint_auth_methods_supported"));
         Assert.True(json.GetProperty("client_id_metadata_document_supported").GetBoolean());
         Assert.True(json.GetProperty("authorization_response_iss_parameter_supported").GetBoolean());
-        Assert.Equal(["tripit", "linkedin", "time", "amazon", "google-flights", "other"], Strings(json, "scopes_supported"));
+        Assert.Equal(["tripit", "linkedin", "amazon", "google-flights", "other"], Strings(json, "scopes_supported"));
     }
 
     // ---- Happy path ----
@@ -208,9 +208,9 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
     }
 
     [Fact]
-    public async Task TimeMcp_FromThisPc_WorksWithoutToken()
+    public async Task AmazonMcp_FromThisPc_WorksWithoutToken()
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/time/mcp")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/amazon/mcp")
         {
             Content = new StringContent("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""", Encoding.UTF8, "application/json"),
         };
@@ -220,7 +220,7 @@ public class OAuthFlowTests(AuthTestApp app) : IClassFixture<AuthTestApp>
         var response = await _driver.Http.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("\"get_local_time\"", await response.Content.ReadAsStringAsync());
+        Assert.Contains("\"amazon_search\"", await response.Content.ReadAsStringAsync());
     }
 
     // ---- Authorization endpoint ----

@@ -21,7 +21,6 @@ public sealed class ServiceIdentityTests(AuthTestApp app) : IClassFixture<AuthTe
         new(McpEndpointRouting.EndpointPaths.Select(path => path.Trim('/')[..^"/mcp".Length]));
 
     [Theory]
-    [InlineData("time", "Time", "https://time.now/")]
     [InlineData("tripit", "TripIt", "https://www.tripit.com/")]
     [InlineData("linkedin", "LinkedIn", "https://www.linkedin.com/")]
     [InlineData("amazon", "Amazon", "https://www.amazon.com/")]

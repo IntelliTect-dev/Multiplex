@@ -22,18 +22,6 @@ public sealed class ChromiumFactAttribute : FactAttribute
     }
 }
 
-/// <summary>A fact that hits the real time.now site; opt in with MULTIPLEX_LIVE_TESTS=1 (also needs Chromium).</summary>
-public sealed class LiveFactAttribute : FactAttribute
-{
-    public LiveFactAttribute() => Skip = LiveSkipReason.Get();
-}
-
-/// <summary>A theory that hits the real time.now site; opt in with MULTIPLEX_LIVE_TESTS=1 (also needs Chromium).</summary>
-public sealed class LiveTheoryAttribute : TheoryAttribute
-{
-    public LiveTheoryAttribute() => Skip = LiveSkipReason.Get();
-}
-
 /// <summary>
 /// A fact that hits a real website over plain HTTP, with no browser; opt in with MULTIPLEX_LIVE_TESTS=1.
 /// </summary>
@@ -44,14 +32,4 @@ public sealed class LiveHttpFactAttribute : FactAttribute
         if (Environment.GetEnvironmentVariable("MULTIPLEX_LIVE_TESTS") != "1")
             Skip = "Live test. Set MULTIPLEX_LIVE_TESTS=1 to run against the real website.";
     }
-}
-
-internal static class LiveSkipReason
-{
-    public static string? Get() =>
-        Environment.GetEnvironmentVariable("MULTIPLEX_LIVE_TESTS") != "1"
-            ? "Live test. Set MULTIPLEX_LIVE_TESTS=1 to run against time.now."
-            : ChromiumLocator.Path is null
-                ? "No Chromium found. Set MULTIPLEX_CHROMIUM to its path."
-                : null;
 }

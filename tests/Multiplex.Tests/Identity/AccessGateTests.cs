@@ -123,7 +123,7 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     [Theory]
     [InlineData("/oauth/authorize?client_id=x")]
     [InlineData("/connect/tripit?p=x")]
-    [InlineData("/connect/time/allow?p=x")]
+    [InlineData("/connect/amazon/allow?p=x")]
     public async Task Connecting_a_service_needs_a_person_even_on_the_host(string path)
     {
         var response = await _app.Client().GetAsync(path);
@@ -152,7 +152,7 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     [InlineData("/.well-known/openid-configuration")]
     [InlineData("/.well-known/oauth-protected-resource")]
     [InlineData("/.well-known/oauth-protected-resource/tripit/mcp")]
-    [InlineData("/.well-known/oauth-protected-resource/time/mcp")]
+    [InlineData("/.well-known/oauth-protected-resource/amazon/mcp")]
     public async Task Health_and_discovery_stay_open_to_the_internet(string path)
     {
         using var request = Request(HttpMethod.Get, path, "X-Forwarded-For", "203.0.113.7", "dakar.tailaca68e.ts.net");
@@ -228,19 +228,19 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     [MemberData(nameof(FunnelShapes))]
     public async Task A_service_that_acts_for_no_one_still_needs_a_token_through_Funnel(string header, string? value, string? host)
     {
-        using var request = Initialize("/time/mcp", header, value, host);
+        using var request = Initialize("/amazon/mcp", header, value, host);
 
         var response = await _app.Client().SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Contains("resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/time/mcp\"",
+        Assert.Contains("resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/amazon/mcp\"",
             response.Headers.WwwAuthenticate.ToString());
     }
 
     [Fact]
     public async Task A_service_that_acts_for_no_one_needs_no_token_on_the_host()
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
 
         var response = await _app.Client().SendAsync(request);
 
@@ -263,7 +263,7 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     public async Task A_web_sign_in_never_authorizes_a_service_call()
     {
         var client = await _app.SignedInClientAsync();
-        using var request = Initialize("/time/mcp", "X-Forwarded-For", "203.0.113.7");
+        using var request = Initialize("/amazon/mcp", "X-Forwarded-For", "203.0.113.7");
 
         var response = await client.SendAsync(request);
 
@@ -283,13 +283,14 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
     }
 
     [Fact]
-    public void Every_service_requires_sign_in_and_only_time_acts_for_no_one()
+    public void Every_service_requires_sign_in_and_only_amazon_and_google_flights_act_for_no_one()
     {
         var endpoints = _app.Services.GetRequiredService<AuthenticatedEndpoints>();
 
         Assert.True(endpoints.FindBySlug("tripit")!.NeedsSiteAccount);
         Assert.True(endpoints.FindBySlug("linkedin")!.NeedsSiteAccount);
-        Assert.False(endpoints.FindBySlug("time")!.NeedsSiteAccount);
+        Assert.False(endpoints.FindBySlug("amazon")!.NeedsSiteAccount);
+        Assert.False(endpoints.FindBySlug("google-flights")!.NeedsSiteAccount);
         Multiplex.Web.Mcp.McpEndpointRouting.EnsureEveryEndpointRequiresSignIn(endpoints);
     }
 
@@ -306,7 +307,7 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
         var endpoints = services.BuildServiceProvider().GetRequiredService<AuthenticatedEndpoints>();
 
         var refused = Assert.Throws<InvalidOperationException>(() => Multiplex.Web.Mcp.McpEndpointRouting.EnsureEveryEndpointRequiresSignIn(endpoints));
-        Assert.Contains("time", refused.Message);
+        Assert.Contains("amazon", refused.Message);
         Assert.Contains("linkedin", refused.Message);
     }
 }
