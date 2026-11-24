@@ -39,7 +39,6 @@ Each service lives in its own folder, with its code, its tests and a README. The
 
 - **Its own address.** Each service is served at `/{name}/mcp` and lists only its own tools. A tool that isn't assigned to a service isn't served at all, and there's no catch-all `/mcp`.
 - **A stateless transport.** Streamable HTTP with no MCP session ID, so the host can run behind a load balancer without sticky sessions.
-- **A shared browser for reading pages.** Services that read a site's pages share one Chromium, launched on the first call. Each call gets its own tab.
 - **A health check** at `/healthz`.
 - **Its website's name and icon.** Each service tells a client its title, the website it wraps and that website's own icon, in the `serverInfo` of its `initialize` answer. A client that reads it shows the site's icon instead of a placeholder. The icons are served from `/icons/<name>.png`, open without sign-in, each a 256x256 PNG of at most 10 KB. ChatGPT did not pick up the declared icon for an app that already existed; it shows the icon uploaded when an app is added (PNG, at most 10 KB), so that same file is uploaded there. ChatGPT offers no way to change an existing app's icon (openai/openai-apps-sdk-examples#232), so an app added without one keeps its placeholder until it is deleted and added again. Claude picks a connector's icon from the host's favicon instead, so there every service on one host looks the same.
 
