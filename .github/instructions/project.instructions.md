@@ -116,10 +116,13 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
   website and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which a
   client that reads it shows instead of a placeholder; `ServiceIdentityTests`
   fails for a service without them, or with an icon ChatGPT could not take.
-  **ChatGPT ignores `serverInfo.icons`:** a custom app shows only the icon
+  **ChatGPT does not take the icon from `serverInfo`** for an existing app
+  (its Refresh tools kept the placeholder, 2026-11-24). It shows the icon
   uploaded in its "Add custom MCP server" form (PNG, at most 10 KB, best at
-  256x256), and an existing app's icon cannot be changed. When adding a
-  service to ChatGPT, upload `/icons/<slug>.png` there.
+  256x256), so upload `/icons/<slug>.png` there when adding a service. An
+  existing app's icon has no edit control (openai/openai-apps-sdk-examples#232):
+  to change it, delete the app and add it again, which means connecting it
+  again.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
