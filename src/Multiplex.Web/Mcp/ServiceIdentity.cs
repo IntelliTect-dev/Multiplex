@@ -7,8 +7,8 @@ namespace Multiplex.Web.Mcp;
 
 /// <summary>
 /// What a service tells a client about itself (#135), in the <c>serverInfo</c> of its <c>initialize</c>
-/// answer (MCP 2025-11-25): its name, the website it wraps and that website's icon. A client such as ChatGPT
-/// shows these; without them it shows a placeholder for every service.
+/// answer (MCP 2025-11-25): its name, the website it wraps and that website's icon. A client that reads them
+/// shows the site's icon; without them, ChatGPT showed a placeholder for every service.
 /// </summary>
 /// <remarks>
 /// The name and website come from the service's registration

@@ -113,9 +113,9 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
   draw one or take another site's. Save it as
   `src/Multiplex.Web/wwwroot/icons/<slug>.png` and write its source URL in the
   service's README under **Icon**. The service then names its title, website
-  and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which ChatGPT shows
-  instead of a placeholder; `ServiceIdentityTests` fails for a service without
-  them.
+  and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which a client that
+  reads it shows instead of a placeholder; `ServiceIdentityTests` fails for a
+  service without them.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
