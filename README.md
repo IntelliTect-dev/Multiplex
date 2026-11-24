@@ -172,10 +172,10 @@ dotnet test
 | Variable | Effect |
 |---|---|
 | `MULTIPLEX_CHROMIUM` | Path to Chromium for the browser-driven tests (default `/usr/bin/chromium`). Without one they are skipped |
-| `MULTIPLEX_LIVE_TESTS=1` | Also run the tests that call the real websites end to end (needs Chromium too). These are the tests that notice when a site changes its API or its pages |
+| `MULTIPLEX_LIVE_TESTS=1` | Also run the tests that call the real websites end to end, over plain HTTP. These are the tests that notice when a site changes its API or its pages |
 
 The default Chromium path is Linux-only, so on Windows a bare `dotnet test`
-skips the browser tests, including the page-parsing ones. Point it at Chrome:
+skips the browser tests (site sign-in). Point it at Chrome:
 
 ```powershell
 $env:MULTIPLEX_CHROMIUM = 'C:\Program Files\Google\Chrome\Application\chrome.exe'

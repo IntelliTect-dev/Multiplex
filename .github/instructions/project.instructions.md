@@ -66,8 +66,8 @@ dotnet format
 - Browser-driven tests (`[ChromiumFact]`) need Chromium: set
   `MULTIPLEX_CHROMIUM` to its path (default `/usr/bin/chromium`). Without it they
   are skipped.
-- Live tests (`[LiveFact]`, `[LiveTheory]`) hit the real site and run only with
-  `MULTIPLEX_LIVE_TESTS=1` (and Chromium).
+- Live tests (`[LiveHttpFact]`, or a service's own such as `[GoogleFlightsLiveFact]`)
+  hit the real site over plain HTTP and run only with `MULTIPLEX_LIVE_TESTS=1`.
 - `web-api-discovery/` suites run from that folder; see its README.
 
 ## Run / Debug
@@ -76,11 +76,7 @@ dotnet format
 dotnet run --project src/Multiplex.Web --launch-profile http
 ```
 
-Serves on `http://localhost:5190`; MCP endpoints at `/<slug>/mcp`. To watch a
-tool drive the browser, set `Browser:Headless` to `false` and
-`Browser:StepDelayMs` to e.g. `500` -- from a shell, as environment variables
-(`Browser__Headless=false`, `Browser__StepDelayMs=500`) or in
-`appsettings.Development.json`.
+Serves on `http://localhost:5190`; MCP endpoints at `/<slug>/mcp`.
 
 Browser-driven tests need `MULTIPLEX_CHROMIUM` on Windows (the default path is
 Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
@@ -154,4 +150,4 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 - Do not add sticky-session or session-scoped state to the MCP server.
 - Do not make default test runs depend on a live website; mark them
-  `[LiveFact]`/`[LiveTheory]`.
+  `[LiveHttpFact]` or the service's own live attribute.
