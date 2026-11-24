@@ -14,7 +14,9 @@ network, from a real browser too (`docs/protocol.md` section 2, Q1-Q4).
 first answer in its HTML (data block `ds:1`, the `GetShoppingResults`
 layout). The client fetches search pages over plain HTTPS and reads that
 block: a search's first leg (H1), and a round trip's returns from the search
-page with the outbound pinned in its link (H2). The airport lookup still goes
+page with the outbound pinned in its link (H2). Every search page is fetched
+with **View more flights** set (`tfu` field 2.2, H7-H9, #134), so the block
+carries every flight, not only the first ones. The airport lookup still goes
 to its RPC, which needs no token (H5).
 
 **Owner's decisions, 2026-11-22.**
@@ -54,11 +56,23 @@ link for a person to open.
   flights (and is not multi-city) is reported as "no flights" and cached for 12
   minutes: nothing on the page tells an empty route from a page Google chose
   not to fill. Not seen so far; if it is, stop caching empty page answers.
-- **Pages are heavy.** About 2-3 MB a search against about 55 KB for the old
-  RPC: keep the pacing.
+- **A page without View more flights is a short list.** Without `tfu` field
+  2.2 = 1 a search page carries only its first flights: 14 of 98 for SEA-DEN
+  (H1 against H7), 3 of 16 for a one-airline search. Nothing on the short page
+  says more exist. Never drop the field to save bytes.
+- **Pages are heavy.** About 2-3 MB a search without the full list, up to
+  about 8 MB with it on a busy route (H7), against about 55 KB for the old RPC:
+  keep the pacing. The MCP tools list at most 30 flights an answer (owner's
+  decision, #134: 98 flights are about 30k tokens, past an AI's limit for one
+  tool answer) and say how many there are; the PowerShell commands return all.
 - **Test fixtures are the pages' own data blocks** (`references/pages/`),
   verbatim except the page's one-time script nonce. The rest of a page is not
   kept: it is megabytes of scripts, and nothing the client reads.
+- **Fixtures are fetched on neutral routes, never the owner's own trips.** The
+  repository is public. Before committing a page fixture, search it for the
+  operator's home area: a city there is route data only if the page's own
+  airport lists explain it (a search's connecting airports carry places no
+  shown flight uses).
 
 ## Built from scratch, against Google's own endpoints
 

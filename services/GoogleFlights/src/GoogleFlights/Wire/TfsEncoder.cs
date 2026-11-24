@@ -37,18 +37,19 @@ internal static class TfsEncoder
         return tfs.ToBase64Url();
     }
 
-    /// <summary>The <c>tfu</c> value for a sort order other than Google's default.</summary>
-    public static string? SortParameter(FlightSort sort) =>
-        sort == FlightSort.Best
-            ? null
-            : new ProtoWriter().Message(2, new ProtoWriter().Varint(1, (int)sort).Varint(2, 0).Varint(3, 0)).ToBase64Url();
+    /// <summary>
+    /// The <c>tfu</c> value of a search page: field 2.1 is the sort, and field 2.2 = 1 is "View more flights", without
+    /// which the page carries only its first flights (14 of 98 in H1 against H7).
+    /// </summary>
+    public static string ListParameter(FlightSort sort) =>
+        new ProtoWriter().Message(2, new ProtoWriter().Varint(1, (int)sort).Varint(2, 1).Varint(3, 0)).ToBase64Url();
 
     /// <summary>A Google Flights page URL for a request: the search page, or the booking page once every leg is chosen.</summary>
     public static Uri PageUrl(FlightSearchRequest request, JsonArray filter, bool booking)
     {
         var query = $"tfs={Encode(filter)}";
-        if (!booking && SortParameter(request.Sort) is { } tfu)
-            query += $"&tfu={tfu}";
+        if (!booking)
+            query += $"&tfu={ListParameter(request.Sort)}";
         query += string.Create(CultureInfo.InvariantCulture, $"&hl={RequestEncoder.Language}&gl={request.Region}&curr={request.Currency}");
         return new Uri($"https://www.google.com/travel/flights/{(booking ? "booking" : "search")}?{query}");
     }
