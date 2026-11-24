@@ -106,6 +106,51 @@ public class GoogleFlightsToolTests : IDisposable
     }
 
     [Fact]
+    public async Task In_Googles_order_the_flights_kept_are_its_best_then_the_fewest_stops_cheapest_and_earliest()
+    {
+        // Owner's decision, 2026-11-24 (#134, N3): after its best flights Google lists the rest by price alone, so the
+        // first 30 of SEA-DEN held 18 one-stop $168 flights of 5-10 hours and left out the $184 United nonstop (58th).
+        _app.Google.AnswerPage("one-way-full-2026-11-24");
+
+        var search = await CallAsync(_app.Mcp(), "search_flights", new
+        {
+            origin = "SEA", destination = "DEN", departure_date = "2026-12-15", exclude_basic_economy = false,
+        });
+
+        var flights = search.GetProperty("flights").EnumerateArray().ToArray();
+        Assert.Equal(30, flights.Length);
+        Assert.All(flights.Take(4), f => Assert.True(f.GetProperty("best").GetBoolean()));
+        var rest = flights.Skip(4).Select(f => (
+            Stops: f.GetProperty("stops").GetInt32(),
+            Price: f.GetProperty("price").GetDecimal(),
+            Departs: f.GetProperty("departs").GetString()!)).ToArray();
+        // Every nonstop (the 9 not among the best, the United one included), then the cheapest one-stops; no two-stop.
+        Assert.Equal(9, rest.Count(f => f.Stops == 0));
+        Assert.Contains(flights, f => f.GetProperty("segments")[0].GetProperty("flight").GetString() == "UA1411");
+        Assert.Equal(rest.OrderBy(f => f.Stops).ThenBy(f => f.Price).ThenBy(f => f.Departs, StringComparer.Ordinal), rest);
+        Assert.Contains("fewest stops", search.GetProperty("more_flights").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_sort_asked_for_is_kept_in_the_order_the_page_gives()
+    {
+        // The stops rule is only for Google's own order: for a sort asked for, the page's order stands. H7's page stands
+        // in for a sorted one here because on it the $184 United nonstop comes 58th, behind cheaper one-stops, where
+        // the stops rule would move it up. (On H8, fetched later, that flight was $158 and already near the top.)
+        _app.Google.AnswerPage("one-way-full-2026-11-24");
+
+        var search = await CallAsync(_app.Mcp(), "search_flights", new
+        {
+            origin = "SEA", destination = "DEN", departure_date = "2026-12-15", exclude_basic_economy = false, sort = "price",
+        });
+
+        var flights = search.GetProperty("flights").EnumerateArray().ToArray();
+        Assert.Equal(30, flights.Length);
+        Assert.DoesNotContain(flights, f => f.GetProperty("segments")[0].GetProperty("flight").GetString() == "UA1411");
+        Assert.Contains("in the order asked for", search.GetProperty("more_flights").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_search_leaves_out_Basic_Economy_unless_asked_for()
     {
         // Owner's decision, 2026-11-22: fares such as Delta Main Basic are excluded by default (tfs field 25 = 1).
