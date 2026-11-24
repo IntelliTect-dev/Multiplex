@@ -418,6 +418,18 @@ worth keeping, which is most of the time.
 - Record observed OAuth IdP redirect hosts (`accounts.google.com`,
   `login.microsoftonline.com`, `facebook.com/v*/dialog/oauth`) for the
   auth-style heuristic.
+- **Find the site's icon.** A client shows it beside the MCP server built
+  from this site (Phase 6); without one, ChatGPT and other clients show a
+  placeholder, and every server looks the same. Take what the site itself
+  declares, in this order: the home page's `<link rel="icon">` and
+  `<link rel="apple-touch-icon">` tags (read their `sizes`), then the web app
+  manifest (`<link rel="manifest">`, its `icons` list), then `/favicon.ico`.
+  Pick the largest **square PNG** of at least 48x48 (128x128 or more is
+  better). An SVG-only icon is rasterized to a PNG (a headless browser
+  screenshot of it at 256x256 on a transparent background does it), and an
+  `.ico` gives up its largest frame. Never draw one, and never take another
+  site's. Record the URL it came from beside the capture, so it can be
+  fetched again when the site changes its icon.
 
 ### Phase 1.5 -- Mobile App Discovery (required prompt)
 
@@ -2777,6 +2789,32 @@ over stdio (`McpProgram.cs`), on the same SDK version line as the Multiplex host
 generated one differs (and skips, saying why, where no host project is beside
 the skill).
 
+- **The server says what site it wraps.** Its `serverInfo` (MCP 2025-11-25)
+  carries `title` (the site's name), `websiteUrl` (the site's address) and
+  `icons` (the icon found in Phase 1, with `mimeType` `image/png` and `sizes`
+  its real `WxH`). That is what a client shows for the server. Over stdio
+  there is no address to serve a file from, so the icon goes in as a `data:`
+  URI (the PNG, base64). A server on HTTP serves the PNG from its own origin
+  instead, because clients are told to trust icons from the server's origin
+  and to fetch them without credentials, so the path it is served at must be
+  open without sign-in. The generator does not emit this yet. Add it to
+  `McpProgram.cs`, which a re-run does not rewrite, and keep the PNG beside it:
+
+  ```csharp
+  builder.Services
+      .AddMcpServer(options => options.ServerInfo = new()
+      {
+          Name = "<name>",                      // programmatic, e.g. "contoso"
+          Title = "<Site name>",                // what a person sees
+          Version = "1.0.0",
+          WebsiteUrl = "https://www.<site>/",
+          Icons = [new() { Source = "data:image/png;base64,<...>", MimeType = "image/png", Sizes = ["192x192"] }],
+      })
+  ```
+
+  A server hosted beside others on one HTTP host (such as Multiplex) declares
+  the same three fields per service, with the icon at a path of its own on
+  that host.
 - **One tool per client method that is not left out**, in
   `<Name>Tools.Generated.cs`, GraphQL included (one `graphql` tool). The name
   on the wire is set explicitly -- the client method without `Async`, in
@@ -3220,6 +3258,8 @@ Per-endpoint recipe section in the project README:
   this client**.
 - NuGet packaging notes (Description, Authors, RepositoryUrl,
   PackageLicenseExpression, version-from-git already filled in).
+- Where the server's icon came from (the URL recorded in Phase 1), so it can
+  be fetched again.
 
 ### Phase 11 -- Initialize git repository
 
@@ -3283,6 +3323,9 @@ The skill's final user-visible output is:
   anywhere except DPAPI / user-secrets.
 - **Do not** generate per-endpoint POST/PUT/DELETE wrappers without the
   `[Experimental]` attribute on first scaffold.
+- **Do not** ship an MCP server without its site's name, address and icon in
+  `serverInfo`, and never with a made-up icon or another site's: the client
+  shows a placeholder, or the wrong brand, for it.
 - **Do not** get past a block. No user-agent or fingerprint spoofing, no
   `navigator.webdriver` or stealth patches, no CAPTCHA solving, no retrying a
   403 or a challenge until it clears -- in the capture tooling or the agent's
