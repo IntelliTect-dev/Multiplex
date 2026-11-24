@@ -2810,6 +2810,8 @@ the skill).
           WebsiteUrl = "https://www.<site>/",
           Icons = [new() { Source = "data:image/png;base64,<...>", MimeType = "image/png", Sizes = ["192x192"] }],
       })
+      .WithStdioServerTransport()               // the rest of the chain as generated
+      .WithToolsFromAssembly();
   ```
 
   A server hosted beside others on one HTTP host (such as Multiplex) declares

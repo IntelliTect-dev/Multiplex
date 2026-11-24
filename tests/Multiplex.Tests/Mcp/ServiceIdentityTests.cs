@@ -83,6 +83,20 @@ public sealed class ServiceIdentityTests(AuthTestApp app) : IClassFixture<AuthTe
         Assert.Equal("websiteUrl", error.ParamName);
     }
 
+    /// <summary>
+    /// <c>/icons</c> is open to anyone, so a service registered as <c>icons</c> would be served at
+    /// <c>/icons/mcp</c> without a token. Registration refuses it, which also fails startup for such an endpoint.
+    /// </summary>
+    [Fact]
+    public void The_icons_folder_cannot_be_a_service()
+    {
+        var auth = new ServiceCollection().AddMultiplexAuth(new ConfigurationBuilder().Build());
+
+        var error = Assert.Throws<ArgumentException>(() => auth.RequireAuthFor("icons", "Icons"));
+
+        Assert.Equal("slug", error.ParamName);
+    }
+
     private async Task<JsonElement> ServerInfoAsync(string slug)
     {
         var endpoint = app.Services.GetRequiredService<AuthenticatedEndpoints>().FindBySlug(slug)!;

@@ -26,6 +26,7 @@ public sealed class ServiceIdentity(AuthenticatedEndpoints endpoints, AuthIssuer
     private static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
     private static readonly string Version = typeof(ServiceIdentity).Assembly.GetName().Version?.ToString() ?? "1.0.0";
 
+    // One instance per service, handed to every request's options: read it, never change it.
     private readonly ConcurrentDictionary<string, Implementation> _bySlug = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The <c>serverInfo</c> for the service at <c>/{slug}/mcp</c>, or null for a slug not registered.</summary>
