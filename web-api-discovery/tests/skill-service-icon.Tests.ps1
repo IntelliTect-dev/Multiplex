@@ -33,9 +33,11 @@ Describe 'web-api-discovery SKILL.md: the site''s icon (issue #135)' {
         $discover | Should -Match '10 KB'
     }
 
-    It 'says ChatGPT ignores serverInfo.icons and takes the icon uploaded when the app is created (issue #138)' {
-        $script:SkillText | Should -Match '(?is)ChatGPT ignores `serverInfo\.icons`'
-        $script:SkillText | Should -Match '(?is)Add custom MCP server.{0,200}(upload|Icon)'
+    It 'says ChatGPT takes an app''s icon from its Add form, not from serverInfo, and how to change one (issue #138)' {
+        $script:SkillText | Should -Match 'ChatGPT does not take the icon from `serverInfo`'
+        $script:SkillText | Should -Match '(?s)"Add custom MCP server" form uploads an icon'
+        $script:SkillText | Should -Match '(?s)deleting the app and adding it again'
+        $script:SkillText | Should -Match '(?s)README\s+tells the person to upload the same PNG'
     }
 
     It 'Phase 1 rasterizes an SVG-only icon and records where the icon came from' {
