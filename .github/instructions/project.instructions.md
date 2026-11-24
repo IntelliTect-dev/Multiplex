@@ -25,6 +25,9 @@ with the catalog of services, is `spec/product.md`.
 - `Mcp/McpEndpointAttribute.cs`, `Mcp/McpEndpointRouting.cs` -- every distinct
   `[McpEndpoint("<slug>")]` slug is mapped to `/<slug>/mcp`, and each request's
   tool list is scoped to the tools of the endpoint it arrived on.
+  `Mcp/ServiceIdentity.cs` gives each endpoint its own `serverInfo`: title,
+  website and icon (`wwwroot/icons/<slug>.png`, served at `/icons/<slug>.png`
+  and open without sign-in).
 - `Services/<Name>/` -- one folder per service: its tool class, its README, and
   for a service that reads pages, a `*Page` class holding that site's DOM
   knowledge (URLs, selectors, parsing), e.g. `Services/Time/TimeNowPage.cs`.
@@ -98,8 +101,21 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
   shared pieces are in `src/Multiplex.Web/HtmlSites/`; `Services/Amazon/` is the example.
 - **New service = new folder.** A static class with `[McpServerToolType]` and
   `[McpEndpoint("<slug>")]` in `src/Multiplex.Web/Services/<Name>/`, with a
-  README there. No other registration. A tool class without `[McpEndpoint]` is
-  not served. Add one row for it to the catalog in `spec/product.md`.
+  README there. A tool class without `[McpEndpoint]` is not served. Register
+  the slug in `Program.cs` with
+  `RequireAuthFor("<slug>", "<Display name>", websiteUrl: "https://<site>/")`;
+  startup fails for an endpoint that is not registered. Add one row for it to
+  the catalog in `spec/product.md`.
+- **Every service carries its website's icon** (#135). Find it as Phase 1 of
+  the `web-api-discovery` skill says: what the site itself declares
+  (`<link rel="icon">`, `apple-touch-icon`, the web app manifest), the largest
+  square PNG of at least 48x48, an SVG-only icon rasterized to a PNG. Never
+  draw one or take another site's. Save it as
+  `src/Multiplex.Web/wwwroot/icons/<slug>.png` and write its source URL in the
+  service's README under **Icon**. The service then names its title, website
+  and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which ChatGPT shows
+  instead of a placeholder; `ServiceIdentityTests` fails for a service without
+  them.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
