@@ -212,8 +212,9 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
         });
 
     /// <summary>
-    /// The most flights one answer lists (owner's decision, #134). Search pages carry every flight, and 98 flights
-    /// are about 30k tokens, past an AI's limit for one tool answer; 30 are about 9k.
+    /// The most flights one answer lists (owner's decision, #134). Search pages carry every flight. Measured on live
+    /// answers, a flight is about 0.8-1.1 KB of JSON, so SEA-DEN's 98 are about 105 KB (roughly 30k tokens), past
+    /// an AI's limit for one tool answer; 30 are about 32 KB.
     /// </summary>
     private const int MostFlightsListed = 30;
 
