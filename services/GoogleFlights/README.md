@@ -80,8 +80,9 @@ var returns = await flights.GetReturnFlightsAsync(outbound.BestFlights[0].Select
   and has lasted hours (#101). The client paces itself (4 requests back to
   back, then one per 20 seconds), caches answers for 12 minutes, never retries
   a refusal, and after one stops sending anything for 15 minutes (doubling
-  with each refusal in a row, up to 6 hours). A search page is about 2-3 MB.
-  See `NOTES.md`.
+  with each refusal in a row, up to 6 hours). A search page is about 2-8 MB:
+  the client asks it for every flight, not only the first ones (#134). See
+  `NOTES.md`.
 - **Identity.** Google serves its search pages only to browser User-Agents,
   so the client sends Chrome's User-Agent form followed by its own name and
   link: `... Chrome/... Safari/537.36 (compatible;

@@ -41,18 +41,25 @@ generated from it. Edit the JSON, then run `render-har-catalogue.js --dir .`.
 ## Search page data (`pages/`)
 
 Since 2026-11-22 the client reads flights from Google Flights' search pages
-(`../docs/protocol.md` section 2). A page is 2-3 MB of scripts; what the
+(`../docs/protocol.md` section 2). A page is 2-8 MB of scripts; what the
 client reads is one element, the data block `ds:1`. Each file here is that
-`<script>` element of a page the client fetched live, **verbatim except the
-page's one-time script nonce** (`nonce="redacted"`). It holds route data
-(airports, airlines, flights, prices) and Google's opaque search and
-selection tokens; nothing personal.
+`<script>` element of a page fetched live with the client's User-Agent,
+**verbatim except the page's one-time script nonce** (`nonce="redacted"`). It
+holds route data (airports, airlines, flights, prices, and the connecting
+airports Google offers as filters) and Google's opaque search and selection
+tokens; nothing personal. Fixtures are fetched on neutral routes, never the
+owner's own trips (`../NOTES.md`).
 
 | File | Evidence | What it is |
 |---|---|---|
-| `pages/google-flights-search-page-data-one-way-2026-11-22.html` | H1 | The one-way SEA-DEN 2026-12-15 search page: 4 best and 10 other flights |
-| `pages/google-flights-search-page-data-one-way-by-price-2026-11-22.html` | H6 | The same search sorted by price (`tfu`): no best flights, all 14 in price order |
-| `pages/google-flights-search-page-data-return-leg-2026-11-22.html` | H2 | The round-trip SEA-DEN 2026-12-15/22 search page with Delta DL2759 pinned on the outbound: 3 best and 14 other returns |
+| `pages/google-flights-search-page-data-one-way-2026-11-22.html` | H1 | The one-way SEA-DEN 2026-12-15 search page without the full list: 4 best and 10 other flights |
+| `pages/google-flights-search-page-data-return-leg-2026-11-22.html` | H2 | The round-trip SEA-DEN 2026-12-15/22 search page with Delta DL2759 pinned on the outbound, without the full list: 3 best and 14 other returns |
+| `pages/google-flights-search-page-data-one-way-full-2026-11-24.html` | H7 | H1's page with the full list (`tfu` field 2.2): 4 best and 94 other flights |
+| `pages/google-flights-search-page-data-one-way-full-by-price-2026-11-24.html` | H8 | The same sorted by price: no best flights, all 98 in price order |
+| `pages/google-flights-search-page-data-return-leg-full-2026-11-24.html` | H9 | H2's page with the full list: 4 best and 17 other returns |
+
+H6's fixture (H1 sorted by price, without the full list) was replaced by H8's
+in #134.
 
 The whole pages, and the booking and multi-city pages that carry no flight
 data (H3, H4), stay in the gitignored capture store.

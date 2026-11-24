@@ -41,7 +41,10 @@ relied on.
 | **H3** | `2026-11-22-124105-probe-booking` | The same, the booking page with DL2759 out and DL1731 back pinned: HTTP 200, 1.6 MB, data blocks `ds:0`-`ds:3` only, none with sellers, fares or prices. The page loads them through its own script (`GetBookingResults`). Not committed. |
 | **H4** | `2026-11-22-124703-probe-multicity` | The same, a multi-city search page (SEA-DEN 2026-12-15, DEN-LAX 2026-12-20): HTTP 200, `ds:1` present but with no flights at indices 2 and 3. The page loads them through its own script. Not committed. |
 | **H5** | `2026-11-22-124404-probe-autocomplete` | The branch's client's airport lookup (batchexecute `H028ib`, "Denv"), Chrome-form User-Agent: answered, 5 places, Denver first. Not committed. |
-| **H6** | `2026-11-22-132228-probe-sort` | The same one-way search page as H1 with `tfu=EgYIAhAAGAA` (sort by price): HTTP 200, `ds:1` carrying no best flights and all 14 others in price order (ties by departure), the one-stop option last. The server-rendered page honours the sort. Fixture `pages/google-flights-search-page-data-one-way-by-price-2026-11-22.html`. |
+| **H6** | `2026-11-22-132228-probe-sort` | The same one-way search page as H1 with `tfu=EgYIAhAAGAA` (sort by price): HTTP 200, `ds:1` carrying no best flights and 14 others in price order (ties by departure), the one-stop option last. The server-rendered page honours the sort. Its fixture was replaced by H8's in #134. |
+| **H7** | `curl`, 2026-11-24 06:08 UTC (not kept beyond the fixture) | H1's one-way search page fetched twice, 15 s apart, with the client's User-Agent: without `tfu`, HTTP 200, 2.8 MB, `ds:1` carrying 4 best and 10 other flights, as H1; with `tfu=EgYIABABGAA` (`{2: {1: 0, 2: 1, 3: 0}}`, what the page's URL carried after **View more flights** was clicked in a browser that morning), HTTP 200, 7.9 MB, `ds:1` carrying the same 4 best and **94** other flights. A page without field 2.2 carries only its first flights. Fixture `pages/google-flights-search-page-data-one-way-full-2026-11-24.html`. |
+| **H8** | `curl`, 2026-11-24 13:14 UTC | The same with `tfu=EgYIAhABGAA` (sort by price and the full list): HTTP 200, 7.9 MB, `ds:1` carrying no best flights and all **98** in price order. The sort and the full list combine. Fixture `pages/google-flights-search-page-data-one-way-full-by-price-2026-11-24.html`. |
+| **H9** | `curl`, 2026-11-24 13:14-13:15 UTC | H2's return-leg page (Delta DL2759 pinned): with `tfu=EgYIABABGAA`, HTTP 200, 2.4 MB, 4 best and **17** other returns; without it, about 30 s later, 2.3 MB, 4 best and 13 other. Fixture `pages/google-flights-search-page-data-return-leg-full-2026-11-24.html`. |
 | **Q4** | `2026-11-22-125002-direct-p8` | P8 resent once more: refused, gRPC 13 now WITH the `ErrorResponse` detail and a search session id. Not committed. |
 | **X** | GoogleFlightsEx `2026-11-06-211138` | The owner's earlier project's capture. **Cross-check only**: nothing here rests on X alone without saying so, and nothing from it is committed. |
 
@@ -138,6 +141,8 @@ No `at=` token is sent: the page is signed out.
 | 11-22 12:47 (H4) | the client, search page | a multi-city search page | 200, but **no flights** in `ds:1` |
 | 11-22 12:50 (Q4) | direct HTTP | P8 exactly | `[13]` with the `ErrorResponse` detail |
 | 11-22 13:22 (H6) | the client, search page | H1's search sorted by price (`tfu`) | **200, 14 flights in price order** |
+| 11-24 06:08 (H7) | `curl` with the client's User-Agent, search page | H1's search, then the same with `tfu` field 2.2 = 1 | **200, 14 flights; then 200, 98 flights** |
+| 11-24 13:14 (H8, H9) | the same | H1's search by price with the full list; H2's returns with and without it | **200, 98 flights in price order; 21 returns against 17** |
 
 **The refusal follows the network, not the client stack.** On L1-L3's network
 the same search was refused from three client stacks and with both User-Agent
@@ -191,8 +196,8 @@ User-Agent form followed by its own name (the owner's decision):
 
 | What | Over direct HTTPS | Evidence |
 |---|---|---|
-| A one-way or round-trip search's first leg, in the order asked for | the search page, sort in `tfu`: **yes** | H1, H6 |
-| A round trip's returns | the search page with the outbound pinned in `tfs` (leg field 4): **yes** | H2 |
+| A one-way or round-trip search's first leg, in the order asked for | the search page, sort and full list in `tfu`: **yes**, every flight | H1, H6, H7, H8 |
+| A round trip's returns | the search page with the outbound pinned in `tfs` (leg field 4), full list in `tfu`: **yes** | H2, H9 |
 | Booking options | the booking page carries **none**; the page loads them with `GetBookingResults` | H3 |
 | A multi-city trip | the search page carries **no flights**; the page loads them with `GetShoppingResults` | H4 |
 | Price calendars | no page carries one; the page loads them with the calendar RPCs | section 5 |
@@ -513,8 +518,15 @@ A leg (field 3):
 
 `tfu` is a second base64url protobuf. Field 2.1 is the **sort** (the values in
 section 5): `EgYIAhAAGAA` = `{2: {1: 2, 2: 0, 3: 0}}` is sort by price (I).
-B's home page had `{5: {1: 3}}`. On a page reached by choosing a flight, `tfu`
-also carries a token; it is not needed to load a search.
+Field 2.2 = 1 is **View more flights**: `EgYIABABGAA` = `{2: {1: 0, 2: 1, 3: 0}}`
+is Google's order with every flight. Without it a search page's `ds:1` carries
+only its first flights (14 of 98 in H7, 17 of 21 returns in H9); with it, all of
+them, sorted as field 2.1 says (H8). The page's own click loads the rest with
+`GetShoppingResults`, which wants the page's token (section 2); the page
+fetched with the field set needs none. The client always sets it on search
+pages. Field 2.3 is 0 in every value seen; its meaning is **pending**. B's home
+page had `{5: {1: 3}}`. On a page reached by choosing a flight, `tfu` also
+carries a token; it is not needed to load a search.
 
 **Proven both ways.**
 - *Encoding matches the page:* an encoder built from these tables reproduces,

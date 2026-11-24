@@ -5,8 +5,9 @@ namespace Multiplex.Sites.GoogleFlights.Tests;
 
 /// <summary>
 /// Flights from Google Flights' search pages, fetched over plain HTTPS. A search page carries its first answer in
-/// its HTML (data block <c>ds:1</c>). The page fixtures are the <c>ds:1</c> elements of pages the client fetched
-/// live on 2026-11-22 (protocol.md section 2, H1 and H2).
+/// its HTML (data block <c>ds:1</c>). The page fixtures are the <c>ds:1</c> elements of pages fetched live with the
+/// client's User-Agent (protocol.md section 2): H1 and H2 on 2026-11-22 without the full list, H7-H9 on
+/// 2026-11-24 with it.
 /// </summary>
 public class SearchPageTests
 {
@@ -26,22 +27,23 @@ public class SearchPageTests
     private static FlightSearchRequest RoundTrip => FlightSearchRequest.RoundTrip("SEA", "DEN", Dec15, Dec22).Normalize("USD", "US");
 
     [Fact]
-    public async Task A_search_lists_the_flights_its_search_page_carries()
+    public async Task A_search_asks_its_page_for_every_flight_and_lists_them_all()
     {
-        _google.AnswerPage(SearchPages.Load("one-way-2026-11-22"));
+        // Without the full list the same page carried 4 best and 10 other flights (H1); with it, 4 best and 94 other (H7).
+        _google.AnswerPage(SearchPages.Load("one-way-full-2026-11-24"));
         using var client = Client();
 
         var result = await client.SearchAsync(OneWay);
 
         var sent = Assert.Single(_google.Sent);
-        // The link H1 fetched live: the one-way search, nothing chosen.
+        // The link H7 fetched live: the one-way search, nothing chosen, "View more flights" set.
         Assert.Equal(
-            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&hl=en-US&gl=US&curr=USD",
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&tfu=EgYIABABGAA&hl=en-US&gl=US&curr=USD",
             sent.Url.AbsoluteUri);
         Assert.Equal(sent.Url, result.GoogleFlightsUrl);
         Assert.Equal(0, result.Leg);
         Assert.Equal(4, result.BestFlights.Count);
-        Assert.Equal(10, result.OtherFlights.Count);
+        Assert.Equal(94, result.OtherFlights.Count);
         Assert.All(result.AllFlights, f =>
         {
             Assert.Equal("SEA", f.Origin);
@@ -70,37 +72,39 @@ public class SearchPageTests
     [Fact]
     public async Task A_search_sorted_by_price_asks_the_page_for_that_order_and_keeps_it()
     {
-        // H6: the page honours the sort in its link (tfu); sorted by price it lists every flight in price order.
-        _google.AnswerPage(SearchPages.Load("one-way-by-price-2026-11-22"));
+        // H8: the page honours the sort and the full list together in its link (tfu); sorted by price it lists every
+        // flight in price order, with no best flights.
+        _google.AnswerPage(SearchPages.Load("one-way-full-by-price-2026-11-24"));
         using var client = Client();
 
         var result = await client.SearchAsync(OneWay with { Sort = FlightSort.Price });
 
         Assert.Equal(
-            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&tfu=EgYIAhAAGAA&hl=en-US&gl=US&curr=USD",
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhoeEgoyMDI2LTEyLTE1agcIARIDU0VBcgcIARIDREVOQAFIAXABggELCP___________wGYAQI&tfu=EgYIAhABGAA&hl=en-US&gl=US&curr=USD",
             Assert.Single(_google.Sent).Url.AbsoluteUri);
         Assert.Empty(result.BestFlights);
         var prices = result.AllFlights.Select(f => f.Price!.Amount).ToArray();
-        Assert.Equal(14, prices.Length);
+        Assert.Equal(98, prices.Length);
         Assert.Equal(prices.Order(), prices);
     }
 
     [Fact]
     public async Task Return_flights_come_from_the_search_page_with_the_chosen_outbound_pinned_in_its_link()
     {
-        _google.AnswerPage(SearchPages.Load("return-leg-2026-11-22"));
+        // Without the full list the same page carried 4 best and 13 other returns that day; with it, 4 and 17 (H9).
+        _google.AnswerPage(SearchPages.Load("return-leg-full-2026-11-24"));
         using var client = Client();
 
         var returns = await client.GetReturnFlightsAsync(new FlightSelection(RoundTrip, [[Dl2759Out]], "token"));
 
         var sent = Assert.Single(_google.Sent);
-        // The link H2 fetched live: Delta DL2759 pinned on the outbound leg.
+        // The link H9 fetched live: Delta DL2759 pinned on the outbound leg, "View more flights" set.
         Assert.Equal(
-            "https://www.google.com/travel/flights/search?tfs=CBwQAhpAEgoyMDI2LTEyLTE1IiAKA1NFQRIKMjAyNi0xMi0xNRoDREVOKgJETDIEMjc1OWoHCAESA1NFQXIHCAESA0RFThoeEgoyMDI2LTEyLTIyagcIARIDREVOcgcIARIDU0VBQAFIAXABggELCP___________wGYAQE&hl=en-US&gl=US&curr=USD",
+            "https://www.google.com/travel/flights/search?tfs=CBwQAhpAEgoyMDI2LTEyLTE1IiAKA1NFQRIKMjAyNi0xMi0xNRoDREVOKgJETDIEMjc1OWoHCAESA1NFQXIHCAESA0RFThoeEgoyMDI2LTEyLTIyagcIARIDREVOcgcIARIDU0VBQAFIAXABggELCP___________wGYAQE&tfu=EgYIABABGAA&hl=en-US&gl=US&curr=USD",
             sent.Url.AbsoluteUri);
         Assert.Equal(1, returns.Leg);
-        Assert.Equal(3, returns.BestFlights.Count);
-        Assert.Equal(14, returns.OtherFlights.Count);
+        Assert.Equal(4, returns.BestFlights.Count);
+        Assert.Equal(17, returns.OtherFlights.Count);
         Assert.All(returns.AllFlights, f =>
         {
             Assert.Equal("DEN", f.Origin);

@@ -35,10 +35,12 @@ public class TfsEncoderTests
     }
 
     [Fact]
-    public void Sort_by_price_is_the_tfu_the_page_used()
+    public void A_search_page_link_asks_for_every_flight_in_the_order_asked_for()
     {
-        // Capture I: the page's URL after choosing "Price" carried tfu=EgYIAhAAGAA.
-        Assert.Equal("EgYIAhAAGAA", TfsEncoder.SortParameter(FlightSort.Price));
-        Assert.Null(TfsEncoder.SortParameter(FlightSort.Best));
+        // tfu field 2.1 is the sort (capture I: "Price" was EgYIAhAAGAA). Field 2.2 = 1 is "View more flights": the
+        // page's URL after that click carried EgYIABABGAA (2026-11-24), and pages fetched with it carry every flight,
+        // in Google's order (H7) or sorted (H8, EgYIAhABGAA).
+        Assert.Equal("EgYIABABGAA", TfsEncoder.ListParameter(FlightSort.Best));
+        Assert.Equal("EgYIAhABGAA", TfsEncoder.ListParameter(FlightSort.Price));
     }
 }

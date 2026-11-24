@@ -211,10 +211,17 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
             }));
         });
 
+    /// <summary>
+    /// The most flights one answer lists (owner's decision, #134). Search pages carry every flight, and 98 flights
+    /// are about 30k tokens, past an AI's limit for one tool answer; 30 are about 9k.
+    /// </summary>
+    private const int MostFlightsListed = 30;
+
     private static string Flights(FlightSearchResult result)
     {
         var request = result.Request;
         var lastLeg = result.Leg == request.Legs.Count - 1;
+        var all = result.BestFlights.Select(f => (Flight: f, Best: true)).Concat(result.OtherFlights.Select(f => (Flight: f, Best: false))).ToArray();
         return Serialize(new
         {
             trip_type = request.TripType switch
@@ -232,7 +239,13 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
             next_step = lastLeg
                 ? "Booking options are not available here: the person opens google_flights_url and buys from the seller there."
                 : $"Pass a flight's selection to get_return_flights for leg {result.Leg + 2}.",
-            flights = result.BestFlights.Select(f => Flight(f, best: true)).Concat(result.OtherFlights.Select(f => Flight(f, best: false))),
+            total_flights = all.Length,
+            more_flights = all.Length > MostFlightsListed
+                ? $"Listing the first {MostFlightsListed} of {all.Length} flights, in the order asked for. To see the others, narrow " +
+                  "the search (max_stops, airlines, alliances, the departure and arrival hours, max_duration_hours, max_price) or " +
+                  "sort it differently; the person can see them all at google_flights_url."
+                : null,
+            flights = all.Take(MostFlightsListed).Select(f => Flight(f.Flight, f.Best)),
             airlines_in_results = result.Airlines.Select(a => new { a.Code, a.Name }),
         });
     }
