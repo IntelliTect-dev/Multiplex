@@ -65,6 +65,12 @@ link for a person to open.
   keep the pacing. The MCP tools list at most 30 flights an answer (owner's
   decision, #134: 98 flights are about 30k tokens, past an AI's limit for one
   tool answer) and say how many there are; the PowerShell commands return all.
+- **Google's own order ranks the rest by price alone.** After its best
+  flights, a page in Google's order lists everything else by price, then
+  departure time, whatever the stops or duration: SEA-DEN's $184 nonstop came
+  58th, behind 41 one-stops at $168 (H7). So in that order the MCP tools list
+  the rest by fewest stops, then price, then departure time before keeping 30
+  (owner's decision, #134). A sort asked for is kept as the page gives it.
 - **Test fixtures are the pages' own data blocks** (`references/pages/`),
   verbatim except the page's one-time script nonce. The rest of a page is not
   kept: it is megabytes of scripts, and nothing the client reads.

@@ -222,7 +222,13 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
     {
         var request = result.Request;
         var lastLeg = result.Leg == request.Legs.Count - 1;
-        var all = result.BestFlights.Select(f => (Flight: f, Best: true)).Concat(result.OtherFlights.Select(f => (Flight: f, Best: false))).ToArray();
+        // In its own order Google lists the flights after its best ones by price alone, so slow cheap connections came
+        // before pricier nonstops. There, fewer stops come first (owner's decision, #134); a sort asked for is kept.
+        var googlesOrder = request.Sort == FlightSort.Best;
+        var others = googlesOrder
+            ? result.OtherFlights.OrderBy(f => f.Stops).ThenBy(f => f.Price?.Amount ?? decimal.MaxValue).ThenBy(f => f.DepartsLocal)
+            : result.OtherFlights.AsEnumerable();
+        var all = result.BestFlights.Select(f => (Flight: f, Best: true)).Concat(others.Select(f => (Flight: f, Best: false))).ToArray();
         return Serialize(new
         {
             trip_type = request.TripType switch
@@ -242,7 +248,9 @@ public sealed class GoogleFlightsTools(GoogleFlightsClient client)
                 : $"Pass a flight's selection to get_return_flights for leg {result.Leg + 2}.",
             total_flights = all.Length,
             more_flights = all.Length > MostFlightsListed
-                ? $"Listing the first {MostFlightsListed} of {all.Length} flights, in the order asked for. To see the others, narrow " +
+                ? $"Listing the first {MostFlightsListed} of {all.Length} flights, " +
+                  (googlesOrder ? "Google's best, then the rest by fewest stops, price and departure time" : "in the order asked for") +
+                  ". To see the others, narrow " +
                   "the search (max_stops, airlines, alliances, the departure and arrival hours, max_duration_hours, max_price) or " +
                   "sort it differently; the person can see them all at google_flights_url."
                 : null,
