@@ -66,8 +66,21 @@ public sealed class ServiceIdentityTests(AuthTestApp app) : IClassFixture<AuthTe
         Assert.Equal("image/png", response.Content.Headers.ContentType?.MediaType);
         var (width, height) = PngSize(await response.Content.ReadAsByteArrayAsync());
         Assert.Equal(width, height);
-        Assert.True(width >= 48, $"{slug}'s icon is {width}x{height}; clients ask for at least 48x48");
         Assert.Equal([$"{width}x{height}"], icon.GetProperty("sizes").EnumerateArray().Select(s => s.GetString()));
+    }
+
+    /// <summary>
+    /// ChatGPT ignores <c>serverInfo.icons</c>: a custom app shows only the icon uploaded in its "Add custom MCP
+    /// server" form, which takes a PNG of at most 10 KB, best at 256x256 (#138). Each service's icon is that file.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Slugs))]
+    public async Task Every_services_icon_can_be_uploaded_to_ChatGPT(string slug)
+    {
+        var png = await app.Client().GetByteArrayAsync($"/icons/{slug}.png");
+
+        Assert.True(png.Length <= 10 * 1024, $"{slug}'s icon is {png.Length} bytes; ChatGPT takes at most 10 KB");
+        Assert.Equal((256, 256), PngSize(png));
     }
 
     [Theory]

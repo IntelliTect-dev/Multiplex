@@ -25,7 +25,17 @@ Describe 'web-api-discovery SKILL.md: the site''s icon (issue #135)' {
         $discover | Should -Match 'apple-touch-icon'
         $discover | Should -Match '(?i)manifest'
         $discover | Should -Match '(?i)square PNG'
-        $discover | Should -Match '48x48'
+    }
+
+    It 'Phase 1 fits the icon to what ChatGPT''s upload takes: 256x256, at most 10 KB (issue #138)' {
+        $discover = Get-Section '### Phase 1 -- Discover'
+        $discover | Should -Match '256x256'
+        $discover | Should -Match '10 KB'
+    }
+
+    It 'says ChatGPT ignores serverInfo.icons and takes the icon uploaded when the app is created (issue #138)' {
+        $script:SkillText | Should -Match '(?is)ChatGPT ignores `serverInfo\.icons`'
+        $script:SkillText | Should -Match '(?is)Add custom MCP server.{0,200}(upload|Icon)'
     }
 
     It 'Phase 1 rasterizes an SVG-only icon and records where the icon came from' {
