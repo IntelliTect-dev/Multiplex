@@ -20,3 +20,7 @@ The endpoint needs no sign-in, so it answers only requests from this PC unless
 
 These files move into `services/GoogleFlights/` with the host-contracts work in
 #83.
+
+## Icon
+
+`wwwroot/icons/google-flights.png` (192x192), the icon Google Flights' own page declares (`<link rel="icon" sizes="192x192">`), from `https://www.gstatic.com/images/branding/product/2x/travel_flights_96dp.png`. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.

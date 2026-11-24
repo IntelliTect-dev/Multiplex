@@ -18,12 +18,13 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Multiplex.Web.Browser.BrowserService>();
 // Every service needs sign-in (#80). The ones that act on a person's site account connect by signing
 // in to that site; Time, Amazon and Google Flights act for no one, so connecting them is a consent page.
+// Each names the website it wraps, and shows that site's icon (wwwroot/icons/<slug>.png), in its serverInfo (#135).
 builder.Services.AddMultiplexAuth(builder.Configuration)
-    .RequireAuthFor("tripit", "TripIt")
-    .RequireAuthFor("linkedin", "LinkedIn")
-    .RequireAuthFor("time", "Time", needsSiteAccount: false)
-    .RequireAuthFor("amazon", "Amazon", needsSiteAccount: false)
-    .RequireAuthFor("google-flights", "Google Flights", needsSiteAccount: false);
+    .RequireAuthFor("tripit", "TripIt", websiteUrl: "https://www.tripit.com/")
+    .RequireAuthFor("linkedin", "LinkedIn", websiteUrl: "https://www.linkedin.com/")
+    .RequireAuthFor("time", "Time", needsSiteAccount: false, websiteUrl: "https://time.now/")
+    .RequireAuthFor("amazon", "Amazon", needsSiteAccount: false, websiteUrl: "https://www.amazon.com/")
+    .RequireAuthFor("google-flights", "Google Flights", needsSiteAccount: false, websiteUrl: "https://www.google.com/travel/flights");
 builder.Services.AddTripItService(builder.Configuration);
 builder.Services.AddLinkedInService(builder.Configuration);
 builder.Services.AddAmazonService();
@@ -38,9 +39,10 @@ builder.Services
     .WithHttpTransport(options =>
     {
         options.Stateless = true;
-        options.ConfigureSessionOptions = McpEndpointRouting.ScopeToolsToEndpoint;
+        options.ConfigureSessionOptions = McpEndpointRouting.ConfigureForEndpoint;
     })
     .WithToolsFromAssembly();
+builder.Services.AddSingleton<ServiceIdentity>();
 
 var app = builder.Build();
 

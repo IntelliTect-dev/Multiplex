@@ -118,3 +118,7 @@ Protection with the shared Multiplex settings (application name `Multiplex`, key
   and deletes it through the confirm step. The library's own live suite is
   `tripit/tests/TripIt.FunctionalTests` with the same variables. Session snapshots age out in
   about two hours (Akamai cookies): a 403 with a small HTML page means capture a new one.
+
+## Icon
+
+`wwwroot/icons/tripit.png` (180x180), TripIt's own touch icon, from `https://www.tripit.com/apple-touch-icon.png`. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.

@@ -38,11 +38,19 @@ public static class McpEndpointRouting
         }
     }
 
-    /// <summary>Restricts a session's tools to those belonging to the endpoint the request arrived on.</summary>
-    public static Task ScopeToolsToEndpoint(HttpContext context, McpServerOptions options, CancellationToken ct)
+    /// <summary>
+    /// Makes a session the service at the endpoint the request arrived on: only that service's tools, and its
+    /// own name, website and icon in <c>serverInfo</c> (<see cref="ServiceIdentity"/>).
+    /// </summary>
+    public static Task ConfigureForEndpoint(HttpContext context, McpServerOptions options, CancellationToken ct)
     {
         var path = context.Request.Path.Value!.TrimEnd('/');
         var slug = path[..^"/mcp".Length].Trim('/');
+
+        if (context.RequestServices.GetRequiredService<ServiceIdentity>().ServerInfo(slug) is { } serverInfo)
+        {
+            options.ServerInfo = serverInfo;
+        }
 
         var scoped = new McpServerPrimitiveCollection<McpServerTool>();
         foreach (var tool in options.ToolCollection ?? [])

@@ -78,3 +78,7 @@ dotnet test --filter "FullyQualifiedName~Multiplex.Tests.Services.Time"
 ```
 
 When time.now changes its layout, update `TimeNowPage.cs`, then refresh the saved pages in `Fixtures/` so the offline tests match the new layout.
+
+## Icon
+
+`wwwroot/icons/time.png` (256x256), the largest icon time.now's home page declares, from `https://time.now/static/favicon-256x256.png`. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.

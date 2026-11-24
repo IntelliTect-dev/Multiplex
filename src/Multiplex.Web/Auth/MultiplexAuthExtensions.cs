@@ -26,13 +26,20 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
     /// account, so connecting it signs in to the site and every call needs a token, even from this host.
     /// False for a service that acts for no one (e.g. <c>time</c>): connecting it is a consent page, and
     /// a call from this host may come without a token.</param>
-    public MultiplexAuthBuilder RequireAuthFor(string slug, string? displayName = null, bool needsSiteAccount = true)
+    /// <param name="websiteUrl">The https address of the website the service wraps. The service names it, and
+    /// shows the icon at <c>wwwroot/icons/{slug}.png</c>, in its <c>serverInfo</c> (#135).</param>
+    public MultiplexAuthBuilder RequireAuthFor(string slug, string? displayName = null, bool needsSiteAccount = true, string? websiteUrl = null)
     {
         if (!SlugPattern().IsMatch(slug))
         {
             throw new ArgumentException("A slug is lower-case letters, digits and hyphens, e.g. 'tripit'.", nameof(slug));
         }
-        Services.Configure<AuthenticatedEndpointOptions>(o => o.Endpoints.Add((slug, displayName ?? slug, needsSiteAccount)));
+        if (websiteUrl is not null
+            && !(Uri.TryCreate(websiteUrl, UriKind.Absolute, out var website) && website.Scheme == Uri.UriSchemeHttps))
+        {
+            throw new ArgumentException("A website is an absolute https URL, e.g. 'https://www.tripit.com/'.", nameof(websiteUrl));
+        }
+        Services.Configure<AuthenticatedEndpointOptions>(o => o.Endpoints.Add((slug, displayName ?? slug, needsSiteAccount, websiteUrl)));
         return this;
     }
 

@@ -42,7 +42,7 @@ public sealed class AuthLimits
 /// <see cref="MultiplexAuthBuilder.RequireAuthFor"/>.</summary>
 public sealed class AuthenticatedEndpointOptions
 {
-    internal List<(string Slug, string DisplayName, bool NeedsSiteAccount)> Endpoints { get; } = [];
+    internal List<(string Slug, string DisplayName, bool NeedsSiteAccount, string? WebsiteUrl)> Endpoints { get; } = [];
 }
 
 /// <summary>Fixed protocol lifetimes (not configurable: clients depend on them being short).</summary>
