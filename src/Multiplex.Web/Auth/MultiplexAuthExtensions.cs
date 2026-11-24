@@ -34,6 +34,11 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
         {
             throw new ArgumentException("A slug is lower-case letters, digits and hyphens, e.g. 'tripit'.", nameof(slug));
         }
+        // /icons is open to anyone, so a service there would be served without a token.
+        if (slug == Mcp.ServiceIdentity.IconsPath.TrimStart('/'))
+        {
+            throw new ArgumentException($"'{slug}' is where service icons are served, open to anyone; a service cannot use it.", nameof(slug));
+        }
         if (websiteUrl is not null
             && !(Uri.TryCreate(websiteUrl, UriKind.Absolute, out var website) && website.Scheme == Uri.UriSchemeHttps))
         {
