@@ -30,4 +30,4 @@ These files move into `services/GoogleFlights/` with the host-contracts work in
 
 ## Icon
 
-`wwwroot/icons/google-flights.png` (192x192), the icon Google Flights' own page declares (`<link rel="icon" sizes="192x192">`), from `https://www.gstatic.com/images/branding/product/2x/travel_flights_96dp.png`. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.
+`wwwroot/icons/google-flights.png` (256x256, at most 10 KB), the icon Google Flights' own page declares (`<link rel="icon" sizes="192x192">`), from `https://www.gstatic.com/images/branding/product/2x/travel_flights_96dp.png`. It is fitted to 256x256 and at most 10 KB, the one file ChatGPT's "Add custom MCP server" form takes as an app's icon (#138). Clients that read `serverInfo` show it beside the service, with its title and website (#135); ChatGPT does not, so upload this file in that form when adding the service there. To refresh it, fetch the same URL again and fit it the same way (Phase 1 of the `web-api-discovery` skill).

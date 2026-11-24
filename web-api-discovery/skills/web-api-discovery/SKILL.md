@@ -424,12 +424,16 @@ worth keeping, which is most of the time.
   declares, in this order: the home page's `<link rel="icon">` and
   `<link rel="apple-touch-icon">` tags (read their `sizes`), then the web app
   manifest (`<link rel="manifest">`, its `icons` list), then `/favicon.ico`.
-  Pick the largest **square PNG** of at least 48x48 (128x128 or more is
-  better). An SVG-only icon is rasterized to a PNG (a headless browser
-  screenshot of it at 256x256 on a transparent background does it), and an
-  `.ico` gives up its largest frame. Never draw one, and never take another
-  site's. Record the URL it came from beside the capture, so it can be
-  fetched again when the site changes its icon.
+  Pick the largest **square PNG** it offers. An SVG-only icon is rasterized
+  to a PNG (a headless browser screenshot of it at 256x256 on a transparent
+  background does it), and an `.ico` gives up its largest frame. Then fit it
+  to a **256x256 PNG of at most 10 KB**: resize, and if it is still too big,
+  reduce it to a palette of 256 colors or fewer. That is the one file ChatGPT's
+  "Add custom MCP server" form takes as an app's icon (PNG only, at most
+  10 KB, best at 256x256), and every MCP client that shows icons accepts PNG.
+  Never draw one, and never take another site's. Record the URL it came from
+  beside the capture, so it can be fetched again when the site changes its
+  icon.
 
 ### Phase 1.5 -- Mobile App Discovery (required prompt)
 
@@ -2792,7 +2796,12 @@ the skill).
 - **The server says what site it wraps.** Its `serverInfo` (MCP 2025-11-25)
   carries `title` (the site's name), `websiteUrl` (the site's address) and
   `icons` (the icon found in Phase 1, with `mimeType` `image/png` and `sizes`
-  its real `WxH`). That is what a client shows for the server. Over stdio
+  its real `WxH`). A client that reads it shows that icon for the server.
+  **ChatGPT ignores `serverInfo.icons`** (checked 2026-11-24: its Refresh
+  tools read the server's `serverInfo` and kept the placeholder). A ChatGPT
+  custom app shows only the icon uploaded in its "Add custom MCP server" form
+  when the app is created, and an existing app's icon cannot be changed. So
+  the generated README tells the person to upload the same PNG there. Over stdio
   there is no address to serve a file from, so the icon goes in as a `data:`
   URI (the PNG, base64). A server on HTTP serves the PNG from its own origin
   instead, because clients are told to trust icons from the server's origin
@@ -3261,7 +3270,8 @@ Per-endpoint recipe section in the project README:
 - NuGet packaging notes (Description, Authors, RepositoryUrl,
   PackageLicenseExpression, version-from-git already filled in).
 - Where the server's icon came from (the URL recorded in Phase 1), so it can
-  be fetched again.
+  be fetched again, and that ChatGPT needs it uploaded in its "Add custom MCP
+  server" form: it ignores the icon the server declares.
 
 ### Phase 11 -- Initialize git repository
 

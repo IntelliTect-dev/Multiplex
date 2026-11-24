@@ -81,4 +81,4 @@ When time.now changes its layout, update `TimeNowPage.cs`, then refresh the save
 
 ## Icon
 
-`wwwroot/icons/time.png` (256x256), the largest icon time.now's home page declares, from `https://time.now/static/favicon-256x256.png`. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.
+`wwwroot/icons/time.png` (256x256, at most 10 KB), the largest icon time.now's home page declares, from `https://time.now/static/favicon-256x256.png`. It is fitted to 256x256 and at most 10 KB, the one file ChatGPT's "Add custom MCP server" form takes as an app's icon (#138). Clients that read `serverInfo` show it beside the service, with its title and website (#135); ChatGPT does not, so upload this file in that form when adding the service there. To refresh it, fetch the same URL again and fit it the same way (Phase 1 of the `web-api-discovery` skill).

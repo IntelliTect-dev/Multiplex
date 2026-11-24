@@ -109,13 +109,17 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 - **Every service carries its website's icon** (#135). Find it as Phase 1 of
   the `web-api-discovery` skill says: what the site itself declares
   (`<link rel="icon">`, `apple-touch-icon`, the web app manifest), the largest
-  square PNG of at least 48x48, an SVG-only icon rasterized to a PNG. Never
-  draw one or take another site's. Save it as
-  `src/Multiplex.Web/wwwroot/icons/<slug>.png` and write its source URL in the
-  service's README under **Icon**. The service then names its title, website
-  and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which a client that
-  reads it shows instead of a placeholder; `ServiceIdentityTests` fails for a
-  service without them.
+  square PNG, an SVG-only icon rasterized to a PNG, then fitted to a 256x256
+  PNG of at most 10 KB (#138). Never draw one or take another site's. Save it
+  as `src/Multiplex.Web/wwwroot/icons/<slug>.png` and write its source URL in
+  the service's README under **Icon**. The service then names its title,
+  website and icon in its `serverInfo` (`Mcp/ServiceIdentity.cs`), which a
+  client that reads it shows instead of a placeholder; `ServiceIdentityTests`
+  fails for a service without them, or with an icon ChatGPT could not take.
+  **ChatGPT ignores `serverInfo.icons`:** a custom app shows only the icon
+  uploaded in its "Add custom MCP server" form (PNG, at most 10 KB, best at
+  256x256), and an existing app's icon cannot be changed. When adding a
+  service to ChatGPT, upload `/icons/<slug>.png` there.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
 - **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
