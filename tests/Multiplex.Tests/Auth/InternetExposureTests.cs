@@ -7,13 +7,13 @@ namespace Multiplex.Tests.Auth;
 
 /// <summary>
 /// Once a tunnel publishes the server, every MCP endpoint needs a token from the internet (a service
-/// that uses no site account, like Time, is tokenless only from this PC), and lockouts/rate limits
+/// that uses no site account, like Amazon, is tokenless only from this PC), and lockouts/rate limits
 /// must key on the real caller rather than on the tunnel.
 /// </summary>
 public class InternetExposureTests : IClassFixture<AuthTestApp>
 {
-    private const string TimeChallenge =
-        "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/time/mcp\", scope=\"time\"";
+    private const string AmazonChallenge =
+        "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/amazon/mcp\", scope=\"amazon\"";
 
     private const string TripItChallenge =
         "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/tripit/mcp\", scope=\"tripit\"";
@@ -39,27 +39,27 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
     }
 
     [Fact]
-    public async Task Time_ThroughATunnel_WithoutAToken_IsChallenged()
+    public async Task Amazon_ThroughATunnel_WithoutAToken_IsChallenged()
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
         request.Headers.Add("X-Forwarded-For", "203.0.113.7");
         var response = await _app.Client().SendAsync(request);
-        AssertChallenged(response, TimeChallenge);
+        AssertChallenged(response, AmazonChallenge);
     }
 
     [Fact]
-    public async Task Time_UnderThePublicHostName_WithoutAToken_IsChallenged()
+    public async Task Amazon_UnderThePublicHostName_WithoutAToken_IsChallenged()
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
         request.Headers.Host = "box.example.ts.net";
         var response = await _app.Client().SendAsync(request);
-        AssertChallenged(response, TimeChallenge);
+        AssertChallenged(response, AmazonChallenge);
     }
 
     [Fact]
-    public async Task Time_FromThisPc_StillWorksWithoutAToken()
+    public async Task Amazon_FromThisPc_StillWorksWithoutAToken()
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
         request.Headers.Host = "localhost";
         var response = await _app.Client().SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -69,19 +69,19 @@ public class InternetExposureTests : IClassFixture<AuthTestApp>
     [InlineData("https://evil.example")]
     [InlineData("null")]
     [InlineData("http://localhost.evil.example")]
-    public async Task Time_FromAWebPageThatIsNotLocal_WithoutAToken_IsChallenged(string origin)
+    public async Task Amazon_FromAWebPageThatIsNotLocal_WithoutAToken_IsChallenged(string origin)
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
         request.Headers.Host = "localhost";
         request.Headers.Add("Origin", origin);
         var response = await _app.Client().SendAsync(request);
-        AssertChallenged(response, TimeChallenge);
+        AssertChallenged(response, AmazonChallenge);
     }
 
     [Fact]
-    public async Task Time_FromALocalWebPage_StillWorksWithoutAToken()
+    public async Task Amazon_FromALocalWebPage_StillWorksWithoutAToken()
     {
-        using var request = Initialize("/time/mcp");
+        using var request = Initialize("/amazon/mcp");
         request.Headers.Host = "localhost";
         request.Headers.Add("Origin", "http://localhost:6274");
         var response = await _app.Client().SendAsync(request);

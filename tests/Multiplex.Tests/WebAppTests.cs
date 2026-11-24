@@ -19,11 +19,11 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     }
 
     [Fact]
-    public async Task Index_ListsTimeMcpEndpoint()
+    public async Task Index_ListsTheAmazonMcpEndpoint()
     {
         var body = await _client.GetStringAsync("/");
 
-        Assert.Matches("<code>[^<]*/time/mcp</code>", body);
+        Assert.Matches("<code>[^<]*/amazon/mcp</code>", body);
     }
 
     [Fact]
@@ -51,11 +51,13 @@ public class WebAppTests(WebApplicationFactory<Program> factory) : IClassFixture
     }
 
     [Fact]
-    public async Task TimeMcp_ListsTimeTool()
+    public async Task TheTimeService_IsGone()
     {
-        var body = await ListTools("/time/mcp");
+        // Removed on the owner's decision (#144): no address, and nothing on the index page.
+        var response = await _client.PostAsync("/time/mcp", new StringContent("{}", Encoding.UTF8, "application/json"));
 
-        Assert.Contains("\"get_local_time\"", body);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.DoesNotContain("/time/mcp", await _client.GetStringAsync("/"));
     }
 
     private async Task<string> ListTools(string path)

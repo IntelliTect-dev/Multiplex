@@ -125,27 +125,27 @@ public sealed class OwnershipTests
     }
 
     [Fact]
-    public async Task Time_connects_with_a_consent_page_and_its_token_works_from_the_internet()
+    public async Task Amazon_connects_with_a_consent_page_and_its_token_works_from_the_internet()
     {
         using var app = new AuthTestApp();
         var driver = new OAuthDriver(app);
         var clientId = await driver.RegisterAsync();
         var pkce = OAuthDriver.NewPkce();
-        var resource = AuthTestApp.BaseUrl + "/time/mcp";
-        var pending = await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, pkce, resource: resource), "time");
+        var resource = AuthTestApp.BaseUrl + "/amazon/mcp";
+        var pending = await driver.StartAsync(OAuthDriver.AuthorizeParameters(clientId, pkce, resource: resource), "amazon");
 
         // The person's browser: their sign-in cookie, and whatever cookies the pages set (antiforgery).
         var jar = new CookieContainer();
         jar.SetCookies(new Uri("https://localhost"), TestPeople.CookieFor(app.Services, (await TestPeople.SignInAsync(app.Services)).Person));
         var browser = app.CreateDefaultClient(new Uri("https://localhost"), new Microsoft.AspNetCore.Mvc.Testing.Handlers.CookieContainerHandler(jar));
 
-        var page = await browser.GetAsync($"/connect/time?p={pending}");
+        var page = await browser.GetAsync($"/connect/amazon?p={pending}");
         var html = await page.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
-        Assert.Contains("Connect Claude to Time", html);
+        Assert.Contains("Connect Claude to Amazon", html);
         Assert.Contains(TestPeople.Owner, html);
         var token = System.Text.RegularExpressions.Regex.Match(html, "name=\"__RequestVerificationToken\" value=\"([^\"]+)\"").Groups[1].Value;
-        var allowed = await browser.PostAsync($"/connect/time/allow?p={pending}",
+        var allowed = await browser.PostAsync($"/connect/amazon/allow?p={pending}",
             new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = WebUtility.HtmlDecode(token) }));
 
         Assert.Equal(HttpStatusCode.SeeOther, allowed.StatusCode);
@@ -155,7 +155,7 @@ public sealed class OwnershipTests
         var (status, body, _) = await driver.TokenAsync(exchange);
         Assert.Equal(HttpStatusCode.OK, status);
 
-        using var call = new HttpRequestMessage(HttpMethod.Post, "/time/mcp")
+        using var call = new HttpRequestMessage(HttpMethod.Post, "/amazon/mcp")
         {
             Content = new StringContent(
                 """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""",

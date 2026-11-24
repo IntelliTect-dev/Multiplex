@@ -11,9 +11,8 @@ Multiplex is an ASP.NET Core web app that hosts several **services**, one per
 website, each a Model Context Protocol (MCP) server at its own `/{slug}/mcp`
 endpoint. A service calls its website's own (undocumented) API, found with the
 `web-api-discovery` skill; a browser is only for what the API can't do, such as
-signing in. Two services read pages instead: Time reads time.now's pages in a shared
-headless Chromium, and Amazon, which has no data calls for search or product details,
-reads Amazon's pages over plain HTTPS with no browser. The repository also carries the self-contained
+signing in. One service reads pages instead: Amazon, which has no data calls for search
+or product details, reads Amazon's pages over plain HTTPS with no browser. The repository also carries the self-contained
 `web-api-discovery` skill under `web-api-discovery/`. The product overview,
 with the catalog of services, is `spec/product.md`.
 
@@ -30,10 +29,8 @@ with the catalog of services, is `spec/product.md`.
   and open without sign-in).
 - `Services/<Name>/` -- one folder per service: its tool class, its README, and
   for a service that reads pages, a `*Page` class holding that site's DOM
-  knowledge (URLs, selectors, parsing), e.g. `Services/Time/TimeNowPage.cs`.
+  knowledge (URLs, selectors, parsing), e.g. `Services/Amazon/AmazonSearchPage.cs`.
   Its tests and saved pages are in `tests/Multiplex.Tests/Services/<Name>/`.
-- `Browser/BrowserService.cs` -- one shared browser, launched lazily; tools rent
-  and return pages.
 - `services/<Name>/` -- one folder per provider (the owner's decision in #83):
   its client library, PowerShell module, scrubbed references, protocol docs and
   tests. Google Flights (`services/GoogleFlights/`) is the first; its MCP tool
@@ -125,15 +122,11 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
   again.
 - **Keep the server stateless.** No per-session state; a tool call must work on
   any instance.
-- **Rent pages, never close them.** Use `BrowserService.RentPageAsync` /
-  `ReturnPageAsync` in a `try`/`finally`. Closing the last tab of a headed
-  window closes the window and breaks the next call.
 - **Site knowledge lives in the `*Page` class**, not in the tool. Selectors and
   parsing there are testable against saved HTML in
   `tests/Multiplex.Tests/Services/<Name>/Fixtures/`.
 - **Report "not found" with `McpException`** and a message naming the input, so
   the client sees a tool error rather than a crash.
-- Call `BrowserService.PauseAsync` between visible steps so `StepDelayMs` works.
 
 ## Domain Glossary
 
@@ -148,7 +141,6 @@ Linux-only), e.g. `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 ## External Dependencies & Secrets
 
-- time.now (public, no credentials) for `get_local_time`.
 - amazon.com and its image host (public, signed out, no credentials) for the Amazon service.
 - Google Flights' search pages and airport lookup on `www.google.com` (public,
   no credentials, direct HTTPS) for `/google-flights/mcp`. Google can refuse a

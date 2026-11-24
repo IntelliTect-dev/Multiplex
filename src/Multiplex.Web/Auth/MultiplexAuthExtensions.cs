@@ -24,7 +24,7 @@ public sealed partial class MultiplexAuthBuilder(IServiceCollection services)
     /// </summary>
     /// <param name="needsSiteAccount">True (the default) when the service's tools act on a person's site
     /// account, so connecting it signs in to the site and every call needs a token, even from this host.
-    /// False for a service that acts for no one (e.g. <c>time</c>): connecting it is a consent page, and
+    /// False for a service that acts for no one (e.g. <c>amazon</c>): connecting it is a consent page, and
     /// a call from this host may come without a token.</param>
     /// <param name="websiteUrl">The https address of the website the service wraps. The service names it, and
     /// shows the icon at <c>wwwroot/icons/{slug}.png</c>, in its <c>serverInfo</c> (#135).</param>
