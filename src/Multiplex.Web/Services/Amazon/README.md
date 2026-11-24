@@ -239,3 +239,7 @@ real check page from 2026-11-23, with its token replaced.
 
 When Amazon changes its markup, the live test fails first. Update the page class, then
 refresh the fixtures.
+
+## Icon
+
+`wwwroot/icons/amazon.png` (196x196), Amazon's "a" and smile mark from Amazon's own image host, `https://m.media-amazon.com/images/G/01/anywhere/a_smile_196x196.png` (amazon.com's home page declares no icon to a plain HTTP client; its `/favicon.ico` is the same mark at 48x48). Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.

@@ -162,6 +162,38 @@ public sealed class AccessGateTests : IClassFixture<MicrosoftTestApp>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    /// <summary>
+    /// A service's icon (#135) is fetched by the client without credentials (MCP 2025-11-25), and the files
+    /// are public brand images, so they are open; nothing else under the same name is.
+    /// </summary>
+    [Theory]
+    [InlineData("/icons/tripit.png")]
+    [InlineData("/icons/google-flights.png")]
+    [InlineData("/ICONS/amazon.png")]
+    public async Task A_services_icon_stays_open_to_the_internet(string path)
+    {
+        using var request = Request(HttpMethod.Get, path, "X-Forwarded-For", "203.0.113.7", "dakar.tailaca68e.ts.net");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "image");
+
+        var response = await _app.Client().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("image/png", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Theory]
+    [InlineData("/iconsx/tripit.png")]
+    [InlineData("/icons-tripit.png")]
+    public async Task A_path_that_only_starts_like_the_icons_folder_still_needs_sign_in(string path)
+    {
+        using var request = Request(HttpMethod.Get, path, "X-Forwarded-For", "203.0.113.7", "dakar.tailaca68e.ts.net");
+
+        var response = await _app.Client().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.StartsWith(FakeMicrosoft.AuthorizationEndpoint, response.Headers.Location!.AbsoluteUri);
+    }
+
     [Fact]
     public async Task Registration_stays_open_to_the_internet()
     {

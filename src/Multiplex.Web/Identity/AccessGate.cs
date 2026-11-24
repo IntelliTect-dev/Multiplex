@@ -11,7 +11,8 @@ namespace Multiplex.Web.Identity;
 /// The one access rule every request passes (decision D3 of #80):
 /// <list type="bullet">
 /// <item>Open to anyone: <c>/healthz</c>, <c>/.well-known/*</c>, <c>/oauth/register</c>, <c>/oauth/token</c>,
-/// <c>/oauth/revoke</c>, the Microsoft callback and sign-out.</item>
+/// <c>/oauth/revoke</c>, the Microsoft callback and sign-out, and the services' icons under <c>/icons</c>
+/// (public brand images, which a client fetches without credentials; see <see cref="Mcp.ServiceIdentity"/>).</item>
 /// <item>Every <c>/{slug}/mcp</c> needs a bearer token whose audience is that endpoint, issued to a person
 /// still on the allowlist. A web sign-in never counts there. A path shaped like an MCP endpoint that is not
 /// registered is 404, so no service can be served without sign-in.</item>
@@ -140,6 +141,7 @@ public sealed partial class AccessGate(
     {
         var path = context.Request.Path;
         return path.StartsWithSegments("/.well-known", StringComparison.OrdinalIgnoreCase)
+               || path.StartsWithSegments(Mcp.ServiceIdentity.IconsPath, StringComparison.OrdinalIgnoreCase)
                || OpenPaths.Any(open => IsExactly(path, open))
                // The error page re-run after an exception: the request it serves already passed (or was open).
                || context.Features.Get<IExceptionHandlerFeature>() is not null;

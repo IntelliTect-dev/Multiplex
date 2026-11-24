@@ -116,3 +116,7 @@ cannot send different text.
 - `LinkedInRecordedPageTests.cs` (opt-in): reads a locally saved, real invitations page and
   warning answer (`LINKEDIN_RECORDED_INVITATIONS_HTML`, `LINKEDIN_RECORDED_WARNING`), printing
   only counts. Recordings hold other people's names and never enter the repository.
+
+## Icon
+
+`wwwroot/icons/linkedin.png` (256x256), LinkedIn's own icon, which its home page declares only as an SVG (`https://static.licdn.com/aero-v1/sc/h/akt4ae504epesldzj74dzred8`), rasterized to a PNG at 256x256 on a transparent background with headless Chrome. Clients show it beside the service: its `serverInfo` names it, with the service's title and website (#135). To refresh it, fetch the same URL again.
