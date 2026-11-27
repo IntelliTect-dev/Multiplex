@@ -4261,19 +4261,78 @@ function quarantineRejectedScrub(session, state) {
 }
 
 /**
- * How the AI catalogue child is launched: `claude -p <prompt>`, run UNDER
- * run-with-heartbeat.js (#492).
+ * The exact `node <script>` commands the catalogue prompt tells the AI to run
+ * (#149), keyed by role.
+ *
+ * ABSOLUTE, because the child runs with its cwd at the output path, where the
+ * `../har/` the prompt used to give resolves to nothing. ONE source for both the
+ * prompt and the permission grant, so the command the child is told to type and
+ * the command it is allowed to type cannot drift. Forward slashes on every
+ * platform (node accepts them on Windows, and a backslash in a permission rule
+ * is one more thing to escape); quoted only when the path has a space.
+ */
+function catalogueScriptCommands(scriptsDir = path.join(__dirname, '..')) {
+    const command = (name) => {
+        const script = path.join(scriptsDir, 'har', name).replace(/\\/g, '/');
+        return `node ${/\s/.test(script) ? `"${script}"` : script}`;
+    };
+    return {
+        extract: command('extract-har-reference.js'),
+        render: command('render-har-catalogue.js'),
+        verifyReference: command('verify-har-reference.js'),
+        verifyCatalogue: command('verify-har-catalogue.js')
+    };
+}
+
+/**
+ * What the catalogue child may do without asking (#149): read, edit the
+ * catalogue it is promoting, and run the four commands above -- nothing else.
+ *
+ * WHY A GRANT AT ALL. Under `-p` the child cannot ask, so in the default mode
+ * everything not pre-approved is refused. Without this list it was refused every
+ * Edit and every `node` call, wrote nothing, and exited 0 -- the same "silently
+ * deny everything else" agentChildCommand already documents for the drive.
+ *
+ * WHY THIS NARROW. The child runs beside raw.har and its live cookies. It needs
+ * no shell beyond the four tools, and the files it produces besides the
+ * catalogue (the extracted references, the rendered README) are written by
+ * those tools, not by it. `Edit(./catalogue.json)` is relative to the child's
+ * cwd, the output path, so it names exactly the catalogue being promoted.
+ */
+function catalogueAllowedTools(commands = catalogueScriptCommands()) {
+    return [
+        'Read', 'Grep', 'Glob',
+        'Edit(./catalogue.json)', 'Write(./catalogue.json)',
+        ...Object.values(commands).map((c) => `Bash(${c} *)`)
+    ];
+}
+
+/**
+ * How the AI catalogue child is launched: `claude -p <prompt>` with a stated
+ * permission mode and grant, run UNDER run-with-heartbeat.js (#492).
  *
  * The child is ~95% of the wall time after a recording stops, and under `-p`
  * it prints nothing at all -- measured at fifteen silent minutes on one real
  * capture. postProcess is synchronous, so it cannot keep a timer of its own
- * while `spawnSync` blocks; the wrapper is a second process that can. The argv
- * after the wrapper is exactly what the child was always given.
+ * while `spawnSync` blocks; the wrapper is a second process that can.
+ *
+ * `--permission-mode default`, stated rather than inherited from the
+ * operator's settings: what the grant omits is REFUSED, not judged. The drive
+ * runs under `auto` by owner decision (#112) because it cannot know in advance
+ * what a page will need; the catalogue pass can, so it gets the list and no
+ * classifier. Never `--dangerously-skip-permissions`.
+ *
+ * The prompt sits straight after `-p`, and `--allowedTools` goes LAST: it is
+ * variadic, so anything after it would be read as a tool name.
  */
-function catalogueChildCommand(prompt) {
+function catalogueChildCommand(prompt, commands = catalogueScriptCommands()) {
     return {
         command: process.execPath,
-        args: [path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt]
+        args: [
+            path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt,
+            '--permission-mode', 'default',
+            '--allowedTools', ...catalogueAllowedTools(commands)
+        ]
     };
 }
 
@@ -4308,8 +4367,17 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
     const result = { delegatedTo: decision.delegatedTo, pending: decision.pending };
 
     if (decision.delegatedTo === 'claude-cli') {
+        const commands = catalogueScriptCommands();
         const prompt =
             `${fs.readFileSync(decision.promptPath, 'utf8')}\n\n` +
+            // THE COMMANDS, VERBATIM (#149). The grant allows exactly these
+            // strings, so the child is told them rather than left to rebuild a
+            // path from the prompt's `<Scripts>` placeholder.
+            'Commands (run exactly these; this run permits no other shell command, ' +
+            'and permits editing only ./catalogue.json):\n' +
+            `Extract: ${commands.extract}\nRender: ${commands.render}\n` +
+            `Verify reference: ${commands.verifyReference}\n` +
+            `Verify catalogue: ${commands.verifyCatalogue}\n\n` +
             `Digest: ${digestPath}\nCatalogue: ${cataloguePath}\n` +
             `Raw capture: ${session.harPath}\nOutput path: ${session.outputPath}\n` +
             (session.describe ? `Operator intent: ${session.describe}\n` : '') +
@@ -4323,12 +4391,22 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
         // waiting on it allows it far longer than a scrub of the same capture.
         phaseReporter(opts)(captureEnding.PHASES.AI_CATALOGUE);
         log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
-        const child = catalogueChildCommand(prompt);
+        const child = catalogueChildCommand(prompt, commands);
         const run = spawn(child.command, child.args, {
             encoding: 'utf8', cwd: session.outputPath, stdio: 'inherit', windowsHide: true
         });
         if (run.status !== 0) {
             state.errors.push(`catalogue: claude exited ${run.status}`);
+            result.pending = true;
+        } else if (isScaffoldOnly(cataloguePath)) {
+            // EXIT 0 IS NOT A CATALOGUE (#149). A `-p` child that was refused
+            // every write still exits 0, and this run then recorded
+            // `pending: false` with no error while every row stayed Observed.
+            // Keyed on Description, as postProcessLines is: describing a row is
+            // the one thing the AI does that the scaffold never can, and an
+            // honest pass that promotes nothing still describes its rows.
+            state.errors.push('catalogue: the AI pass exited 0 but described no row -- ' +
+                'catalogue.json is still the untouched scaffold (see its output above)');
             result.pending = true;
         }
     } else if (decision.delegatedTo === 'none') {
@@ -6770,6 +6848,8 @@ module.exports = {
     buildCatalogueScaffold,
     decideCatalogueRunner,
     catalogueChildCommand,
+    catalogueScriptCommands,
+    catalogueAllowedTools,
     buildAgentPrompt,
     agentChildCommand,
     captureBrowserName,

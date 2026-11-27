@@ -18,6 +18,7 @@ The recorder supplies these paths; read each one fresh.
 | `catalogue.json` | The scaffold: one `Observed` row per group. You promote rows; you do not start from an empty file. |
 | The raw capture | Ground truth. Read it only for the entries you have already narrowed to. |
 | Operator intent | An optional hint (`-Describe`). It helps you segment. It is **never** the source of an action name. |
+| Commands | The four `node` commands below, with `<Scripts>` resolved to an absolute path. The recorder supplies them verbatim and permits only those, plus editing `catalogue.json`; run them exactly as given. `<Scripts>` is the `scripts/` directory that holds this file's `capture/` folder. |
 
 ## What to produce
 
@@ -37,7 +38,7 @@ Name each action for **the operation a human performed**, not for the endpoint.
 For each action you identified, derive a selector and run:
 
 ```
-node ../har/extract-har-reference.js --in <raw.har> \
+node <Scripts>/har/extract-har-reference.js --in <raw.har> \
     --provider <provider> --action <action>
 ```
 
@@ -144,7 +145,7 @@ beside a generated half is how a README ends up describing a previous capture.
 ### 5. Render the table
 
 ```
-node ../har/render-har-catalogue.js --dir <OutputPath>
+node <Scripts>/har/render-har-catalogue.js --dir <OutputPath>
 ```
 
 `catalogue.json` is the source of truth; the table in `README.md` is generated
@@ -155,8 +156,8 @@ naming convention and the re-capture recipe live there.
 ### 6. Gate the result -- BOTH gates
 
 ```
-node ../har/verify-har-reference.js --dir <OutputPath>
-node ../har/verify-har-catalogue.js --dir <OutputPath>
+node <Scripts>/har/verify-har-reference.js --dir <OutputPath>
+node <Scripts>/har/verify-har-catalogue.js --dir <OutputPath>
 ```
 
 Neither substitutes for the other. `verify-har-reference.js` is about the
