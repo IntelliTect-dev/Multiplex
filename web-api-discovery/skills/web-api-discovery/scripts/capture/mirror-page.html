@@ -133,6 +133,11 @@ button[disabled]{opacity:.6}
     es.addEventListener('fields', function (e) {
       try { var m = JSON.parse(e.data); gen = m.g; boxes = m.f || []; render(); } catch (_) { }
     });
+    // The box being typed in is gone from the page's list: leave it, and say so.
+    es.addEventListener('lost', function (e) {
+      try { statusEl.textContent = JSON.parse(e.data).text; } catch (_) { }
+      if (active) { var el = active; active = null; el.blur(); }
+    });
     es.addEventListener('end', function (e) {
       try { over(JSON.parse(e.data).text); } catch (_) { over('This hand-over is over.'); }
     });

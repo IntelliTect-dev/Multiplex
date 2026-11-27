@@ -600,6 +600,11 @@ async function startMirror(opts) {
     // The box being typed into: what kind it is, and what the page's box holds
     // as far as this view has typed it.
     let focused = null;
+    // A focus that named a box no list holds any more: the phone thinks it
+    // is typing into a box, and the page has none. The Enter after it is NOT
+    // pressed -- it would submit the form from the box before, without this
+    // one (found in CI) -- until a focus lands or the picture is tapped.
+    let focusLost = false;
     // What the MASKED fallback box has typed since it was last final.
     let fallbackSecret = '';
     // The view is ending: a typing replay in flight stops.
@@ -640,7 +645,10 @@ async function startMirror(opts) {
             fieldsJson = json;
             // A new generation only when the BOXES changed; a value that
             // changed is the same generation, sent again.
-            const layout = JSON.stringify(list.map((b) => [b.x, b.y, b.w, b.h, b.k, b.t]));
+            // Positions to a thousandth of the picture: sub-pixel layout
+            // jitter is not a new set of boxes.
+            const r3 = (v) => Math.round(v * 1000);
+            const layout = JSON.stringify(list.map((b) => [r3(b.x), r3(b.y), r3(b.w), r3(b.h), b.k, b.t]));
             if (layout !== layoutJson) {
                 layoutJson = layout;
                 fieldGen += 1;
@@ -681,7 +689,12 @@ async function startMirror(opts) {
         commit();
         focused = null;
         const box = (generations.get(input.g) || [])[input.i];
-        if (!box || !(size.w > 0)) return;
+        if (!box || !(size.w > 0)) {
+            focusLost = true;
+            broadcast('lost', { text: 'That box changed on the page -- tap it again.' });
+            return;
+        }
+        focusLost = false;
         await relayInput(cdp, { t: 'tap', x: box.x + box.w / 2, y: box.y + box.h / 2 }, size, gapMs);
         // CLEARED, whatever it held: the phone sends its box's whole text next,
         // so the page's box is exactly what the phone shows -- not what a
@@ -809,6 +822,8 @@ async function startMirror(opts) {
                 }
                 if (input.t !== 'back' && input.t !== 'text' && input.t !== 'key' && !(size.w > 0)) return;
                 inputChain = inputChain.then(() => {
+                    if (input.t === 'key' && input.k === 'Enter' && focusLost) return undefined;
+                    if (input.t === 'tap' || input.t === 'down' || input.t === 'back') focusLost = false;
                     // Enter submits; a tap, a press or Back in the picture moves
                     // the page's focus (its own Sign-in button, another field):
                     // what is in the box is final, BEFORE that reaches the page.

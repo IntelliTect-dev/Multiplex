@@ -664,12 +664,24 @@ test('T9: typing into a box -- cleared on focus, then each change as key presses
         await settle();
         assert.deepStrictEqual(keyLog(cdp, mark), ['keyDown:P', 'keyUp:P', 'keyDown:w', 'keyUp:w', 'keyDown:9', 'keyUp:9']);
 
-        // A focus on a box from a generation nobody has: nothing.
+        // A focus on a box from a generation nobody has: nothing -- and the
+        // Enter after it is NOT pressed (it would submit the form from the
+        // box before, without this one: found in CI), and the phone is told
+        // to tap the box again.
         mark = cdp.calls.length;
         await post(view, cookie, { t: 'focus', g: g + 1000, i: 0 });
         await post(view, cookie, { t: 'value', v: 'stale' });
+        await post(view, cookie, { t: 'key', k: 'Enter' });
         await settle();
-        assert.ok(!cdp.calls.slice(mark).some((c) => c.method.startsWith('Input.')), 'an unknown box is nothing');
+        assert.ok(!cdp.calls.slice(mark).some((c) => c.method.startsWith('Input.')), 'an unknown box is nothing, nor its Enter');
+        const lost = await watching.next('lost');
+        assert.match(lost.text, /tap it again/);
+        // A box found again: Enter works as before.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'focus', g, i: 0 });
+        await post(view, cookie, { t: 'key', k: 'Enter' });
+        await settle();
+        assert.ok(keyLog(cdp, mark).includes('keyDown:Enter'), 'after a focus that landed, Enter is pressed');
         // Malformed messages are refused.
         assert.strictEqual((await post(view, cookie, { t: 'focus', g: -1, i: 0 })).status, 400);
         assert.strictEqual((await post(view, cookie, { t: 'focus', g, i: 'x' })).status, 400);
