@@ -524,6 +524,8 @@ function notFound(res) {
     res.end('Not found');
 }
 
+const LOST = Object.freeze({ text: 'That box changed on the page -- tap it again.' });
+
 const SPENT_TEXT = 'This link was already opened on another device. Use that device, or the terminal on the PC.';
 
 /**
@@ -691,7 +693,7 @@ async function startMirror(opts) {
         const box = (generations.get(input.g) || [])[input.i];
         if (!box || !(size.w > 0)) {
             focusLost = true;
-            broadcast('lost', { text: 'That box changed on the page -- tap it again.' });
+            broadcast('lost', LOST);
             return;
         }
         focusLost = false;
@@ -769,6 +771,7 @@ async function startMirror(opts) {
             req.on('close', () => { clearInterval(ping); clients.delete(client); });
             sse(client, 'status', status);
             if (lastFields) sse(client, 'fields', lastFields);
+            if (focusLost) sse(client, 'lost', LOST);
             sendFrame(client);
             void readFields();
             return;

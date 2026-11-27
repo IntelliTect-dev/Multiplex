@@ -676,6 +676,13 @@ test('T9: typing into a box -- cleared on focus, then each change as key presses
         assert.ok(!cdp.calls.slice(mark).some((c) => c.method.startsWith('Input.')), 'an unknown box is nothing, nor its Enter');
         const lost = await watching.next('lost');
         assert.match(lost.text, /tap it again/);
+        // A phone that reconnects meanwhile is told too.
+        const again = events(view.url + 'events', cookie);
+        try {
+            assert.match((await again.next('lost')).text, /tap it again/, 'a reconnected phone is told');
+        } finally {
+            again.close();
+        }
         // A box found again: Enter works as before.
         mark = cdp.calls.length;
         await post(view, cookie, { t: 'focus', g, i: 0 });
