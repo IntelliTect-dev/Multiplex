@@ -86,6 +86,7 @@ function handOverPhrase(decision) {
     if (decision.why === 'persistent') return 'nothing but "slow down" for an hour';
     if (decision.why === 'zero-wait') return '"slow down" again and again, with no wait named';
     if (decision.why === 'retry-after-too-long') return 'a request to wait more than a day';
+    if (decision.why === 'sign-in') return 'a sign-in page';
     return 'a block or a check';
 }
 

@@ -1265,6 +1265,13 @@ test('A21: a site that refused the START page means the agent is never started',
     assert.strictEqual(capture.terminalLineMeans('', true), 'end', 'ENTER ends the recording');
     assert.strictEqual(capture.terminalLineMeans('continue', false), 'end', 'no hand-over: every line ends it');
     assert.strictEqual(capture.terminalLineMeans('cancel', true), 'end');
+    // A SIGN-IN ON THE START PAGE that nobody completed (#155) says so -- it
+    // is not the site refusing.
+    const notSignedIn = capture.agentStartRefusal(fakeSession({ handOver: {
+        kind: 'sign-in', signature: 'a sign-in form', url: 'https://www.example.com/signin', by: 'agent-not-started'
+    } }), null).map(([, t]) => t).join('\n');
+    assert.match(notSignedIn, /the agent was not started: the start page needs a sign-in, and nobody signed in \(on https:\/\/www\.example\.com\/signin\)/);
+    assert.doesNotMatch(notSignedIn, /refused/);
     // A PERSON WHO TOOK OVER AND HANDED BACK has answered the check: the agent starts.
     assert.strictEqual(capture.agentStartRefusal(fakeSession({ handOver: {
         signature: 'Cloudflare challenge', url: 'https://www.example.com/', by: 'agent-not-started',

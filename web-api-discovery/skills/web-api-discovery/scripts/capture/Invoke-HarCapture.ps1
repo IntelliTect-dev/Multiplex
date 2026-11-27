@@ -1943,7 +1943,9 @@ switch ($exit) {
         # the person "sign in once" rather than "it broke".
         Write-Warning ('Sign-in needed, and nobody was at a terminal to start one. Run ' +
             'Invoke-HarCapture once from a terminal: Bitwarden (or a masked prompt) signs in ' +
-            'and the session is saved, so unattended runs after it go straight through.')
+            'and the session is saved, so unattended runs after it go straight through. ' +
+            'Or run it with -AI on a PC on your Tailscale tailnet: the sign-in is handed to ' +
+            'your phone, and you sign in there.')
         exit 8
     }
     default {

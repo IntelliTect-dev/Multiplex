@@ -48,6 +48,19 @@
 //   P8  a page that changes host while the prompt is open is not filled
 //   P9  no terminal, mid-run -> a notice; the recording is not ended
 //   P10 a login wall drawn by script after load still counts as the first page
+//   P11 no terminal, and a person can take over (the phone view, #155) -> the
+//       sign-in is handed to them: not ended, nothing filled, no vault read,
+//       one hand-over however often the form loads
+//   P12 what the person typed (reported final by the phone view) reaches the
+//       scrub; once they are through, the session is saved against the
+//       cookies from before they typed; result() says a person signed in
+//   P13 nobody can take over -> the unattended ending, as before
+//   P14 the person submits BEFORE the phone view says the password is final
+//       (a tap on the page's own button): the session is still saved, when
+//       the password arrives -- no further page load needed
+//   P15 ...but a password reported while the page is still at the address it
+//       was handed over on (the form merely hidden, a sign-in in flight) is
+//       not taken for "through": nothing is saved early
 
 'use strict';
 
@@ -74,6 +87,8 @@ function slow(name, started) {
 }
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+// Browser cases that ran, counted rather than written down.
+let browserRan = 0;
 
 function item(id, name, uris, extra = {}) {
     return {
@@ -588,6 +603,7 @@ async function browserCases(pw) {
             timer = setTimeout(() => reject(new Error('timed out after 20s')), 20000);
         });
         const began = Date.now();
+        browserRan++;
         try { await Promise.race([fn(context), limit]); slow(name, began); } catch (e) {
             failures.push(`${name}: ${e && e.message ? e.message : e}`);
         } finally {
@@ -761,6 +777,123 @@ async function browserCases(pw) {
         assert.strictEqual(unattended, 1, 'the empty shell was taken for a page that is not a sign-in');
     });
 
+    await run('P11: nobody at the terminal, and a person can take over -- the sign-in is handed to them, not ended', async (context) => {
+        const handed = [];
+        let unattended = 0;
+        const bw = fakeBw({ items: [item('a1', 'Example', ['localhost'])] });
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: (host) => signIn.resolveCredentials(host, bw.bw, fakeIo([], false)),
+            onUnattended: () => { unattended++; },
+            handToPerson: (host, p) => { handed.push({ host, page: p }); return true; }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        assert.strictEqual(unattended, 0, 'the run is not ended: a person is signing in');
+        assert.deepStrictEqual(handed.map((h) => h.host), ['localhost']);
+        assert.strictEqual(handed[0].page, page, 'the page with the form, for the person\'s view');
+        assert.strictEqual(await page.locator('input[type=password]').inputValue(), '', 'nothing is filled for them');
+        assert.strictEqual(bw.calls.length, 0, 'the vault is never read with nobody at the terminal');
+        // The form loads again (the person is still on it): not handed over twice.
+        await page.reload();
+        await settle(page, w);
+        assert.strictEqual(handed.length, 1, 'one hand-over for one sign-in');
+    });
+
+    await run('P12: what the person typed reaches the scrub, and once they are through the session is saved', async (context) => {
+        const savedWith = [];
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => true,
+            onSignedIn: (arg) => { savedWith.push(arg); }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        // THE PERSON signs in -- on their phone, through the live view -- and
+        // the view reports what they typed once it was final.
+        await page.fill('input[name=email]', USER);
+        await page.fill('input[name=pw]', PASSWORD);
+        w.addTyped({ kind: 'username', value: USER });
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        w.addTyped({ kind: 'password', value: 'abc' });            // too short to be a literal
+        w.addTyped({ kind: 'otp', value: '123456' });              // a code is dead in 30 s
+        await page.click('button');
+        await page.waitForURL(/\/home$/);
+        await settle(page, w);
+        assert.strictEqual(savedWith.length, 1, 'signed in: the session is saved, as after a filled sign-in');
+        assert.ok(savedWith[0].cookiesBefore instanceof Map, 'against the cookies from BEFORE the person typed');
+        assert.ok(![...savedWith[0].cookiesBefore.values()].includes('signed-in'),
+            'the baseline holds no session cookie: the sign-in set it');
+        assert.deepStrictEqual(w.secrets().sort(), [PASSWORD, USER].sort(), 'the typed values go to the scrub');
+        assert.deepStrictEqual(w.result(), { source: 'person', signedIn: true, needed: true });
+    });
+
+    await run('P13: nobody can take over (no phone view) -- the unattended ending, as before', async (context) => {
+        let unattended = 0;
+        let asked = 0;
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => { asked++; return false; },
+            onUnattended: () => { unattended++; }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        assert.strictEqual(asked, 1);
+        assert.strictEqual(unattended, 1, 'sign-in-needed, as before');
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        assert.deepStrictEqual(w.secrets(), [PASSWORD], 'typed values still reach the scrub');
+    });
+
+    await run('P14: the person submits before the password is reported -- the session is still saved when it is', async (context) => {
+        const savedWith = [];
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => true,
+            onSignedIn: (arg) => { savedWith.push(arg); }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        await page.fill('input[name=email]', USER);
+        await page.fill('input[name=pw]', PASSWORD);
+        await page.click('button');
+        await page.waitForURL(/\/home$/);
+        await settle(page, w);
+        assert.strictEqual(savedWith.length, 0, 'no password reported yet: nothing to call a sign-in');
+        // Now the phone view reports it final -- and nothing else loads.
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        const deadline = Date.now() + 5000;
+        while (!savedWith.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(savedWith.length, 1, 'the session is saved once the password arrives');
+        assert.strictEqual(w.result().signedIn, true);
+    });
+
+    await run('P15: a password reported while the page is still where it was handed over is not "through"', async (context) => {
+        const savedWith = [];
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => true,
+            onSignedIn: (arg) => { savedWith.push(arg); }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        // A script-driven sign-in hides the form while it runs; the address stays.
+        await page.evaluate(() => { document.querySelector('form').style.display = 'none'; });
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        // Longer than the watcher's own wait for a page to draw its form.
+        await new Promise((r) => setTimeout(r, 4000));
+        assert.strictEqual(savedWith.length, 0, 'not saved before the site moved on');
+        assert.strictEqual(w.result().signedIn, false);
+    });
+
     // Bounded: on some machines Chromium's shutdown alone takes minutes
     // (measured: 148s), which is nothing this suite tests. The process exits
     // explicitly below, taking a slow browser down with it.
@@ -799,6 +932,6 @@ async function browserCases(pw) {
         failures.forEach((f) => console.error(`  - ${f}`));
         process.exit(1);
     }
-    console.log(`sign-in.test.js: all green (${tests.length} unit${skipped.length ? ', browser cases skipped' : ' + 10 browser'})`);
+    console.log(`sign-in.test.js: all green (${tests.length} unit${skipped.length ? ', browser cases skipped' : ` + ${browserRan} browser`})`);
     process.exit(0);
 })();
