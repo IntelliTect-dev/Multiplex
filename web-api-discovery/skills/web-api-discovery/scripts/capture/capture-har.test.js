@@ -1080,44 +1080,60 @@ test('the AI catalogue child is run under the heartbeat wrapper, with its argv i
 // refusals and a final message saying it had written nothing.
 // ---------------------------------------------------------------------------
 
-/** The tools after `--allowedTools` -- variadic, so it must be the last flag. */
+/** The permissions the catalogue child is launched with, from its `--settings`. */
 function catalogueGrant(args) {
-    const at = args.indexOf('--allowedTools');
-    assert.ok(at > 0, 'the catalogue child must be given an --allowedTools grant (#149)');
-    const tools = args.slice(at + 1);
-    assert.ok(tools.length > 0, '--allowedTools must name tools');
-    assert.ok(tools.every((t) => !t.startsWith('--')),
-        '--allowedTools is variadic: nothing may follow it but tool names');
-    return tools;
+    const at = args.indexOf('--settings');
+    assert.ok(at > 0, 'the catalogue child must be given a permissions grant (#149)');
+    const settings = JSON.parse(args[at + 1]);
+    assert.deepStrictEqual(Object.keys(settings), ['permissions'], 'the settings carry permissions and nothing else');
+    return settings.permissions;
 }
 
-test('the catalogue child is granted exactly the edit and the four commands the prompt needs (#149)', () => {
+test('the catalogue child is granted exactly the read, the edit and the four commands it needs (#149)', () => {
     const { args } = capture.catalogueChildCommand('the prompt');
-    const tools = catalogueGrant(args);
+    const grant = catalogueGrant(args);
+    const c = capture.catalogueScriptCommands();
+    assert.deepStrictEqual(Object.keys(c).sort(), ['extract', 'render', 'verifyCatalogue', 'verifyReference']);
 
-    // The catalogue itself, in place. The child's cwd is the output path, so
-    // the relative rule names exactly the catalogue being promoted.
-    assert.ok(tools.includes('Edit(./catalogue.json)'), 'the child must be able to promote rows');
+    // AN ALLOWLIST, compared whole. The child runs beside raw.har and its live
+    // cookies and reads untrusted page content; any rule added here has to be
+    // added to this test on purpose.
+    assert.deepStrictEqual(grant.allow, [
+        'Read(./**)',
+        'Edit(./catalogue.json)',
+        `Bash(${c.extract} *)`,
+        `Bash(${c.render} *)`,
+        `Bash(${c.verifyReference} *)`,
+        `Bash(${c.verifyCatalogue} *)`
+    ]);
+    // What the tools write stays in the capture directory: the extractor writes
+    // wherever --out says, cookies and all.
+    assert.deepStrictEqual(grant.deny, [
+        `Bash(${c.extract} *--out*)`,
+        `Bash(${c.extract} *..*)`,
+        `Bash(${c.render} *..*)`,
+        `Bash(${c.verifyReference} *..*)`,
+        `Bash(${c.verifyCatalogue} *..*)`
+    ]);
 
-    // Each tool the prompt tells it to run, by its exact command.
-    const commands = capture.catalogueScriptCommands();
-    for (const key of ['extract', 'render', 'verifyReference', 'verifyCatalogue']) {
-        assert.ok(commands[key], `a command for ${key}`);
-        assert.ok(tools.includes(`Bash(${commands[key]} *)`),
-            `the child must be allowed to run ${commands[key]}`);
-    }
-
-    // NOTHING BROADER. The child runs beside raw.har and its live cookies; an
-    // unscoped Bash/Edit/Write would hand it the machine.
-    for (const broad of ['Bash', 'Edit', 'Write', 'Bash(*)', 'Bash(node *)', 'Bash(node:*)']) {
-        assert.ok(!tools.includes(broad), `the grant must not include a bare ${broad}`);
-    }
     assert.ok(!args.includes('--dangerously-skip-permissions'), 'never skip permissions');
-    assert.ok(!args.includes('bypassPermissions'), 'never bypass permissions');
+    assert.ok(!args.includes('--allowedTools'), 'the grant is the settings JSON alone');
     const mode = args.indexOf('--permission-mode');
     assert.ok(mode > 0, 'the permission mode is stated, not left to the operator settings');
     assert.strictEqual(args[mode + 1], 'default',
         'default mode: what the grant omits is refused, not judged');
+});
+
+test('a scripts path with spaces and parentheses yields rules naming it verbatim (#149)', () => {
+    // `C:/Program Files (x86)/...` broke the --allowedTools argv form: the CLI
+    // split the rule at the parenthesis and refused the command it named.
+    const dir = path.join(tmpDir('catalogue-parens'), 'Program Files (x86)', 'scripts');
+    const c = capture.catalogueScriptCommands(dir);
+    const script = path.join(dir, 'har', 'extract-har-reference.js').replace(/\\/g, '/');
+    assert.strictEqual(c.extract, `node "${script}"`, 'a path with a space is quoted');
+    const { args } = capture.catalogueChildCommand('p', c);
+    const grant = catalogueGrant(args);
+    assert.ok(grant.allow.includes(`Bash(node "${script}" *)`), 'and the rule carries it whole');
 });
 
 test('every catalogue command names a script that exists (#149)', () => {

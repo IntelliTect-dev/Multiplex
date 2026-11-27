@@ -18,7 +18,7 @@ The recorder supplies these paths; read each one fresh.
 | `catalogue.json` | The scaffold: one `Observed` row per group. You promote rows; you do not start from an empty file. |
 | The raw capture | Ground truth. Read it only for the entries you have already narrowed to. |
 | Operator intent | An optional hint (`-Describe`). It helps you segment. It is **never** the source of an action name. |
-| Commands | The four `node` commands below, with `<Scripts>` resolved to an absolute path. The recorder supplies them verbatim and permits only those, plus editing `catalogue.json`; run them exactly as given. `<Scripts>` is the `scripts/` directory that holds this file's `capture/` folder. |
+| Commands | The four `node` commands below. `<Scripts>` is the `scripts/` directory that holds this file's `capture/` folder, as an absolute path. When the recorder runs you, it supplies the commands verbatim in a `Commands` block and permits only those (no `--out`, no `..` in any argument), reading inside the output path, and editing `catalogue.json` -- run them exactly as given. An agent following this file without that block resolves `<Scripts>` itself. |
 
 ## What to produce
 
