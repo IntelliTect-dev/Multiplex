@@ -4285,26 +4285,44 @@ function catalogueScriptCommands(scriptsDir = path.join(__dirname, '..')) {
 }
 
 /**
- * What the catalogue child may do without asking (#149): read, edit the
- * catalogue it is promoting, and run the four commands above -- nothing else.
+ * What the catalogue child may do without asking (#149), as a settings
+ * `permissions` object: read inside the capture directory, edit the catalogue
+ * it is promoting, and run the four commands above.
  *
  * WHY A GRANT AT ALL. Under `-p` the child cannot ask, so in the default mode
- * everything not pre-approved is refused. Without this list it was refused every
+ * everything not pre-approved is refused. Without this it was refused every
  * Edit and every `node` call, wrote nothing, and exited 0 -- the same "silently
  * deny everything else" agentChildCommand already documents for the drive.
  *
- * WHY THIS NARROW. The child runs beside raw.har and its live cookies. It needs
- * no shell beyond the four tools, and the files it produces besides the
- * catalogue (the extracted references, the rendered README) are written by
- * those tools, not by it. `Edit(./catalogue.json)` is relative to the child's
- * cwd, the output path, so it names exactly the catalogue being promoted.
+ * WHY THIS NARROW. The child runs beside raw.har and its live cookies, and it
+ * reads untrusted page content. Every rule is relative to its cwd, the output
+ * path: `Read(./**)` keeps it inside the capture directory, and
+ * `Edit(./catalogue.json)` (which covers Write too -- the CLI ignores
+ * `Write(path)` rules) names exactly the catalogue being promoted. The files it
+ * produces besides the catalogue are written by the four tools, and the DENY
+ * rules keep those inside the capture directory as well: no `--out` (the
+ * extractor would write a reference, cookies and all, wherever it is told), and
+ * no `..` in any argument. What remains is measured, not assumed: a tool may
+ * still be pointed, read-only, at another absolute `--in` or `--dir`.
+ *
+ * WHY `--settings` AND NOT `--allowedTools`. The argv form splits on `(`/`)`
+ * and on whitespace, so a scripts path such as `C:/Program Files (x86)/...`
+ * produced a rule the CLI could not parse -- measured: it then refused the very
+ * command the prompt names. JSON carries a rule verbatim.
  */
-function catalogueAllowedTools(commands = catalogueScriptCommands()) {
-    return [
-        'Read', 'Grep', 'Glob',
-        'Edit(./catalogue.json)', 'Write(./catalogue.json)',
-        ...Object.values(commands).map((c) => `Bash(${c} *)`)
-    ];
+function cataloguePermissions(commands = catalogueScriptCommands()) {
+    const tools = Object.values(commands);
+    return {
+        allow: [
+            'Read(./**)',
+            'Edit(./catalogue.json)',
+            ...tools.map((c) => `Bash(${c} *)`)
+        ],
+        deny: [
+            `Bash(${commands.extract} *--out*)`,
+            ...tools.map((c) => `Bash(${c} *..*)`)
+        ]
+    };
 }
 
 /**
@@ -4322,8 +4340,8 @@ function catalogueAllowedTools(commands = catalogueScriptCommands()) {
  * what a page will need; the catalogue pass can, so it gets the list and no
  * classifier. Never `--dangerously-skip-permissions`.
  *
- * The prompt sits straight after `-p`, and `--allowedTools` goes LAST: it is
- * variadic, so anything after it would be read as a tool name.
+ * The settings JSON is one argv element; the child is spawned without a shell
+ * (here and in the wrapper), so its quotes and spaces survive on Windows.
  */
 function catalogueChildCommand(prompt, commands = catalogueScriptCommands()) {
     return {
@@ -4331,7 +4349,7 @@ function catalogueChildCommand(prompt, commands = catalogueScriptCommands()) {
         args: [
             path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt,
             '--permission-mode', 'default',
-            '--allowedTools', ...catalogueAllowedTools(commands)
+            '--settings', JSON.stringify({ permissions: cataloguePermissions(commands) })
         ]
     };
 }
@@ -4373,8 +4391,9 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
             // THE COMMANDS, VERBATIM (#149). The grant allows exactly these
             // strings, so the child is told them rather than left to rebuild a
             // path from the prompt's `<Scripts>` placeholder.
-            'Commands (run exactly these; this run permits no other shell command, ' +
-            'and permits editing only ./catalogue.json):\n' +
+            'Commands (run exactly these, from the output path; this run permits no other ' +
+            'shell command, no --out, no `..` in any argument, reading only inside the ' +
+            'output path, and editing only ./catalogue.json):\n' +
             `Extract: ${commands.extract}\nRender: ${commands.render}\n` +
             `Verify reference: ${commands.verifyReference}\n` +
             `Verify catalogue: ${commands.verifyCatalogue}\n\n` +
@@ -6849,7 +6868,7 @@ module.exports = {
     decideCatalogueRunner,
     catalogueChildCommand,
     catalogueScriptCommands,
-    catalogueAllowedTools,
+    cataloguePermissions,
     buildAgentPrompt,
     agentChildCommand,
     captureBrowserName,
