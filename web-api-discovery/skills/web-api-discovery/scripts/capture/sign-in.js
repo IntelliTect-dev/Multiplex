@@ -9,8 +9,11 @@
  *   1. Bitwarden (`bw`), unlocked or unlockable -- the item whose saved URIs
  *      match the site. Several matches are a numbered pick; none falls through.
  *   2. A masked prompt in the operator's terminal.
- *   3. Nothing, when there is no terminal to prompt in. The capture then hands
- *      back exactly as it did before this file existed.
+ *   3. Nothing, when there is no terminal to prompt in. Then, when a person
+ *      can take over -- the phone view of a hand-over (#155) -- the sign-in is
+ *      HANDED TO THEM (`handToPerson`): they sign in themselves, on their own
+ *      device, and what they type reaches the scrub (`addTyped`). Otherwise
+ *      the capture hands back exactly as it did before this file existed.
  *
  * THE VALUES NEVER LEAVE THIS PROCESS EXCEPT INTO THE PAGE AND THE SCRUB.
  * Nothing here prints a username, password, code or vault session key; the
@@ -480,10 +483,20 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
  *                  nobody is at the terminal; the recorder ends the run as
  *                  `sign-in-needed`. Met later (a session expiring mid-run),
  *                  it is a notice instead: what was recorded is kept.
+ *   handToPerson(host, page)  optional (#155): nobody is at the terminal --
+ *                  can a PERSON take this sign-in over (the phone view of a
+ *                  hand-over)? True: they sign in themselves; nothing is
+ *                  filled, onUnattended is not called, and the watcher only
+ *                  watches -- once the person has typed a password (addTyped)
+ *                  and the site has moved on from the sign-in, onSignedIn
+ *                  fires as after a filled one, against the cookies from
+ *                  BEFORE they typed. False: as if it were absent.
  *
- * Returns `{ check(page), secrets(), hosts(), result() }`. `check` is exposed
- * so the caller can look at the first page before anything else happens, and
- * so tests can drive it without waiting on events.
+ * Returns `{ check(page), secrets(), hosts(), result(), addTyped(t) }`.
+ * `check` is exposed so the caller can look at the first page before anything
+ * else happens, and so tests can drive it without waiting on events.
+ * `addTyped({kind, value})` is what a person typed into a password or
+ * sign-in-name box, final, from the phone view -- for the scrub.
  */
 function createSignInWatcher(context, opts) {
     const startHost = hostOf(opts.uri);
@@ -494,6 +507,10 @@ function createSignInWatcher(context, opts) {
     let otpDeclined = false;
     let signedIn = false;
     let noTerminal = false;
+    // A PERSON is signing in (handToPerson said yes): nothing is filled, and
+    // the watcher only watches for them to get through.
+    let withPerson = false;
+    const typed = [];
     // Whether the capture has shown anything but a sign-in. Until it has, a
     // sign-in with nobody present means the run can record nothing useful.
     let sawOtherPage = false;
@@ -518,7 +535,7 @@ function createSignInWatcher(context, opts) {
     }
 
     async function checkNow(page) {
-        if (gaveUp || signedIn || (page.isClosed && page.isClosed())) return;
+        if ((gaveUp && !withPerson) || signedIn || (page.isClosed && page.isClosed())) return;
         if (opts.inScope && !opts.inScope(page)) return;
         if (!hostOf(page.url()) || page.url() === 'about:blank') return;
         let step = await detectStep(page);
@@ -537,6 +554,17 @@ function createSignInWatcher(context, opts) {
         if (step === 'unknown') return;
         const host = hostOf(page.url());
         if (!host) return;
+        // THE PERSON IS SIGNING IN: a form is theirs to fill. Through once
+        // they typed a password and the site moved on -- the same positive
+        // evidence as a filled sign-in.
+        if (withPerson) {
+            if (!step) sawOtherPage = true;
+            if (!step && passwordFilled && !signedIn) {
+                signedIn = true;
+                if (opts.onSignedIn) await opts.onSignedIn({ cookiesBefore });
+            }
+            return;
+        }
         if (!step || (step === 'otp' && otpDeclined)) {
             if (!step) sawOtherPage = true;
             // POSITIVE evidence only: a password step this run filled, and
@@ -565,6 +593,20 @@ function createSignInWatcher(context, opts) {
         if (resolved.source === 'none') {
             gaveUp = true;
             noTerminal = resolved.code === 'no-terminal';
+            if (opts.handToPerson && (resolved.code === 'no-terminal' || resolved.code === 'no-prompt')) {
+                // The baseline a saved session must beat, taken BEFORE the
+                // person types: a sign-in rotates the session cookie.
+                const before = context
+                    ? new Map((await context.cookies().catch(() => [])).map((c) => [cookieKey(c), c.value]))
+                    : null;
+                let taken = false;
+                try { taken = !!(await opts.handToPerson(host, page)); } catch (e) { void e; }
+                if (taken) {
+                    withPerson = true;
+                    cookiesBefore = before;
+                    return;
+                }
+            }
             if (noTerminal && !sawOtherPage && opts.onUnattended) {
                 opts.onUnattended(host);
                 return;
@@ -623,9 +665,26 @@ function createSignInWatcher(context, opts) {
 
     return {
         check,
-        /** Every value filled into a page, for the scrub. Codes are left out: they are dead in 30s and 6 digits long. */
+        /**
+         * Every value filled into a page, or typed by a person (addTyped), for
+         * the scrub. Codes are left out: they are dead in 30s and 6 digits long.
+         */
         secrets() {
-            return creds ? [creds.username, creds.password].filter((v) => v && v.length >= 4) : [];
+            const filled = creds ? [creds.username, creds.password].filter((v) => v && v.length >= 4) : [];
+            return [...new Set([...filled, ...typed])];
+        },
+        /**
+         * What a person typed into a password or sign-in-name box, FINAL (the
+         * phone view reports it once the box is left or submitted). Kept for
+         * the scrub; a password counts as the person's sign-in going in, but
+         * only while they are signing in for this watcher -- with no baseline
+         * of cookies from before, a save could not tell a session from none.
+         */
+        addTyped(t) {
+            if (!t || typeof t.value !== 'string' || t.value.length < 4) return;
+            if (t.kind !== 'password' && t.kind !== 'username') return;
+            if (!typed.includes(t.value)) typed.push(t.value);
+            if (t.kind === 'password' && withPerson) passwordFilled = true;
         },
         /** The hosts whose session is this capture's: the start host and every host a form was filled on. */
         hosts() {
@@ -633,7 +692,7 @@ function createSignInWatcher(context, opts) {
         },
         /** For session.json: where the credentials came from, never what they were. */
         result() {
-            const r = { source: creds ? creds.source : (gaveUp ? 'none' : null), signedIn };
+            const r = { source: creds ? creds.source : withPerson ? 'person' : (gaveUp ? 'none' : null), signedIn };
             if (noTerminal) r.needed = true;
             return r;
         }

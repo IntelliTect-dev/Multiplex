@@ -27,7 +27,11 @@ skills/web-api-discovery/
 │   │   ├── pacing.js                # human-scale pacing; reads throttling / blocks
 │   │   │                            #   in responses and decides pause or hand-over
 │   │   ├── pacing.test.js           # zero-dep behavior suite for the above
-│   │   ├── sign-in.js               # the recorder signs in (Bitwarden / prompt), paced
+│   │   ├── sign-in.js               # the recorder signs in (Bitwarden / prompt), paced;
+│   │   │                            #   with nobody at the terminal, hands it to the phone
+│   │   ├── mirror.js                # a hand-over's private phone view: the live tab,
+│   │   │                            #   taps, and typing into the page's own text boxes
+│   │   ├── mirror-fields.js         # the page's text boxes on screen, for mirror.js
 │   │   ├── capture-ending.js        # where a capture's ending has got to: what `stop`
 │   │   │                            #   waits on and `status` reports (progressing,
 │   │   │                            #   stalled, or a stop that never registered)

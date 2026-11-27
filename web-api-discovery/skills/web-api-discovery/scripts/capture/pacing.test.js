@@ -969,6 +969,24 @@ test('L1: the hand-over says who has the browser, gives the phone link, and evad
     assert.doesNotMatch(headless, /THE BROWSER IS YOURS/);
 });
 
+test('L1b: a sign-in hand-over (#155) says the site asks the person to sign in, and that nobody does it for them', () => {
+    const decision = { action: 'hand-over', why: 'sign-in',
+        signal: { kind: 'sign-in', status: 200, url: 'https://www.example.com/ap/signin?return=%2Forders&email=x%40y',
+            retryAfterMs: null, signature: 'a sign-in form' } };
+    const link = 'http://100.101.102.103:41234/m/abc/';
+    const said = pacing.throttleLines(decision, 'agent-unstarted', { link }).map(([, t]) => t).join('\n');
+    assert.match(said, /^capture-har: Handed over to you: the site asks you to sign in\./);
+    assert.ok(said.includes(`Open on your phone: ${link}`), said);
+    assert.match(said, /a sign-in form on https:\/\/www\.example\.com\/ap\/signin\./, 'says where, never the query');
+    assert.doesNotMatch(said, /email=|return=/);
+    assert.match(said, /The agent has not been started/);
+    assert.match(said, /Nobody signs in for you: the agent never sees or types a credential\./);
+    assert.doesNotMatch(said, /solves it|answer the check/, 'a sign-in is not a bot check');
+    assert.match(said, /sign in yourself/);
+    assert.match(said, /THE BROWSER IS YOURS/);
+    assert.strictEqual(pacing.handOverReason(decision), 'the site asks you to sign in');
+});
+
 test('L2: the pause and resume lines say until when, for how long, and why', () => {
     const start = Date.parse('2026-11-17T10:37:00Z');
     const clock = (ms) => `T+${(ms - start) / MIN}`;

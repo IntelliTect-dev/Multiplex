@@ -472,6 +472,7 @@ const capturePause = require(path.join(__dirname, 'capture-pause.js'));
 const agentStream = require(path.join(__dirname, 'agent-stream.js'));
 // The private phone view of the browser during a hand-over.
 const mirror = require(path.join(__dirname, 'mirror.js'));
+const mirrorFields = require(path.join(__dirname, 'mirror-fields.js'));
 // Where the END of a capture has got to, and whether it is still getting
 // anywhere: the recorder writes it down, `stop` waits on it, `status` asks it
 // once. See "## Stopping from another process" above.
@@ -660,6 +661,10 @@ const AGENT_DRAIN_MAX_MS = 5000;
 // `result` with one outstanding is not "finished" -- but an acknowledgement
 // that never comes must not keep a finished agent's session open for ever.
 const AGENT_ACK_GRACE_MS = 30000;
+// How long an -AI run lets the sign-in watcher's first look at the start page
+// finish before launching the agent (#155). Bounded: with somebody at the
+// terminal that look can be a prompt they take a minute over.
+const FIRST_SIGN_IN_CHECK_MS = 10000;
 // HOW LONG A HAND-OVER WAITS FOR A PERSON NOBODY IS AT THE TERMINAL FOR. With
 // a phone link the person may be anywhere; without an answer from it in this
 // long, the recording ends as `handed-over` and is post-processed.
@@ -3540,6 +3545,10 @@ function agentExitEnding(result, recordingEndedBy, ctx = {}) {
  *          operator is told instead
  */
 function agentStartRefusal(session, recordingEndedBy) {
+    if (session.handOver && !session.handOver.resolved && session.handOver.kind === 'sign-in') {
+        return [['warn', 'capture-har: the agent was not started: the start page needs a sign-in, and nobody ' +
+            `signed in (on ${session.handOver.url}).\n  The browser is yours; nothing will drive it.`]];
+    }
     if (session.handOver && !session.handOver.resolved) {
         return [['warn', 'capture-har: the agent was not started: the site refused the start page ' +
             `(${session.handOver.signature} on ${session.handOver.url}).\n` +
@@ -3982,8 +3991,7 @@ function postProcess(session, opts = {}) {
     // without them -- `stop` after the recorder died -- still scrubs by key
     // name, but cannot prove the filled values gone, and says so rather than
     // letting a pass read as one that checked.
-    if (!opts.literals && session.signIn
-        && (session.signIn.source === 'bitwarden' || session.signIn.source === 'prompt')) {
+    if (!opts.literals && session.signIn && ['bitwarden', 'prompt', 'person'].includes(session.signIn.source)) {
         state.warnings.push('sign-in: this capture signed in, but the values it filled were not ' +
             'available to this scrub (the recorder that held them has exited). They were scrubbed ' +
             'by field name only; check the scrubbed capture for them before sharing it.');
@@ -4830,12 +4838,17 @@ function createTerminal(rl, present = !!rl) {
     };
 }
 
-/** An unattended run met a sign-in form (#115). */
-function signInNeededLines(host) {
+/**
+ * An unattended run met a sign-in form (#115) that nobody could take over.
+ * `noLink`, when given, is why there was no phone view to hand it to (#155).
+ */
+function signInNeededLines(host, noLink) {
     return [
         ['warn', `capture-har: ${host} needs a sign-in, and nobody is at this terminal to start one.`],
+        ...(noLink ? [['warn', `  ${noLink}`]] : []),
         ['warn', '  Ending now rather than recording a login page. Sign in once from a terminal'],
-        ['warn', '  (Bitwarden or the prompt fills it); the saved session lets unattended runs through.']
+        ['warn', '  (Bitwarden or the prompt fills it), or from your phone when this PC is on a'],
+        ['warn', '  Tailscale tailnet; the saved session lets unattended runs through.']
     ];
 }
 
@@ -5561,6 +5574,9 @@ async function start(args) {
         }
         return true;
     };
+    // The sign-in watcher, once it exists: the phone view of ANY hand-over
+    // hands it what the person typed (a sign-in met during a bot check too).
+    let signInWatcherRef = null;
     const startHandOver = async (decision, who, info) => {
         const h = { who, phone: null, timer: null };
         handOver = h;
@@ -5575,7 +5591,7 @@ async function start(args) {
         // Tailscale address only, behind a one-time token. No Tailscale, no
         // link -- and the PC hand-over is exactly what it was.
         let noLink = null;
-        const tailnet = mirror.findTailnetAddress({ env: process.env });
+        const tailnet = (info && info.tailnet) || mirror.findTailnetAddress({ env: process.env });
         if (!tailnet.address) {
             noLink = `No phone link: ${tailnet.reason}.`;
         } else {
@@ -5588,7 +5604,12 @@ async function start(args) {
                     cdp,
                     status: mirror.handOverStatus(record),
                     onDone: () => handBack('phone'),
-                    onEnd: () => { if (handOver === h) settle('ended-on-phone'); }
+                    onEnd: () => { if (handOver === h) settle('ended-on-phone'); },
+                    // The page's own text boxes, so the phone types into them
+                    // (#155) -- and what the person types into a password or
+                    // sign-in name goes to the scrub, as a filled one does.
+                    fields: () => mirrorFields.readFields(page),
+                    onTyped: (t) => { if (signInWatcherRef) signInWatcherRef.addTyped(t); }
                 });
             } catch (e) {
                 noLink = `No phone link: the phone view could not start (${e.message}).`;
@@ -5649,6 +5670,13 @@ async function start(args) {
                 if (!sent) log.warn('capture-har: the agent could not be told to wait: its input has closed. The browser still holds.');
             }
             syncPauses();
+            return;
+        }
+        // THE PERSON ALREADY HAS THE BROWSER (a sign-in handed over, and now
+        // a check after it): the same hand-over goes on; they are told here.
+        if (handOver) {
+            log.lines(pacing.throttleLines(decision, 'you'));
+            writeSession();
             return;
         }
         session.handOver = Object.assign({}, record,
@@ -5717,6 +5745,8 @@ async function start(args) {
             resolve();
         }));
     }
+    // Why a sign-in could not be handed to a phone, for the line that ends the run.
+    let signInNoLink = null;
     const signInWatcher = signIn.createSignInWatcher(context, {
         uri: args.uri,
         inScope: scope ? (p) => scope.owns(p) : null,
@@ -5726,8 +5756,37 @@ async function start(args) {
         resolve: (host) => signIn.resolveCredentials(host, signIn.createBitwarden(), terminal),
         say: (lines) => log.lines(lines.map((l) => ['info', l])),
         onUnattended: (host) => {
-            log.lines(signInNeededLines(host));
+            log.lines(signInNeededLines(host, signInNoLink));
             settle('sign-in-needed');
+        },
+        // NOBODY AT THE TERMINAL, BUT A PERSON CAN TAKE OVER (#155): an agent's
+        // capture, on a PC with a phone view, hands the sign-in to the person
+        // -- as a bot check is handed -- instead of ending. They sign in on
+        // their own device; the agent waits (or, on the start page, starts
+        // after). A person's own capture (no -AI) is theirs already, and keeps
+        // what it did.
+        handToPerson: (host, page) => {
+            if (reason) return false;
+            // Already theirs (a check handed over, and now a sign-in): the
+            // same hand-over goes on, and what they type is scrubbed.
+            if (handOver) return true;
+            const who = driverNow();
+            if (who !== 'agent' && who !== 'agent-unstarted' && who !== 'agent-unmessaged') return false;
+            const tailnet = mirror.findTailnetAddress({ env: process.env });
+            if (!tailnet.address) {
+                signInNoLink = `No phone link: ${tailnet.reason}.`;
+                return false;
+            }
+            const signal = { kind: 'sign-in', status: 200, url: page.url(), signature: 'a sign-in form', retryAfterMs: null };
+            const decision = { action: 'hand-over', why: 'sign-in', signal };
+            session.handOver = { at: new Date().toISOString(), kind: 'sign-in', status: 200,
+                url: pacing.whereOf(signal.url), signature: signal.signature, retryAfterMs: null,
+                action: 'hand-over', why: 'sign-in', by: who === 'agent-unstarted' ? 'agent-not-started' : 'person' };
+            writeSession();
+            void startHandOver(decision, who, { page, tailnet }).catch((e) => {
+                log.warn(`capture-har: the hand-over could not be set up fully: ${e.message}`);
+            });
+            return true;
         },
         onSignedIn: async ({ cookiesBefore } = {}) => {
             // On the session AS IT HAPPENS, not only at the end: a `stop` that
@@ -5753,6 +5812,7 @@ async function start(args) {
                 : `capture-har: signed in -- session NOT saved: ${why}`);
         }
     });
+    signInWatcherRef = signInWatcher;
 
     // WHO MADE THIS, written with the first session.json (#26). `captureId` is
     // this recorder invocation and nothing else; `run` is what every capture
@@ -5795,7 +5855,7 @@ async function start(args) {
     });
     // Not awaited: a prompt here must not hold back the banner or the endings.
     // A `load` the watcher missed during `goto` is covered by looking now.
-    signInWatcher.check(page);
+    const firstSignInCheck = signInWatcher.check(page);
 
     log.lines(startBannerLines(session));
 
@@ -5833,6 +5893,11 @@ async function start(args) {
     if (ai) {
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
+        // A LOGIN WALL ON THE START PAGE is handed to a person BEFORE the agent
+        // exists (#155), as a refused start page is: the first look at the
+        // page is given a bounded moment to finish, so the agent is not
+        // launched onto a sign-in only to be told to wait.
+        await Promise.race([Promise.resolve(firstSignInCheck).catch(() => {}), sleep(FIRST_SIGN_IN_CHECK_MS)]);
         // A hand-over is set up asynchronously; give one in progress a moment
         // to register before asking whether anything is paused.
         await sleep(0);

@@ -1093,11 +1093,24 @@ not sent). Then the browser is yours, still open and still recording:
   and continue".
 - **On your phone**, when this PC is on a **Tailscale** tailnet: the hand-over
   line carries a link to a live view of the capture browser's tab
-  (`mirror.js`). It shows the page as it is and relays your taps, typing,
-  scrolling and Back into it -- and, in **Press & drag** mode, press, move and
-  release, for a "Press & Hold" or a slider; pinch to zoom. Two buttons: **I'm
-  done, continue** and **End the capture**. Whichever you use first, here or
-  there, wins.
+  (`mirror.js`). It shows the page as it is and relays your taps, scrolling
+  and Back into it -- and, in **Press & drag** mode, press, move and release,
+  for a "Press & Hold" or a slider; pinch to zoom. Two buttons: **I'm done,
+  continue** and **End the capture**. Whichever you use first, here or there,
+  wins.
+- **You type into the page's own text boxes** (#155). The recorder tells the
+  phone where the page's text boxes are (`mirror-fields.js`: every frame, a
+  cross-origin one included; never a password's value), and the phone lays a
+  real box of the same type over each. Tap one and your phone's own keyboard
+  opens on it; your **password manager** (Bitwarden, Google Password Manager)
+  can fill a username and password together. The page's address is this
+  PC's, not the site's, so the password manager will not match the login by
+  itself: search for the site and pick it, and decline if it offers to save
+  this page's address to the login. What you type reaches the page as **key
+  presses**, one per character at a typing pace -- never inserted text, which
+  bot protection reads as a script (#61) -- and Enter or **Go** submits. A
+  field that is not a real text box (a canvas) has the **Keyboard** fallback:
+  a separate box, masked when you tapped a password field.
 - **The phone view is private by construction.** It listens only on this PC's
   Tailscale IPv4 address, read at run time from `tailscale status --json`, and
   only if that address is a tailnet one (`100.64.0.0/10`) -- never on every
@@ -1150,8 +1163,9 @@ never a warm-up request or a retry.
 ### Signing in
 
 When a sign-in form appears in a capture tab, **the recorder fills it -- never
-the agent, and never the human typing into the capture browser** (#115). There
-is no option to turn on; it happens only when a form is actually seen.
+the agent** (#115) -- or, when nobody is at the terminal, **hands it to you on
+your phone** (#155). There is no option to turn on; it happens only when a
+form is actually seen.
 
 | Situation | What happens |
 |---|---|
@@ -1160,7 +1174,8 @@ is no option to turn on; it happens only when a form is actually seen.
 | `bw` installed and locked | Your master password is asked for, masked, and the vault unlocked for this run only. |
 | `bw` installed but logged out | It says `bw login`, then prompts. |
 | `bw` not installed | It prints the install command (`winget install Bitwarden.CLI` on Windows), then asks for username, password (masked) and, if the site asks, a one-time code. A blank password means "I'll sign in in the browser". |
-| **Nobody at the terminal** (an agent or a schedule started the run) | **Nothing is read from the vault, even an unlocked one.** If the *first* page is the login wall, the run ends at once with exit **8**, *sign-in needed*, keeping the raw and skipping post-processing. A session that expires *mid-run* is a notice instead -- what was recorded is kept. |
+| **Nobody at the terminal, `-AI`, and this PC on a Tailscale tailnet** (an AI session you drive from a laptop or phone started the run) | **Handed over to you**, as a bot check is: the line says *the site asks you to sign in* and carries the phone link; the agent is told to wait -- or, on the start page, is not started until you hand back. **You sign in on your phone**, typing into the page's own boxes or filling them from your password manager. Nothing is read from the vault on this PC. |
+| **Nobody at the terminal** otherwise (no tailnet, a schedule, a capture without `-AI`) | **Nothing is read from the vault, even an unlocked one.** If the *first* page is the login wall, the run ends at once with exit **8**, *sign-in needed*, keeping the raw and skipping post-processing; the line says why there was no phone link. A session that expires *mid-run* is a notice instead -- what was recorded is kept. |
 | A terminal nobody is reading (`--no-wait`) | No vault read and no prompt (there is no reader to answer one), and no exit 8 either. Sign in in the browser. |
 
 What is guaranteed:
@@ -1197,18 +1212,34 @@ What is guaranteed:
   cannot replace a working session), and never from a browser the run attached
   to. Storage state has no field for a password. A later `-Isolated` capture
   reads it; the default capture profile keeps its own sign-in regardless.
+- **Signed in on the phone, the same guarantees.** What you type into a
+  password or sign-in-name box reaches the scrub as a literal, as a filled
+  value does -- once it is final (the box left, Enter, *I'm done*, or the view
+  closed), never each prefix as you type, and never a one-time code. Once you
+  have typed a password and the site has moved on from the sign-in, the
+  session is saved under the same conditions as above, against the cookies
+  from *before* you typed. A password's value never travels to the phone.
 - **A `stop` after the recorder died** still scrubs by field name, but the
-  filled values died with the recorder, so the post-process reports a warning
-  (exit 7) rather than a pass it could not check.
+  filled (or phone-typed) values died with the recorder, so the post-process
+  reports a warning (exit 7) rather than a pass it could not check.
 - **Out of scope:** CAPTCHAs, passkeys, push approvals and codes sent by SMS or
-  email. Finish those in the browser; the recording carries on.
+  email. Finish those in the browser -- or on your phone, during a hand-over:
+  a code box is a real text box there too; the recording carries on.
 - `session.json` records `signIn: { source, signedIn }` -- where the
-  credentials came from, never what they were.
+  credentials came from (`bitwarden`, `prompt`, `person` when you signed in
+  through the phone, `none`), never what they were.
 
 **Starting captures unattended (from a phone, a schedule, an agent).** Sign in
-once from a terminal; the saved session carries the unattended runs that
-follow. When it expires, the next unattended run ends with exit 8 instead of
-recording a login page, and whoever started it tells you to sign in again.
+once from a terminal, or on your phone when an `-AI` run hands the sign-in
+over; the saved session carries the unattended runs that follow. When it
+expires, the next `-AI` run on a tailnet hands it to you again; any other
+unattended run ends with exit 8 instead of recording a login page, and
+whoever started it tells you to sign in again. **The recording machine must
+itself be on the tailnet**: a Docker container behind its host's Tailscale
+has no tailnet address of its own, so the phone cannot reach it -- give the
+container its own Tailscale node (`NET_ADMIN`, `/dev/net/tun`, `tailscaled`),
+not userspace networking, which would expose the container's loopback-only
+services (the capture browser's debugging port among them) to the tailnet.
 Whether the start would be refused before it opens a browser -- no driver, no
 operator profile, no agent -- can be asked beforehand: see **Check first**,
 under Preflight below.

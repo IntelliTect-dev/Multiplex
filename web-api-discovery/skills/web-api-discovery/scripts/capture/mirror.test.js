@@ -22,9 +22,11 @@
 //   T5  frames: the screencast starts, each frame is acknowledged and reaches
 //       the phone; closing stops the screencast, ends the page and stops
 //       listening
-//   T6  input: taps, press/move/release, scroll, typing (Input.insertText),
-//       keys and Back reach the page through CDP, in order; a cross-origin or
-//       non-JSON post is refused; the two buttons call back
+//   T6  input: taps, press/move/release, scroll, typing, keys and Back reach
+//       the page through CDP, in order -- typing as ONE KEY PRESS PER
+//       CHARACTER, never Input.insertText (a site's bot protection reads key
+//       events: #61); a cross-origin or non-JSON post is refused; the two
+//       buttons call back
 //   T7  a view that cannot listen leaves nothing running: no screencast, no
 //       frame listener, the CDP session let go; malformed HTTP is a bare 404;
 //       one browser cannot pile up live streams
@@ -32,8 +34,30 @@
 //       phone view, and a tap and typing from it land in that page
 //   E2  the phone page's own script, in a real browser emulating a phone
 //       (touch, mobile viewport): live frames, a touch tap on the picture,
-//       typing through its text box, a press-drag-release that moves a
-//       slider, and "I'm done, continue"
+//       typing through its fallback keyboard box, a press-drag-release that
+//       moves a slider, and "I'm done, continue"
+//   T8  THE PAGE'S OWN TEXT BOXES (#155): the boxes the recorder lists reach
+//       the phone as fractions of the picture, with what each is for and the
+//       autocomplete a password manager looks for; a password's value never
+//       does, even from a lister that offers one; an unchanged list is not
+//       sent again, a changed one is, with a new generation
+//   T9  typing into a box: focus taps the box in the page and CLEARS it
+//       (select all, Backspace) -- the phone then sends what its own box
+//       shows, so the page's box ends up exactly as the phone shows it,
+//       whatever a stale list said it held; each change is replayed as key
+//       presses -- an append is the new characters, a deletion Backspace, an
+//       edit in the middle arrows to it -- and a character no key types is
+//       inserted whole; nothing happens without a focus
+//   T10 what the person typed into a password or sign-in-name box reaches the
+//       scrub (onTyped) once it is FINAL -- the box left, Enter, done, or the
+//       view closed -- never a prefix of it, never a one-time code, an email
+//       or plain text, never twice
+//   T11 the phone's status line says what to do: sign in yourself, or answer
+//       the check
+//   E3  the phone page in a real browser at a phone's size, over a real
+//       sign-in form: a real box of the right type over each of the page's,
+//       filling them (as a password manager does) types into the page as key
+//       presses, Enter submits the form, and the password reaches the scrub
 
 'use strict';
 
@@ -377,7 +401,7 @@ test('T5: frames reach the phone; closing stops the screencast, ends the page an
 test('T6: taps, drags, scrolls, typing, keys and Back reach the page in order; the buttons call back', async () => {
     const cdp = fakeCdp();
     const calls = { done: 0, end: 0 };
-    const view = await mirror.startMirror({ host: '127.0.0.1', cdp,
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, keyGapMs: 0,
         onDone: () => { calls.done++; }, onEnd: () => { calls.end++; } });
     let watching = null;
     try {
@@ -410,10 +434,16 @@ test('T6: taps, drags, scrolls, typing, keys and Back reach the page in order; t
         ], 'a tap, then a press-drag-release -- what a "Press & Hold" or a slider needs');
         const wheel = sent.find((c) => c.params && c.params.type === 'mouseWheel');
         assert.strictEqual(wheel.params.deltaY, 300, 'half a frame down is 300 CSS px');
-        assert.deepStrictEqual(sent.find((c) => c.method === 'Input.insertText').params, { text: 'hello' });
+        assert.ok(!sent.some((c) => c.method === 'Input.insertText'),
+            'typing is key presses, never inserted text: bot protection reads key events (#61)');
         const keys = sent.filter((c) => c.method === 'Input.dispatchKeyEvent');
-        assert.deepStrictEqual(keys.map((k) => k.params.type), ['keyDown', 'keyUp']);
-        assert.strictEqual(keys[0].params.text, '\r', 'Enter submits a form, as a keyboard would');
+        assert.deepStrictEqual(keys.map((k) => `${k.params.type}:${k.params.key}`), [
+            'keyDown:h', 'keyUp:h', 'keyDown:e', 'keyUp:e', 'keyDown:l', 'keyUp:l', 'keyDown:l', 'keyUp:l',
+            'keyDown:o', 'keyUp:o', 'keyDown:Enter', 'keyUp:Enter'
+        ], 'one key press per character, then Enter');
+        assert.strictEqual(keys[0].params.text, 'h', 'each key press types its character');
+        assert.strictEqual(keys[0].params.code, 'KeyH');
+        assert.strictEqual(keys[10].params.text, '\r', 'Enter submits a form, as a keyboard would');
         assert.deepStrictEqual(sent.find((c) => c.method === 'Page.navigateToHistoryEntry').params, { entryId: 7 },
             'Back is the previous history entry');
 
@@ -485,6 +515,211 @@ test('T7: a view that cannot listen leaves nothing running; malformed HTTP is a 
 // ---------------------------------------------------------------------------
 // E1 -- a real browser
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The page's own text boxes (#155)
+// ---------------------------------------------------------------------------
+
+/** A lister that answers what `state.list` holds -- the recorder's mirror-fields.readFields. */
+function fakeFields(state) {
+    return async () => ({ vw: 400, vh: 300, fields: state.list });
+}
+
+const EMAIL_BOX = { x: 40, y: 30, w: 200, h: 30, kind: 'username', type: 'email', value: 'a@b.invalid',
+    length: 11, maxLength: 512, label: 'Email' };
+const PASSWORD_BOX = { x: 40, y: 90, w: 200, h: 30, kind: 'password', type: 'password', length: 3,
+    maxLength: 512, label: 'Password' };
+
+/** Key events since `mark`, as `type:key`. */
+function keyLog(cdp, mark) {
+    return cdp.calls.slice(mark).filter((c) => c.method === 'Input.dispatchKeyEvent' || c.method === 'Input.insertText')
+        .map((c) => (c.method === 'Input.insertText' ? `insert:${c.params.text}` : `${c.params.type}:${c.params.key}`));
+}
+
+test('T8: the page\'s text boxes reach the phone -- placed, typed, no password value -- and only when they change', async () => {
+    const cdp = fakeCdp();
+    // A lister that misbehaves and offers a password's value: it is not passed on.
+    const state = { list: [EMAIL_BOX, Object.assign({ value: 'leaked-pw' }, PASSWORD_BOX)] };
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, fields: fakeFields(state), fieldPollMs: 30 });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        watching = claimed.stream;
+        const first = await watching.next('fields');
+        assert.strictEqual(typeof first.g, 'number');
+        assert.deepStrictEqual(first.f[0], { i: 0, x: 0.1, y: 0.1, w: 0.5, h: 0.1, k: 'username', t: 'email',
+            ac: 'username', v: 'a@b.invalid', n: 11, ml: 512, l: 'Email' }, 'as fractions of the picture');
+        assert.strictEqual(first.f[1].k, 'password');
+        assert.strictEqual(first.f[1].t, 'password');
+        assert.strictEqual(first.f[1].ac, 'current-password', 'what a password manager fills');
+        assert.strictEqual(first.f[1].n, 3, 'whether it holds something');
+        assert.ok(!('v' in first.f[1]), 'a password\'s value never reaches the phone');
+        assert.ok(!JSON.stringify(watching.got).includes('leaked-pw'), 'not anywhere in the stream');
+        // Unchanged: nothing more is sent.
+        await new Promise((r) => setTimeout(r, 200));
+        assert.strictEqual(watching.got.filter((g) => g.event === 'fields').length, 1, 'an unchanged list is sent once');
+        // Changed: sent again, with a new generation.
+        state.list = [EMAIL_BOX];
+        const second = await watching.next('fields');
+        assert.ok(second.g > first.g, 'a new generation');
+        assert.strictEqual(second.f.length, 1);
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T9: typing into a box -- cleared on focus, then each change as key presses', async () => {
+    const cdp = fakeCdp();
+    const state = { list: [EMAIL_BOX, PASSWORD_BOX] };
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, fields: fakeFields(state), fieldPollMs: 30, keyGapMs: 0 });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
+        cdp.frame(400, 300);
+        const { g } = await watching.next('fields');
+
+        // No focus yet: a value goes nowhere.
+        let mark = cdp.calls.length;
+        assert.strictEqual((await post(view, cookie, { t: 'value', v: 'nowhere' })).status, 204);
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark), [], 'nothing is typed without a box');
+
+        // FOCUS the email box: a tap in its middle, then the box cleared --
+        // select all, on any platform, then Backspace.
+        mark = cdp.calls.length;
+        assert.strictEqual((await post(view, cookie, { t: 'focus', g, i: 0 })).status, 204);
+        await settle();
+        const pressed = cdp.calls.slice(mark).find((c) => c.params && c.params.type === 'mousePressed');
+        assert.ok(Math.abs(pressed.params.x - 140) < 0.01 && Math.abs(pressed.params.y - 45) < 0.01,
+            `the middle of the box, in the page: ${pressed.params.x},${pressed.params.y}`);
+        const cleared = cdp.calls.slice(mark).filter((c) => c.method === 'Input.dispatchKeyEvent');
+        assert.deepStrictEqual(cleared[0].params.commands, ['selectAll'], 'select all, on any platform');
+        assert.deepStrictEqual(keyLog(cdp, mark).slice(2), ['rawKeyDown:Backspace', 'keyUp:Backspace']);
+        // The phone sends what its box shows: typed in whole.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'a@b.invalid' });
+        await settle();
+        assert.strictEqual(keyLog(cdp, mark).filter((k) => k.startsWith('keyDown:')).length, 11, 'one key per character');
+
+        // An APPEND is just the new characters.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'a@b.invalidX!' });
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark), ['keyDown:X', 'keyUp:X', 'keyDown:!', 'keyUp:!']);
+        const bang = cdp.calls.slice(mark).find((c) => c.params && c.params.key === '!');
+        assert.strictEqual(bang.params.code, 'Digit1', 'the key that types it');
+        // A DELETION at the end is Backspace.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'a@b.invalidX' });
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark), ['rawKeyDown:Backspace', 'keyUp:Backspace']);
+        // An EDIT IN THE MIDDLE: arrow back to it, delete, type, back to the end.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'a@c.invalidX' });
+        await settle();
+        const edit = keyLog(cdp, mark);
+        assert.deepStrictEqual(edit.filter((k) => k === 'rawKeyDown:ArrowLeft').length, 9, 'back past ".invalidX"');
+        assert.deepStrictEqual(edit.slice(18), ['rawKeyDown:Backspace', 'keyUp:Backspace', 'keyDown:c', 'keyUp:c',
+            'rawKeyDown:End', 'keyUp:End']);
+        // A CHARACTER NO KEY TYPES is inserted whole.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'a@c.invalidXé' });
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark), ['insert:é']);
+
+        // FOCUS the password box: cleared the same way.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'focus', g, i: 1 });
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark).slice(2), ['rawKeyDown:Backspace', 'keyUp:Backspace']);
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'value', v: 'Pw9' });
+        await settle();
+        assert.deepStrictEqual(keyLog(cdp, mark), ['keyDown:P', 'keyUp:P', 'keyDown:w', 'keyUp:w', 'keyDown:9', 'keyUp:9']);
+
+        // A focus on a box from a generation nobody has: nothing.
+        mark = cdp.calls.length;
+        await post(view, cookie, { t: 'focus', g: g + 1000, i: 0 });
+        await post(view, cookie, { t: 'value', v: 'stale' });
+        await settle();
+        assert.ok(!cdp.calls.slice(mark).some((c) => c.method.startsWith('Input.')), 'an unknown box is nothing');
+        // Malformed messages are refused.
+        assert.strictEqual((await post(view, cookie, { t: 'focus', g: -1, i: 0 })).status, 400);
+        assert.strictEqual((await post(view, cookie, { t: 'focus', g, i: 'x' })).status, 400);
+        assert.strictEqual((await post(view, cookie, { t: 'value', v: 'x'.repeat(513) })).status, 400);
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T10: a typed password or sign-in name reaches the scrub once it is final -- never a prefix', async () => {
+    const cdp = fakeCdp();
+    const OTP_BOX = Object.assign({}, EMAIL_BOX, { y: 150, kind: 'otp', type: 'text', value: '', length: 0 });
+    const TEXT_BOX = Object.assign({}, EMAIL_BOX, { y: 200, kind: 'email', value: '', length: 0 });
+    const state = { list: [Object.assign({}, EMAIL_BOX, { value: '', length: 0 }), PASSWORD_BOX, OTP_BOX, TEXT_BOX] };
+    const typed = [];
+    let done = 0;
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, fields: fakeFields(state), fieldPollMs: 30,
+        keyGapMs: 0, onTyped: (t) => typed.push(t), onDone: () => { done++; } });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
+        cdp.frame(400, 300);
+        const { g } = await watching.next('fields');
+        // The sign-in name, typed a character at a time: nothing until it is left.
+        await post(view, cookie, { t: 'focus', g, i: 0 });
+        for (const v of ['o', 'ow', 'own', 'owne', 'owner']) await post(view, cookie, { t: 'value', v });
+        await settle();
+        assert.deepStrictEqual(typed, [], 'not while it is being typed');
+        // Left for the password box: the name is final.
+        await post(view, cookie, { t: 'focus', g, i: 1 });
+        for (const v of ['s', 'se', 'sec', 'secret-1']) await post(view, cookie, { t: 'value', v });
+        await settle();
+        assert.deepStrictEqual(typed, [{ kind: 'username', value: 'owner' }]);
+        // Enter: the password is final.
+        await post(view, cookie, { t: 'key', k: 'Enter' });
+        await settle();
+        assert.deepStrictEqual(typed, [{ kind: 'username', value: 'owner' }, { kind: 'password', value: 'secret-1' }]);
+        // A one-time code and an email box are not secrets the scrub is given.
+        await post(view, cookie, { t: 'focus', g, i: 2 });
+        await post(view, cookie, { t: 'value', v: '123456' });
+        await post(view, cookie, { t: 'blur' });
+        await post(view, cookie, { t: 'focus', g, i: 3 });
+        await post(view, cookie, { t: 'value', v: 'news@example.invalid' });
+        await post(view, cookie, { t: 'blur' });
+        // The same password again, then "I'm done": not reported twice.
+        await post(view, cookie, { t: 'focus', g, i: 1 });
+        await post(view, cookie, { t: 'value', v: 'secret-1' });
+        await post(view, cookie, { t: 'done' });
+        await settle();
+        assert.strictEqual(done, 1);
+        assert.deepStrictEqual(typed, [{ kind: 'username', value: 'owner' }, { kind: 'password', value: 'secret-1' }]);
+        // Closing makes whatever is in a box final.
+        await post(view, cookie, { t: 'focus', g, i: 1 });
+        await post(view, cookie, { t: 'value', v: 'second-pw' });
+        await settle();
+        await view.close();
+        assert.deepStrictEqual(typed.slice(2), [{ kind: 'password', value: 'second-pw' }], 'closing makes it final');
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T11: the phone\'s status line says what to do -- sign in yourself, or answer the check', () => {
+    const signInStatus = mirror.handOverStatus({ reason: 'the site asks you to sign in', why: 'sign-in' });
+    assert.match(signInStatus.text, /^Handed over to you: the site asks you to sign in\./);
+    assert.match(signInStatus.text, /Sign in yourself: tap a box in the page to type in it/);
+    assert.doesNotMatch(signInStatus.text, /Answer it/);
+    const check = mirror.handOverStatus({ reason: 'the site put up a bot check', why: 'challenge' });
+    assert.match(check.text, /Answer it yourself if you choose to/);
+});
 
 function integrationRequired(ciValue) {
     if (ciValue === undefined || ciValue === null) return false;
@@ -581,8 +816,10 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
         // button lands on the button.
         await phone.touchscreen.tap(box.x + box.width * 0.25, box.y + box.height / 6);
         await site.waitForFunction(() => document.title === 'tapped', null, { timeout: 10000 });
-        // Tap the picture of the field, type in the phone's text box, Send.
+        // Tap the picture of the field, open the fallback keyboard box, type, Send.
         await phone.touchscreen.tap(box.x + box.width * 0.75, box.y + box.height * (175 / 300));
+        assert.strictEqual(await phone.isVisible('#txt'), false, 'the fallback box is out of the way until asked for');
+        await phone.click('#kbd');
         await phone.fill('#txt', 'from the phone page');
         await phone.click('#send');
         await site.waitForFunction(() => document.getElementById('i').value === 'from the phone page', null,
@@ -591,6 +828,8 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
         // check needs -- move the page's slider from one end to the other.
         await phone.click('#mode');
         assert.strictEqual(await phone.textContent('#mode'), 'Press & drag');
+        // The fallback box pushed the picture down: measure it again.
+        Object.assign(box, await phone.locator('#screen').boundingBox());
         const y = box.y + box.height * (260 / 300);
         await phone.mouse.move(box.x + box.width * (14 / 400), y);
         await phone.mouse.down();
@@ -616,6 +855,82 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
         await view.close('Handed back.');
         await phone.waitForFunction(() => !document.getElementById('over').hidden, null, { timeout: 10000 });
         assert.match(await phone.textContent('#over-msg'), /Handed back/);
+    } finally {
+        if (view) await view.close();
+        await browser.close();
+    }
+});
+
+test('E3: the phone page lays real boxes over a real sign-in form; filling them types into the page as key presses', async () => {
+    // The owner's case (#155): a sign-in page in the capture browser, the
+    // person on their phone. The phone page's own script, in a real browser at
+    // a phone's size, over a real form read by mirror-fields.js.
+    const found = browserBlocker();
+    if (found.why) {
+        if (integrationRequired(process.env.CI)) throw new Error(`E3 cannot run: ${found.why} -- in CI that is a failure`);
+        skipped.push(`E3 (${found.why})`);
+        return;
+    }
+    const fieldsOf = require(path.join(__dirname, 'mirror-fields.js'));
+    const browser = await found.playwright.chromium.launch({ executablePath: found.chrome, headless: true });
+    let view = null;
+    try {
+        const site = await browser.newPage({ viewport: { width: 400, height: 300 } });
+        await site.setContent('<html><body style="margin:0">' +
+            '<form id="f" onsubmit="event.preventDefault(); document.title = \'submitted\'">' +
+            '<input id="u" type="email" autocomplete="username" value="stale@example.invalid" ' +
+            '  style="position:absolute;left:50px;top:40px;width:300px;height:40px">' +
+            '<input id="p" type="password" value="old" style="position:absolute;left:50px;top:120px;width:300px;height:40px">' +
+            '<button style="position:absolute;left:50px;top:200px">Sign in</button>' +
+            '</form><script>window.keys = 0; addEventListener("keydown", () => { window.keys++; }, true);</script>' +
+            '</body></html>');
+        const typed = [];
+        view = await mirror.startMirror({ host: '127.0.0.1', cdp: await site.context().newCDPSession(site),
+            fields: () => fieldsOf.readFields(site), keyGapMs: 5, onTyped: (t) => typed.push(t),
+            status: { state: 'handed-over', text: 'Handed over to you: the site asks you to sign in.' } });
+        const phoneContext = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
+        const phone = await phoneContext.newPage();
+        await phone.goto(view.url);
+        await phone.waitForFunction(() => (document.getElementById('screen').src || '').startsWith('data:image/jpeg'),
+            null, { timeout: 15000 });
+        // A REAL BOX OVER EACH of the page's, of the same kind.
+        await phone.waitForFunction(() => document.querySelectorAll('#fields input').length === 2, null, { timeout: 15000 });
+        const user = phone.locator('#fields input[autocomplete="username"]');
+        const pass = phone.locator('#fields input[type="password"]');
+        assert.strictEqual(await user.getAttribute('type'), 'email');
+        assert.strictEqual(await pass.getAttribute('autocomplete'), 'current-password', 'what a password manager fills');
+        assert.strictEqual(await phone.evaluate(() => document.querySelector('#fields input').form.id), 'fields',
+            'one form, so a password manager fills both');
+        // Placed over the picture of the page's box.
+        const shot = await phone.locator('#screen').boundingBox();
+        const ub = await user.boundingBox();
+        assert.ok(Math.abs(ub.x - (shot.x + shot.width * (50 / 400))) <= 2 &&
+            Math.abs(ub.y - (shot.y + shot.height * (40 / 300))) <= 2, `over the page's box: ${JSON.stringify({ ub, shot })}`);
+        assert.strictEqual(await user.inputValue(), 'stale@example.invalid', 'the phone\'s box shows what the page\'s does');
+        assert.strictEqual(await pass.inputValue(), '', 'but never a password');
+        // TAP IT AND TYPE, as a person does -- through the phone's own box. The
+        // page's box ends up exactly as the phone's shows it.
+        await user.tap();
+        await user.fill('');
+        await user.pressSequentially('owner@example.invalid', { delay: 10 });
+        await site.waitForFunction(() => document.getElementById('u').value === 'owner@example.invalid', null,
+            { timeout: 15000 });
+        assert.ok(await site.evaluate(() => window.keys) >= 'owner@example.invalid'.length,
+            'the page saw a key press for every character -- not inserted text (#61)');
+        // A PASSWORD MANAGER fills the box that is NOT being typed in, at the
+        // same moment -- then Enter on the one that is. The page gets both.
+        await pass.evaluate((el) => { el.value = 'Hunter2-phone'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+        await user.press('Enter');
+        await site.waitForFunction(() => document.getElementById('p').value === 'Hunter2-phone', null, { timeout: 15000 });
+        // The username's Enter was "Next" (a password follows): on to the
+        // password box, whose Enter submits.
+        await phone.waitForFunction(() => document.activeElement && document.activeElement.type === 'password');
+        await pass.press('Enter');
+        await site.waitForFunction(() => document.title === 'submitted', null, { timeout: 15000 });
+        const deadline = Date.now() + 5000;
+        while (typed.length < 2 && Date.now() < deadline) await settle();
+        assert.deepStrictEqual(typed, [{ kind: 'username', value: 'owner@example.invalid' },
+            { kind: 'password', value: 'Hunter2-phone' }], 'the final values reach the scrub');
     } finally {
         if (view) await view.close();
         await browser.close();

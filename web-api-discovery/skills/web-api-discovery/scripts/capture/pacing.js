@@ -815,7 +815,10 @@ const WHY = {
     blocked: 'the site refused the visitor',
     persistent: 'the site has gone on throttling for an hour without one page loading',
     'zero-wait': 'the site kept throttling while naming no wait to keep to (a Retry-After of 0, or already over)',
-    'retry-after-too-long': 'the site asked for a wait of more than a day'
+    'retry-after-too-long': 'the site asked for a wait of more than a day',
+    // Not a signal from the site's traffic: the recorder met a sign-in form
+    // with nobody at the terminal, and a person can take it over (#155).
+    'sign-in': 'the site asks you to sign in'
 };
 
 /** Why a hand-over happened, in a phrase. */
@@ -892,7 +895,11 @@ function throttleLines(decision, who = 'you', opts = {}) {
     if (decision.action !== 'hand-over') return [];
     const why = handOverReason(decision);
     const wait = s.retryAfterMs !== null ? ` It asked for ${describeDuration(s.retryAfterMs)} before the next request.` : '';
-    const evade = 'Nothing here retries it, solves it or works around it.';
+    const signIn = decision.why === 'sign-in';
+    const evade = signIn
+        ? 'Nobody signs in for you: the agent never sees or types a credential.'
+        : 'Nothing here retries it, solves it or works around it.';
+    const answer = signIn ? 'sign in yourself' : 'answer the check yourself if you choose to';
     if (who === 'you') {
         return [['warn', `${tool}: ${why} (${at}).${wait}\n  ${evade} Answer it yourself in the browser if you choose\n` +
             '  to, or end the recording; what was recorded so far is kept.']];
@@ -911,7 +918,7 @@ function throttleLines(decision, who = 'you', opts = {}) {
         `  ${at}.${wait}${noLink}\n` +
         `  ${told}. ${evade}\n` +
         '  THE BROWSER IS YOURS: it is still open, and still recording. Take over there' +
-        (opts.link ? ' or on\n  your phone' : '') + ' -- answer the check yourself if you choose to -- then\n' +
+        (opts.link ? ' or on\n  your phone' : '') + ` -- ${answer} -- then\n` +
         `  ${finish}. What was recorded is kept.`]];
 }
 

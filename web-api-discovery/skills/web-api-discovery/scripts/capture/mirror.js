@@ -44,12 +44,39 @@
  * instead. It solves nothing and disguises nothing: the person answers the
  * check (THE BOUNDARY, SKILL.md).
  *
- * THE TRANSPORT is Server-Sent Events down (frames and status) and small JSON
- * POSTs up (input) -- not a WebSocket, because Node has no WebSocket server
- * built in and this skill is zero-dependency. The messages are the ones the
- * Multiplex server's live sign-in mirror uses on a phone: tap, scroll, text,
- * key, back -- plus press / move / release, so a "Press & Hold" or a slider
- * can be answered, and done / end.
+ * THE TRANSPORT is Server-Sent Events down (frames, status and the page's
+ * text boxes) and small JSON POSTs up (input) -- not a WebSocket, because Node
+ * has no WebSocket server built in and this skill is zero-dependency. The
+ * messages are the ones the Multiplex server's live sign-in mirror uses on a
+ * phone: tap, scroll, text, key, back -- plus press / move / release, so a
+ * "Press & Hold" or a slider can be answered; focus / value / blur, for the
+ * page's own text boxes; and done / end.
+ *
+ * TYPING INTO THE PAGE'S OWN TEXT BOXES (#155). A picture has no text box to
+ * type into, so the recorder lists the page's (mirror-fields.js, `opts.fields`)
+ * and the phone lays a real one over each, of the same type, with the
+ * `autocomplete` a password manager looks for. Tapping one opens the phone's
+ * own keyboard on it; its password manager can fill it. `focus` taps the
+ * page's box and CLEARS it, and the phone then sends what its own box shows:
+ * so the page's box ends up exactly as the phone shows it, whatever a list
+ * read a moment ago said it held. Each `value` is the phone box's whole text,
+ * and only the DIFFERENCE from the last is replayed -- new characters typed,
+ * Backspace for a deletion, arrow keys to an edit in the middle.
+ *
+ * AS KEY PRESSES, never inserted text: one key down and up per character, a
+ * typing pace apart, as PR #84 made the server's mirror do -- a site's bot
+ * protection reads key events, and Akamai refused a sign-in whose text simply
+ * appeared (#61). A character no key on a US keyboard types (an accented
+ * letter, an emoji) is inserted whole; a line break or a tab is dropped, since
+ * as a key it would press Enter or Tab part-way through.
+ *
+ * WHAT WAS TYPED INTO A PASSWORD OR SIGN-IN-NAME BOX goes to the scrub
+ * (`opts.onTyped`), as a credential the recorder filled does -- once it is
+ * FINAL (the box left, Enter, done, end, or the view closed), never a prefix
+ * of it: a one-letter prefix as a scrub literal would replace that letter
+ * everywhere. Codes are left out, as sign-in.js leaves them out: dead in 30 s
+ * and six digits long. A password's value never travels the other way: the
+ * phone is told only whether the page's box holds something.
  *
  * Zero dependencies. The CDP session is anything with send(method, params)
  * and on/off(event, fn) -- Playwright's CDPSession, or a test's fake.
@@ -72,6 +99,23 @@ const TAILSCALE_TIMEOUT_MS = 5000;
 // How many live streams the one browser holding the view may have open: a
 // phone that reconnects keeps its newest few, and the oldest are ended.
 const MAX_STREAMS = 3;
+// Typing pace: one key press per character, this far apart (PR #84's pace).
+const KEY_GAP_MS = 50;
+// How often the page's text boxes are read while a phone is watching, and how
+// soon after an input -- a tap can open a form, a scroll moves one.
+const FIELD_POLL_MS = 700;
+const FIELD_SOON_MS = 150;
+const MAX_FIELDS = 40;
+// Generations of the box list a focus may still name: a tap on a list that
+// changed a moment ago still means that box.
+const FIELD_GENERATIONS = 4;
+// The shortest typed value the scrub is given: a shorter literal would
+// replace common text everywhere (sign-in.js keeps the same floor).
+const MIN_SECRET_LENGTH = 4;
+const FIELD_KINDS = ['password', 'otp', 'username', 'email', 'tel', 'number', 'text'];
+const FIELD_TYPES = ['text', 'email', 'password', 'tel', 'number', 'search', 'url'];
+const INPUT_MODES = ['text', 'numeric', 'decimal', 'tel', 'email', 'url', 'search'];
+const SECRET_KINDS = ['password', 'username'];
 
 // The only keys the phone may press, as CDP describes them.
 const KEYS = Object.freeze({
@@ -85,6 +129,41 @@ const KEYS = Object.freeze({
     ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
     ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 }
 });
+
+// Keys the RECORDER presses to edit a box -- never sent by the phone.
+const NAV_KEYS = Object.freeze({
+    End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 },
+    ArrowLeft: KEYS.ArrowLeft,
+    Backspace: KEYS.Backspace
+});
+
+// The key that types each printable ASCII character on a US keyboard, so a
+// character arrives as a key press, not as inserted text.
+const US_KEYS = (() => {
+    const map = {};
+    for (let c = 0; c < 26; c++) {
+        const lower = String.fromCharCode(97 + c);
+        const upper = lower.toUpperCase();
+        map[lower] = { code: `Key${upper}`, vk: upper.charCodeAt(0) };
+        map[upper] = { code: `Key${upper}`, vk: upper.charCodeAt(0) };
+    }
+    const shiftedDigits = ')!@#$%^&*(';
+    for (let d = 0; d < 10; d++) {
+        map[String(d)] = { code: `Digit${d}`, vk: 48 + d };
+        map[shiftedDigits[d]] = { code: `Digit${d}`, vk: 48 + d };
+    }
+    map[' '] = { code: 'Space', vk: 32 };
+    for (const [plain, shifted, code, vk] of [
+        ['-', '_', 'Minus', 189], ['=', '+', 'Equal', 187], ['[', '{', 'BracketLeft', 219],
+        [']', '}', 'BracketRight', 221], ['\\', '|', 'Backslash', 220], [';', ':', 'Semicolon', 186],
+        ["'", '"', 'Quote', 222], [',', '<', 'Comma', 188], ['.', '>', 'Period', 190],
+        ['/', '?', 'Slash', 191], ['`', '~', 'Backquote', 192]
+    ]) {
+        map[plain] = { code, vk };
+        map[shifted] = { code, vk };
+    }
+    return Object.freeze(map);
+})();
 
 // ---------------------------------------------------------------------------
 // Where: this PC's Tailscale address
@@ -235,7 +314,13 @@ function parseInput(doc) {
         case 'key':
             return typeof doc.k === 'string' && Object.prototype.hasOwnProperty.call(KEYS, doc.k)
                 ? { t: 'key', k: doc.k } : null;
-        case 'back': case 'done': case 'end':
+        case 'focus':
+            return Number.isInteger(doc.g) && doc.g >= 0 && Number.isInteger(doc.i) && doc.i >= 0 && doc.i < MAX_FIELDS
+                ? { t: 'focus', g: doc.g, i: doc.i } : null;
+        case 'value':
+            // The phone box's whole text; empty is a box cleared.
+            return typeof doc.v === 'string' && doc.v.length <= MAX_TEXT_LENGTH ? { t: 'value', v: doc.v } : null;
+        case 'back': case 'done': case 'end': case 'blur':
             return { t: doc.t };
         default:
             return null;
@@ -246,7 +331,7 @@ function parseInput(doc) {
  * Replay one input into the page over CDP. `size` is the CSS size of the
  * frame the phone tapped on, so a fraction of it is a point in the page.
  */
-async function relayInput(cdp, input, size) {
+async function relayInput(cdp, input, size, gapMs = KEY_GAP_MS) {
     const at = () => ({ x: input.x * size.w, y: input.y * size.h });
     const mouse = (type, extra) => cdp.send('Input.dispatchMouseEvent', Object.assign({ type }, at(), extra));
     switch (input.t) {
@@ -269,15 +354,12 @@ async function relayInput(cdp, input, size) {
             await mouse('mouseWheel', { deltaX: input.dx * size.w, deltaY: input.dy * size.h });
             return;
         case 'text':
-            // Into whatever has focus, as a phone keyboard would.
-            await cdp.send('Input.insertText', { text: input.v });
+            // Into whatever has focus, as key presses (typeText).
+            await typeText(cdp, input.v, gapMs);
             return;
-        case 'key': {
-            const k = KEYS[input.k];
-            await cdp.send('Input.dispatchKeyEvent', Object.assign({ type: k.text ? 'keyDown' : 'rawKeyDown' }, k));
-            await cdp.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, k, { text: undefined }));
+        case 'key':
+            await pressKey(cdp, KEYS[input.k]);
             return;
-        }
         case 'back': {
             const history = await cdp.send('Page.getNavigationHistory');
             const entry = history && history.entries && history.entries[history.currentIndex - 1];
@@ -286,6 +368,121 @@ async function relayInput(cdp, input, size) {
         }
         default:
     }
+}
+
+// ---------------------------------------------------------------------------
+// Typing: key presses, and the difference between two values
+// ---------------------------------------------------------------------------
+
+const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+
+/** One key, down and up, as a keyboard sends it. */
+async function pressKey(cdp, k, extra = {}) {
+    await cdp.send('Input.dispatchKeyEvent', Object.assign({ type: k.text ? 'keyDown' : 'rawKeyDown' }, k, extra));
+    await cdp.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, k, extra, { text: undefined, commands: undefined }));
+}
+
+/**
+ * `text` into whatever has focus, ONE KEY PRESS PER CHARACTER, `gapMs` apart.
+ * A character no US key types is inserted whole; line breaks, tabs and other
+ * control characters are dropped (as keys they would press Enter or Tab).
+ */
+async function typeText(cdp, text, gapMs = KEY_GAP_MS) {
+    let first = true;
+    for (const ch of Array.from(String(text))) {
+        if (/[\u0000-\u001f\u007f]/.test(ch)) continue;
+        if (!first) await sleep(gapMs);
+        first = false;
+        const k = US_KEYS[ch];
+        if (k) {
+            await pressKey(cdp, { key: ch, code: k.code, windowsVirtualKeyCode: k.vk, text: ch, unmodifiedText: ch });
+        } else {
+            await cdp.send('Input.insertText', { text: ch });
+        }
+    }
+}
+
+/** Select everything in the focused box: the editing command, on any platform. */
+async function selectAll(cdp) {
+    await pressKey(cdp, { key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 },
+        { modifiers: process.platform === 'darwin' ? 4 : 2, commands: ['selectAll'] });
+}
+
+/**
+ * How to turn `prev` into `next` with the caret at the end: `left` presses of
+ * ArrowLeft past what the two share at the end, `back` Backspaces, then type
+ * `insert` (and End again, when the caret moved).
+ */
+function editKeys(prev, next) {
+    const a = Array.from(prev);
+    const b = Array.from(next);
+    let p = 0;
+    while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    let q = 0;
+    while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+    return { left: q, back: a.length - p - q, insert: b.slice(p, b.length - q).join('') };
+}
+
+async function replayEdit(cdp, prev, next, gapMs) {
+    const e = editKeys(prev, next);
+    for (let i = 0; i < e.left; i++) await pressKey(cdp, NAV_KEYS.ArrowLeft);
+    for (let i = 0; i < e.back; i++) {
+        if (i) await sleep(gapMs);
+        await pressKey(cdp, NAV_KEYS.Backspace);
+    }
+    if (e.insert) {
+        if (e.back) await sleep(gapMs);
+        await typeText(cdp, e.insert, gapMs);
+    }
+    if (e.left) await pressKey(cdp, NAV_KEYS.End);
+}
+
+// ---------------------------------------------------------------------------
+// The page's text boxes, as the phone is told them
+// ---------------------------------------------------------------------------
+
+function clampFraction(v) {
+    return Math.min(1, Math.max(0, Math.round(v * 1e4) / 1e4));
+}
+
+function autocompleteFor(kind, newPassword) {
+    if (kind === 'password') return newPassword ? 'new-password' : 'current-password';
+    return { otp: 'one-time-code', username: 'username', email: 'email', tel: 'tel' }[kind] || 'off';
+}
+
+/**
+ * The lister's answer (mirror-fields.readFields) as the phone is told it:
+ * fractions of the picture, what each box is for, and -- for anything but a
+ * password -- what it shows. A password's value is never passed on, whatever
+ * the lister offered.
+ */
+function phoneFields(read) {
+    if (!read || !(read.vw > 0) || !(read.vh > 0) || !Array.isArray(read.fields)) return [];
+    const finite = (v) => typeof v === 'number' && Number.isFinite(v);
+    return read.fields
+        .filter((f) => f && finite(f.x) && finite(f.y) && finite(f.w) && finite(f.h) && f.w > 0 && f.h > 0)
+        .slice(0, MAX_FIELDS)
+        .map((f, i) => {
+            const kind = FIELD_KINDS.includes(f.kind) ? f.kind : 'text';
+            const out = {
+                i,
+                x: clampFraction(f.x / read.vw), y: clampFraction(f.y / read.vh),
+                w: clampFraction(f.w / read.vw), h: clampFraction(f.h / read.vh),
+                k: kind,
+                t: kind === 'password' ? 'password'
+                    // A number box is a text box with a number pad: the browser's
+                    // own number box mangles what it does not like.
+                    : (FIELD_TYPES.includes(f.type) && f.type !== 'password' && f.type !== 'number' ? f.type : 'text'),
+                ac: autocompleteFor(kind, !!f.newPassword)
+            };
+            if (kind !== 'password' && typeof f.value === 'string') out.v = f.value.slice(0, MAX_TEXT_LENGTH);
+            out.n = Number.isInteger(f.length) && f.length > 0 ? f.length : 0;
+            out.ml = Number.isInteger(f.maxLength) && f.maxLength > 0 ? Math.min(f.maxLength, MAX_TEXT_LENGTH) : MAX_TEXT_LENGTH;
+            out.l = String(f.label || '').slice(0, 60);
+            if (INPUT_MODES.includes(f.inputmode)) out.im = f.inputmode;
+            else if (f.type === 'number' || kind === 'otp') out.im = 'numeric';
+            return out;
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +544,13 @@ function spentPage(res) {
  *   status   {state, text} for the status line
  *   onDone   the person tapped "I'm done, continue"
  *   onEnd    the person tapped "End the capture"
+ *   fields   optional: async () => mirror-fields.readFields(page) -- the
+ *            page's text boxes, read while a phone watches, so the phone can
+ *            lay a real box over each. Absent, the phone has only its
+ *            fallback keyboard box.
+ *   onTyped  optional: ({kind, value}) -- a password or sign-in name the
+ *            person typed, once final, for the scrub. Never logged here.
+ *   keyGapMs, fieldPollMs   tests only: the typing pace and the read interval
  *
  * @returns {Promise<{url, token, port, host, setStatus, close, clients}>}
  */
@@ -371,12 +575,89 @@ async function startMirror(opts) {
     let closed = false;
     const clients = new Set();
     let inputChain = Promise.resolve();
+    const gapMs = opts.keyGapMs === undefined ? KEY_GAP_MS : opts.keyGapMs;
+
+    // THE PAGE'S TEXT BOXES: read while a phone watches, sent when they change.
+    let fieldsJson = null;
+    let fieldGen = 0;
+    let lastFields = null;
+    const generations = new Map();
+    let reading = false;
+    let soonTimer = null;
+    // The box being typed into: what kind it is, and what the page's box holds
+    // as far as this view has typed it.
+    let focused = null;
+    const reported = new Set();
+    // FINAL: a typed password or sign-in name, to the scrub -- once.
+    const commit = () => {
+        const f = focused;
+        if (!f || !SECRET_KINDS.includes(f.kind) || f.value.length < MIN_SECRET_LENGTH) return;
+        const key = `${f.kind}\u0000${f.value}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        if (opts.onTyped) {
+            try { opts.onTyped({ kind: f.kind, value: f.value }); } catch (e) { void e; }
+        }
+    };
 
     const sse = (client, event, data) => {
         if (client.res.writableEnded) return true;
         return client.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
     const broadcast = (event, data) => { for (const c of clients) sse(c, event, data); };
+    const readFields = async () => {
+        if (closed || !opts.fields || reading || clients.size === 0) return;
+        reading = true;
+        try {
+            const list = phoneFields(await opts.fields());
+            const json = JSON.stringify(list);
+            if (closed || json === fieldsJson) return;
+            fieldsJson = json;
+            fieldGen += 1;
+            generations.set(fieldGen, list);
+            for (const g of generations.keys()) { if (generations.size > FIELD_GENERATIONS) generations.delete(g); }
+            lastFields = { g: fieldGen, f: list };
+            broadcast('fields', lastFields);
+        } catch (e) {
+            void e; // A page mid-navigation has no answer this time; the next read looks again.
+        } finally {
+            reading = false;
+        }
+    };
+    const readSoon = () => {
+        if (!opts.fields || soonTimer || closed) return;
+        soonTimer = setTimeout(() => { soonTimer = null; void readFields(); }, FIELD_SOON_MS);
+        if (typeof soonTimer.unref === 'function') soonTimer.unref();
+    };
+    const fieldTimer = opts.fields ? setInterval(() => { void readFields(); }, opts.fieldPollMs || FIELD_POLL_MS) : null;
+    if (fieldTimer && typeof fieldTimer.unref === 'function') fieldTimer.unref();
+    const stopFields = () => {
+        if (fieldTimer) clearInterval(fieldTimer);
+        if (soonTimer) { clearTimeout(soonTimer); soonTimer = null; }
+    };
+    // Focus, value and blur: typing into the page's own boxes (see the top).
+    const relayTyping = async (input) => {
+        if (input.t === 'blur') { commit(); focused = null; return; }
+        if (input.t === 'value') {
+            if (!focused) return;
+            const prev = focused.value;
+            focused.value = input.v;
+            await replayEdit(cdp, prev, input.v, gapMs);
+            return;
+        }
+        // focus
+        commit();
+        focused = null;
+        const box = (generations.get(input.g) || [])[input.i];
+        if (!box || !(size.w > 0)) return;
+        await relayInput(cdp, { t: 'tap', x: box.x + box.w / 2, y: box.y + box.h / 2 }, size, gapMs);
+        // CLEARED, whatever it held: the phone sends its box's whole text next,
+        // so the page's box is exactly what the phone shows -- not what a
+        // list read before the last keystroke said it held.
+        await selectAll(cdp);
+        await pressKey(cdp, NAV_KEYS.Backspace);
+        focused = { kind: box.k, value: '' };
+    };
     const sendFrame = (client) => {
         if (!lastFrame || client.busy) return;
         if (!sse(client, 'frame', lastFrame)) {
@@ -442,7 +723,9 @@ async function startMirror(opts) {
             if (typeof ping.unref === 'function') ping.unref();
             req.on('close', () => { clearInterval(ping); clients.delete(client); });
             sse(client, 'status', status);
+            if (lastFields) sse(client, 'fields', lastFields);
             sendFrame(client);
+            void readFields();
             return;
         }
         if (req.method === 'POST' && rest === 'input') {
@@ -467,12 +750,26 @@ async function startMirror(opts) {
                 res.writeHead(input ? 204 : 400, { 'cache-control': 'no-store' });
                 res.end();
                 if (!input || closed) return;
-                if (input.t === 'done') { if (opts.onDone) opts.onDone(); return; }
-                if (input.t === 'end') { if (opts.onEnd) opts.onEnd(); return; }
+                // IN ORDER, one at a time: a press must land before its release,
+                // a box's text before the Enter that submits it, and the last
+                // typing before "done" makes it final. Never logged: a typed
+                // value may be anything.
+                if (input.t === 'done' || input.t === 'end') {
+                    inputChain = inputChain.then(() => {
+                        commit();
+                        if (closed) return;
+                        if (input.t === 'done') { if (opts.onDone) opts.onDone(); } else if (opts.onEnd) opts.onEnd();
+                    }).catch(() => {});
+                    return;
+                }
+                if (input.t === 'focus' || input.t === 'value' || input.t === 'blur') {
+                    inputChain = inputChain.then(() => relayTyping(input)).catch(() => {}).then(readSoon);
+                    return;
+                }
                 if (input.t !== 'back' && input.t !== 'text' && input.t !== 'key' && !(size.w > 0)) return;
-                // IN ORDER, one at a time: a press must land before its release.
-                // Never logged: a typed value may be anything.
-                inputChain = inputChain.then(() => relayInput(cdp, input, size)).catch(() => {});
+                // Enter submits: what is in the box is final.
+                if (input.t === 'key' && input.k === 'Enter') inputChain = inputChain.then(commit);
+                inputChain = inputChain.then(() => relayInput(cdp, input, size, gapMs)).catch(() => {}).then(readSoon);
             });
             return;
         }
@@ -498,6 +795,7 @@ async function startMirror(opts) {
             server.listen(opts.port || 0, host, () => { server.off('error', reject); resolve(); });
         });
     } catch (e) {
+        stopFields();
         await detach();
         throw e;
     }
@@ -520,6 +818,7 @@ async function startMirror(opts) {
         });
     } catch (e) {
         closed = true;
+        stopFields();
         cdp.off('Page.screencastFrame', onFrame);
         await Promise.resolve(cdp.send('Page.stopScreencast')).catch(() => {});
         await detach();
@@ -544,6 +843,12 @@ async function startMirror(opts) {
         async close(text) {
             if (closed) return;
             closed = true;
+            stopFields();
+            // Whatever is in a box when the view closes is final. Typing still
+            // on its way is let through first, so the value is the last one.
+            await inputChain.catch(() => {});
+            commit();
+            focused = null;
             broadcast('end', { text: text || 'This hand-over is over. You can close this page.' });
             for (const c of clients) { try { c.res.end(); } catch (e) { void e; } }
             clients.clear();
@@ -560,6 +865,14 @@ async function startMirror(opts) {
 
 /** What the phone's status line says during a hand-over. */
 function handOverStatus(record) {
+    if (record.why === 'sign-in') {
+        return {
+            state: 'handed-over',
+            text: `Handed over to you: ${record.reason}. The capture is paused for you. Sign in yourself: tap a box ` +
+                'in the page to type in it, and your password manager can fill it. Then tap "I\'m done, continue" ' +
+                '-- or end the capture.'
+        };
+    }
     return {
         state: 'handed-over',
         text: `Handed over to you: ${record.reason}. The capture is paused for you. Answer it yourself ` +
@@ -586,6 +899,9 @@ module.exports = {
     handOverStatus,
     parseInput,
     relayInput,
+    typeText,
+    editKeys,
+    phoneFields,
     KEYS,
     MAX_INPUT_BYTES,
     MAX_STREAMS

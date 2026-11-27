@@ -9,9 +9,15 @@
 <!--
   The phone view of a capture hand-over (mirror.js). Self-contained: no CDN, no
   font, no external file; the script and the style carry the response's CSP
-  nonce. Frames and status arrive as Server-Sent Events; input goes back as
-  small JSON POSTs, in order. Phone-first, after the Multiplex server's live
-  sign-in page, which is proven on a phone.
+  nonce. Frames, status and the page's text boxes arrive as Server-Sent
+  Events; input goes back as small JSON POSTs, in order. Phone-first, after the
+  Multiplex server's live sign-in page, which is proven on a phone.
+
+  THE PAGE'S OWN TEXT BOXES (#155): a real box is laid over the picture of
+  each, with the same type and autocomplete, inside one form -- so tapping one
+  opens this phone's keyboard there, and its password manager can fill a
+  username and a password together. What is typed goes to the page as key
+  presses. The separate type-here box is a fallback, behind "Keyboard".
 -->
 <style nonce="__NONCE__">
 :root{--bg:#f6f7f9;--fg:#14171a;--muted:#59626e;--card:#fff;--border:#d4d9e0;--accent:#1f5fd6;--accent-fg:#fff;--danger:#b42318}
@@ -38,6 +44,11 @@ button[disabled]{opacity:.6}
 .stage .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted)}
 .stage.has-frame .loading{display:none}
 .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin:12px 10px}
+#fields{position:absolute;left:0;top:0;width:100%;height:100%;margin:0;pointer-events:none}
+.stage:not(.has-frame) #fields{display:none}
+#fields input{position:absolute;pointer-events:auto;margin:0;padding:0 6px;box-sizing:border-box;border:2px solid var(--accent);border-radius:4px;background:transparent;color:transparent;caret-color:transparent;opacity:.75;font:16px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;outline:none;-webkit-appearance:none;appearance:none;min-height:0}
+#fields input:focus{opacity:1;background:var(--card);color:var(--fg);caret-color:auto;min-height:44px;z-index:3;box-shadow:0 2px 12px rgba(0,0,0,.35)}
+.stage.dragging #fields input{pointer-events:none}
 </style>
 </head>
 <body>
@@ -47,27 +58,35 @@ button[disabled]{opacity:.6}
     <button id="done" type="button">I'm done, continue</button>
     <button id="end" type="button" class="danger">End the capture</button>
   </div>
-  <div class="row type">
-    <input id="txt" type="text" maxlength="512" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the page">
-    <button id="send" type="button">Send</button>
-  </div>
   <div class="row keys">
-    <button type="button" data-key="Enter">Enter</button>
-    <button type="button" data-key="Backspace">Delete</button>
-    <button type="button" data-key="Tab">Tab</button>
     <button type="button" id="back">Back</button>
     <button type="button" id="mode" aria-pressed="false">Tap &amp; scroll</button>
+    <button type="button" id="kbd" aria-expanded="false" aria-controls="fallback">Keyboard</button>
   </div>
-  <p class="hint">Pinch with two fingers to zoom. For "press and hold" or a slider, switch Tap &amp; scroll to Press &amp; drag.</p>
+  <div id="fallback" hidden>
+    <div class="row type">
+      <input id="txt" type="text" maxlength="512" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the page">
+      <button id="send" type="button">Send</button>
+    </div>
+    <div class="row keys">
+      <button type="button" data-key="Enter">Enter</button>
+      <button type="button" data-key="Backspace">Delete</button>
+      <button type="button" data-key="Tab">Tab</button>
+    </div>
+  </div>
+  <p class="hint">Tap a box in the page to type in it; your password manager can fill it. Pinch with two fingers to zoom. For "press and hold" or a slider, switch Tap &amp; scroll to Press &amp; drag.</p>
 </header>
-<main id="stage" class="stage"><img id="screen" alt="Live view of the capture browser" draggable="false"><span class="loading">Waiting for the browser...</span></main>
+<main id="stage" class="stage"><img id="screen" alt="Live view of the capture browser" draggable="false"><form id="fields" autocomplete="on" novalidate></form><span class="loading">Waiting for the browser...</span></main>
 <section id="over" class="card" hidden><p id="over-msg"></p></section>
 <script nonce="__NONCE__">
 (function () {
   var base = location.pathname.replace(/[^/]*$/, '');
   var img = document.getElementById('screen'), stage = document.getElementById('stage');
   var statusEl = document.getElementById('status'), txt = document.getElementById('txt');
+  var form = document.getElementById('fields');
   var es = null, finished = false, drag = false, queue = Promise.resolve();
+  // The page's text boxes, as last told: generation and list.
+  var gen = 0, boxes = [];
 
   // In order, one at a time: a press must reach the page before its release.
   // Resolves true when the capture took it.
@@ -93,7 +112,7 @@ button[disabled]{opacity:.6}
     document.getElementById('over-msg').textContent = text;
     document.getElementById('over').hidden = false;
     stage.hidden = true;
-    document.querySelectorAll('.row, .hint').forEach(function (r) { r.hidden = true; });
+    document.querySelectorAll('.row, .hint, #fallback').forEach(function (r) { r.hidden = true; });
   }
   function connect() {
     es = new EventSource(base + 'events');
@@ -106,6 +125,9 @@ button[disabled]{opacity:.6}
         img.src = 'data:image/jpeg;base64,' + m.d;
         stage.classList.add('has-frame');
       } catch (_) { }
+    });
+    es.addEventListener('fields', function (e) {
+      try { var m = JSON.parse(e.data); gen = m.g; boxes = m.f || []; render(); } catch (_) { }
     });
     es.addEventListener('end', function (e) {
       try { over(JSON.parse(e.data).text); } catch (_) { over('This hand-over is over.'); }
@@ -123,7 +145,7 @@ button[disabled]{opacity:.6}
     return { x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height), r: r };
   }
   var pointers = 0, start = null, moved = false, lastX = 0, lastY = 0, pdx = 0, pdy = 0;
-  var flush = null, pressed = false, moveTimer = null, pending = null;
+  var flush = null, pressed = false, moveTimer = null, pending = null, onBox = false;
   function cancelGesture() {
     if (drag && pressed && start) post({ t: 'up', x: start.x, y: start.y });
     pressed = false; start = null;
@@ -134,6 +156,11 @@ button[disabled]{opacity:.6}
     if (pointers > 1) { cancelGesture(); return; }
     if (!stage.classList.contains('has-frame')) return;
     start = frac(e); lastX = e.clientX; lastY = e.clientY; moved = false;
+    // A TAP ON ONE OF OUR BOXES is a tap on a real text box: the browser
+    // focuses it and opens the keyboard (its focus tells the page). Only a
+    // swipe that starts there is ours, as a scroll.
+    onBox = !drag && e.target && e.target.parentNode === form;
+    if (onBox) return;
     try { stage.setPointerCapture(e.pointerId); } catch (_) { }
     if (drag) { pressed = true; post({ t: 'down', x: start.x, y: start.y }); }
     e.preventDefault();
@@ -163,8 +190,8 @@ button[disabled]{opacity:.6}
     if (!start) return;
     var f = frac(e);
     if (drag) { if (pressed) post({ t: 'up', x: f.x, y: f.y }); pressed = false; }
-    else if (!moved && !cancelled) post({ t: 'tap', x: f.x, y: f.y });
-    start = null;
+    else if (!moved && !cancelled && !onBox) { maskFor(f); post({ t: 'tap', x: f.x, y: f.y }); }
+    start = null; onBox = false;
   }
   stage.addEventListener('pointerup', function (e) { endPointer(e, false); });
   stage.addEventListener('pointercancel', function (e) { endPointer(e, true); });
@@ -188,8 +215,119 @@ button[disabled]{opacity:.6}
   var mode = document.getElementById('mode');
   mode.addEventListener('click', function () {
     drag = !drag;
+    stage.classList.toggle('dragging', drag);
     mode.setAttribute('aria-pressed', drag ? 'true' : 'false');
     mode.textContent = drag ? 'Press & drag' : 'Tap & scroll';
+  });
+  // THE FALLBACK: a separate box for a field that is not a real text box.
+  var kbd = document.getElementById('kbd'), fallback = document.getElementById('fallback');
+  kbd.addEventListener('click', function () {
+    fallback.hidden = !fallback.hidden;
+    kbd.setAttribute('aria-expanded', fallback.hidden ? 'false' : 'true');
+    if (!fallback.hidden) txt.focus();
+  });
+  // A tap on the picture of a password box hides what the fallback box shows.
+  function maskFor(f) {
+    var hit = boxes.filter(function (b) { return f.x >= b.x && f.x <= b.x + b.w && f.y >= b.y && f.y <= b.y + b.h; })[0];
+    txt.type = hit && hit.k === 'password' ? 'password' : 'text';
+  }
+
+  // ---- THE PAGE'S OWN TEXT BOXES -------------------------------------------
+  var active = null, sendTimer = null, lastSent = null, enterAt = 0;
+  function pct(v) { return (v * 100).toFixed(3) + '%'; }
+  function sendValue() {
+    if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
+    if (active && active.value !== lastSent) {
+      lastSent = active.value; active.sent = active.value;
+      post({ t: 'value', v: active.value });
+    }
+  }
+  // A box whose text the page has not been sent: one a password manager
+  // filled while another box was being typed in.
+  function dirty(el) { return !!el.value && el.value !== el.sent; }
+  function next(el) {
+    var all = Array.prototype.slice.call(form.elements), i = all.indexOf(el);
+    return i >= 0 ? all[i + 1] : null;
+  }
+  function place(el, b) {
+    el.style.left = pct(b.x); el.style.top = pct(b.y);
+    el.style.width = pct(b.w); el.style.height = pct(b.h);
+  }
+  function render() {
+    // The box being typed in stays as it is -- replacing it would close the
+    // keyboard -- unless the page's box under it went away or changed kind.
+    var els = Array.prototype.slice.call(form.elements);
+    if (active && (!boxes[active.dataset.i] || boxes[active.dataset.i].k !== active.dataset.k)) active.blur();
+    boxes.forEach(function (b, i) {
+      var el = els[i];
+      if (!el) { el = document.createElement('input'); form.appendChild(el); wire(el); }
+      el.dataset.i = String(i); el.dataset.g = String(gen); el.dataset.k = b.k;
+      if (el !== active) {
+        if (el.type !== b.t) el.type = b.t;
+        // What the page's box shows; a box a password manager filled and
+        // nobody has sent yet keeps what it was filled with.
+        if (!dirty(el)) el.value = b.v || '';
+        el.sent = el.value;
+      }
+      el.setAttribute('autocomplete', b.ac);
+      el.name = { password: 'password', username: 'username', otp: 'one-time-code', email: 'email' }[b.k] || ('field' + i);
+      el.maxLength = b.ml || 512;
+      if (b.im) el.setAttribute('inputmode', b.im); else el.removeAttribute('inputmode');
+      el.setAttribute('aria-label', b.l || b.k);
+      el.setAttribute('autocapitalize', 'none'); el.setAttribute('autocorrect', 'off'); el.spellcheck = false;
+      var after = boxes.slice(i + 1).some(function (o) { return o.k === 'password'; });
+      el.enterKeyHint = (b.k === 'username' || b.k === 'email') && after ? 'next'
+        : (b.k === 'password' || b.k === 'otp' || b.k === 'username') ? 'go' : 'enter';
+      if (el !== active) place(el, b);
+    });
+    for (var j = els.length - 1; j >= boxes.length; j--) { if (els[j] === active) active.blur(); form.removeChild(els[j]); }
+  }
+  function wire(el) {
+    el.addEventListener('focus', function () {
+      active = el;
+      // Wide enough to see what is typed, and inside the picture.
+      var b = boxes[el.dataset.i];
+      if (b) { var w = Math.max(b.w, 0.6); el.style.width = pct(w); el.style.left = pct(Math.min(b.x, 1 - w)); }
+      // The page's box is cleared on focus; this box's whole text follows.
+      post({ t: 'focus', g: Number(el.dataset.g), i: Number(el.dataset.i) });
+      lastSent = '';
+      sendValue();
+    });
+    el.addEventListener('input', function () {
+      if (el !== active) return;   // filled by a password manager: sent when it is focused, or before Enter
+      if (sendTimer) clearTimeout(sendTimer);
+      sendTimer = setTimeout(sendValue, 120);
+    });
+    el.addEventListener('blur', function () {
+      if (active !== el) return;
+      sendValue();
+      active = null;
+      post({ t: 'blur' });
+      var b = boxes[el.dataset.i];
+      if (b) place(el, b);
+    });
+    el.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      enterAt = Date.now();
+      sendValue();
+      var n = next(el);
+      if (el.enterKeyHint === 'next' && n) { n.focus(); return; }
+      submit();
+    });
+  }
+  // ENTER SUBMITS -- after any box a password manager filled is sent too:
+  // focusing it sends its text, and the Enter then goes to the page's form.
+  function submit() {
+    Array.prototype.slice.call(form.elements).forEach(function (o) { if (o !== active && dirty(o)) o.focus(); });
+    post({ t: 'key', k: 'Enter' });
+  }
+  // The keyboard's "Go" can arrive as a submit rather than an Enter key.
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (Date.now() - enterAt < 500 || !active) return;
+    sendValue();
+    submit();
   });
   document.getElementById('done').addEventListener('click', function () {
     var button = this;
