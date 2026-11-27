@@ -4285,6 +4285,27 @@ function catalogueScriptCommands(scriptsDir = path.join(__dirname, '..')) {
 }
 
 /**
+ * A permission rule's spelling of an absolute file (#149): `//` then the
+ * path with forward slashes, the drive letter as its own segment on Windows
+ * (`D:\\x\\raw.har` -> `//d/x/raw.har`). A single leading `/` would be read as
+ * relative to the settings source, not to the filesystem root.
+ */
+function absoluteReadRule(file) {
+    const p = path.resolve(file).replace(/\\/g, '/');
+    const drive = /^([A-Za-z]):\/(.*)$/.exec(p);
+    return drive ? `//${drive[1].toLowerCase()}/${drive[2]}` : `/${p}`;
+}
+
+/** The files the catalogue prompt names that `Read(./**)` does not reach. */
+function catalogueReadFiles(session) {
+    const root = path.resolve(session.outputPath);
+    return [session.harPath, session.agentLogPath]
+        .filter(Boolean)
+        .map((f) => path.resolve(f))
+        .filter((f) => path.relative(root, f).startsWith('..') || path.isAbsolute(path.relative(root, f)));
+}
+
+/**
  * What the catalogue child may do without asking (#149), as a settings
  * `permissions` object: read inside the capture directory, edit the catalogue
  * it is promoting, and run the four commands above.
@@ -4310,11 +4331,16 @@ function catalogueScriptCommands(scriptsDir = path.join(__dirname, '..')) {
  * produced a rule the CLI could not parse -- measured: it then refused the very
  * command the prompt names. JSON carries a rule verbatim.
  */
-function cataloguePermissions(commands = catalogueScriptCommands()) {
+function cataloguePermissions(commands = catalogueScriptCommands(), readFiles = []) {
     const tools = Object.values(commands);
     return {
         allow: [
             'Read(./**)',
+            // EXACT FILES the prompt names that live outside the output path:
+            // with an explicit output path, raw.har and the agent step log stay
+            // in the session directory under the captures root. One file each,
+            // never their directory (it also holds the substitution tables).
+            ...readFiles.map((f) => `Read(${absoluteReadRule(f)})`),
             'Edit(./catalogue.json)',
             ...tools.map((c) => `Bash(${c} *)`)
         ],
@@ -4343,13 +4369,13 @@ function cataloguePermissions(commands = catalogueScriptCommands()) {
  * The settings JSON is one argv element; the child is spawned without a shell
  * (here and in the wrapper), so its quotes and spaces survive on Windows.
  */
-function catalogueChildCommand(prompt, commands = catalogueScriptCommands()) {
+function catalogueChildCommand(prompt, commands = catalogueScriptCommands(), readFiles = []) {
     return {
         command: process.execPath,
         args: [
             path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt,
             '--permission-mode', 'default',
-            '--settings', JSON.stringify({ permissions: cataloguePermissions(commands) })
+            '--settings', JSON.stringify({ permissions: cataloguePermissions(commands, readFiles) })
         ]
     };
 }
@@ -4410,7 +4436,7 @@ function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
         // waiting on it allows it far longer than a scrub of the same capture.
         phaseReporter(opts)(captureEnding.PHASES.AI_CATALOGUE);
         log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
-        const child = catalogueChildCommand(prompt, commands);
+        const child = catalogueChildCommand(prompt, commands, catalogueReadFiles(session));
         const run = spawn(child.command, child.args, {
             encoding: 'utf8', cwd: session.outputPath, stdio: 'inherit', windowsHide: true
         });
@@ -6869,6 +6895,7 @@ module.exports = {
     catalogueChildCommand,
     catalogueScriptCommands,
     cataloguePermissions,
+    absoluteReadRule,
     buildAgentPrompt,
     agentChildCommand,
     captureBrowserName,

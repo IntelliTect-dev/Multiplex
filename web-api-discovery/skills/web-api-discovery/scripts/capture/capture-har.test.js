@@ -1136,6 +1136,60 @@ test('a scripts path with spaces and parentheses yields rules naming it verbatim
     assert.ok(grant.allow.includes(`Bash(node "${script}" *)`), 'and the rule carries it whole');
 });
 
+function catalogueGrantFor(session) {
+    fs.mkdirSync(session.outputPath, { recursive: true });
+    const cataloguePath = path.join(session.outputPath, 'catalogue.json');
+    fs.writeFileSync(cataloguePath, '[]', 'utf8');
+    const calls = [];
+    capture.runCatalogue(session, path.join(session.outputPath, 'digest.json'), cataloguePath,
+        { errors: [], warnings: [] }, {
+            runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+            spawn: (command, args) => { calls.push(args); return { status: 0 }; }
+        });
+    assert.strictEqual(calls.length, 1);
+    return catalogueGrant(calls[0]);
+}
+
+test('with an explicit output path, the child may read the raw capture and step log by exact file (#149)', () => {
+    // The prompt names both; with -OutputPath they stay in the session
+    // directory under the captures root, outside the child's cwd.
+    const root = tmpDir('catalogue-explicit-out');
+    const sessionDir = path.join(root, '.har-captures', 'host', 'stamp');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const session = {
+        harPath: path.join(sessionDir, 'raw.har'),
+        agentLogPath: path.join(sessionDir, 'agent-log.txt'),
+        outputPath: path.join(root, 'docs', 'har-reference'),
+        describe: null
+    };
+    const grant = catalogueGrantFor(session);
+    const reads = grant.allow.filter((r) => r.startsWith('Read('));
+    // Spelling is pinned by the absoluteReadRule test below; this pins WHICH files.
+    assert.deepStrictEqual(reads, [
+        'Read(./**)',
+        `Read(${capture.absoluteReadRule(session.harPath)})`,
+        `Read(${capture.absoluteReadRule(session.agentLogPath)})`
+    ], 'one rule per file, never the session directory (it holds the substitution tables)');
+});
+
+test('in the default layout the read grant is the output path alone (#149)', () => {
+    // outputPath IS the session directory: raw.har is already under ./**.
+    const dir = path.join(tmpDir('catalogue-default-layout'), 'stamp');
+    const grant = catalogueGrantFor({
+        harPath: path.join(dir, 'raw.har'), agentLogPath: path.join(dir, 'agent-log.txt'),
+        outputPath: dir, describe: null
+    });
+    assert.deepStrictEqual(grant.allow.filter((r) => r.startsWith('Read(')), ['Read(./**)']);
+});
+
+test('an absolute file is spelled the way permission rules read it (#149)', () => {
+    if (process.platform === 'win32') {
+        assert.strictEqual(capture.absoluteReadRule('D:\\Git\\x\\raw.har'), '//d/Git/x/raw.har');
+    } else {
+        assert.strictEqual(capture.absoluteReadRule('/home/u/x/raw.har'), '//home/u/x/raw.har');
+    }
+});
+
 test('every catalogue command names a script that exists (#149)', () => {
     // A rule for a path that does not exist is a grant nobody can use -- the
     // child would be refused the real command and exit 0 again.
