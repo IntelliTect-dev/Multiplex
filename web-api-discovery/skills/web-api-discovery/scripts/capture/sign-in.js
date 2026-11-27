@@ -515,6 +515,10 @@ function createSignInWatcher(context, opts) {
     // reported AFTER the site already moved on (they tapped the page's own
     // button), that page is looked at again.
     let lastPage = null;
+    // Where the sign-in was handed to the person: a late password re-checks
+    // only a page that has moved on from it -- the same address may just be
+    // the form hidden while a sign-in is in flight.
+    let handedUrl = null;
     // Whether the capture has shown anything but a sign-in. Until it has, a
     // sign-in with nobody present means the run can record nothing useful.
     let sawOtherPage = false;
@@ -609,6 +613,7 @@ function createSignInWatcher(context, opts) {
                 if (taken) {
                     withPerson = true;
                     cookiesBefore = before;
+                    handedUrl = page.url();
                     return;
                 }
             }
@@ -691,8 +696,11 @@ function createSignInWatcher(context, opts) {
             if (!typed.includes(t.value)) typed.push(t.value);
             if (t.kind === 'password' && withPerson && !passwordFilled) {
                 passwordFilled = true;
-                // The site may already be past the sign-in: no load will come.
-                if (lastPage && !(lastPage.isClosed && lastPage.isClosed())) check(lastPage);
+                // The site may already be past the sign-in -- a page at another
+                // address -- and then no load will come to look again.
+                if (lastPage && !(lastPage.isClosed && lastPage.isClosed()) && lastPage.url() !== handedUrl) {
+                    check(lastPage);
+                }
             }
         },
         /** The hosts whose session is this capture's: the start host and every host a form was filled on. */

@@ -223,6 +223,8 @@ test('F5: a password shown as text, or a PIN, is still a password; a phone numbe
                 '  style="position:absolute;left:0;top:120px;width:200px;height:30px">' +
                 '<input aria-label="passport" type="text" name="passport" ' +
                 '  style="position:absolute;left:0;top:160px;width:200px;height:30px">' +
+                '<input aria-label="forgot" type="email" name="forgot_password_email" ' +
+                '  style="position:absolute;left:0;top:200px;width:200px;height:30px">' +
                 '</body></html>'
         });
         try {
@@ -238,6 +240,7 @@ test('F5: a password shown as text, or a PIN, is still a password; a phone numbe
             }
             assert.strictEqual(kind('phone'), 'username', 'a phone number on a sign-in is the sign-in name');
             assert.strictEqual(kind('passport'), 'text', '"passport" is not a password');
+            assert.strictEqual(kind('forgot'), 'username', 'an email box named for a password reset is an email box');
         } finally {
             server.close();
         }

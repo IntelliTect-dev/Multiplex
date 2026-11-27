@@ -17,7 +17,10 @@
   each, with the same type and autocomplete, inside one form -- so tapping one
   opens this phone's keyboard there, and its password manager can fill a
   username and a password together. What is typed goes to the page as key
-  presses. The separate type-here box is a fallback, behind "Keyboard".
+  presses. The separate type-here box is a fallback, behind "Keyboard", for a
+  field the recorder could not list -- which may be a password nobody can
+  recognise, so it is MASKED until "Show", and what it sends masked is
+  scrubbed like a password.
 -->
 <style nonce="__NONCE__">
 :root{--bg:#f6f7f9;--fg:#14171a;--muted:#59626e;--card:#fff;--border:#d4d9e0;--accent:#1f5fd6;--accent-fg:#fff;--danger:#b42318}
@@ -65,7 +68,8 @@ button[disabled]{opacity:.6}
   </div>
   <div id="fallback" hidden>
     <div class="row type">
-      <input id="txt" type="text" maxlength="512" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the page">
+      <input id="txt" type="password" maxlength="512" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Tap a field below, then type here" aria-label="Text to type into the page">
+      <button id="show" type="button" class="secondary" aria-pressed="false">Show</button>
       <button id="send" type="button">Send</button>
     </div>
     <div class="row keys">
@@ -229,10 +233,20 @@ button[disabled]{opacity:.6}
     kbd.setAttribute('aria-expanded', fallback.hidden ? 'false' : 'true');
     if (!fallback.hidden) txt.focus();
   });
-  // A tap on the picture of a password box hides what the fallback box shows.
+  // MASKED UNTIL "SHOW": the fallback serves a field nobody could list, and
+  // what it sends masked goes to the scrub. A tap on the picture of a listed
+  // password box masks it again.
+  var show = document.getElementById('show');
+  function setMasked(masked) {
+    txt.type = masked ? 'password' : 'text';
+    show.setAttribute('aria-pressed', masked ? 'false' : 'true');
+    show.textContent = masked ? 'Show' : 'Hide';
+  }
+  show.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  show.addEventListener('click', function () { setMasked(txt.type !== 'password'); });
   function maskFor(f) {
     var hit = boxes.filter(function (b) { return f.x >= b.x && f.x <= b.x + b.w && f.y >= b.y && f.y <= b.y + b.h; })[0];
-    txt.type = hit && hit.k === 'password' ? 'password' : 'text';
+    if (hit && hit.k === 'password') setMasked(true);
   }
 
   // ---- THE PAGE'S OWN TEXT BOXES -------------------------------------------

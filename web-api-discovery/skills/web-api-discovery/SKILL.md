@@ -1115,9 +1115,11 @@ not sent). Then the browser is yours, still open and still recording:
   typed, and any box your password manager filled, reaches the page first.
   A password box a "show password" toggle turned into plain text, and a PIN,
   are still password boxes. A field that is not a real text box (a canvas)
-  has the **Keyboard** fallback: a separate box, masked when you tapped a
-  password field -- and what you send from it while it is masked is scrubbed
-  like a password. **End the capture** acts at once, even mid-typing.
+  has the **Keyboard** fallback: a separate box, **masked until you tap
+  Show** -- a field nobody could list may be a password nobody could
+  recognise -- and what you send from it masked is scrubbed like a password
+  (tap Show for text that is not secret). **End the capture** acts at once,
+  even mid-typing.
 - **The phone view is private by construction.** It listens only on this PC's
   Tailscale IPv4 address, read at run time from `tailscale status --json`, and
   only if that address is a tailnet one (`100.64.0.0/10`) -- never on every

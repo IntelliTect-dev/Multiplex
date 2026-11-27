@@ -58,6 +58,9 @@
 //   P14 the person submits BEFORE the phone view says the password is final
 //       (a tap on the page's own button): the session is still saved, when
 //       the password arrives -- no further page load needed
+//   P15 ...but a password reported while the page is still at the address it
+//       was handed over on (the form merely hidden, a sign-in in flight) is
+//       not taken for "through": nothing is saved early
 
 'use strict';
 
@@ -869,6 +872,26 @@ async function browserCases(pw) {
         while (!savedWith.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
         assert.strictEqual(savedWith.length, 1, 'the session is saved once the password arrives');
         assert.strictEqual(w.result().signedIn, true);
+    });
+
+    await run('P15: a password reported while the page is still where it was handed over is not "through"', async (context) => {
+        const savedWith = [];
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => true,
+            onSignedIn: (arg) => { savedWith.push(arg); }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        // A script-driven sign-in hides the form while it runs; the address stays.
+        await page.evaluate(() => { document.querySelector('form').style.display = 'none'; });
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        // Longer than the watcher's own wait for a page to draw its form.
+        await new Promise((r) => setTimeout(r, 4000));
+        assert.strictEqual(savedWith.length, 0, 'not saved before the site moved on');
+        assert.strictEqual(w.result().signedIn, false);
     });
 
     // Bounded: on some machines Chromium's shutdown alone takes minutes

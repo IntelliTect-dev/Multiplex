@@ -34,8 +34,9 @@
 //       phone view, and a tap and typing from it land in that page
 //   E2  the phone page's own script, in a real browser emulating a phone
 //       (touch, mobile viewport): live frames, a touch tap on the picture,
-//       typing through its fallback keyboard box, a press-drag-release that
-//       moves a slider, and "I'm done, continue"
+//       typing through its fallback keyboard box -- masked until "Show", and
+//       what is sent from it masked reaches the scrub (re-review of #155) --
+//       a press-drag-release that moves a slider, and "I'm done, continue"
 //   T8  THE PAGE'S OWN TEXT BOXES (#155): the boxes the recorder lists reach
 //       the phone as fractions of the picture, with what each is for and the
 //       autocomplete a password manager looks for; a password's value never
@@ -909,8 +910,10 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
             'style="position:absolute;left:10px;top:240px;width:380px;height:40px;margin:0">' +
             '</body></html>');
         let done = 0;
+        const typed = [];
         view = await mirror.startMirror({ host: '127.0.0.1', cdp: await site.context().newCDPSession(site),
-            status: { state: 'handed-over', text: 'Handed over to you: a check.' }, onDone: () => { done++; } });
+            status: { state: 'handed-over', text: 'Handed over to you: a check.' }, onDone: () => { done++; },
+            onTyped: (t) => typed.push(t), keyGapMs: 5 });
         // The phone: its own context (its own cookies), at a phone's width.
         const phoneContext = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
         const phone = await phoneContext.newPage();
@@ -928,10 +931,22 @@ test('E2: the phone page itself, in a real browser: it shows the live page, and 
         await phone.touchscreen.tap(box.x + box.width * 0.75, box.y + box.height * (175 / 300));
         assert.strictEqual(await phone.isVisible('#txt'), false, 'the fallback box is out of the way until asked for');
         await phone.click('#kbd');
+        // MASKED until "Show": the fallback is for a field the recorder could
+        // not list -- which may be a password nobody can recognise.
+        assert.strictEqual(await phone.getAttribute('#txt', 'type'), 'password', 'masked by default');
         await phone.fill('#txt', 'from the phone page');
         await phone.click('#send');
         await site.waitForFunction(() => document.getElementById('i').value === 'from the phone page', null,
             { timeout: 10000 });
+        // "Show": plain text, and not a secret.
+        await phone.click('#show');
+        assert.strictEqual(await phone.getAttribute('#txt', 'type'), 'text');
+        await phone.fill('#txt', ' shown');
+        await phone.click('#send');
+        await site.waitForFunction(() => document.getElementById('i').value === 'from the phone page shown', null,
+            { timeout: 10000 });
+        assert.deepStrictEqual(typed, [{ kind: 'password', value: 'from the phone page' }],
+            'what was sent masked reached the scrub; what was shown did not');
         // PRESS & DRAG mode: a press, a drag and a release -- what a slider
         // check needs -- move the page's slider from one end to the other.
         await phone.click('#mode');

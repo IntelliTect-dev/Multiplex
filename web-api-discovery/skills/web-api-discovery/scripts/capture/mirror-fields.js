@@ -89,8 +89,13 @@ function collectInFrame(args) {
         const ac = tokens(el);
         const signIn = hasPassword || signInPath;
         let kind;
+        // A NAME saying password counts on a plain text box only (what a
+        // "show password" toggle leaves), and not one that also says email or
+        // user -- `forgot_password_email` is an email box.
+        const namedPassword = (type === '' || type === 'text') && named(el, /passw|pwd|passcode/i) &&
+            !named(el, /email|user/i);
         if (type === 'password' || ac.includes('current-password') || ac.includes('new-password') ||
-            named(el, /passw|pwd|passcode/i) || named(el, /(^|[^a-z])pin([^a-z]|$)/i)) kind = 'password';
+            namedPassword || named(el, /(^|[^a-z])pin([^a-z]|$)/i)) kind = 'password';
         else if (ac.includes('one-time-code') || named(el, /otp|totp/i)) kind = 'otp';
         else if (ac.includes('username')) kind = 'username';
         else if (type === 'email' || ac.includes('email')) kind = signIn ? 'username' : 'email';
