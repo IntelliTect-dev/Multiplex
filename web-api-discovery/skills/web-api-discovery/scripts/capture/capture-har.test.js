@@ -1066,7 +1066,136 @@ test('the AI catalogue child is run under the heartbeat wrapper, with its argv i
     assert.strictEqual(command, process.execPath, 'the wrapper runs under this same node');
     assert.strictEqual(path.basename(args[0]), 'run-with-heartbeat.js');
     assert.ok(fs.existsSync(args[0]), `the wrapper must exist at ${args[0]}`);
-    assert.deepStrictEqual(args.slice(1), ['claude', '-p', 'the prompt']);
+    assert.deepStrictEqual(args.slice(1, 4), ['claude', '-p', 'the prompt'],
+        'the prompt is the positional argument straight after -p');
+});
+
+// ---------------------------------------------------------------------------
+// #149 -- the catalogue child must be ALLOWED to catalogue
+//
+// A bare `claude -p <prompt>` runs in the default permission mode, cannot ask,
+// and so is refused every Edit and every `node` command the prompt tells it to
+// run. It then exits 0. One real capture ended with 696 untouched Observed rows,
+// `pending: false` and no error -- the child's own transcript showing nine
+// refusals and a final message saying it had written nothing.
+// ---------------------------------------------------------------------------
+
+/** The tools after `--allowedTools` -- variadic, so it must be the last flag. */
+function catalogueGrant(args) {
+    const at = args.indexOf('--allowedTools');
+    assert.ok(at > 0, 'the catalogue child must be given an --allowedTools grant (#149)');
+    const tools = args.slice(at + 1);
+    assert.ok(tools.length > 0, '--allowedTools must name tools');
+    assert.ok(tools.every((t) => !t.startsWith('--')),
+        '--allowedTools is variadic: nothing may follow it but tool names');
+    return tools;
+}
+
+test('the catalogue child is granted exactly the edit and the four commands the prompt needs (#149)', () => {
+    const { args } = capture.catalogueChildCommand('the prompt');
+    const tools = catalogueGrant(args);
+
+    // The catalogue itself, in place. The child's cwd is the output path, so
+    // the relative rule names exactly the catalogue being promoted.
+    assert.ok(tools.includes('Edit(./catalogue.json)'), 'the child must be able to promote rows');
+
+    // Each tool the prompt tells it to run, by its exact command.
+    const commands = capture.catalogueScriptCommands();
+    for (const key of ['extract', 'render', 'verifyReference', 'verifyCatalogue']) {
+        assert.ok(commands[key], `a command for ${key}`);
+        assert.ok(tools.includes(`Bash(${commands[key]} *)`),
+            `the child must be allowed to run ${commands[key]}`);
+    }
+
+    // NOTHING BROADER. The child runs beside raw.har and its live cookies; an
+    // unscoped Bash/Edit/Write would hand it the machine.
+    for (const broad of ['Bash', 'Edit', 'Write', 'Bash(*)', 'Bash(node *)', 'Bash(node:*)']) {
+        assert.ok(!tools.includes(broad), `the grant must not include a bare ${broad}`);
+    }
+    assert.ok(!args.includes('--dangerously-skip-permissions'), 'never skip permissions');
+    assert.ok(!args.includes('bypassPermissions'), 'never bypass permissions');
+    const mode = args.indexOf('--permission-mode');
+    assert.ok(mode > 0, 'the permission mode is stated, not left to the operator settings');
+    assert.strictEqual(args[mode + 1], 'default',
+        'default mode: what the grant omits is refused, not judged');
+});
+
+test('every catalogue command names a script that exists (#149)', () => {
+    // A rule for a path that does not exist is a grant nobody can use -- the
+    // child would be refused the real command and exit 0 again.
+    const commands = capture.catalogueScriptCommands();
+    for (const [key, command] of Object.entries(commands)) {
+        const m = /^node ("?)(.+)\1$/.exec(command);
+        assert.ok(m, `${key}: '${command}' must be 'node <script>'`);
+        assert.ok(fs.existsSync(m[2]), `${key}: ${m[2]} must exist`);
+        assert.ok(path.isAbsolute(m[2]), `${key}: the script path must be absolute -- the child runs in the output path`);
+    }
+});
+
+test('the catalogue prompt hands the child the exact commands it is allowed to run (#149)', () => {
+    // The shipped prompt said `node ../har/...`, which resolves from
+    // scripts/capture/ but not from the output path the child runs in.
+    const dir = tmpDir('catalogue-commands');
+    const cataloguePath = path.join(dir, 'catalogue.json');
+    fs.writeFileSync(cataloguePath, '[]', 'utf8');
+    const calls = [];
+    capture.runCatalogue({ harPath: path.join(dir, 'raw.har'), outputPath: dir, describe: null },
+        path.join(dir, 'digest.json'), cataloguePath, { errors: [], warnings: [] }, {
+            runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+            spawn: (command, args) => { calls.push(args); return { status: 0 }; }
+        });
+    assert.strictEqual(calls.length, 1);
+    const args = calls[0];
+    const prompt = args[args.indexOf('-p') + 1];
+    for (const command of Object.values(capture.catalogueScriptCommands())) {
+        assert.ok(prompt.includes(command), `the prompt must give the child '${command}'`);
+    }
+    const shipped = fs.readFileSync(path.join(__dirname, 'catalogue-prompt.md'), 'utf8');
+    assert.doesNotMatch(shipped, /\.\.\/har\//,
+        'catalogue-prompt.md must not give a path that only resolves from scripts/capture/');
+});
+
+test('an AI pass that exits 0 having described no row is a failed catalogue, not a finished one (#149)', () => {
+    // The stub is exactly what the real child did: exit 0, touch nothing.
+    withSandbox('pp-catalogue-noop', [okEntry], (session) => {
+        let state;
+        withRecordedStderr(() => {
+            state = capture.postProcess(session, {
+                runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+                spawn: () => ({ status: 0 })
+            });
+        });
+        assert.ok(capture.isScaffoldOnly(state.catalogue.path), 'precondition: the scaffold is untouched');
+        assert.strictEqual(state.catalogue.pending, true, 'the catalogue phase is still outstanding');
+        assert.ok(state.errors.some((e) => /^catalogue: .*AI pass.*no row/i.test(e)),
+            `the run must say the AI pass catalogued nothing; errors were ${JSON.stringify(state.errors)}`);
+        assert.strictEqual(capture.postProcessExitCode(state, false), 6,
+            'exit 6 -- the catalogue failed -- not 0');
+    });
+});
+
+test('an AI pass that promotes a row is reported as done, with its action (#149)', () => {
+    withSandbox('pp-catalogue-promotes', [okEntry], (session) => {
+        let state;
+        withRecordedStderr(() => {
+            state = capture.postProcess(session, {
+                runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+                spawn: (command, args, options) => {
+                    const p = path.join(options.cwd, 'catalogue.json');
+                    const rows = JSON.parse(fs.readFileSync(p, 'utf8'));
+                    Object.assign(rows[0], {
+                        Status: 'Exercised', Action: 'thing-read', Description: 'Reads the thing.'
+                    });
+                    fs.writeFileSync(p, JSON.stringify(rows), 'utf8');
+                    return { status: 0 };
+                }
+            });
+        });
+        assert.deepStrictEqual(state.catalogue.actions, ['thing-read']);
+        assert.strictEqual(state.catalogue.pending, false);
+        assert.ok(!state.errors.some((e) => /^catalogue:/.test(e)),
+            `no catalogue error; errors were ${JSON.stringify(state.errors)}`);
+    });
 });
 
 test('postProcess really launches the AI child through the wrapper, after announcing it (#492)', () => {
