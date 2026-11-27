@@ -41,7 +41,11 @@
 //       the phone as fractions of the picture, with what each is for and the
 //       autocomplete a password manager looks for; a password's value never
 //       does, even from a lister that offers one; an unchanged list is not
-//       sent again, a changed one is, with a new generation
+//       sent again; a changed VALUE is sent under the SAME generation (typing
+//       must not age out the box being typed in -- found in CI: a slow typing
+//       replay outlived the generations kept, the next box's focus was
+//       dropped, and Enter submitted the form from the wrong box); changed
+//       BOXES get a new generation
 //   T9  typing into a box: focus taps the box in the page and CLEARS it
 //       (select all, Backspace) -- the phone then sends what its own box
 //       shows, so the page's box ends up exactly as the phone shows it,
@@ -570,7 +574,15 @@ test('T8: the page\'s text boxes reach the phone -- placed, typed, no password v
         // Unchanged: nothing more is sent.
         await new Promise((r) => setTimeout(r, 200));
         assert.strictEqual(watching.got.filter((g) => g.event === 'fields').length, 1, 'an unchanged list is sent once');
-        // Changed: sent again, with a new generation.
+        // A VALUE changed (the person is typing): sent again, the same
+        // generation -- the boxes are the same boxes.
+        for (let n = 1; n <= 8; n++) {
+            state.list = [Object.assign({}, EMAIL_BOX, { value: 'a@b.invalid'.slice(0, n), length: n }), PASSWORD_BOX];
+            const typing = await watching.next('fields');
+            assert.strictEqual(typing.g, first.g, `value change ${n}: the same generation`);
+            assert.strictEqual(typing.f[0].v, 'a@b.invalid'.slice(0, n));
+        }
+        // The BOXES changed: a new generation.
         state.list = [EMAIL_BOX];
         const second = await watching.next('fields');
         assert.ok(second.g > first.g, 'a new generation');

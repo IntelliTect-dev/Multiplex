@@ -104,6 +104,42 @@ function sseReader(res) {
     return events;
 }
 
+/**
+ * When the phone's typing did not reach the site: what the capture browser's
+ * sign-in page actually holds (read over the recorder's CDP endpoint, as the
+ * agent attaches), what the site received, what the phone was told, and the
+ * recorder's last words. Never a value -- lengths only.
+ */
+async function diagnose(session, posts, events, recorderErr) {
+    const lines = [];
+    try {
+        const capture = require(path.join(__dirname, 'capture-har.js'));
+        const resolved = capture.resolvePlaywright({ cwd: process.cwd(), env: process.env });
+        const browser = await require(resolved.path).chromium.connectOverCDP(session.cdpEndpoint);
+        try {
+            for (const p of browser.contexts()[0].pages()) {
+                const state = await p.evaluate(() => {
+                    const u = document.querySelector('input[name=u]');
+                    const k = document.querySelector('input[name=k]');
+                    const a = document.activeElement;
+                    return { url: location.pathname, u: u ? u.value.length : null, k: k ? k.value.length : null,
+                        uValid: u ? u.checkValidity() : null, active: a ? (a.name || a.tagName) : null };
+                }).catch((e) => ({ error: e.message }));
+                lines.push(`page: ${JSON.stringify(state)}`);
+            }
+        } finally {
+            await browser.close().catch(() => {});
+        }
+    } catch (e) {
+        lines.push(`could not read the page: ${e.message}`);
+    }
+    lines.push(`site posts: ${posts.length} (${posts.map((p) => `u=${(p.get('u') || '').length} k=${(p.get('k') || '').length}`).join(', ')})`);
+    const fields = events.filter((e) => e.event === 'fields');
+    lines.push(`phone events: ${events.length}; fields generations: ${fields.map((e) => `${e.data.g}:${e.data.f.length}`).join(' ')}`);
+    lines.push(`recorder (last 1500 chars):\n${recorderErr.slice(-1500)}`);
+    return lines.join('\n');
+}
+
 test('S1: THE OWNER\'S CASE -- the start page is a sign-in; the person signs in on the phone; the agent then drives',
     async () => {
         const repo = makeRepo('ai-sign-in-phone');
@@ -159,8 +195,9 @@ test('S1: THE OWNER\'S CASE -- the start page is a sign-in; the person signs in 
                 { t: 'focus', g, i: 1 }, { t: 'value', v: PHONE_PASSWORD }, { t: 'key', k: 'Enter' }]) {
                 assert.strictEqual((await input(doc)).status, 204, JSON.stringify(doc.t));
             }
-            assert.ok(await waitFor(() => posts.some((p) => p.get('k') === PHONE_PASSWORD), 60000),
-                'the site received the sign-in typed on the phone');
+            if (!await waitFor(() => posts.some((p) => p.get('k') === PHONE_PASSWORD), 60000)) {
+                assert.fail(`the site did not receive the sign-in typed on the phone.\n${await diagnose(session, posts, events, recorderErr)}`);
+            }
             assert.ok(await waitFor(() => /signed in -- session saved to/.test(recorderErr), 30000),
                 `the session was not saved:\n${recorderErr}`);
 

@@ -113,8 +113,10 @@ const FIELD_POLL_MS = 700;
 const FIELD_SOON_MS = 150;
 const MAX_FIELDS = 40;
 // Generations of the box list a focus may still name: a tap on a list that
-// changed a moment ago still means that box.
-const FIELD_GENERATIONS = 4;
+// changed a moment ago still means that box. A generation is the BOXES --
+// how many, where, what for -- not their values: typing changes a value with
+// every key, and must not age out the box being typed in.
+const FIELD_GENERATIONS = 16;
 // The shortest typed value the scrub is given: a shorter literal would
 // replace common text everywhere (sign-in.js keeps the same floor).
 const MIN_SECRET_LENGTH = 4;
@@ -588,6 +590,7 @@ async function startMirror(opts) {
 
     // THE PAGE'S TEXT BOXES: read while a phone watches, sent when they change.
     let fieldsJson = null;
+    let layoutJson = null;
     let fieldGen = 0;
     let lastFields = null;
     const generations = new Map();
@@ -635,7 +638,13 @@ async function startMirror(opts) {
             const json = JSON.stringify(list);
             if (closed || json === fieldsJson) return;
             fieldsJson = json;
-            fieldGen += 1;
+            // A new generation only when the BOXES changed; a value that
+            // changed is the same generation, sent again.
+            const layout = JSON.stringify(list.map((b) => [b.x, b.y, b.w, b.h, b.k, b.t]));
+            if (layout !== layoutJson) {
+                layoutJson = layout;
+                fieldGen += 1;
+            }
             generations.set(fieldGen, list);
             for (const g of generations.keys()) { if (generations.size > FIELD_GENERATIONS) generations.delete(g); }
             lastFields = { g: fieldGen, f: list };
