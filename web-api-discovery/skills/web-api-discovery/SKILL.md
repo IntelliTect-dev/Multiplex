@@ -1108,9 +1108,16 @@ not sent). Then the browser is yours, still open and still recording:
   itself: search for the site and pick it, and decline if it offers to save
   this page's address to the login. What you type reaches the page as **key
   presses**, one per character at a typing pace -- never inserted text, which
-  bot protection reads as a script (#61) -- and Enter or **Go** submits. A
-  field that is not a real text box (a canvas) has the **Keyboard** fallback:
-  a separate box, masked when you tapped a password field.
+  bot protection reads as a script (#61) -- and Enter or **Go** submits.
+  Tapping a box clears the page's box and types in what the phone's box
+  shows, so the two always match (a long prefilled value takes a moment).
+  Tapping the page's own Sign-in button in the picture works too: what you
+  typed, and any box your password manager filled, reaches the page first.
+  A password box a "show password" toggle turned into plain text, and a PIN,
+  are still password boxes. A field that is not a real text box (a canvas)
+  has the **Keyboard** fallback: a separate box, masked when you tapped a
+  password field -- and what you send from it while it is masked is scrubbed
+  like a password. **End the capture** acts at once, even mid-typing.
 - **The phone view is private by construction.** It listens only on this PC's
   Tailscale IPv4 address, read at run time from `tailscale status --json`, and
   only if that address is a tailnet one (`100.64.0.0/10`) -- never on every
@@ -1136,6 +1143,13 @@ not sent). Then the browser is yours, still open and still recording:
   the line says so and the hand-over is the PC-only one. Windows Firewall may
   ask, the first time, whether `node` may accept connections on that network:
   allow it for private networks if you want the phone view.
+- **An AI session that starts the capture for somebody away from the PC**
+  (they drive it from a laptop or a phone) must see the hand-over line **while
+  the recording runs**, not when it ends: start `Invoke-HarCapture` as a
+  background command and watch its output. When a line says `Handed over to
+  you` (a check, or `the site asks you to sign in`), pass the `Open on your
+  phone:` link on to the person at once, as plain text -- with what the site
+  asked for -- and never open it yourself. The person has 30 minutes.
 - **With nobody at the terminal** (`--no-wait`, or no console): with a phone
   view, the recording waits up to 30 minutes for the phone's answer; without
   one, nobody can take over, so the recording ends (`endedBy: handed-over`), the
@@ -1174,7 +1188,7 @@ form is actually seen.
 | `bw` installed and locked | Your master password is asked for, masked, and the vault unlocked for this run only. |
 | `bw` installed but logged out | It says `bw login`, then prompts. |
 | `bw` not installed | It prints the install command (`winget install Bitwarden.CLI` on Windows), then asks for username, password (masked) and, if the site asks, a one-time code. A blank password means "I'll sign in in the browser". |
-| **Nobody at the terminal, `-AI`, and this PC on a Tailscale tailnet** (an AI session you drive from a laptop or phone started the run) | **Handed over to you**, as a bot check is: the line says *the site asks you to sign in* and carries the phone link; the agent is told to wait -- or, on the start page, is not started until you hand back. **You sign in on your phone**, typing into the page's own boxes or filling them from your password manager. Nothing is read from the vault on this PC. |
+| **Nobody at the terminal, `-AI`, and this PC on a Tailscale tailnet** (an AI session you drive from a laptop or phone started the run) | **Handed over to you**, as a bot check is -- on the start page or mid-run (a session that expired): the line says *the site asks you to sign in* and carries the phone link; the agent is told to wait -- or, on the start page, is not started until you hand back. **You sign in on your phone**, typing into the page's own boxes or filling them from your password manager. Nothing is read from the vault on this PC. One sign-in hand-over per run: a sign-in the site asks for again after you hand back is the agent's to stop at. |
 | **Nobody at the terminal** otherwise (no tailnet, a schedule, a capture without `-AI`) | **Nothing is read from the vault, even an unlocked one.** If the *first* page is the login wall, the run ends at once with exit **8**, *sign-in needed*, keeping the raw and skipping post-processing; the line says why there was no phone link. A session that expires *mid-run* is a notice instead -- what was recorded is kept. |
 | A terminal nobody is reading (`--no-wait`) | No vault read and no prompt (there is no reader to answer one), and no exit 8 either. Sign in in the browser. |
 
@@ -1214,11 +1228,15 @@ What is guaranteed:
   reads it; the default capture profile keeps its own sign-in regardless.
 - **Signed in on the phone, the same guarantees.** What you type into a
   password or sign-in-name box reaches the scrub as a literal, as a filled
-  value does -- once it is final (the box left, Enter, *I'm done*, or the view
-  closed), never each prefix as you type, and never a one-time code. Once you
-  have typed a password and the site has moved on from the sign-in, the
-  session is saved under the same conditions as above, against the cookies
-  from *before* you typed. A password's value never travels to the phone.
+  value does -- once it is final (the box left, Enter, a tap or Back on the
+  picture, *I'm done*, or the view closed), never each prefix as you type, and
+  never a one-time code. Once you have typed a password and the site has
+  moved on from the sign-in -- whichever of the two the recorder learns of
+  last -- the session is saved under the same conditions as above, against
+  the cookies from *before* you typed. A password's value never travels to
+  the phone. Signing in at the PC's own window during a hand-over is yours to
+  do, but the recorder cannot see what you typed there: it is scrubbed by
+  field name only, and no session is saved.
 - **A `stop` after the recorder died** still scrubs by field name, but the
   filled (or phone-typed) values died with the recorder, so the post-process
   reports a warning (exit 7) rather than a pass it could not check.

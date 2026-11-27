@@ -511,6 +511,10 @@ function createSignInWatcher(context, opts) {
     // the watcher only watches for them to get through.
     let withPerson = false;
     const typed = [];
+    // The last page looked at for this capture: when the person's password is
+    // reported AFTER the site already moved on (they tapped the page's own
+    // button), that page is looked at again.
+    let lastPage = null;
     // Whether the capture has shown anything but a sign-in. Until it has, a
     // sign-in with nobody present means the run can record nothing useful.
     let sawOtherPage = false;
@@ -538,6 +542,7 @@ function createSignInWatcher(context, opts) {
         if ((gaveUp && !withPerson) || signedIn || (page.isClosed && page.isClosed())) return;
         if (opts.inScope && !opts.inScope(page)) return;
         if (!hostOf(page.url()) || page.url() === 'about:blank') return;
+        lastPage = page;
         let step = await detectStep(page);
         // A page with no form YET is given its load and a moment to draw one
         // -- but only where the answer decides something: whether the run has
@@ -684,7 +689,11 @@ function createSignInWatcher(context, opts) {
             if (!t || typeof t.value !== 'string' || t.value.length < 4) return;
             if (t.kind !== 'password' && t.kind !== 'username') return;
             if (!typed.includes(t.value)) typed.push(t.value);
-            if (t.kind === 'password' && withPerson) passwordFilled = true;
+            if (t.kind === 'password' && withPerson && !passwordFilled) {
+                passwordFilled = true;
+                // The site may already be past the sign-in: no load will come.
+                if (lastPage && !(lastPage.isClosed && lastPage.isClosed())) check(lastPage);
+            }
         },
         /** The hosts whose session is this capture's: the start host and every host a form was filled on. */
         hosts() {

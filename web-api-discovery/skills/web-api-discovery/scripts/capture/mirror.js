@@ -72,11 +72,17 @@
  *
  * WHAT WAS TYPED INTO A PASSWORD OR SIGN-IN-NAME BOX goes to the scrub
  * (`opts.onTyped`), as a credential the recorder filled does -- once it is
- * FINAL (the box left, Enter, done, end, or the view closed), never a prefix
- * of it: a one-letter prefix as a scrub literal would replace that letter
- * everywhere. Codes are left out, as sign-in.js leaves them out: dead in 30 s
- * and six digits long. A password's value never travels the other way: the
- * phone is told only whether the page's box holds something.
+ * FINAL (the box left, Enter, a tap or Back on the picture, done, end, or the
+ * view closed), never a prefix of it: a one-letter prefix as a scrub literal
+ * would replace that letter everywhere. So does text from the fallback box
+ * while the phone masks it (a password field was tapped): its pieces as one
+ * value. Codes are left out, as sign-in.js leaves them out: dead in 30 s and
+ * six digits long. A password's value never travels the other way: the phone
+ * is told only whether the page's box holds something.
+ *
+ * "END THE CAPTURE" ACTS AT ONCE: typing a long value takes seconds at a
+ * typing pace, and the person ending the capture is not kept waiting behind
+ * it -- the replay stops.
  *
  * Zero dependencies. The CDP session is anything with send(method, params)
  * and on/off(event, fn) -- Playwright's CDPSession, or a test's fake.
@@ -309,8 +315,9 @@ function parseInput(doc) {
         case 'scroll':
             return x === null || y === null ? null : { t: 'scroll', x, y, dx: delta(doc.dx), dy: delta(doc.dy) };
         case 'text':
+            // `s`: the phone's fallback box was masked -- a password field.
             return typeof doc.v === 'string' && doc.v.length > 0 && doc.v.length <= MAX_TEXT_LENGTH
-                ? { t: 'text', v: doc.v } : null;
+                ? { t: 'text', v: doc.v, s: doc.s === true } : null;
         case 'key':
             return typeof doc.k === 'string' && Object.prototype.hasOwnProperty.call(KEYS, doc.k)
                 ? { t: 'key', k: doc.k } : null;
@@ -331,7 +338,7 @@ function parseInput(doc) {
  * Replay one input into the page over CDP. `size` is the CSS size of the
  * frame the phone tapped on, so a fraction of it is a point in the page.
  */
-async function relayInput(cdp, input, size, gapMs = KEY_GAP_MS) {
+async function relayInput(cdp, input, size, gapMs = KEY_GAP_MS, stop = null) {
     const at = () => ({ x: input.x * size.w, y: input.y * size.h });
     const mouse = (type, extra) => cdp.send('Input.dispatchMouseEvent', Object.assign({ type }, at(), extra));
     switch (input.t) {
@@ -355,7 +362,7 @@ async function relayInput(cdp, input, size, gapMs = KEY_GAP_MS) {
             return;
         case 'text':
             // Into whatever has focus, as key presses (typeText).
-            await typeText(cdp, input.v, gapMs);
+            await typeText(cdp, input.v, gapMs, stop);
             return;
         case 'key':
             await pressKey(cdp, KEYS[input.k]);
@@ -387,11 +394,12 @@ async function pressKey(cdp, k, extra = {}) {
  * A character no US key types is inserted whole; line breaks, tabs and other
  * control characters are dropped (as keys they would press Enter or Tab).
  */
-async function typeText(cdp, text, gapMs = KEY_GAP_MS) {
+async function typeText(cdp, text, gapMs = KEY_GAP_MS, stop = null) {
     let first = true;
     for (const ch of Array.from(String(text))) {
         if (/[\u0000-\u001f\u007f]/.test(ch)) continue;
         if (!first) await sleep(gapMs);
+        if (stop && stop()) return;
         first = false;
         const k = US_KEYS[ch];
         if (k) {
@@ -423,16 +431,17 @@ function editKeys(prev, next) {
     return { left: q, back: a.length - p - q, insert: b.slice(p, b.length - q).join('') };
 }
 
-async function replayEdit(cdp, prev, next, gapMs) {
+async function replayEdit(cdp, prev, next, gapMs, stop = null) {
     const e = editKeys(prev, next);
     for (let i = 0; i < e.left; i++) await pressKey(cdp, NAV_KEYS.ArrowLeft);
     for (let i = 0; i < e.back; i++) {
         if (i) await sleep(gapMs);
+        if (stop && stop()) return;
         await pressKey(cdp, NAV_KEYS.Backspace);
     }
     if (e.insert) {
         if (e.back) await sleep(gapMs);
-        await typeText(cdp, e.insert, gapMs);
+        await typeText(cdp, e.insert, gapMs, stop);
     }
     if (e.left) await pressKey(cdp, NAV_KEYS.End);
 }
@@ -480,7 +489,7 @@ function phoneFields(read) {
             out.ml = Number.isInteger(f.maxLength) && f.maxLength > 0 ? Math.min(f.maxLength, MAX_TEXT_LENGTH) : MAX_TEXT_LENGTH;
             out.l = String(f.label || '').slice(0, 60);
             if (INPUT_MODES.includes(f.inputmode)) out.im = f.inputmode;
-            else if (f.type === 'number' || kind === 'otp') out.im = 'numeric';
+            else if (f.type === 'number' || f.type === 'tel' || kind === 'otp') out.im = f.type === 'tel' ? 'tel' : 'numeric';
             return out;
         });
 }
@@ -583,21 +592,31 @@ async function startMirror(opts) {
     let lastFields = null;
     const generations = new Map();
     let reading = false;
+    let readAgain = false;
     let soonTimer = null;
     // The box being typed into: what kind it is, and what the page's box holds
     // as far as this view has typed it.
     let focused = null;
+    // What the MASKED fallback box has typed since it was last final.
+    let fallbackSecret = '';
+    // The view is ending: a typing replay in flight stops.
+    let stopping = false;
+    const stopTyping = () => stopping || closed;
     const reported = new Set();
-    // FINAL: a typed password or sign-in name, to the scrub -- once.
-    const commit = () => {
-        const f = focused;
-        if (!f || !SECRET_KINDS.includes(f.kind) || f.value.length < MIN_SECRET_LENGTH) return;
-        const key = `${f.kind}\u0000${f.value}`;
+    const report = (kind, value) => {
+        if (!SECRET_KINDS.includes(kind) || value.length < MIN_SECRET_LENGTH) return;
+        const key = `${kind}\u0000${value}`;
         if (reported.has(key)) return;
         reported.add(key);
         if (opts.onTyped) {
-            try { opts.onTyped({ kind: f.kind, value: f.value }); } catch (e) { void e; }
+            try { opts.onTyped({ kind, value }); } catch (e) { void e; }
         }
+    };
+    // FINAL: a typed password or sign-in name, to the scrub -- once.
+    const commit = () => {
+        if (focused) report(focused.kind, focused.value);
+        if (fallbackSecret) report('password', fallbackSecret);
+        fallbackSecret = '';
     };
 
     const sse = (client, event, data) => {
@@ -606,7 +625,10 @@ async function startMirror(opts) {
     };
     const broadcast = (event, data) => { for (const c of clients) sse(c, event, data); };
     const readFields = async () => {
-        if (closed || !opts.fields || reading || clients.size === 0) return;
+        if (closed || !opts.fields || clients.size === 0) return;
+        // Asked while a read is under way (typing just landed): read again
+        // after it, so the last list is never one from before the last key.
+        if (reading) { readAgain = true; return; }
         reading = true;
         try {
             const list = phoneFields(await opts.fields());
@@ -622,6 +644,7 @@ async function startMirror(opts) {
             void e; // A page mid-navigation has no answer this time; the next read looks again.
         } finally {
             reading = false;
+            if (readAgain) { readAgain = false; readSoon(); }
         }
     };
     const readSoon = () => {
@@ -642,7 +665,7 @@ async function startMirror(opts) {
             if (!focused) return;
             const prev = focused.value;
             focused.value = input.v;
-            await replayEdit(cdp, prev, input.v, gapMs);
+            await replayEdit(cdp, prev, input.v, gapMs, stopTyping);
             return;
         }
         // focus
@@ -754,12 +777,21 @@ async function startMirror(opts) {
                 // a box's text before the Enter that submits it, and the last
                 // typing before "done" makes it final. Never logged: a typed
                 // value may be anything.
-                if (input.t === 'done' || input.t === 'end') {
+                // "I'm done" waits for the typing before it to land: the page
+                // is handed back as the person left it.
+                if (input.t === 'done') {
                     inputChain = inputChain.then(() => {
                         commit();
-                        if (closed) return;
-                        if (input.t === 'done') { if (opts.onDone) opts.onDone(); } else if (opts.onEnd) opts.onEnd();
+                        if (!closed && opts.onDone) opts.onDone();
                     }).catch(() => {});
+                    return;
+                }
+                // "End the capture" does not: the typing stops, what was typed
+                // is final, and the capture ends now.
+                if (input.t === 'end') {
+                    stopping = true;
+                    commit();
+                    if (opts.onEnd) opts.onEnd();
                     return;
                 }
                 if (input.t === 'focus' || input.t === 'value' || input.t === 'blur') {
@@ -767,9 +799,25 @@ async function startMirror(opts) {
                     return;
                 }
                 if (input.t !== 'back' && input.t !== 'text' && input.t !== 'key' && !(size.w > 0)) return;
-                // Enter submits: what is in the box is final.
-                if (input.t === 'key' && input.k === 'Enter') inputChain = inputChain.then(commit);
-                inputChain = inputChain.then(() => relayInput(cdp, input, size, gapMs)).catch(() => {}).then(readSoon);
+                inputChain = inputChain.then(() => {
+                    // Enter submits; a tap, a press or Back in the picture moves
+                    // the page's focus (its own Sign-in button, another field):
+                    // what is in the box is final, BEFORE that reaches the page.
+                    if ((input.t === 'key' && input.k === 'Enter') || input.t === 'tap' || input.t === 'down' ||
+                        input.t === 'back') {
+                        commit();
+                        if (input.t !== 'key') focused = null;
+                    }
+                    // The masked fallback box: its pieces are one value.
+                    if (input.t === 'text') {
+                        if (input.s) fallbackSecret += Array.from(input.v).filter((c) => !/[\u0000-\u001f\u007f]/.test(c)).join('');
+                        else { commit(); }
+                    }
+                    if (input.t === 'key' && input.k === 'Backspace' && fallbackSecret) {
+                        fallbackSecret = Array.from(fallbackSecret).slice(0, -1).join('');
+                    }
+                    return relayInput(cdp, input, size, gapMs, stopTyping);
+                }).catch(() => {}).then(readSoon);
             });
             return;
         }
@@ -845,7 +893,8 @@ async function startMirror(opts) {
             closed = true;
             stopFields();
             // Whatever is in a box when the view closes is final. Typing still
-            // on its way is let through first, so the value is the last one.
+            // on its way stops (closed), and the chain is let through first,
+            // so the value is the last one the person sent.
             await inputChain.catch(() => {});
             commit();
             focused = null;

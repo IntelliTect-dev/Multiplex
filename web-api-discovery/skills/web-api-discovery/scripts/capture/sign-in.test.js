@@ -55,6 +55,9 @@
 //       scrub; once they are through, the session is saved against the
 //       cookies from before they typed; result() says a person signed in
 //   P13 nobody can take over -> the unattended ending, as before
+//   P14 the person submits BEFORE the phone view says the password is final
+//       (a tap on the page's own button): the session is still saved, when
+//       the password arrives -- no further page load needed
 
 'use strict';
 
@@ -841,6 +844,31 @@ async function browserCases(pw) {
         assert.strictEqual(unattended, 1, 'sign-in-needed, as before');
         w.addTyped({ kind: 'password', value: PASSWORD });
         assert.deepStrictEqual(w.secrets(), [PASSWORD], 'typed values still reach the scrub');
+    });
+
+    await run('P14: the person submits before the password is reported -- the session is still saved when it is', async (context) => {
+        const savedWith = [];
+        const page = await context.newPage();
+        const w = signIn.createSignInWatcher(context, {
+            uri: `${base}/login`, say: () => {},
+            resolve: () => Promise.resolve({ source: 'none', code: 'no-terminal', reason: 'nobody is at the terminal' }),
+            handToPerson: () => true,
+            onSignedIn: (arg) => { savedWith.push(arg); }
+        });
+        await page.goto(`${base}/login`);
+        await w.check(page);
+        await page.fill('input[name=email]', USER);
+        await page.fill('input[name=pw]', PASSWORD);
+        await page.click('button');
+        await page.waitForURL(/\/home$/);
+        await settle(page, w);
+        assert.strictEqual(savedWith.length, 0, 'no password reported yet: nothing to call a sign-in');
+        // Now the phone view reports it final -- and nothing else loads.
+        w.addTyped({ kind: 'password', value: PASSWORD });
+        const deadline = Date.now() + 5000;
+        while (!savedWith.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(savedWith.length, 1, 'the session is saved once the password arrives');
+        assert.strictEqual(w.result().signedIn, true);
     });
 
     // Bounded: on some machines Chromium's shutdown alone takes minutes

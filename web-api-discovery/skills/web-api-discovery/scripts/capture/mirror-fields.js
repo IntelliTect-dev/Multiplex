@@ -23,10 +23,13 @@
  *
  * WHAT EACH BOX IS FOR (`kind`), so the phone's box gets the type and
  * `autocomplete` a password manager looks for:
- *   password   type=password
+ *   password   type=password -- or a password by any other type: one a "show
+ *              password" toggle made type=text (its autocomplete or its name
+ *              still says so), and a PIN. Its value is never read either.
  *   otp        autocomplete=one-time-code, or a name/id saying otp/totp
- *   username   autocomplete=username; or an email/name box beside a password,
- *              or on a sign-in address -- the same evidence sign-in.js asks for
+ *   username   autocomplete=username; or an email, phone or name box beside a
+ *              password, or on a sign-in address -- the same evidence
+ *              sign-in.js asks for
  *   email      an email box on its own (a newsletter is not a sign-in)
  *   tel, number, text
  *
@@ -84,13 +87,15 @@ function collectInFrame(args) {
             .map((x) => Math.min(vw - 1, Math.max(0, x)));
         if (!xs.some((x) => onTop(el, x, cy))) continue;
         const ac = tokens(el);
+        const signIn = hasPassword || signInPath;
         let kind;
-        if (type === 'password') kind = 'password';
+        if (type === 'password' || ac.includes('current-password') || ac.includes('new-password') ||
+            named(el, /passw|pwd|passcode/i) || named(el, /(^|[^a-z])pin([^a-z]|$)/i)) kind = 'password';
         else if (ac.includes('one-time-code') || named(el, /otp|totp/i)) kind = 'otp';
         else if (ac.includes('username')) kind = 'username';
-        else if (type === 'email' || ac.includes('email')) kind = hasPassword || signInPath ? 'username' : 'email';
-        else if ((hasPassword || signInPath) && named(el, /user|email|login/i)) kind = 'username';
-        else if (type === 'tel') kind = 'tel';
+        else if (type === 'email' || ac.includes('email')) kind = signIn ? 'username' : 'email';
+        else if (signIn && named(el, /user|email|login/i)) kind = 'username';
+        else if (type === 'tel') kind = signIn ? 'username' : 'tel';
         else if (type === 'number') kind = 'number';
         else kind = 'text';
         const label = (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||

@@ -665,6 +665,9 @@ const AGENT_ACK_GRACE_MS = 30000;
 // finish before launching the agent (#155). Bounded: with somebody at the
 // terminal that look can be a prompt they take a minute over.
 const FIRST_SIGN_IN_CHECK_MS = 10000;
+// How long the ending waits for a phone view to close -- the moment what the
+// person typed last becomes final for the scrub (#155).
+const PHONE_CLOSE_MAX_MS = 5000;
 // HOW LONG A HAND-OVER WAITS FOR A PERSON NOBODY IS AT THE TERMINAL FOR. With
 // a phone link the person may be anywhere; without an answer from it in this
 // long, the recording ends as `handed-over` and is post-processed.
@@ -5537,12 +5540,18 @@ async function start(args) {
     // they use first wins: ENTER here ends the recording, `continue` + ENTER
     // hands back; the phone's two buttons do the same.
     let handOver = null;
+    // Phone views still closing. Closing is when what the person typed last
+    // becomes final for the scrub, so the ending waits for them (bounded)
+    // before it reads the sign-in values.
+    const phoneClosings = new Set();
     const closePhoneView = (h, text) => {
         if (h && h.timer) clearTimeout(h.timer);
         if (h && h.phone) {
             const view = h.phone;
             h.phone = null;
-            void view.close(text).catch(() => {});
+            const closing = view.close(text).catch(() => {});
+            phoneClosings.add(closing);
+            void closing.then(() => phoneClosings.delete(closing));
         }
     };
     const handBack = (by) => {
@@ -5768,8 +5777,10 @@ async function start(args) {
         handToPerson: (host, page) => {
             if (reason) return false;
             // Already theirs (a check handed over, and now a sign-in): the
-            // same hand-over goes on, and what they type is scrubbed.
-            if (handOver) return true;
+            // same hand-over goes on, and what they type is scrubbed -- when
+            // they have it on their phone. Without a phone view they sign in
+            // at the PC, which the watcher cannot see typed: as before.
+            if (handOver) return !!handOver.phone;
             const who = driverNow();
             if (who !== 'agent' && who !== 'agent-unstarted' && who !== 'agent-unmessaged') return false;
             const tailnet = mirror.findTailnetAddress({ env: process.env });
@@ -5975,6 +5986,7 @@ async function start(args) {
         closePhoneView(handOver, 'The capture has ended; what was recorded is kept. You can close this page.');
         handOver = null;
     }
+    if (phoneClosings.size) await Promise.race([Promise.all([...phoneClosings]), sleep(PHONE_CLOSE_MAX_MS)]);
     if (agentRunning && agentControl.end) {
         agentControl.end(agentStream.agentMessages.ended());
         // A moment for it to say its last words into the step log: told the

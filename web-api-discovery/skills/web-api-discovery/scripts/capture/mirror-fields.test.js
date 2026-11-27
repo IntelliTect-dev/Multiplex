@@ -18,6 +18,10 @@
 //       address says it is a sign-in), a phone number, plain text
 //   F4  a box with its label drawn over it (a "floating label") is still one
 //       the person can tap
+//   F5  A PASSWORD BY ANY OTHER TYPE (review of #155): a password box a
+//       "show password" toggle turned into type=text (its autocomplete, or its
+//       name, still says password), and a PIN, are passwords -- their values
+//       never read; a phone-number box on a sign-in is the sign-in name
 
 'use strict';
 
@@ -202,6 +206,41 @@ test('F4: a box with its label drawn over it is still one the person can tap', a
             '</body></html>');
         const got = await fields.readFields(page);
         assert.ok(byLabel(got.fields, 'floating'), `the box under its own label is listed: ${JSON.stringify(got.fields)}`);
+    });
+});
+
+test('F5: a password shown as text, or a PIN, is still a password; a phone number on a sign-in is the sign-in name', async () => {
+    await withBrowser('F5', async (browser) => {
+        const { server, port } = await site({
+            '/signin': '<html><body style="margin:0">' +
+                '<input aria-label="shown-by-autocomplete" type="text" autocomplete="current-password" value="visible-pw-1" ' +
+                '  style="position:absolute;left:0;top:0;width:200px;height:30px">' +
+                '<input aria-label="shown-by-name" type="text" name="password" value="visible-pw-2" ' +
+                '  style="position:absolute;left:0;top:40px;width:200px;height:30px">' +
+                '<input aria-label="pin" type="tel" name="pin" value="4321" ' +
+                '  style="position:absolute;left:0;top:80px;width:200px;height:30px">' +
+                '<input aria-label="phone" type="tel" name="phone" value="5550100" ' +
+                '  style="position:absolute;left:0;top:120px;width:200px;height:30px">' +
+                '<input aria-label="passport" type="text" name="passport" ' +
+                '  style="position:absolute;left:0;top:160px;width:200px;height:30px">' +
+                '</body></html>'
+        });
+        try {
+            const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+            await page.goto(`http://127.0.0.1:${port}/signin`);
+            const got = await fields.readFields(page);
+            const kind = (label) => (byLabel(got.fields, label) || {}).kind;
+            assert.strictEqual(kind('shown-by-autocomplete'), 'password');
+            assert.strictEqual(kind('shown-by-name'), 'password');
+            assert.strictEqual(kind('pin'), 'password');
+            for (const v of ['visible-pw-1', 'visible-pw-2', '4321']) {
+                assert.ok(!JSON.stringify(got).includes(v), `a password's value is never read: ${v}`);
+            }
+            assert.strictEqual(kind('phone'), 'username', 'a phone number on a sign-in is the sign-in name');
+            assert.strictEqual(kind('passport'), 'text', '"passport" is not a password');
+        } finally {
+            server.close();
+        }
     });
 });
 

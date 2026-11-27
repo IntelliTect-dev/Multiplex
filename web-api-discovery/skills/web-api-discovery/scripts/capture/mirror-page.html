@@ -162,7 +162,7 @@ button[disabled]{opacity:.6}
     onBox = !drag && e.target && e.target.parentNode === form;
     if (onBox) return;
     try { stage.setPointerCapture(e.pointerId); } catch (_) { }
-    if (drag) { pressed = true; post({ t: 'down', x: start.x, y: start.y }); }
+    if (drag) { settleBoxes(); pressed = true; post({ t: 'down', x: start.x, y: start.y }); }
     e.preventDefault();
   });
   stage.addEventListener('pointermove', function (e) {
@@ -190,7 +190,7 @@ button[disabled]{opacity:.6}
     if (!start) return;
     var f = frac(e);
     if (drag) { if (pressed) post({ t: 'up', x: f.x, y: f.y }); pressed = false; }
-    else if (!moved && !cancelled && !onBox) { maskFor(f); post({ t: 'tap', x: f.x, y: f.y }); }
+    else if (!moved && !cancelled && !onBox) { settleBoxes(); maskFor(f); post({ t: 'tap', x: f.x, y: f.y }); }
     start = null; onBox = false;
   }
   stage.addEventListener('pointerup', function (e) { endPointer(e, false); });
@@ -201,7 +201,10 @@ button[disabled]{opacity:.6}
     post({ t: 'scroll', x: f.x, y: f.y, dx: e.deltaX / f.r.width, dy: e.deltaY / f.r.height });
   }, { passive: false });
 
-  function sendText() { if (txt.value) { post({ t: 'text', v: txt.value }); txt.value = ''; } }
+  // Masked (a password field was tapped): the recorder hands it to the scrub.
+  function sendText() {
+    if (txt.value) { post({ t: 'text', v: txt.value, s: txt.type === 'password' }); txt.value = ''; }
+  }
   var sendBtn = document.getElementById('send');
   // Keep the text field focused (and the phone keyboard open) when Send is tapped.
   sendBtn.addEventListener('pointerdown', function (e) { e.preventDefault(); });
@@ -211,7 +214,7 @@ button[disabled]{opacity:.6}
     b.addEventListener('pointerdown', function (e) { if (document.activeElement === txt) e.preventDefault(); });
     b.addEventListener('click', function () { sendText(); post({ t: 'key', k: b.dataset.key }); });
   });
-  document.getElementById('back').addEventListener('click', function () { post({ t: 'back' }); });
+  document.getElementById('back').addEventListener('click', function () { settleBoxes(); post({ t: 'back' }); });
   var mode = document.getElementById('mode');
   mode.addEventListener('click', function () {
     drag = !drag;
@@ -238,13 +241,31 @@ button[disabled]{opacity:.6}
   function sendValue() {
     if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
     if (active && active.value !== lastSent) {
-      lastSent = active.value; active.sent = active.value;
+      lastSent = active.value; active.sent = active.value; active.sentAt = Date.now();
       post({ t: 'value', v: active.value });
     }
   }
   // A box whose text the page has not been sent: one a password manager
   // filled while another box was being typed in.
   function dirty(el) { return !!el.value && el.value !== el.sent; }
+  // Typed in a moment ago, and the list does not show it yet.
+  function catchingUp(el, b) {
+    return !!el.sentAt && Date.now() - el.sentAt < 3000 && shown(el, b) !== el.sent;
+  }
+  // What the page's box holds, as far as the phone can know: its text -- or,
+  // for a password, what this box sent while the page's holds that many
+  // characters (a password's text never comes to the phone).
+  function shown(el, b) {
+    if (b.k !== 'password') return b.v || '';
+    return el.sent && Array.from(el.sent).length === b.n ? el.sent : '';
+  }
+  // BEFORE ANYTHING ELSE REACHES THE PAGE -- a tap on the picture, Back,
+  // "I'm done": every box a password manager filled is sent, and the box
+  // being typed in is left, so what was typed is final first.
+  function settleBoxes() {
+    Array.prototype.slice.call(form.elements).forEach(function (o) { if (o !== active && dirty(o)) o.focus(); });
+    if (active) active.blur();
+  }
   function next(el) {
     var all = Array.prototype.slice.call(form.elements), i = all.indexOf(el);
     return i >= 0 ? all[i + 1] : null;
@@ -264,10 +285,10 @@ button[disabled]{opacity:.6}
       el.dataset.i = String(i); el.dataset.g = String(gen); el.dataset.k = b.k;
       if (el !== active) {
         if (el.type !== b.t) el.type = b.t;
-        // What the page's box shows; a box a password manager filled and
-        // nobody has sent yet keeps what it was filled with.
-        if (!dirty(el)) el.value = b.v || '';
-        el.sent = el.value;
+        // What the page's box shows -- except a box a password manager filled
+        // and nobody has sent yet (it keeps what it was filled with), and one
+        // just typed in whose text the page may not have caught up with yet.
+        if (!dirty(el) && !catchingUp(el, b)) { el.value = shown(el, b); el.sent = el.value; }
       }
       el.setAttribute('autocomplete', b.ac);
       el.name = { password: 'password', username: 'username', otp: 'one-time-code', email: 'email' }[b.k] || ('field' + i);
@@ -330,6 +351,7 @@ button[disabled]{opacity:.6}
     submit();
   });
   document.getElementById('done').addEventListener('click', function () {
+    settleBoxes();
     var button = this;
     button.disabled = true;
     statusEl.textContent = 'Handing the browser back...';

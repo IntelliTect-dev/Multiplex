@@ -54,6 +54,17 @@
 //       or plain text, never twice
 //   T11 the phone's status line says what to do: sign in yourself, or answer
 //       the check
+//   T12 THE FALLBACK BOX (review of #155): text sent from it while it is
+//       masked (a password field was tapped) reaches the scrub too, the
+//       pieces as one value, Backspace taken off -- once final; unmasked
+//       text does not
+//   T13 a tap on the picture (the page's own Sign-in button) makes what was
+//       typed in a box final BEFORE the tap reaches the page
+//   T14 "End the capture" acts at once, even behind a long typing replay,
+//       and the replay stops
+//   E4  the phone page: a box the password manager filled while another was
+//       being typed in -- and a refresh of the list in between -- is sent
+//       before a tap on the picture's Sign-in button; the page gets both
 //   E3  the phone page in a real browser at a phone's size, over a real
 //       sign-in form: a real box of the right type over each of the page's,
 //       filling them (as a password manager does) types into the page as key
@@ -721,6 +732,103 @@ test('T11: the phone\'s status line says what to do -- sign in yourself, or answ
     assert.match(check.text, /Answer it yourself if you choose to/);
 });
 
+test('T12: text from the masked fallback box reaches the scrub -- as one value, once final; unmasked text does not', async () => {
+    const cdp = fakeCdp();
+    const typed = [];
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, keyGapMs: 0, onTyped: (t) => typed.push(t) });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
+        cdp.frame(400, 300);
+        // Typed in pieces, a mistake taken back with Delete, then Enter.
+        await post(view, cookie, { t: 'text', v: 'fall', s: true });
+        await post(view, cookie, { t: 'text', v: 'backX', s: true });
+        await post(view, cookie, { t: 'key', k: 'Backspace' });
+        await post(view, cookie, { t: 'text', v: '-pw', s: true });
+        await settle();
+        assert.deepStrictEqual(typed, [], 'not before it is final');
+        await post(view, cookie, { t: 'key', k: 'Enter' });
+        await settle();
+        assert.deepStrictEqual(typed, [{ kind: 'password', value: 'fallback-pw' }]);
+        // Unmasked text (a search box) is not a secret.
+        await post(view, cookie, { t: 'text', v: 'one-way flights' });
+        await post(view, cookie, { t: 'key', k: 'Enter' });
+        // A masked piece left in the box when the view closes is final then.
+        await post(view, cookie, { t: 'text', v: 'second-secret', s: true });
+        await settle();
+        await view.close();
+        assert.deepStrictEqual(typed, [{ kind: 'password', value: 'fallback-pw' }, { kind: 'password', value: 'second-secret' }]);
+        assert.strictEqual(mirror.parseInput({ t: 'text', v: 'x', s: 'yes' }).s, false, 'only true masks');
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T13: a tap on the picture makes what was typed final BEFORE the tap reaches the page', async () => {
+    const cdp = fakeCdp();
+    const state = { list: [Object.assign({}, EMAIL_BOX, { value: '', length: 0 }), PASSWORD_BOX] };
+    const order = [];
+    const send = cdp.send;
+    cdp.send = async (method, params) => {
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') order.push(`press@${Math.round(params.y)}`);
+        return send(method, params);
+    };
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, fields: fakeFields(state), fieldPollMs: 30,
+        keyGapMs: 0, onTyped: (t) => order.push(`typed:${t.kind}`) });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
+        cdp.frame(400, 300);
+        const { g } = await watching.next('fields');
+        await post(view, cookie, { t: 'focus', g, i: 1 });
+        await post(view, cookie, { t: 'value', v: 'tapped-pw' });
+        // The page's own "Sign in" button, tapped in the picture.
+        await post(view, cookie, { t: 'tap', x: 0.5, y: 0.8 });
+        await settle();
+        assert.deepStrictEqual(order, ['press@105', 'typed:password', 'press@240'],
+            'the box was tapped, then the password was final, then the button was tapped');
+        // The tap moved the page's focus: later text is not added to that box.
+        await post(view, cookie, { t: 'value', v: 'tapped-pw-and-more' });
+        await settle();
+        await view.close();
+        assert.deepStrictEqual(order.filter((o) => o.startsWith('typed')), ['typed:password']);
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
+test('T14: "End the capture" acts at once, even behind a long typing replay -- and the replay stops', async () => {
+    const cdp = fakeCdp();
+    let ended = 0;
+    const view = await mirror.startMirror({ host: '127.0.0.1', cdp, keyGapMs: 50, onEnd: () => { ended++; } });
+    let watching = null;
+    try {
+        const claimed = await claim(view);
+        const cookie = claimed.cookie;
+        watching = claimed.stream;
+        cdp.frame(400, 300);
+        // 200 characters at 50 ms each: ten seconds of typing.
+        await post(view, cookie, { t: 'text', v: 'x'.repeat(200) });
+        await new Promise((r) => setTimeout(r, 200));
+        const started = Date.now();
+        await post(view, cookie, { t: 'end' });
+        while (!ended && Date.now() - started < 3000) await settle();
+        assert.strictEqual(ended, 1, `"End the capture" waited ${Date.now() - started} ms behind the typing`);
+        await view.close();
+        const keys = cdp.calls.filter((c) => c.method === 'Input.dispatchKeyEvent' && c.params.type === 'keyDown').length;
+        assert.ok(keys < 100, `the replay stopped when the view closed: ${keys} of 200 keys were pressed`);
+    } finally {
+        if (watching) watching.close();
+        await view.close();
+    }
+});
+
 function integrationRequired(ciValue) {
     if (ciValue === undefined || ciValue === null) return false;
     const value = String(ciValue).trim();
@@ -931,6 +1039,58 @@ test('E3: the phone page lays real boxes over a real sign-in form; filling them 
         while (typed.length < 2 && Date.now() < deadline) await settle();
         assert.deepStrictEqual(typed, [{ kind: 'username', value: 'owner@example.invalid' },
             { kind: 'password', value: 'Hunter2-phone' }], 'the final values reach the scrub');
+    } finally {
+        if (view) await view.close();
+        await browser.close();
+    }
+});
+
+test('E4: a box the password manager filled is sent before a tap on the picture\'s Sign-in button', async () => {
+    const found = browserBlocker();
+    if (found.why) {
+        if (integrationRequired(process.env.CI)) throw new Error(`E4 cannot run: ${found.why} -- in CI that is a failure`);
+        skipped.push(`E4 (${found.why})`);
+        return;
+    }
+    const fieldsOf = require(path.join(__dirname, 'mirror-fields.js'));
+    const browser = await found.playwright.chromium.launch({ executablePath: found.chrome, headless: true });
+    let view = null;
+    try {
+        const site = await browser.newPage({ viewport: { width: 400, height: 300 } });
+        await site.setContent('<html><body style="margin:0">' +
+            '<form id="f" onsubmit="event.preventDefault(); document.title = \'submitted:\' + ' +
+            'document.getElementById(\'u\').value + \'/\' + document.getElementById(\'p\').value">' +
+            '<input id="u" type="email" autocomplete="username" ' +
+            '  style="position:absolute;left:50px;top:40px;width:300px;height:40px">' +
+            '<input id="p" type="password" style="position:absolute;left:50px;top:120px;width:300px;height:40px">' +
+            '<button style="position:absolute;left:50px;top:200px;width:300px;height:60px">Sign in</button>' +
+            '</form></body></html>');
+        const typed = [];
+        view = await mirror.startMirror({ host: '127.0.0.1', cdp: await site.context().newCDPSession(site),
+            fields: () => fieldsOf.readFields(site), keyGapMs: 5, fieldPollMs: 100, onTyped: (t) => typed.push(t) });
+        const phoneContext = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
+        const phone = await phoneContext.newPage();
+        await phone.goto(view.url);
+        await phone.waitForFunction(() => document.querySelectorAll('#fields input').length === 2, null, { timeout: 15000 });
+        const user = phone.locator('#fields input[autocomplete="username"]');
+        const pass = phone.locator('#fields input[type="password"]');
+        await user.tap();
+        await user.fill('owner@example.invalid');
+        // The password manager fills the OTHER box too, and nobody focuses it.
+        await pass.evaluate((el) => { el.value = 'Autofilled-pw-155'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+        await site.waitForFunction(() => document.getElementById('u').value === 'owner@example.invalid', null, { timeout: 15000 });
+        // The list of boxes is read again in between (it is, every 100 ms here).
+        await new Promise((r) => setTimeout(r, 400));
+        assert.strictEqual(await pass.inputValue(), 'Autofilled-pw-155', 'a refresh of the list kept what was filled');
+        // A TAP ON THE PICTURE of the page's own Sign-in button.
+        const shot = await phone.locator('#screen').boundingBox();
+        await phone.touchscreen.tap(shot.x + shot.width * 0.5, shot.y + shot.height * (230 / 300));
+        await site.waitForFunction(() => document.title.startsWith('submitted:'), null, { timeout: 15000 });
+        assert.strictEqual(await site.title(), 'submitted:owner@example.invalid/Autofilled-pw-155',
+            'both boxes reached the page before the button did');
+        const deadline = Date.now() + 5000;
+        while (typed.length < 2 && Date.now() < deadline) await settle();
+        assert.deepStrictEqual(typed.map((t) => t.kind).sort(), ['password', 'username'], 'both reached the scrub');
     } finally {
         if (view) await view.close();
         await browser.close();
