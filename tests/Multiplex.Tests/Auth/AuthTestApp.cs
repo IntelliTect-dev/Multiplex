@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Multiplex.Tests.Identity;
 using Multiplex.Web.Auth;
 using Multiplex.Web.Auth.Clients;
 using Multiplex.Web.Auth.Store;
@@ -41,6 +42,7 @@ public class AuthTestApp : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.WithoutMicrosoftSignIn();
         foreach (var (key, value) in Settings) builder.UseSetting(key, value);
 
         builder.ConfigureServices(services =>
