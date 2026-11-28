@@ -48,25 +48,28 @@ happens in somebody's real session. So, **before any page action** -- before
 `tabs_context_mcp`, `navigate` or anything else that touches a page:
 
 1. Call `mcp__claude-in-chrome__list_connected_browsers`.
-2. Find the capture browser: the connected browser whose name is exactly the
-   **Capture browser name** under **This capture** (ignoring case). The name
-   decides. If the list says which browsers are on this computer, a match it
-   says is elsewhere is not the capture browser -- the recorder launched it on
-   this machine a moment ago. If the list does not say whether a browser is on
-   this computer, decide by the name alone.
-3. If exactly one browser matches, call `mcp__claude-in-chrome__select_browser`
-   with its `deviceId`, and drive only it from then on.
-4. If the capture browser cannot be identified unambiguously -- no browser has
-   that name, more than one does, or the only match is reported as elsewhere --
-   do not use the extension and do not switch to another way of driving.
-   **Never act in any other browser**, and do not guess from a name that is
-   merely similar. Stop and hand back: say in your final message which browsers were
-   listed (their names, not their device IDs) and that the capture browser must
-   be connected under the capture browser name, then end your turn.
+2. Find the capture browser: the connected browser whose `deviceId` is exactly
+   the **Capture browser device ID** under **This capture**. The recorder read
+   that ID from the extension inside the capture browser itself, so the device
+   ID decides. Never pick a browser by its name -- the names in the list are
+   labels, often defaults such as "Browser 1" that say nothing about which
+   browser is which -- nor by its place in the list, nor by whether the list
+   calls it local.
+3. If exactly one browser has that device ID, call
+   `mcp__claude-in-chrome__select_browser` with it, and drive only it from then
+   on.
+4. If the capture browser cannot be identified -- the **Capture browser device
+   ID** is unknown, or not exactly one listed browser has it -- do not use the
+   extension and do not switch to another way of driving. **Never act in any other browser.**
+   Stop and hand back: say in your final message which browsers were listed
+   (their names and platforms, not their device IDs) and, if the device ID was
+   unknown, the reason **This capture** gives for it, then end your turn.
 
 Only when the extension is not available at all -- its tools are missing, or
-`list_connected_browsers` lists no browser at all -- use Playwright MCP on the
-CDP endpoint instead, and say so in your summary.
+`list_connected_browsers` lists no browser at all -- and **This capture** gives
+a device ID, use Playwright MCP on the CDP endpoint instead, and say so in your
+summary. When the device ID is unknown, hand back even then: the recorder has
+already told the operator why, and what to fix.
 
 Never use a tool that broadcasts a connection request to every Chrome with the
 extension: it would put a prompt in the operator's other browsers, and the one

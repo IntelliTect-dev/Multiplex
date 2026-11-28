@@ -380,12 +380,9 @@
          -Browser Native).
       2. In it, install Claude in Chrome from the Chrome Web Store:
          https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn
-      3. Sign in to the extension, and connect it under the capture browser
-         name the run prints: `har-capture` for the default profile, or
-         `har-capture-<folder>-<6 hex>` (a hash of the profile path) for any
-         other. Give that name to the capture browser only. The hash comes
-         from the path, so moving or renaming a profile changes the name:
-         reconnect the extension under the new one.
+      3. Sign in to the extension, so it is connected. There is nothing to
+         name: each -AI run reads the capture browser's device ID from the
+         extension inside it, and the agent selects that browser by it.
 
     Before the browser launches, every -AI run looks for the extension's store
     ID under the profile's Extensions folder. Installed: `claude -p` gets
@@ -394,16 +391,24 @@
     these steps, and drives through Playwright MCP -- `--no-chrome` (off even
     if your settings enable it by default), no extension tools in the
     allowlist, and a prompt that says Playwright MCP only. With -Attach nothing
-    is checked and `--chrome` is passed; the name is the plain `har-capture`,
-    so give it only to the browser you attach to -- and an attached run whose
-    only connected Chrome is another browser hands back rather than falling
-    back to Playwright MCP.
+    is checked before the attach and `--chrome` is passed; an attached run
+    whose browser has no running, signed-in extension hands back rather than
+    falling back to Playwright MCP.
+
+    THE DEVICE ID. Once the browser is up, the recorder reads the extension's
+    device ID from its service worker in the capture browser (over its own
+    CDP attach; nothing runs in a page), asking Chrome to start a worker that
+    has gone idle and waiting up to 10 seconds for it, and puts the ID in the
+    prompt. If it cannot be read, the run warns and the prompt says the
+    ID is unknown, so the agent hands back.
 
     THE BROWSER-SELECTION RULE, enforced by the prompt, not by code. Before
     any page action the agent lists the connected browsers and selects, with
-    select_browser, the one whose name is exactly the capture browser name. If
-    it cannot identify it unambiguously it never acts in another browser (that
-    could be your everyday Chrome, unrecorded): it stops and hands back.
+    select_browser, the one whose deviceId is exactly the capture browser's
+    device ID -- never by name: the listing shows default labels such as
+    "Browser 1". If the ID is unknown, or not exactly one listed browser has
+    it, it never acts in another browser (that could be your everyday Chrome,
+    unrecorded): it stops and hands back.
 
     NOT YET, and deliberately: a human sign-in checkpoint (`-SignInFirst`, #75)
     and driving several sites in one run (#74). Until #75 the agent stops at the
