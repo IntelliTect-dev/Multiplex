@@ -3115,10 +3115,13 @@ async function readCaptureBrowserDeviceId(context, opts = {}) {
             const appeared = context.waitForEvent('serviceworker', { predicate: isExtension, timeout: timeoutMs })
                 .catch(() => null);
             if (typeof opts.wake === 'function') {
+                // CLEARED when the wake wins, so no timer outlives the read.
+                let timer = null;
                 await Promise.race([
                     Promise.resolve().then(opts.wake).catch(() => {}),
-                    sleep(timeoutMs)
+                    new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); })
                 ]);
+                clearTimeout(timer);
             }
             worker = (await appeared) || listed();
         }
@@ -3208,18 +3211,19 @@ function applyCaptureBrowserDeviceId(session, read) {
     return {
         level: 'warn',
         message: `capture-har: ${reason}.\n` +
-            '  The agent will hand back rather than pick a browser. Sign in to Claude in Chrome in ' +
-            'the capture\n  browser so it is connected, then record again.'
+            '  The agent will hand back rather than pick a browser. Make sure Claude in Chrome is ' +
+            'installed,\n  signed in and running in the capture browser, then record again.'
     };
 }
 
 /**
- * Text the prompt quotes, made safe to quote: one line, no backticks or control
- * characters, and at most `max` characters. The prompt is instructions.
+ * Text the prompt quotes, made safe to quote: one line -- no backticks, C0 or C1
+ * control characters (NEL among them) or Unicode line separators -- and at most
+ * `max` characters. The prompt is instructions.
  */
 function promptSafe(text, max) {
     const flat = String(text === undefined || text === null ? '' : text)
-        .replace(/[`\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+        .replace(/[`\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
     return flat.length > max ? flat.slice(0, max - 3).trimEnd() + '...' : flat;
 }
 

@@ -889,7 +889,9 @@ run:
   recorder waits up to 10 seconds for it. The prompt gives the ID as the
   **capture browser device ID**. If it cannot be read (the
   extension is not running there, or has never been signed in), the run warns,
-  the prompt says the ID is unknown and why, and the agent hands back.
+  the prompt says the ID is unknown and why, and the agent hands back. A
+  "not running" hand-back can mean the extension's worker stayed idle as well
+  as a missing install or sign-in.
 - **Missing:** the run prints the setup steps above and **drives through
   Playwright MCP** -- a warning, not a refusal. The child gets `--no-chrome`
   (disabled outright, even if your Claude Code settings turn the integration on
