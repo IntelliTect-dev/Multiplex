@@ -25,6 +25,8 @@ public sealed class SiteBrowserLaunchTests
         "disable-backgrounding-occluded-windows", "disable-renderer-backgrounding", "disable-background-timer-throttling",
         // Headless Chrome adds this one itself.
         "noerrdialogs",
+        // On Linux it also adds these, for drawing with no display (Chrome 158, #157).
+        "ozone-platform", "ozone-override-screen-size", "use-angle",
         // chrome://version brackets the switches set in chrome://flags; there are none.
         "flag-switches-begin", "flag-switches-end",
     ];
