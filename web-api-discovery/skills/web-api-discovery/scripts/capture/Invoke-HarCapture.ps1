@@ -397,17 +397,18 @@
 
     THE DEVICE ID. Once the browser is up, the recorder reads the extension's
     device ID from its service worker in the capture browser (over its own
-    CDP attach, waiting up to 10 seconds; nothing runs in a page) and puts it
-    in the prompt. If it cannot be read, the run warns and the prompt says the
+    CDP attach; nothing runs in a page), asking Chrome to start a worker that
+    has gone idle and waiting up to 10 seconds for it, and puts the ID in the
+    prompt. If it cannot be read, the run warns and the prompt says the
     ID is unknown, so the agent hands back.
 
     THE BROWSER-SELECTION RULE, enforced by the prompt, not by code. Before
     any page action the agent lists the connected browsers and selects, with
     select_browser, the one whose deviceId is exactly the capture browser's
     device ID -- never by name: the listing shows default labels such as
-    "Browser 1". If the ID is unknown or not listed it never acts in another
-    browser (that could be your everyday Chrome, unrecorded): it stops and
-    hands back.
+    "Browser 1". If the ID is unknown, or not exactly one listed browser has
+    it, it never acts in another browser (that could be your everyday Chrome,
+    unrecorded): it stops and hands back.
 
     NOT YET, and deliberately: a human sign-in checkpoint (`-SignInFirst`, #75)
     and driving several sites in one run (#74). Until #75 the agent stops at the

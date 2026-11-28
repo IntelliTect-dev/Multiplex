@@ -3098,18 +3098,29 @@ async function readCaptureBrowserDeviceId(context, opts = {}) {
     const isExtension = (worker) => {
         try { return String(worker.url()).startsWith(prefix); } catch (e) { void e; return false; }
     };
-    const firstLine = (e) => String((e && e.message) || e).split('\n')[0].trim();
+    const firstLine = (e) => promptSafe(String((e && e.message) || e).split('\n')[0], 160);
     const notRunning = {
         deviceId: null,
-        reason: 'Claude in Chrome is not running in the capture browser (its service worker did not appear)'
+        reason: 'Claude in Chrome is not running in the capture browser (its service worker did not start)'
     };
+    const listed = () => (context && typeof context.serviceWorkers === 'function' ? context.serviceWorkers() : [])
+        .find(isExtension);
     let worker;
     try {
-        worker = (context && typeof context.serviceWorkers === 'function' ? context.serviceWorkers() : [])
-            .find(isExtension);
+        worker = listed();
         if (!worker && timeoutMs > 0 && context && typeof context.waitForEvent === 'function') {
-            worker = await context.waitForEvent('serviceworker', { predicate: isExtension, timeout: timeoutMs })
+            // LISTENING BEFORE WAKING, so a worker the wake starts at once is not
+            // missed. An idle Manifest V3 worker starts no event by itself (review
+            // finding 1); the wake asks Chrome to start it. Bounded either way.
+            const appeared = context.waitForEvent('serviceworker', { predicate: isExtension, timeout: timeoutMs })
                 .catch(() => null);
+            if (typeof opts.wake === 'function') {
+                await Promise.race([
+                    Promise.resolve().then(opts.wake).catch(() => {}),
+                    sleep(timeoutMs)
+                ]);
+            }
+            worker = (await appeared) || listed();
         }
     } catch (e) {
         void e;
@@ -3146,6 +3157,73 @@ async function readCaptureBrowserDeviceId(context, opts = {}) {
 }
 
 /**
+ * Ask Chrome to start Claude in Chrome's service worker (review finding 1).
+ * Chrome stops a Manifest V3 worker that has been idle, and an idle worker is
+ * not listed and fires no event, so without this an attached browser that had
+ * been open a while could look as if the extension were not there. Done with
+ * CDP's ServiceWorker domain -- a page domain, so over the capture page's own
+ * session -- on the extension's scope only, then let go. Best effort: never a
+ * throw. Nothing runs in the page; the site cannot see it.
+ *
+ * Measured on a live capture browser: the page's ServiceWorker domain lists the
+ * extension's registration, and startWorker on its scope leaves the worker
+ * readable. Waking a worker that had really gone idle could not be shown there:
+ * the extension restarted its worker itself within seconds of being stopped.
+ */
+async function wakeExtensionWorker(context, page) {
+    let cdp = null;
+    try {
+        if (!context || typeof context.newCDPSession !== 'function') return;
+        if (!page || (typeof page.isClosed === 'function' && page.isClosed())) return;
+        cdp = await context.newCDPSession(page);
+        await cdp.send('ServiceWorker.enable');
+        await cdp.send('ServiceWorker.startWorker', { scopeURL: `chrome-extension://${CLAUDE_EXTENSION_ID}/` });
+    } catch (e) {
+        void e;
+    } finally {
+        if (cdp) {
+            try { await cdp.send('ServiceWorker.disable'); } catch (e) { void e; }
+            try { await cdp.detach(); } catch (e) { void e; }
+        }
+    }
+}
+
+/**
+ * Put what readCaptureBrowserDeviceId found on the session -- the prompt is
+ * built from it, and session.json carries it at its next write -- and say what
+ * the operator should hear: `{ level, message }`.
+ */
+function applyCaptureBrowserDeviceId(session, read) {
+    session.captureBrowserDeviceId = read && read.deviceId ? read.deviceId : null;
+    if (session.captureBrowserDeviceId) {
+        delete session.captureBrowserDeviceIdReason;
+        return {
+            level: 'info',
+            message: 'capture-har: read the capture browser\'s Claude in Chrome device ID; the agent ' +
+                'selects that browser by it.'
+        };
+    }
+    const reason = promptSafe((read && read.reason) || 'the device ID could not be read', 200);
+    session.captureBrowserDeviceIdReason = reason;
+    return {
+        level: 'warn',
+        message: `capture-har: ${reason}.\n` +
+            '  The agent will hand back rather than pick a browser. Sign in to Claude in Chrome in ' +
+            'the capture\n  browser so it is connected, then record again.'
+    };
+}
+
+/**
+ * Text the prompt quotes, made safe to quote: one line, no backticks or control
+ * characters, and at most `max` characters. The prompt is instructions.
+ */
+function promptSafe(text, max) {
+    const flat = String(text === undefined || text === null ? '' : text)
+        .replace(/[`\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return flat.length > max ? flat.slice(0, max - 3).trimEnd() + '...' : flat;
+}
+
+/**
  * The prompt's lines about the capture browser, when the extension is (or may
  * be) the driver: its device ID, or that it is unknown and why. Unknown -- not
  * read, or read and refused -- is said as such, so the agent hands back rather
@@ -3160,8 +3238,8 @@ function captureBrowserLines(session) {
             '  `deviceId` is exactly this -- see "Select the capture browser")'
         ];
     }
-    const reason = session.captureBrowserDeviceIdReason ||
-        'the recorder did not read it from the capture browser';
+    const reason = promptSafe(session.captureBrowserDeviceIdReason ||
+        'the recorder did not read it from the capture browser', 200);
     return [
         `- **Capture browser device ID (Claude in Chrome):** unknown -- ${reason}.`,
         '  So no listed browser can be identified as the capture browser: do not select any,',
@@ -6033,18 +6111,11 @@ async function start(args) {
         // drives through Playwright MCP and selects nothing. On the session too,
         // with no write of its own (see captureId above): the next write carries it.
         if (session.chromeExtension !== false) {
-            const read = await readCaptureBrowserDeviceId(context);
-            session.captureBrowserDeviceId = read.deviceId;
-            if (read.deviceId) {
-                delete session.captureBrowserDeviceIdReason;
-                log.info('capture-har: read the capture browser\'s Claude in Chrome device ID; the agent ' +
-                    'selects that browser by it.');
-            } else {
-                session.captureBrowserDeviceIdReason = read.reason;
-                log.warn(`capture-har: ${read.reason}.\n` +
-                    '  The agent will hand back rather than pick a browser. Sign in to Claude in Chrome in ' +
-                    'the capture\n  browser so it is connected, then record again.');
-            }
+            const read = await readCaptureBrowserDeviceId(context, {
+                wake: () => wakeExtensionWorker(context, page)
+            });
+            const said = applyCaptureBrowserDeviceId(session, read);
+            log[said.level](said.message);
         }
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
@@ -6991,6 +7062,8 @@ module.exports = {
     buildAgentPrompt,
     agentChildCommand,
     readCaptureBrowserDeviceId,
+    wakeExtensionWorker,
+    applyCaptureBrowserDeviceId,
     captureProfileRoot,
     chromeExtensionInstalled,
     chromeExtensionNotice,

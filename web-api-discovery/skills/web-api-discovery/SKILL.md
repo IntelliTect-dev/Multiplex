@@ -883,9 +883,11 @@ run:
 - **Installed:** the child gets `--chrome` ("Enable Claude in Chrome
   integration") in both `-AITools` modes. Once the browser is up, and before
   the prompt is written, the recorder reads the device ID from the extension's
-  service worker in the capture browser -- through its own CDP attach, waiting
-  up to 10 seconds for the worker; nothing runs in a page -- and the prompt
-  gives it as the **capture browser device ID**. If it cannot be read (the
+  service worker in the capture browser -- through its own CDP attach; nothing
+  runs in a page. A worker Chrome has stopped for being idle is asked to start
+  (CDP `ServiceWorker.startWorker`, on the extension's scope only), and the
+  recorder waits up to 10 seconds for it. The prompt gives the ID as the
+  **capture browser device ID**. If it cannot be read (the
   extension is not running there, or has never been signed in), the run warns,
   the prompt says the ID is unknown and why, and the agent hands back.
 - **Missing:** the run prints the setup steps above and **drives through
@@ -911,11 +913,12 @@ and happens in your real session. So before any page action the agent calls
 the one listed browser whose `deviceId` is exactly this run's capture browser
 device ID. A name never decides: the listing reports default labels such as
 "Browser 1", not a name typed when the extension was connected (measured for
-#161, which is why #117's name rule never matched). If the ID is unknown, or no
-listed browser has it, the agent **never acts in another browser** and does not
-switch drivers: it stops and hands back, listing the browsers it saw. Only when
-the extension is not available at all (no tools, or no connected browser) does it
-use Playwright MCP instead. It never uses `switch_browser`, which broadcasts a
+#161, which is why #117's name rule never matched). If the ID is unknown, or not
+exactly one listed browser has it (a copied profile carries its ID with it), the
+agent **never acts in another browser** and does not switch drivers: it stops
+and hands back, listing the browsers it saw. Only when the extension is not
+available at all (no tools, or no connected browser) **and** the ID was read does
+it use Playwright MCP instead; an unknown ID is a hand-back even then. It never uses `switch_browser`, which broadcasts a
 connection prompt to every Chrome with the extension.
 
 This rule is **enforced by the prompt, not by code**: the recorder cannot see
