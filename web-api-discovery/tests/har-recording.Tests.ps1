@@ -1275,25 +1275,25 @@ Describe 'An AI can be told to drive the recording (#98)' {
 
     It 'documents the one-time extension setup and the browser-selection rule (#117)' {
         # The extension is the default driver only once it is installed, signed in
-        # and connected under the capture browser name in the CAPTURE profile --
-        # a step no run automates. And the rule that keeps the agent out of the
-        # operator's everyday Chrome has to be one the operator can read, not only
-        # one the agent is told. Both places an operator looks: SKILL.md and the
-        # -AI help.
+        # and connected in the CAPTURE profile -- a step no run automates. Nothing
+        # is named (#161): the agent selects the capture browser by the device ID
+        # the recorder reads from the extension in it. And the rule that keeps the
+        # agent out of the operator's everyday Chrome has to be one the operator
+        # can read, not only one the agent is told. Both places an operator looks:
+        # SKILL.md and the -AI help.
         $help = (Get-Help -Name $script:InvokePs1 -Parameter AI | Out-String)
         foreach ($doc in @(@{ Name = 'SKILL.md'; Text = (Get-Content -LiteralPath $script:SkillMd -Raw) },
                            @{ Name = '-AI help'; Text = $help })) {
             $doc.Text | Should -Match 'chromewebstore\.google\.com/detail/\S*fcoeoabgfenejglbffodgkkbkcdhcgfn' -Because "$($doc.Name) says where to install it"
             $doc.Text | Should -Match '(?i)capture\s+profile' -Because "$($doc.Name) says which profile"
             $doc.Text | Should -Match '(?i)sign\s+in\W+to\s+the\s+extension' -Because "$($doc.Name) says to sign in to the extension"
-            $doc.Text | Should -Match '`har-capture`' -Because "$($doc.Name) names the default capture browser name"
-            $doc.Text | Should -Match '(?i)capture\s+browser\s+only' -Because "$($doc.Name) says the name is for the capture browser alone"
+            $doc.Text | Should -Match '(?i)device\s+ID' -Because "$($doc.Name) says the agent selects the capture browser by its device ID (#161)"
+            $doc.Text | Should -Not -Match '(?i)connect\s+it\s+under|capture\s+browser\s+name' -Because "$($doc.Name) no longer asks the operator to name the browser (#161)"
             $doc.Text | Should -Match 'select_browser' -Because "$($doc.Name) states the selection rule"
             $doc.Text | Should -Match '(?i)enforced\s+by\s+the\s+prompt' -Because "$($doc.Name) says the rule is the prompt's, not code"
             $doc.Text | Should -Match '(?i)hands? back' -Because "$($doc.Name) says what happens when it cannot select"
             $doc.Text | Should -Match '--chrome' -Because "$($doc.Name) says the child is given the extension"
             $doc.Text | Should -Match '--no-chrome' -Because "$($doc.Name) says a run without the extension disables it"
-            $doc.Text | Should -Match '(?i)(mov|renam)\w*[\s\S]{0,200}reconnect' -Because "$($doc.Name) says moving a profile changes its name"
             $doc.Text | Should -Match '(?i)attach[\s\S]{0,400}hands?\s+back\s+rather\s+than' -Because "$($doc.Name) says an attached run hands back rather than falling back"
             $doc.Text | Should -Match '(?i)drives?\s+through\s+Playwright\s+MCP' -Because "$($doc.Name) says a run without the extension uses Playwright MCP"
         }

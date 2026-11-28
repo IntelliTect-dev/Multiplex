@@ -609,9 +609,20 @@ function agentAllowedTools(chrome) {
 const CLAUDE_EXTENSION_ID = 'fcoeoabgfenejglbffodgkkbkcdhcgfn';
 const CLAUDE_EXTENSION_STORE_URL =
     `https://chromewebstore.google.com/detail/claude/${CLAUDE_EXTENSION_ID}`;
-// The name the operator gives the capture browser when connecting the extension,
-// and the name the agent selects it by. See captureBrowserName.
-const CAPTURE_BROWSER_NAME = 'har-capture';
+// WHICH CONNECTED BROWSER IS THE CAPTURE BROWSER (#161). The extension keeps,
+// in the capture browser's own chrome.storage.local, the ID that
+// list_connected_browsers reports as that browser's `deviceId`; the agent
+// selects by it. See readCaptureBrowserDeviceId.
+const DEVICE_ID_STORAGE_KEY = 'bridgeDeviceId';
+// How long the recorder waits for the extension's service worker to show up in
+// the capture browser before it says the device ID is unknown. The worker
+// starts with the browser, so by the time the start page has loaded it is
+// normally there already; this covers an attach that has not caught up yet.
+const EXTENSION_WORKER_WAIT_MS = 10000;
+// What a device ID may look like before it is put into the prompt: the
+// extension's are UUIDs. Anything else -- markup, a line break -- is refused,
+// not quoted, because the prompt is instructions.
+const DEVICE_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/;
 // Where committed references live in a consuming project. Named here only to
 // PRINT the promote command -- nothing in this file writes into it.
 const REFERENCE_DIR = path.join('docs', 'har-reference');
@@ -3019,10 +3030,7 @@ function buildAgentPrompt(session, opts = {}) {
                 '  Claude-in-Chrome extension is not installed in the capture profile, so skip',
                 '  "Select the capture browser" and do not use any `mcp__claude-in-chrome__*` tool.'
             ]
-            : [
-                `- **Capture browser name (Claude in Chrome):** \`${captureBrowserName(session)}\``,
-                '  (select the connected browser with exactly this name; see "Select the capture browser")'
-            ]),
+            : captureBrowserLines(session)),
         // THE SAME NUMBERS the recorder paces its own steps by (pacing.js), so
         // "human pace" in the rules means one thing for the agent and the code.
         `- **Pace:** ${pacing.describePace(session.pace || pacing.DEFAULT_PACE)}`,
@@ -3063,36 +3071,102 @@ function chromeExtensionInstalled(profileDir) {
 }
 
 /**
- * The name the capture browser goes by in Claude in Chrome, and the one fact the
- * agent selects it by (#117). The extension's list_connected_browsers reports
- * each connected Chrome by deviceId and display name -- nothing about CDP ports
- * or profiles -- so the operator names the capture browser once, when connecting
- * the extension in it, and the run tells the agent which name to select.
+ * The capture browser's Claude in Chrome device ID, read from the extension
+ * inside that browser (#161). Resolves `{ deviceId, reason }`: the ID, or null
+ * and why -- never a throw, because a capture must not end over it.
  *
- * UNIQUE PER PROFILE (review I3). The default profile is plain `har-capture`;
- * every other profile is `har-capture-<folder slug>-<6 hex>`, the hex a hash of
- * the resolved profile path. The slug alone collided -- `profile-work` and a
- * folder named `work` were both `har-capture-work`, and a folder whose slug came
- * out empty took the default profile's name -- and a collision is the agent
- * driving the wrong browser. The hash is stable, so a profile keeps its name.
- * An attached browser has no profile this run can name, so it is the plain name.
+ * WHY NOT A NAME. #117 had the operator name the capture browser when connecting
+ * the extension, and the agent select the listed browser with that name. On a
+ * real host list_connected_browsers never reported it: the session that paired
+ * the capture Chrome as `har-capture` and a fresh `claude -p --chrome` on the
+ * same host both listed it as "Browser 1", a default positional label. So every
+ * run handed back.
+ *
+ * WHAT IS READ. The extension stores, in the capture browser's own
+ * chrome.storage.local under `bridgeDeviceId`, exactly the `deviceId` the
+ * listing reports for that browser (checked against a live capture Chrome). It
+ * is per extension install, so it is unique per profile with nothing to keep
+ * unique by hand. It is read through the CDP attach the recorder already holds
+ * -- Playwright's `context.serviceWorkers()` -- from the extension's own service
+ * worker; nothing runs in a page, so no site can see it.
+ *
+ * Bounded: a worker that has not shown up within `timeoutMs` is "not running".
  */
-function captureBrowserName(session) {
-    const profileDir = session && session.profileDir;
-    if (!profileDir) return CAPTURE_BROWSER_NAME;
-    const resolved = path.resolve(profileDir);
-    const key = (dir) => {
-        const r = path.resolve(dir);
-        return process.platform === 'win32' ? r.toLowerCase() : r;
+async function readCaptureBrowserDeviceId(context, opts = {}) {
+    const timeoutMs = opts.timeoutMs === undefined ? EXTENSION_WORKER_WAIT_MS : opts.timeoutMs;
+    const prefix = `chrome-extension://${CLAUDE_EXTENSION_ID}/`;
+    const isExtension = (worker) => {
+        try { return String(worker.url()).startsWith(prefix); } catch (e) { void e; return false; }
     };
-    // The EFFECTIVE default only: with HAR_CAPTURE_PROFILE set, that is the
-    // default and `<root>/profile` is an ordinary profile with its own name.
-    if (key(defaultProfileDir()) === key(resolved)) return CAPTURE_BROWSER_NAME;
-    const base = path.basename(resolved).trim().toLowerCase();
-    const slug = (base.startsWith('profile-') ? base.slice('profile-'.length) : base)
-        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    const hash = require('crypto').createHash('sha256').update(key(resolved)).digest('hex').slice(0, 6);
-    return [CAPTURE_BROWSER_NAME, slug, hash].filter(Boolean).join('-');
+    const firstLine = (e) => String((e && e.message) || e).split('\n')[0].trim();
+    const notRunning = {
+        deviceId: null,
+        reason: 'Claude in Chrome is not running in the capture browser (its service worker did not appear)'
+    };
+    let worker;
+    try {
+        worker = (context && typeof context.serviceWorkers === 'function' ? context.serviceWorkers() : [])
+            .find(isExtension);
+        if (!worker && timeoutMs > 0 && context && typeof context.waitForEvent === 'function') {
+            worker = await context.waitForEvent('serviceworker', { predicate: isExtension, timeout: timeoutMs })
+                .catch(() => null);
+        }
+    } catch (e) {
+        void e;
+        worker = null;
+    }
+    if (!worker) return notRunning;
+    let value;
+    try {
+        // Runs IN the extension's service worker, where `chrome` is its API.
+        value = await worker.evaluate(
+            (key) => globalThis.chrome.storage.local.get(key).then((stored) => stored[key]),
+            DEVICE_ID_STORAGE_KEY);
+    } catch (e) {
+        return {
+            deviceId: null,
+            reason: `Claude in Chrome in the capture browser could not be read: ${firstLine(e)}`
+        };
+    }
+    if (value === undefined || value === null || value === '') {
+        return {
+            deviceId: null,
+            reason: 'Claude in Chrome in the capture browser has no device ID yet -- it has never been ' +
+                'signed in and connected there'
+        };
+    }
+    if (typeof value !== 'string' || !DEVICE_ID_SHAPE.test(value)) {
+        return {
+            deviceId: null,
+            reason: 'Claude in Chrome in the capture browser holds a device ID this recorder does not ' +
+                'recognise, so it is not used'
+        };
+    }
+    return { deviceId: value, reason: null };
+}
+
+/**
+ * The prompt's lines about the capture browser, when the extension is (or may
+ * be) the driver: its device ID, or that it is unknown and why. Unknown -- not
+ * read, or read and refused -- is said as such, so the agent hands back rather
+ * than guessing (drive-prompt.md, "Select the capture browser").
+ */
+function captureBrowserLines(session) {
+    const id = session.captureBrowserDeviceId;
+    if (typeof id === 'string' && DEVICE_ID_SHAPE.test(id)) {
+        return [
+            `- **Capture browser device ID (Claude in Chrome):** \`${id}\``,
+            '  (read from the extension inside the capture browser; select the listed browser whose',
+            '  `deviceId` is exactly this -- see "Select the capture browser")'
+        ];
+    }
+    const reason = session.captureBrowserDeviceIdReason ||
+        'the recorder did not read it from the capture browser';
+    return [
+        `- **Capture browser device ID (Claude in Chrome):** unknown -- ${reason}.`,
+        '  So no listed browser can be identified as the capture browser: do not select any,',
+        '  hand back (see "Select the capture browser").'
+    ];
 }
 
 /**
@@ -3103,14 +3177,13 @@ function captureBrowserName(session) {
  */
 function chromeExtensionNotice(session) {
     if (!session.profileDir) return null;
-    const name = captureBrowserName(session);
     if (chromeExtensionInstalled(session.profileDir)) {
         return {
             installed: true,
             level: 'info',
             message: 'capture-har: Claude in Chrome is installed in the capture profile. The agent ' +
-                `selects the connected\n  browser named \`${name}\` -- give it that name when you ` +
-                'connect the extension in it.'
+                'selects the capture\n  browser by the device ID the extension keeps in it -- ' +
+                'sign in to the extension there once, so it is connected.'
         };
     }
     return {
@@ -3125,9 +3198,9 @@ function chromeExtensionNotice(session) {
             `       ${session.profileDir}`,
             '    2. In it, install Claude in Chrome from the Chrome Web Store:',
             `       ${CLAUDE_EXTENSION_STORE_URL}`,
-            '    3. Sign in to the extension with your Claude account, and connect it under the name',
-            `       \`${name}\` -- the agent selects the capture browser by that name. Give that`,
-            '       name to the capture browser only.'
+            '    3. Sign in to the extension with your Claude account, so it is connected. There is',
+            '       nothing to name: the agent selects the capture browser by the device ID the',
+            '       extension keeps in it.'
         ].join('\n')
     };
 }
@@ -5954,6 +6027,25 @@ async function start(args) {
     // refused and nobody handed back (agentStartRefusal). ENTER, the stop
     // command and a closed window all still end the wait.
     if (ai) {
+        // WHICH BROWSER THE AGENT MAY DRIVE (#161), read from the extension in the
+        // capture browser itself, before the prompt that names it is built. Not
+        // when the preflight found no extension in the capture profile: that run
+        // drives through Playwright MCP and selects nothing. On the session too,
+        // with no write of its own (see captureId above): the next write carries it.
+        if (session.chromeExtension !== false) {
+            const read = await readCaptureBrowserDeviceId(context);
+            session.captureBrowserDeviceId = read.deviceId;
+            if (read.deviceId) {
+                delete session.captureBrowserDeviceIdReason;
+                log.info('capture-har: read the capture browser\'s Claude in Chrome device ID; the agent ' +
+                    'selects that browser by it.');
+            } else {
+                session.captureBrowserDeviceIdReason = read.reason;
+                log.warn(`capture-har: ${read.reason}.\n` +
+                    '  The agent will hand back rather than pick a browser. Sign in to Claude in Chrome in ' +
+                    'the capture\n  browser so it is connected, then record again.');
+            }
+        }
         const prompt = buildAgentPrompt(session);
         fs.writeFileSync(session.agentPromptPath, prompt, 'utf8');
         // A hand-over is set up asynchronously; give one in progress a moment
@@ -6898,7 +6990,7 @@ module.exports = {
     absoluteReadRule,
     buildAgentPrompt,
     agentChildCommand,
-    captureBrowserName,
+    readCaptureBrowserDeviceId,
     captureProfileRoot,
     chromeExtensionInstalled,
     chromeExtensionNotice,

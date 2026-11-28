@@ -867,13 +867,13 @@ ordinary browser with none). **One-time setup**, per capture profile:
    `Invoke-HarCapture <url> -Describe 'setup' -Browser Native`.
 2. In that window, install **Claude in Chrome** from the Chrome Web Store:
    <https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn>.
-3. Sign in to the extension with your Claude account, and connect it under the
-   **capture browser name** the run prints: `har-capture` for the default
-   profile; for any other profile, `har-capture-<folder>-<6 hex>`, where the hex
-   is a hash of the profile's path, so no two profiles share a name. Give that
-   name to the capture browser only -- never to your everyday Chrome. Because
-   the hash comes from the path, **moving or renaming a profile changes its
-   name**: reconnect the extension in it under the new name the run prints.
+3. Sign in to the extension with your Claude account, so it is connected.
+   There is **nothing to name** (#161): every `-AI` run reads the capture
+   browser's **device ID** from the extension inside it -- the `bridgeDeviceId`
+   the extension keeps in its own storage, which is the `deviceId`
+   `list_connected_browsers` reports for that browser -- and the agent selects
+   the capture browser by that ID. It belongs to that profile's copy of the
+   extension, so no two profiles share one, and moving a profile keeps it.
 
 Every `-AI` run checks for it **before the browser launches**, by looking for the
 extension's store ID (`fcoeoabgfenejglbffodgkkbkcdhcgfn`) under the profile's
@@ -881,8 +881,13 @@ extension's store ID (`fcoeoabgfenejglbffodgkkbkcdhcgfn`) under the profile's
 run:
 
 - **Installed:** the child gets `--chrome` ("Enable Claude in Chrome
-  integration") in both `-AITools` modes, and the prompt names the capture
-  browser name to select.
+  integration") in both `-AITools` modes. Once the browser is up, and before
+  the prompt is written, the recorder reads the device ID from the extension's
+  service worker in the capture browser -- through its own CDP attach, waiting
+  up to 10 seconds for the worker; nothing runs in a page -- and the prompt
+  gives it as the **capture browser device ID**. If it cannot be read (the
+  extension is not running there, or has never been signed in), the run warns,
+  the prompt says the ID is unknown and why, and the agent hands back.
 - **Missing:** the run prints the setup steps above and **drives through
   Playwright MCP** -- a warning, not a refusal. The child gets `--no-chrome`
   (disabled outright, even if your Claude Code settings turn the integration on
@@ -890,32 +895,36 @@ run:
   prompt tells the agent to use Playwright MCP only, so an extension connected
   in some other Chrome is never offered to it.
 - **Attached** (`-Attach`): there is no profile to look in, so nothing is
-  checked; the child gets `--chrome` and the name is the plain `har-capture`.
-  With no preflight, any connected Chrome named `har-capture` is selectable -- so
-  give that name only to the browser you attach to. And because the extension is
-  not known to be absent, an attached run whose only connected Chrome is some
-  other browser hands back rather than falling back to Playwright MCP.
+  checked before the attach; the child gets `--chrome`, and the device ID is
+  read from the extension in the browser you attached to, as above. Because the
+  extension is not known to be absent, an attached run whose browser has no
+  running, signed-in extension hands back rather than falling back to
+  Playwright MCP.
 
-The check cannot see whether the extension is signed in or connected.
+The preflight cannot see whether the extension is signed in; the device ID read
+after launch is what tells.
 
 **The browser-selection rule.** The extension can be connected in more than one
 Chrome -- your everyday one among them -- and anything done there is unrecorded
 and happens in your real session. So before any page action the agent calls
 `list_connected_browsers` and selects the capture browser with `select_browser`:
-the one connected browser whose name is exactly this run's capture browser name.
-If the listing says which browser is on this computer, a match reported as
-elsewhere is rejected; if it does not say, the name alone decides. If no browser
-matches, or more than one does, it **never acts in another browser** and does
-not switch drivers: it stops and hands back, listing the names it saw. Only when
+the one listed browser whose `deviceId` is exactly this run's capture browser
+device ID. A name never decides: the listing reports default labels such as
+"Browser 1", not a name typed when the extension was connected (measured for
+#161, which is why #117's name rule never matched). If the ID is unknown, or no
+listed browser has it, the agent **never acts in another browser** and does not
+switch drivers: it stops and hands back, listing the browsers it saw. Only when
 the extension is not available at all (no tools, or no connected browser) does it
 use Playwright MCP instead. It never uses `switch_browser`, which broadcasts a
 connection prompt to every Chrome with the extension.
 
 This rule is **enforced by the prompt, not by code**: the recorder cannot see
 which browser the extension acts in, so what keeps the agent out of your
-everyday Chrome is the generated instruction, the unique name, and the
-`--chrome` flag being withheld when the capture profile has no extension. The
-real shape of `list_connected_browsers`' output is to be confirmed in #109.
+everyday Chrome is the generated instruction, the device ID read from the
+capture browser itself, and the `--chrome` flag being withheld when the capture
+profile has no extension. As measured for #161, each `list_connected_browsers`
+entry carries a `deviceId`, a `name` (a default label) and an `osPlatform`, and
+sometimes whether it is local; the rest of its shape is #109's to confirm.
 
 **The agent is talked to, never ended.** `claude -p` runs with stream-json in
 and out (`--input-format stream-json --output-format stream-json --verbose
