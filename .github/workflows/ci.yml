@@ -1,0 +1,51 @@
+name: ci
+
+# Builds and tests Multiplex.slnx -- the app, its services and their tests --
+# on every pull request and every push to main. GitHub-hosted runners are free
+# for a public repository. The live tests stay off: they run only with
+# MULTIPLEX_LIVE_TESTS=1, which is never set here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request makes its older run moot; a run on main always finishes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: ci / build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The browser-driven tests skip when they find no browser, which would
+      # still report green. Point them at the image's Google Chrome so they run;
+      # they start it headless, so no display is needed.
+      MULTIPLEX_CHROMIUM: /usr/bin/google-chrome
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      # Fails the job if the image ever stops shipping Chrome there, rather than
+      # letting the browser tests skip.
+      - name: Check the browser the browser-driven tests use
+        run: '"$MULTIPLEX_CHROMIUM" --version'
+
+      - name: Restore
+        run: dotnet restore Multiplex.slnx
+
+      - name: Build
+        run: dotnet build Multiplex.slnx --no-restore
+
+      - name: Test
+        run: dotnet test Multiplex.slnx --no-build
