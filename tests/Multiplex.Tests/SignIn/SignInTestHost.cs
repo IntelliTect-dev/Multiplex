@@ -65,6 +65,7 @@ public sealed class SignInTestHost : IAsyncDisposable
         Definition = new StubSignInDefinition(options.StubBaseUrl ?? new Uri("http://127.0.0.1:9/"));
         Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
+            b.WithoutMicrosoftSignIn();
             b.UseSetting("Multiplex:DataPath", DataPath);
             b.UseSetting("Browser:ExecutablePath", options.ExecutablePath);
             b.UseSetting("SignIn:Headless", "true");
